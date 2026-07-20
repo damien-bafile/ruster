@@ -68,7 +68,8 @@ impl Renderer for TuiRenderer {
                 state.cursor,
             )
             .with_syntax(has_highlights)
-            .with_cursor_visible(state.cursor_visible);
+            .with_cursor_visible(state.cursor_visible)
+            .with_cursor_kind(state.cursor_kind);
             frame.render_widget(buf_widget, chunks[0]);
 
             // Statusline

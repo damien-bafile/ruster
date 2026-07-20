@@ -3,7 +3,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::widgets::Widget;
 use ruster_core::vim::VimMode;
-use ruster_render::{StyledLine, Color as RColor};
+use ruster_render::{CursorKind, StyledLine, Color as RColor};
 
 /// Convert a VimMode to a display string.
 pub fn mode_label(mode: &VimMode) -> &'static str {
@@ -34,11 +34,12 @@ pub struct BufferWidget {
     cursor: (u16, u16),
     syntax: bool,
     cursor_visible: bool,
+    cursor_kind: CursorKind,
 }
 
 impl BufferWidget {
     pub fn new(lines: Vec<StyledLine>, cursor: (u16, u16)) -> Self {
-        BufferWidget { lines, cursor, syntax: false, cursor_visible: true }
+        BufferWidget { lines, cursor, syntax: false, cursor_visible: true, cursor_kind: CursorKind::Block }
     }
 
     pub fn with_syntax(mut self, yes: bool) -> Self {
@@ -48,6 +49,11 @@ impl BufferWidget {
 
     pub fn with_cursor_visible(mut self, visible: bool) -> Self {
         self.cursor_visible = visible;
+        self
+    }
+
+    pub fn with_cursor_kind(mut self, kind: CursorKind) -> Self {
+        self.cursor_kind = kind;
         self
     }
 }
@@ -79,8 +85,17 @@ impl Widget for BufferWidget {
                 if let Some(cell) = buf.cell_mut((x, y)) {
                     cell.set_char(ch);
                     if is_cursor_line && j as u16 == self.cursor.1 && self.cursor_visible {
-                        cell.set_bg(Color::White);
-                        cell.set_fg(Color::Black);
+                        match self.cursor_kind {
+                            CursorKind::Bar => {
+                                cell.set_char('\u{258f}');
+                                cell.set_fg(Color::White);
+                                cell.set_bg(Color::Reset);
+                            }
+                            CursorKind::Block => {
+                                cell.set_bg(Color::White);
+                                cell.set_fg(Color::Black);
+                            }
+                        }
                     } else if let Some((fg, bg)) = style_map.get(&(i as u16, j as u16)) {
                         cell.set_fg(ruster_render_color_to_tui(fg));
                         if !matches!(bg, RColor::Default) {

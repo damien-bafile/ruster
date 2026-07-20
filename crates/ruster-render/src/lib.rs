@@ -24,6 +24,7 @@ pub struct StyledLine {
     pub highlights: Vec<(usize, usize, SyntaxStyle)>,
 }
 
+#[derive(Copy, Clone)]
 pub enum CursorKind { Block, Bar }
 
 pub struct EditorState<'a> {

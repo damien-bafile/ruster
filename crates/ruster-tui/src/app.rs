@@ -7,7 +7,7 @@ use ruster_core::vim::VimState;
 use ruster_render::{CursorKind, EditorState, Renderer, StyledLine};
 use ruster_syntax::SyntaxEngine;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CmdAction {
@@ -22,33 +22,6 @@ enum AppEvent {
     Input(crossterm::event::Event),
 }
 
-use tachyonfx::EffectTimer;
-use tachyonfx::Interpolation;
-
-#[derive(Clone)]
-pub struct AnimationState {
-    cursor_visible: bool,
-    cursor_timer: EffectTimer,
-}
-
-impl AnimationState {
-    pub fn new() -> Self {
-        AnimationState {
-            cursor_visible: true,
-            cursor_timer: EffectTimer::from_ms(500, Interpolation::Linear),
-        }
-    }
-
-    pub fn tick(&mut self, delta: std::time::Duration) {
-        let remaining = self.cursor_timer
-            .process(tachyonfx::Duration::from_secs_f32(delta.as_secs_f64() as f32));
-        if remaining.is_some() {
-            self.cursor_timer = EffectTimer::from_ms(500, Interpolation::Linear);
-            self.cursor_visible = !self.cursor_visible;
-        }
-    }
-}
-
 pub struct App {
     pub editor: Editor,
     pub vim: VimState,
@@ -57,7 +30,6 @@ pub struct App {
     pub should_quit: bool,
     message: Option<String>,
     syntax: Option<SyntaxEngine>,
-    anim: AnimationState,
 }
 
 impl App {
@@ -70,8 +42,7 @@ impl App {
             .and_then(|e| e.to_str())
             .unwrap_or("");
         let syntax = SyntaxEngine::new(&content, ext).ok();
-        let anim = AnimationState::new();
-        App { editor, vim, renderer, file_path, should_quit: false, message: None, syntax, anim }
+        App { editor, vim, renderer, file_path, should_quit: false, message: None, syntax }
     }
 
     pub fn handle_key(&mut self, ck: crossterm::event::KeyEvent) {
@@ -165,8 +136,6 @@ impl App {
         let mut interval = tokio::time::interval(Duration::from_secs_f64(1.0 / 60.0));
         interval.tick().await; // discard first immediate tick
 
-        let mut last_frame = Instant::now();
-
         loop {
             tokio::select! {
                 event = rx.recv() => {
@@ -183,10 +152,6 @@ impl App {
                 _ = interval.tick() => {}
             }
 
-            let now = Instant::now();
-            let delta = now.duration_since(last_frame);
-            last_frame = now;
-            self.anim.tick(delta);
             self.render();
             if self.should_quit { break; }
         }
@@ -230,7 +195,7 @@ impl App {
             lines: styled_lines,
             cursor: (line, col),
             cursor_kind,
-            cursor_visible: self.anim.cursor_visible,
+            cursor_visible: true,
             mode_label,
             file_path: &file_path,
             modified: false,
@@ -311,19 +276,6 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn animation_state_cursor_toggles() {
-        use std::time::Duration;
-        let mut anim = AnimationState::new();
-        assert!(anim.cursor_visible);
-        // Advance 600ms — should toggle to invisible
-        for _ in 0..36 { anim.tick(Duration::from_secs_f64(1.0 / 60.0)); }
-        assert!(!anim.cursor_visible);
-        // Advance another 600ms — should toggle back
-        for _ in 0..36 { anim.tick(Duration::from_secs_f64(1.0 / 60.0)); }
-        assert!(anim.cursor_visible);
-    }
 
     #[test]
     fn cmd_w_saves() {

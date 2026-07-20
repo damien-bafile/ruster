@@ -13,4 +13,3 @@ ruster-syntax = { path = "../ruster-syntax" }
 ratatui = "0.28"
 crossterm = "0.28"
 tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
-tachyonfx = "0.25"
