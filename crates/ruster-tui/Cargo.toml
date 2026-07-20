@@ -9,5 +9,6 @@ path = "src/lib.rs"
 [dependencies]
 ruster-core = { path = "../ruster-core" }
 ruster-render = { path = "../ruster-render" }
+ruster-syntax = { path = "../ruster-syntax" }
 ratatui = "0.28"
 crossterm = "0.28"

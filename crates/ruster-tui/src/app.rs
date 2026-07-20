@@ -4,7 +4,8 @@ use ruster_core::action::{Action, Motion};
 use ruster_core::editor::Editor;
 use ruster_core::vim::VimMode;
 use ruster_core::vim::VimState;
-use ruster_render::{CursorKind, EditorState, Renderer};
+use ruster_render::{CursorKind, EditorState, Renderer, StyledLine};
+use ruster_syntax::SyntaxEngine;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +24,7 @@ pub struct App {
     file_path: PathBuf,
     pub should_quit: bool,
     message: Option<String>,
+    syntax: Option<SyntaxEngine>,
 }
 
 impl App {
@@ -31,7 +33,11 @@ impl App {
         editor.execute(Action::Move(Motion::To(0)));
         let vim = VimState::new();
         let renderer = TuiRenderer::dummy();
-        App { editor, vim, renderer, file_path, should_quit: false, message: None }
+        let ext = file_path.extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("");
+        let syntax = SyntaxEngine::new(&content, ext).ok();
+        App { editor, vim, renderer, file_path, should_quit: false, message: None, syntax }
     }
 
     pub fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
@@ -79,16 +85,21 @@ impl App {
     }
 
     fn render(&mut self) {
-        let lines: Vec<String> = self.editor.buffer().to_string()
-            .split('\n')
-            .map(|s| s.to_string())
-            .collect();
+        let content = self.editor.buffer().to_string();
+        if let Some(syn) = &mut self.syntax {
+            syn.reparse(&content);
+        }
+        let styled_lines: Vec<StyledLine> = match &self.syntax {
+            Some(syn) => syn.styled_lines().to_vec(),
+            None => content.split('\n').map(|s| StyledLine { text: s.to_string(), highlights: vec![] }).collect(),
+        };
+
         let head = self.editor.primary_head();
         let mut line = 0u16;
         let mut col = 0u16;
         let mut remaining = head;
-        for l in &lines {
-            let lc = l.chars().count();
+        for l in &styled_lines {
+            let lc = l.text.chars().count();
             if remaining <= lc { col = remaining as u16; break; }
             remaining = remaining.saturating_sub(lc + 1);
             line += 1;
@@ -106,7 +117,7 @@ impl App {
         };
 
         let state = EditorState {
-            lines,
+            lines: styled_lines,
             cursor: (line, col),
             cursor_kind,
             mode_label,

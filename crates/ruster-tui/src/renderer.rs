@@ -1,7 +1,23 @@
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
-use ruster_render::{EditorState, Renderer};
+use ruster_render::{Color, EditorState, Renderer, SyntaxStyle};
 use std::io::Stdout;
+
+fn ruster_color_to_ratatui(c: &Color) -> ratatui::style::Color {
+    match c {
+        Color::Default => ratatui::style::Color::Reset,
+        Color::Rgb(r, g, b) => ratatui::style::Color::Rgb(*r, *g, *b),
+    }
+}
+
+pub fn ruster_style_to_ratatui(s: &SyntaxStyle) -> ratatui::style::Style {
+    let mut style = ratatui::style::Style::default()
+        .fg(ruster_color_to_ratatui(&s.fg))
+        .bg(ruster_color_to_ratatui(&s.bg));
+    if s.bold { style = style.add_modifier(ratatui::style::Modifier::BOLD); }
+    if s.italic { style = style.add_modifier(ratatui::style::Modifier::ITALIC); }
+    style
+}
 
 pub struct TuiRenderer {
     terminal: Option<Terminal<CrosstermBackend<Stdout>>>,
@@ -46,10 +62,11 @@ impl Renderer for TuiRenderer {
                 .split(area);
 
             // Buffer area
+            let has_highlights = state.lines.iter().any(|l| !l.highlights.is_empty());
             let buf_widget = crate::widgets::BufferWidget::new(
                 state.lines.clone(),
                 state.cursor,
-            );
+            ).with_syntax(has_highlights);
             frame.render_widget(buf_widget, chunks[0]);
 
             // Statusline

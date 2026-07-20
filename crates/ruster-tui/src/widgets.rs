@@ -3,6 +3,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::widgets::Widget;
 use ruster_core::vim::VimMode;
+use ruster_render::{StyledLine, Color as RColor};
 
 /// Convert a VimMode to a display string.
 pub fn mode_label(mode: &VimMode) -> &'static str {
@@ -20,25 +21,53 @@ pub fn cmdline_label(buf: &str) -> String {
     if buf.is_empty() { ":".to_string() } else { buf.to_string() }
 }
 
-/// Renders buffer text with cursor highlight.
+fn ruster_render_color_to_tui(c: &RColor) -> Color {
+    match c {
+        RColor::Default => Color::Reset,
+        RColor::Rgb(r, g, b) => Color::Rgb(*r, *g, *b),
+    }
+}
+
+/// Renders buffer text with cursor highlight and optional syntax highlighting.
 pub struct BufferWidget {
-    lines: Vec<String>,
+    lines: Vec<StyledLine>,
     cursor: (u16, u16),
+    syntax: bool,
 }
 
 impl BufferWidget {
-    pub fn new(lines: Vec<String>, cursor: (u16, u16)) -> Self {
-        BufferWidget { lines, cursor }
+    pub fn new(lines: Vec<StyledLine>, cursor: (u16, u16)) -> Self {
+        BufferWidget { lines, cursor, syntax: false }
+    }
+
+    pub fn with_syntax(mut self, yes: bool) -> Self {
+        self.syntax = yes;
+        self
     }
 }
 
 impl Widget for BufferWidget {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let mut style_map: std::collections::HashMap<(u16, u16), (RColor, RColor)> =
+            std::collections::HashMap::new();
+        if self.syntax {
+            for (i, line) in self.lines.iter().enumerate() {
+                let y = i as u16;
+                if y >= area.height { break; }
+                for (offset, length, style) in &line.highlights {
+                    for c in 0..*length {
+                        let x = (offset + c) as u16;
+                        style_map.insert((y, x), (style.fg, style.bg));
+                    }
+                }
+            }
+        }
+
         for (i, line) in self.lines.iter().enumerate() {
             if i as u16 >= area.height { break; }
             let y = area.y + i as u16;
             let is_cursor_line = i as u16 == self.cursor.0;
-            for (j, ch) in line.chars().enumerate() {
+            for (j, ch) in line.text.chars().enumerate() {
                 let x = area.x + j as u16;
                 if x >= area.right() { break; }
                 if let Some(cell) = buf.cell_mut((x, y)) {
@@ -46,6 +75,11 @@ impl Widget for BufferWidget {
                     if is_cursor_line && j as u16 == self.cursor.1 {
                         cell.set_bg(Color::White);
                         cell.set_fg(Color::Black);
+                    } else if let Some((fg, bg)) = style_map.get(&(i as u16, j as u16)) {
+                        cell.set_fg(ruster_render_color_to_tui(fg));
+                        if !matches!(bg, RColor::Default) {
+                            cell.set_bg(ruster_render_color_to_tui(bg));
+                        }
                     }
                 }
             }
