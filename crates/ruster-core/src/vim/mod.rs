@@ -181,6 +181,14 @@ impl VimState {
                 self.replay_last_change(editor, out);
                 self.count = None;
             }
+            KeyEvent::Char('u') => {
+                out.push(Action::Undo);
+                self.count = None;
+            }
+            KeyEvent::Ctrl('r') => {
+                out.push(Action::Redo);
+                self.count = None;
+            }
             KeyEvent::Char('v') => {
                 let at = editor.primary_head();
                 self.mode = VimMode::VisualChar;
