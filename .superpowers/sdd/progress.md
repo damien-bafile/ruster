@@ -16,3 +16,5 @@ Task 12: complete (commits a58ef6f..0f0c998, 50 tests). Subagent caught split-se
 Task 13: complete (milestone tagged plan-a-core-complete)
 Task 1: complete (commits 114f454..ff60730, review clean)
 Task 2: complete (commits ff60730..5c59b11, review clean)
+Task 3: complete (commits 5c59b11..f9d7cfd, review clean)
+Task 4: complete (commit d01c4f1, 86 tests pass)

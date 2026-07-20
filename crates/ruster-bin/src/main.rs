@@ -24,7 +24,7 @@ fn main() {
     };
 
     let mut app = App::new(content, path);
-    if let Err(e) = app.run() {
+    if let Err(e) = app.run_async() {
         eprintln!("Error: {}", e);
         std::process::exit(1);
     }
