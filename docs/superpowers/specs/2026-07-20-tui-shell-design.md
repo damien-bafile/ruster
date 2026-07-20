@@ -24,8 +24,8 @@ crates/ruster-bin/      — binary entry point, CLI arg parsing, error exit
 
 `ruster-core` is **not modified** except for:
 - Adding `Action::CmdlineResult(String)` variant (and the corresponding no-op match arm in `Editor::execute`)
-- Extending `VimState` with `cmdline_buffer`, `pending_cmdline`, and Cmdline-mode key handling (existing `VimMode::Cmdline` match arm is expanded from "absorb Esc" to full text capture + Enter parsing)
-- Adding a public `VimState::cmdline_buffer()` getter and `take_pending_cmdline()` method
+- Extending `VimState` with `cmdline_buffer` and full Cmdline-mode key handling (existing `VimMode::Cmdline` match arm is expanded from "absorb Esc" to full text capture + Enter parsing)
+- Adding a public `VimState::cmdline_buffer()` getter
 
 All other additions are in the new crates.
 
@@ -89,9 +89,12 @@ loop {
 
     read crossterm event, convert to ruster_core::KeyEvent
 
-    match vim.mode {
-        Cmdline => handle_cmdline_key(key),
-        _       => handle_editor_key(key),
+    // Single path for all modes — VimState internally routes Cmdline/Insert/Visual/Normal
+    for action in vim.handle(key, &editor) {
+        match action {
+            Action::CmdlineResult(cmd) => execute_cmd(&cmd),
+            other => editor.execute(other),
+        }
     }
 
     if should_quit { break }
@@ -99,29 +102,7 @@ loop {
 disable raw mode, restore screen
 ```
 
-**`handle_editor_key`:**
-
-```
-for action in vim.handle(key, &editor) {
-    match action {
-        Action::CmdlineResult(cmd) => execute_cmd(&cmd),
-        other => editor.execute(other),
-    }
-}
-```
-
-**`handle_cmdline_key`:**
-
-```
-// VimState stores the cmdline_buffer internally.
-// We just feed the key and check for results.
-for action in vim.handle(key, &editor) {
-    // Cmdline mode returns no actions; Enter sets pending_cmdline
-}
-if let Some(cmd) = vim.take_pending_cmdline() {
-    execute_cmd(&cmd);
-}
-```
+The event loop simplifies to one path regardless of mode:
 
 ### Cmdline parsing in App (`execute_cmd`)
 
@@ -252,11 +233,10 @@ Action::CmdlineResult(_) => {}
 Add to `VimState`:
 
 ```rust
-cmdline_buffer: String,           // current cmdline text
-pending_cmdline: Option<String>,  // set on Enter, cleared by App
+cmdline_buffer: String,  // current cmdline text
 ```
 
-Expand the `VimMode::Cmdline` match arm in `handle()`:
+Expand the `VimMode::Cmdline` match arm in `handle()` (the `handle` method receives `out: &mut Vec<Action>`):
 
 ```rust
 VimMode::Cmdline => {
@@ -267,8 +247,8 @@ VimMode::Cmdline => {
         }
         KeyEvent::Enter => {
             let cmd = std::mem::take(&mut self.cmdline_buffer);
-            self.pending_cmdline = Some(cmd);
             self.mode = VimMode::Normal;
+            out.push(Action::CmdlineResult(cmd));
         }
         KeyEvent::Backspace => {
             self.cmdline_buffer.pop();
@@ -295,9 +275,6 @@ Add public getter/taker:
 
 ```rust
 pub fn cmdline_buffer(&self) -> &str { &self.cmdline_buffer }
-pub fn take_pending_cmdline(&mut self) -> Option<String> {
-    self.pending_cmdline.take()
-}
 ```
 
 ---
@@ -313,7 +290,7 @@ pub fn take_pending_cmdline(&mut self) -> Option<String> {
 
 ## Testing
 
-- **Unit tests** for `VimState` cmdline capture: verify that `:` enters Cmdline mode, chars are captured, Enter sets `pending_cmdline`, Esc clears it, and the mode returns to Normal.
+- **Unit tests** for `VimState` cmdline capture: verify that `:` enters Cmdline mode, chars are captured, Enter emits `Action::CmdlineResult`, Esc clears it, and the mode returns to Normal.
 - **Unit tests** for cmdline parsing: verify `:w`, `:q`, `:wq`, `:q!`, `:w /path` map to the correct actions.
 - **Scenarios**: extend `scenario.rs` with key scripts that exercise the `:` → Enter → Esc flow.
 - **Manual smoke test:** open a file, navigate with `hjkl`, edit text, `:w` save, `:q` quit.
