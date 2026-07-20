@@ -30,6 +30,7 @@ pub struct VimState {
     register: Option<String>,
     last_change: Option<LastChange>,
     anchor: Option<usize>,
+    cmdline_buffer: String,
 }
 
 impl VimState {
@@ -43,8 +44,11 @@ impl VimState {
             register: None,
             last_change: None,
             anchor: None,
+            cmdline_buffer: String::new(),
         }
     }
+
+    pub fn cmdline_buffer(&self) -> &str { &self.cmdline_buffer }
 
     pub fn handle(&mut self, key: KeyEvent, editor: &Editor) -> Vec<Action> {
         let n = self.count.unwrap_or(1);
@@ -53,7 +57,26 @@ impl VimState {
             VimMode::Normal => self.handle_normal(key, editor, n, &mut out),
             VimMode::Insert => self.handle_insert(key, editor, &mut out),
             VimMode::VisualChar | VimMode::VisualLine => self.handle_visual(key, editor, n, &mut out),
-            VimMode::Cmdline => { if key == KeyEvent::Esc { self.mode = VimMode::Normal; } }
+            VimMode::Cmdline => {
+                match key {
+                    KeyEvent::Esc => {
+                        self.mode = VimMode::Normal;
+                        self.cmdline_buffer.clear();
+                    }
+                    KeyEvent::Enter => {
+                        let cmd = std::mem::take(&mut self.cmdline_buffer);
+                        self.mode = VimMode::Normal;
+                        out.push(Action::CmdlineResult(cmd));
+                    }
+                    KeyEvent::Backspace => {
+                        self.cmdline_buffer.pop();
+                    }
+                    KeyEvent::Char(c) if !c.is_control() => {
+                        self.cmdline_buffer.push(c);
+                    }
+                    _ => {}
+                }
+            }
         }
         out
     }
@@ -125,6 +148,11 @@ impl VimState {
 
         match key {
             KeyEvent::Esc => { self.count = None; }
+            KeyEvent::Char(':') => {
+                self.mode = VimMode::Cmdline;
+                self.cmdline_buffer = String::from(":");
+                self.count = None;
+            }
             KeyEvent::Char('h') => { for _ in 0..n { out.push(Action::Move(Motion::Grapheme(-1))); } self.count = None; }
             KeyEvent::Char('l') => { for _ in 0..n { out.push(Action::Move(Motion::Grapheme(1))); } self.count = None; }
             KeyEvent::Char('j') => { out.push(Action::Move(Motion::Line(n as i32))); self.count = None; }
@@ -506,5 +534,35 @@ mod tests {
         to_start(&mut e, &mut v);
         for a in v.handle(KeyEvent::Char('.'), &e) { e.execute(a); }
         assert_eq!(e.buffer().to_string(), "hello");
+    }
+
+    #[test]
+    fn cmdline_colon_enters_cmdline_mode() {
+        let mut e = Editor::from_str("hello");
+        let mut v = VimState::new();
+        for a in v.handle(KeyEvent::Char(':'), &e) { e.execute(a); }
+        assert_eq!(v.mode, VimMode::Cmdline);
+        assert_eq!(v.cmdline_buffer(), ":");
+    }
+
+    #[test]
+    fn cmdline_escape_returns_to_normal() {
+        let mut e = Editor::from_str("hello");
+        let mut v = VimState::new();
+        for a in v.handle(KeyEvent::Char(':'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Esc, &e) { e.execute(a); }
+        assert_eq!(v.mode, VimMode::Normal);
+        assert_eq!(v.cmdline_buffer(), "");
+    }
+
+    #[test]
+    fn cmdline_enter_emits_result_and_returns_to_normal() {
+        let mut e = Editor::from_str("hello");
+        let mut v = VimState::new();
+        for a in v.handle(KeyEvent::Char(':'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('w'), &e) { e.execute(a); }
+        let actions: Vec<Action> = v.handle(KeyEvent::Enter, &e);
+        assert_eq!(v.mode, VimMode::Normal);
+        assert!(actions.iter().any(|a| matches!(a, Action::CmdlineResult(c) if c == ":w")));
     }
 }

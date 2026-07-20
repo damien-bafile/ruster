@@ -27,4 +27,7 @@ pub enum Action {
     /// Set the anchor (start) of the primary cursor's visual selection,
     /// keeping the current head. Used to extend a selection in visual mode.
     BeginVisual(usize),
+    /// Emitted when the user presses Enter in Cmdline mode.
+    /// Contains the full cmdline string (e.g. ":w", ":q").
+    CmdlineResult(String),
 }
