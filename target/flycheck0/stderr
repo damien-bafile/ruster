@@ -1,0 +1,101 @@
+   0.077120208s  INFO prepare_target{force=false package_id=ruster-bin v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-bin) target="ruster"}: cargo::core::compiler::fingerprint: stale: changed "/Users/daimyo/Dev/ruster/Cargo.toml"
+   0.077131666s  INFO prepare_target{force=false package_id=ruster-bin v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-bin) target="ruster"}: cargo::core::compiler::fingerprint:           (vs) "/Users/daimyo/Dev/ruster/target/debug/.fingerprint/ruster-core-07808371817311a6/dep-lib-ruster_core"
+   0.077134416s  INFO prepare_target{force=false package_id=ruster-bin v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-bin) target="ruster"}: cargo::core::compiler::fingerprint:                FileTime { seconds: 1784546863, nanos: 246449461 } < FileTime { seconds: 1784547071, nanos: 301126556 }
+   0.077219041s  INFO prepare_target{force=false package_id=ruster-bin v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-bin) target="ruster"}: cargo::core::compiler::fingerprint: stale: changed "/Users/daimyo/Dev/ruster/Cargo.toml"
+   0.077223083s  INFO prepare_target{force=false package_id=ruster-bin v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-bin) target="ruster"}: cargo::core::compiler::fingerprint:           (vs) "/Users/daimyo/Dev/ruster/target/debug/.fingerprint/ruster-render-df7226ebf2d4b17d/dep-lib-ruster_render"
+   0.077224875s  INFO prepare_target{force=false package_id=ruster-bin v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-bin) target="ruster"}: cargo::core::compiler::fingerprint:                FileTime { seconds: 1784546863, nanos: 251842451 } < FileTime { seconds: 1784547071, nanos: 301126556 }
+   0.079603458s  INFO prepare_target{force=false package_id=ruster-bin v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-bin) target="ruster"}: cargo::core::compiler::fingerprint: fingerprint error for ruster-bin v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-bin)/Check { test: false }/TargetInner { name: "ruster", doc: true, ..: with_path("/Users/daimyo/Dev/ruster/crates/ruster-bin/src/main.rs", Edition2021) }
+   0.079613500s  INFO prepare_target{force=false package_id=ruster-bin v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-bin) target="ruster"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/daimyo/Dev/ruster/target/debug/.fingerprint/ruster-bin-063e8636da0652a2/bin-ruster`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   7: cargo::ops::cargo_compile::compile_ws
+   8: cargo::ops::cargo_compile::compile_with_exec
+   9: cargo::ops::cargo_compile::compile
+  10: cargo::commands::check::exec
+  11: <cargo::cli::Exec>::exec
+  12: cargo::main
+  13: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  14: std::rt::lang_start::<()>::{closure#0}
+  15: std::rt::lang_start_internal
+  16: _main
+   0.082544125s  INFO prepare_target{force=false package_id=ruster-core v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-core) target="ruster_core"}: cargo::core::compiler::fingerprint: fingerprint dirty for ruster-core v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-core)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("ruster_core", ["lib"], "/Users/daimyo/Dev/ruster/crates/ruster-core/src/lib.rs", Edition2021) }
+   0.082556375s  INFO prepare_target{force=false package_id=ruster-core v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-core) target="ruster_core"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleItem(ChangedFile { reference: "/Users/daimyo/Dev/ruster/target/debug/.fingerprint/ruster-core-07808371817311a6/dep-lib-ruster_core", reference_mtime: FileTime { seconds: 1784546863, nanos: 246449461 }, stale: "/Users/daimyo/Dev/ruster/Cargo.toml", stale_mtime: FileTime { seconds: 1784547071, nanos: 301126556 } }))
+   0.083671791s  INFO prepare_target{force=false package_id=ruster-render v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-render) target="ruster_render"}: cargo::core::compiler::fingerprint: fingerprint dirty for ruster-render v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-render)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("ruster_render", ["lib"], "/Users/daimyo/Dev/ruster/crates/ruster-render/src/lib.rs", Edition2021) }
+   0.083678000s  INFO prepare_target{force=false package_id=ruster-render v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-render) target="ruster_render"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleItem(ChangedFile { reference: "/Users/daimyo/Dev/ruster/target/debug/.fingerprint/ruster-render-df7226ebf2d4b17d/dep-lib-ruster_render", reference_mtime: FileTime { seconds: 1784546863, nanos: 251842451 }, stale: "/Users/daimyo/Dev/ruster/Cargo.toml", stale_mtime: FileTime { seconds: 1784547071, nanos: 301126556 } }))
+   0.083835125s  INFO prepare_target{force=false package_id=ruster-tui v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-tui) target="ruster_tui"}: cargo::core::compiler::fingerprint: fingerprint dirty for ruster-tui v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-tui)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("ruster_tui", ["lib"], "/Users/daimyo/Dev/ruster/crates/ruster-tui/src/lib.rs", Edition2021) }
+   0.083841416s  INFO prepare_target{force=false package_id=ruster-tui v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-tui) target="ruster_tui"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleDepFingerprint { unit: UnitIndex(48) })
+   0.086676916s  INFO prepare_target{force=false package_id=ruster-bin v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-bin) target="ruster"}: cargo::core::compiler::fingerprint: fingerprint error for ruster-bin v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-bin)/Check { test: true }/TargetInner { name: "ruster", doc: true, ..: with_path("/Users/daimyo/Dev/ruster/crates/ruster-bin/src/main.rs", Edition2021) }
+   0.086682625s  INFO prepare_target{force=false package_id=ruster-bin v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-bin) target="ruster"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/daimyo/Dev/ruster/target/debug/.fingerprint/ruster-bin-eb634f17d940f67d/test-bin-ruster`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   7: cargo::ops::cargo_compile::compile_ws
+   8: cargo::ops::cargo_compile::compile_with_exec
+   9: cargo::ops::cargo_compile::compile
+  10: cargo::commands::check::exec
+  11: <cargo::cli::Exec>::exec
+  12: cargo::main
+  13: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  14: std::rt::lang_start::<()>::{closure#0}
+  15: std::rt::lang_start_internal
+  16: _main
+   0.087002500s  INFO prepare_target{force=false package_id=ruster-bin v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-bin) target="cli_args"}: cargo::core::compiler::fingerprint: fingerprint error for ruster-bin v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-bin)/Check { test: true }/TargetInner { kind: "test", name: "cli_args", benched: false, ..: with_path("/Users/daimyo/Dev/ruster/crates/ruster-bin/tests/cli_args.rs", Edition2021) }
+   0.087007791s  INFO prepare_target{force=false package_id=ruster-bin v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-bin) target="cli_args"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/daimyo/Dev/ruster/target/debug/.fingerprint/ruster-bin-f16927b1649d8247/test-integration-test-cli_args`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   7: cargo::ops::cargo_compile::compile_ws
+   8: cargo::ops::cargo_compile::compile_with_exec
+   9: cargo::ops::cargo_compile::compile
+  10: cargo::commands::check::exec
+  11: <cargo::cli::Exec>::exec
+  12: cargo::main
+  13: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  14: std::rt::lang_start::<()>::{closure#0}
+  15: std::rt::lang_start_internal
+  16: _main
+   0.087345875s  INFO prepare_target{force=false package_id=ruster-core v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-core) target="ruster_core"}: cargo::core::compiler::fingerprint: stale: changed "/Users/daimyo/Dev/ruster/Cargo.toml"
+   0.087349000s  INFO prepare_target{force=false package_id=ruster-core v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-core) target="ruster_core"}: cargo::core::compiler::fingerprint:           (vs) "/Users/daimyo/Dev/ruster/target/debug/.fingerprint/ruster-core-e2bc75b223e004f5/dep-test-lib-ruster_core"
+   0.087350916s  INFO prepare_target{force=false package_id=ruster-core v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-core) target="ruster_core"}: cargo::core::compiler::fingerprint:                FileTime { seconds: 1784546863, nanos: 274558657 } < FileTime { seconds: 1784547071, nanos: 301126556 }
+   0.087410708s  INFO prepare_target{force=false package_id=ruster-core v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-core) target="ruster_core"}: cargo::core::compiler::fingerprint: fingerprint dirty for ruster-core v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-core)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("ruster_core", ["lib"], "/Users/daimyo/Dev/ruster/crates/ruster-core/src/lib.rs", Edition2021) }
+   0.087416041s  INFO prepare_target{force=false package_id=ruster-core v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-core) target="ruster_core"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleItem(ChangedFile { reference: "/Users/daimyo/Dev/ruster/target/debug/.fingerprint/ruster-core-e2bc75b223e004f5/dep-test-lib-ruster_core", reference_mtime: FileTime { seconds: 1784546863, nanos: 274558657 }, stale: "/Users/daimyo/Dev/ruster/Cargo.toml", stale_mtime: FileTime { seconds: 1784547071, nanos: 301126556 } }))
+   0.087737375s  INFO prepare_target{force=false package_id=ruster-render v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-render) target="ruster_render"}: cargo::core::compiler::fingerprint: stale: changed "/Users/daimyo/Dev/ruster/Cargo.toml"
+   0.087739708s  INFO prepare_target{force=false package_id=ruster-render v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-render) target="ruster_render"}: cargo::core::compiler::fingerprint:           (vs) "/Users/daimyo/Dev/ruster/target/debug/.fingerprint/ruster-render-dda4d2d4dd0afd33/dep-test-lib-ruster_render"
+   0.087741583s  INFO prepare_target{force=false package_id=ruster-render v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-render) target="ruster_render"}: cargo::core::compiler::fingerprint:                FileTime { seconds: 1784546863, nanos: 296757739 } < FileTime { seconds: 1784547071, nanos: 301126556 }
+   0.087797541s  INFO prepare_target{force=false package_id=ruster-render v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-render) target="ruster_render"}: cargo::core::compiler::fingerprint: fingerprint dirty for ruster-render v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-render)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("ruster_render", ["lib"], "/Users/daimyo/Dev/ruster/crates/ruster-render/src/lib.rs", Edition2021) }
+   0.087801583s  INFO prepare_target{force=false package_id=ruster-render v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-render) target="ruster_render"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleItem(ChangedFile { reference: "/Users/daimyo/Dev/ruster/target/debug/.fingerprint/ruster-render-dda4d2d4dd0afd33/dep-test-lib-ruster_render", reference_mtime: FileTime { seconds: 1784546863, nanos: 296757739 }, stale: "/Users/daimyo/Dev/ruster/Cargo.toml", stale_mtime: FileTime { seconds: 1784547071, nanos: 301126556 } }))
+   0.087940500s  INFO prepare_target{force=false package_id=ruster-tui v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-tui) target="ruster_tui"}: cargo::core::compiler::fingerprint: fingerprint dirty for ruster-tui v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-tui)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("ruster_tui", ["lib"], "/Users/daimyo/Dev/ruster/crates/ruster-tui/src/lib.rs", Edition2021) }
+   0.087945916s  INFO prepare_target{force=false package_id=ruster-tui v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-tui) target="ruster_tui"}: cargo::core::compiler::fingerprint:     dirty: FsStatusOutdated(StaleDepFingerprint { unit: UnitIndex(48) })
+    Checking ruster-render v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-render)
+    Checking ruster-core v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-core)
+    Checking ruster-tui v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-tui)
+    Checking ruster-bin v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-bin)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.41s
