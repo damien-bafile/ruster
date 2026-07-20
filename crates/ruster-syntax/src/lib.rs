@@ -193,4 +193,16 @@ mod tests {
         let (start, end) = result.unwrap();
         assert!(start < end);
     }
+
+    #[test]
+    fn rainbow_bracket_colors_applied() {
+        let engine = SyntaxEngine::new("(a(b)c)", "rs").unwrap();
+        let styled = engine.styled_lines();
+        assert_eq!(styled.len(), 1);
+        let line = &styled[0];
+        let bracket_highlights: Vec<_> = line.highlights.iter()
+            .filter(|(s, _, _)| *s == 0 || *s == 6)
+            .collect();
+        assert!(!bracket_highlights.is_empty(), "expected bracket highlights");
+    }
 }
