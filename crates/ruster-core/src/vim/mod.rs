@@ -238,9 +238,10 @@ impl VimState {
             'c' => {
                 out.push(Action::BeginBatch);
                 out.push(Action::Edit(EditOp::DeleteRange(start, end)));
-                out.push(Action::EndBatch);
                 self.mode = VimMode::Insert;
-                out.push(Action::BeginBatch);
+                // No EndBatch + re-BeginBatch: the Insert-mode edits that follow
+                // must group with the deletion into a single undo unit (real Vim
+                // `c{motion}...Esc` is one undo). Esc issues the EndBatch.
             }
             _ => {}
         }
@@ -339,10 +340,10 @@ impl VimState {
                 let (start, end) = self.visual_range(editor);
                 out.push(Action::BeginBatch);
                 out.push(Action::Edit(EditOp::DeleteRange(start, end)));
-                out.push(Action::EndBatch);
                 self.mode = VimMode::Insert;
                 self.anchor = None;
-                out.push(Action::BeginBatch);
+                // No EndBatch + re-BeginBatch: Insert-mode edits group with the
+                // deletion; Esc fires EndBatch so the whole visual-c is one undo unit.
                 self.count = None;
             }
             _ => {}
