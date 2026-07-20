@@ -184,4 +184,13 @@ mod tests {
         assert_eq!(engine.styled_lines().len(), 1);
         assert_eq!(engine.styled_lines()[0].text, "");
     }
+
+    #[test]
+    fn ts_textobject_inner_function() {
+        let engine = SyntaxEngine::new("fn foo() { let x = 1; }", "rs").unwrap();
+        let result = engine.ts_textobject('i', 'f', 15);
+        assert!(result.is_some());
+        let (start, end) = result.unwrap();
+        assert!(start < end);
+    }
 }

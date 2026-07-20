@@ -30,4 +30,8 @@ pub enum Action {
     /// Emitted when the user presses Enter in Cmdline mode.
     /// Contains the full cmdline string (e.g. ":w", ":q").
     CmdlineResult(String),
+    /// Tree-sitter-backed structural textobject.
+    /// op is the operator ('d', 'c', 'y'), kind is 'i' (inner) or 'a' (outer),
+    /// target is 'f' (function), 'c' (class), 'l' (loop), 'a' (parameter/argument).
+    Textobject { op: char, kind: char, target: char, count: u32 },
 }

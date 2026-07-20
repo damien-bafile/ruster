@@ -50,6 +50,8 @@ impl VimState {
 
     pub fn cmdline_buffer(&self) -> &str { &self.cmdline_buffer }
 
+    pub fn set_register(&mut self, text: String) { self.register = Some(text); }
+
     pub fn handle(&mut self, key: KeyEvent, editor: &Editor) -> Vec<Action> {
         let n = self.count.unwrap_or(1);
         let mut out: Vec<Action> = Vec::new();
@@ -109,6 +111,14 @@ impl VimState {
                                 self.last_change = Some(LastChange::OperatorTextobj { op, kind, target: c2 });
                             }
                         }
+                        return;
+                    }
+                    KeyEvent::Char(c2 @ ('f' | 'c' | 'l' | 'a')) => {
+                        self.pending = OpState::Idle;
+                        self.pending_textobj = None;
+                        let count = self.count.unwrap_or(1);
+                        self.count = None;
+                        out.push(Action::Textobject { op, kind, target: c2, count });
                         return;
                     }
                     _ => { return; }
@@ -564,5 +574,15 @@ mod tests {
         let actions: Vec<Action> = v.handle(KeyEvent::Enter, &e);
         assert_eq!(v.mode, VimMode::Normal);
         assert!(actions.iter().any(|a| matches!(a, Action::CmdlineResult(c) if c == ":w")));
+    }
+
+    #[test]
+    fn di_f_triggers_textobject_action() {
+        let mut e = Editor::from_str("fn foo() { let x = 1; }");
+        let mut v = VimState::new();
+        for a in v.handle(KeyEvent::Char('d'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('i'), &e) { e.execute(a); }
+        let actions = v.handle(KeyEvent::Char('f'), &e);
+        assert!(actions.iter().any(|a| matches!(a, Action::Textobject { op: 'd', kind: 'i', target: 'f', .. })));
     }
 }

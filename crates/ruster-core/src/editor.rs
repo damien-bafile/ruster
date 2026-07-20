@@ -43,6 +43,7 @@ impl Editor {
             Action::Move(m) => self.apply_motion(m),
             Action::Edit(e) => self.apply_edit(e),
             Action::CmdlineResult(_) => {}
+            Action::Textobject { .. } => {}
         }
     }
 

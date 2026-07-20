@@ -1,6 +1,6 @@
 use crate::key::crossterm_to_ruster_key;
 use crate::renderer::TuiRenderer;
-use ruster_core::action::{Action, Motion};
+use ruster_core::action::{Action, EditOp, Motion};
 use ruster_core::editor::Editor;
 use ruster_core::vim::VimMode;
 use ruster_core::vim::VimState;
@@ -59,6 +59,14 @@ impl App {
             let key = crossterm_to_ruster_key(ck);
             for action in self.vim.handle(key, &self.editor) {
                 match action {
+                    Action::Textobject { op, kind, target, count: _ } => {
+                        let cursor = self.editor.primary_head();
+                        if let Some((start, end)) = self.syntax.as_ref()
+                            .and_then(|s| s.ts_textobject(kind, target, cursor))
+                        {
+                            self.exec_operator(op, start, end);
+                        }
+                    }
                     Action::CmdlineResult(cmd) => {
                         self.message = None;
                         match self.parse_cmdline(&cmd) {
@@ -161,6 +169,27 @@ impl App {
                 self.message = Some(format!("Saved (forced): {}", self.file_path.display()));
             }
             Err(e) => self.message = Some(format!("Error: {}", e)),
+        }
+    }
+
+    fn exec_operator(&mut self, op: char, start: usize, end: usize) {
+        let safe_end = end.min(self.editor.buffer().len_chars());
+        match op {
+            'd' => {
+                self.editor.execute(Action::BeginBatch);
+                self.editor.execute(Action::Edit(EditOp::DeleteRange(start, safe_end)));
+                self.editor.execute(Action::EndBatch);
+            }
+            'c' => {
+                self.editor.execute(Action::BeginBatch);
+                self.editor.execute(Action::Edit(EditOp::DeleteRange(start, safe_end)));
+                self.vim.mode = VimMode::Insert;
+            }
+            'y' => {
+                let text = self.editor.buffer().slice_string(start, safe_end);
+                self.vim.set_register(text);
+            }
+            _ => {}
         }
     }
 
