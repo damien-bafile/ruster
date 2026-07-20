@@ -1,0 +1,13 @@
+[package]
+name = "ruster-tui"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+ruster-core = { path = "../ruster-core" }
+ruster-render = { path = "../ruster-render" }
+ratatui = "0.28"
+crossterm = "0.28"

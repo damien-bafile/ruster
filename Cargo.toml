@@ -1,3 +1,3 @@
 [workspace]
-members = ["crates/ruster-core", "crates/ruster-render"]
+members = ["crates/ruster-core", "crates/ruster-render", "crates/ruster-tui"]
 resolver = "2"
