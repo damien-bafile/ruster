@@ -74,9 +74,16 @@ impl Highlighter {
         for (li, hl) in per_line.iter().enumerate() {
             let lstart = line_starts[li];
             let lend = line_starts[li + 1];
-            let line_text = &source[lstart..lend.min(bytes.len())];
-            let text = line_text.to_string();
-            let mut merged = hl.clone();
+            let raw = &source[lstart..lend.min(bytes.len())];
+            let text = raw.strip_suffix('\n').unwrap_or(raw).to_string();
+            let text_len = text.chars().count();
+            let mut merged: Vec<(usize, usize, SyntaxStyle)> = hl.iter()
+                .map(|&(s, l, style)| {
+                    let clamped_l = (s + l).min(text_len).saturating_sub(s);
+                    (s, clamped_l, style)
+                })
+                .filter(|(_, l, _)| *l > 0)
+                .collect();
 
             for (offset, ch) in text.char_indices() {
                 let abs_pos = lstart + offset;

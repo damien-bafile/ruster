@@ -195,6 +195,25 @@ mod tests {
     }
 
     #[test]
+    fn styled_lines_strip_trailing_newlines() {
+        let engine = SyntaxEngine::new("hello\nworld", "rs").unwrap();
+        let lines = engine.styled_lines();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].text.chars().count(), 5);
+        assert_eq!(lines[1].text.chars().count(), 5);
+    }
+
+    #[test]
+    fn styled_lines_with_trailing_newline_has_empty_last_line() {
+        let engine = SyntaxEngine::new("hello\nworld\n", "rs").unwrap();
+        let lines = engine.styled_lines();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0].text, "hello");
+        assert_eq!(lines[1].text, "world");
+        assert_eq!(lines[2].text, "");
+    }
+
+    #[test]
     fn rainbow_bracket_colors_applied() {
         let engine = SyntaxEngine::new("(a(b)c)", "rs").unwrap();
         let styled = engine.styled_lines();
