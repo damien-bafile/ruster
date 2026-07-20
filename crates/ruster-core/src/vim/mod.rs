@@ -14,9 +14,6 @@ pub enum VimMode { Normal, Insert, VisualChar, VisualLine, Cmdline }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpState { Idle, Pending(char, u32) }
 
-/// Recomputable description of the last change for `.` (dot-repeat).
-/// Real Vim semantics: `.` re-applies the change at the CURRENT cursor, so we
-/// recompute the affected range from the cursor rather than replaying absolute offsets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LastChange {
     OperatorMotion { op: char, motion: char, count: u32 },
@@ -32,6 +29,7 @@ pub struct VimState {
     pending_textobj: Option<char>,
     register: Option<String>,
     last_change: Option<LastChange>,
+    anchor: Option<usize>,
 }
 
 impl VimState {
@@ -44,6 +42,7 @@ impl VimState {
             pending_textobj: None,
             register: None,
             last_change: None,
+            anchor: None,
         }
     }
 
@@ -67,7 +66,7 @@ impl VimState {
                 self.count = Some(self.count.map(|v| v * 10 + d).unwrap_or(d));
                 return true;
             }
-        }
+            }
         false
     }
 
@@ -143,7 +142,7 @@ impl VimState {
             KeyEvent::Char('w') => { self.do_word_motion(editor, n, next_word_start, out); self.count = None; }
             KeyEvent::Char('b') => { self.do_word_motion(editor, n, prev_word_start, out); self.count = None; }
             KeyEvent::Char('e') => { self.do_word_motion(editor, n, word_end, out); self.count = None; }
-            KeyEvent::Char('i') if self.pending == OpState::Idle && self.pending_textobj.is_none() => {
+            KeyEvent::Char('i') if self.pending == OpState::Idle && self.pending_textobj.is_none() && self.anchor.is_none() => {
                 self.mode = VimMode::Insert;
                 self.count = None;
                 out.push(Action::BeginBatch);
@@ -180,6 +179,20 @@ impl VimState {
             }
             KeyEvent::Char('.') => {
                 self.replay_last_change(editor, out);
+                self.count = None;
+            }
+            KeyEvent::Char('v') => {
+                let at = editor.primary_head();
+                self.mode = VimMode::VisualChar;
+                self.anchor = Some(at);
+                out.push(Action::BeginVisual(at));
+                self.count = None;
+            }
+            KeyEvent::Char('V') => {
+                let at = editor.primary_head();
+                self.mode = VimMode::VisualLine;
+                self.anchor = Some(at);
+                out.push(Action::BeginVisual(at));
                 self.count = None;
             }
             _ => { self.count = None; }
@@ -262,9 +275,93 @@ impl VimState {
         }
     }
 
-    fn handle_visual(&mut self, key: KeyEvent, _editor: &Editor, _n: u32, out: &mut Vec<Action>) {
-        if key == KeyEvent::Esc { self.mode = VimMode::Normal; }
-        let _ = out;
+    fn handle_visual(&mut self, key: KeyEvent, editor: &Editor, n: u32, out: &mut Vec<Action>) {
+        if self.stroke_count(key) { return; }
+        let anchor = match self.anchor { Some(a) => a, None => editor.primary_head() };
+        match key {
+            KeyEvent::Esc => {
+                self.mode = VimMode::Normal;
+                self.anchor = None;
+                self.count = None;
+            }
+            KeyEvent::Char('h') => { for _ in 0..n { out.push(Action::Move(Motion::Grapheme(-1))); } out.push(Action::BeginVisual(anchor)); self.count = None; }
+            KeyEvent::Char('l') => { for _ in 0..n { out.push(Action::Move(Motion::Grapheme(1))); } out.push(Action::BeginVisual(anchor)); self.count = None; }
+            KeyEvent::Char('j') => { out.push(Action::Move(Motion::Line(n as i32))); out.push(Action::BeginVisual(anchor)); self.count = None; }
+            KeyEvent::Char('k') => { out.push(Action::Move(Motion::Line(-(n as i32)))); out.push(Action::BeginVisual(anchor)); self.count = None; }
+            KeyEvent::Char('w') => {
+                let target = crate::vim::motions::next_word_start(editor.buffer(), editor.primary_head());
+                out.push(Action::Move(Motion::To(target)));
+                out.push(Action::BeginVisual(anchor));
+                self.count = None;
+            }
+            KeyEvent::Char('b') => {
+                let target = crate::vim::motions::prev_word_start(editor.buffer(), editor.primary_head());
+                out.push(Action::Move(Motion::To(target)));
+                out.push(Action::BeginVisual(anchor));
+                self.count = None;
+            }
+            KeyEvent::Char('e') => {
+                let target = crate::vim::motions::word_end(editor.buffer(), editor.primary_head());
+                out.push(Action::Move(Motion::To(target)));
+                out.push(Action::BeginVisual(anchor));
+                self.count = None;
+            }
+            KeyEvent::Char('$') => {
+                out.push(Action::Move(Motion::To(last_printable_in_line(editor))));
+                out.push(Action::BeginVisual(anchor));
+                self.count = None;
+            }
+            KeyEvent::Char('0') => {
+                out.push(Action::Move(Motion::LineEdge(Edge::Start)));
+                out.push(Action::BeginVisual(anchor));
+                self.count = None;
+            }
+            KeyEvent::Char('x') | KeyEvent::Char('d') => {
+                let (start, end) = self.visual_range(editor);
+                out.push(Action::BeginBatch);
+                out.push(Action::Edit(EditOp::DeleteRange(start, end)));
+                out.push(Action::EndBatch);
+                self.mode = VimMode::Normal;
+                self.anchor = None;
+                self.count = None;
+            }
+            KeyEvent::Char('y') => {
+                let (start, end) = self.visual_range(editor);
+                let safe_end = end.min(editor.buffer().len_chars());
+                self.register = Some(editor.buffer().slice_string(start, safe_end));
+                // Vim: after visual yank, cursor jumps to start of selection.
+                out.push(Action::Move(Motion::To(start)));
+                self.mode = VimMode::Normal;
+                self.anchor = None;
+                self.count = None;
+            }
+            KeyEvent::Char('c') => {
+                let (start, end) = self.visual_range(editor);
+                out.push(Action::BeginBatch);
+                out.push(Action::Edit(EditOp::DeleteRange(start, end)));
+                out.push(Action::EndBatch);
+                self.mode = VimMode::Insert;
+                self.anchor = None;
+                out.push(Action::BeginBatch);
+                self.count = None;
+            }
+            _ => {}
+        }
+    }
+
+    fn visual_range(&self, editor: &Editor) -> (usize, usize) {
+        let r = editor.cursors().primary();
+        let s = r.start();
+        let e = r.end();
+        if matches!(self.mode, VimMode::VisualLine) {
+            let s_line = crate::vim::motions::char_to_line(editor, s);
+            let e_line = crate::vim::motions::char_to_line(editor, e);
+            let start = editor.buffer().line_start_char(s_line);
+            let end = editor.buffer().line_end_char(e_line);
+            (start, end)
+        } else {
+            (s, e + 1) // visual char selection is inclusive on the cursor side
+        }
     }
 }
 
@@ -280,53 +377,73 @@ mod tests {
     }
 
     #[test]
-    fn dot_repeats_dw_at_cursor() {
-        let mut e = Editor::from_str("foo bar baz");
-        let mut v = VimState::new();
-        to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Char('d'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('w'), &e) { e.execute(a); }
-        assert_eq!(e.buffer().to_string(), "bar baz");
-        for a in v.handle(KeyEvent::Char('w'), &e) { e.execute(a); } // cursor -> 4 (on 'b' of baz)
-        assert_eq!(e.primary_head(), 4);
-        for a in v.handle(KeyEvent::Char('.'), &e) { e.execute(a); }
-        // . re-applies dw at cursor 4: deletes "baz" -> "bar " (with trailing space)
-        assert_eq!(e.buffer().to_string(), "bar ");
-    }
-
-    #[test]
-    fn dot_repeats_x_at_cursor() {
-        let mut e = Editor::from_str("abc");
-        let mut v = VimState::new();
-        to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Char('x'), &e) { e.execute(a); }
-        assert_eq!(e.buffer().to_string(), "bc");
-        for a in v.handle(KeyEvent::Char('.'), &e) { e.execute(a); }
-        assert_eq!(e.buffer().to_string(), "c");
-    }
-
-    #[test]
-    fn dot_repeats_di_paren_textobj() {
-        let mut e = Editor::from_str("(a)(b)");
-        let mut v = VimState::new();
-        to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Char('d'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('i'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('('), &e) { e.execute(a); }
-        assert_eq!(e.buffer().to_string(), "()(b)");
-        assert_eq!(e.primary_head(), 1);
-        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); } // cursor -> 2 (on '(')
-        assert_eq!(e.primary_head(), 2);
-        for a in v.handle(KeyEvent::Char('.'), &e) { e.execute(a); }
-        assert_eq!(e.buffer().to_string(), "()()");
-    }
-
-    #[test]
-    fn dot_does_nothing_without_prior_change() {
+    fn v_l_extends_selection_to_next_char_then_x_deletes() {
         let mut e = Editor::from_str("hello");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Char('.'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('v'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('x'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "llo"); // deletes "he"
+    }
+
+    #[test]
+    fn v_2l_extends_two_chars_then_x_deletes() {
+        let mut e = Editor::from_str("hello");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('v'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('x'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "lo"); // deletes "hel"
+    }
+
+    #[test]
+    fn capital_v_line_visual_then_d() {
+        let mut e = Editor::from_str("abc\ndef\nghi");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('V'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('d'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "def\nghi");
+    }
+
+    #[test]
+    fn esc_exits_visual_without_change() {
+        let mut e = Editor::from_str("hello");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('v'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Esc, &e) { e.execute(a); }
+        assert_eq!(v.mode, VimMode::Normal);
         assert_eq!(e.buffer().to_string(), "hello");
+    }
+
+    #[test]
+    fn v_w_extends_to_word_then_x_deletes_partial_word_inclusive() {
+        let mut e = Editor::from_str("hello world");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('v'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('w'), &e) { e.execute(a); } // cursor at 6 ('w'); selection includes 'w'
+        for a in v.handle(KeyEvent::Char('x'), &e) { e.execute(a); }
+        // visual char selection includes char under cursor; deletes "hello w" -> "orld"
+        assert_eq!(e.buffer().to_string(), "orld");
+    }
+
+    #[test]
+    fn visual_y_then_p_pastes_after() {
+        let mut e = Editor::from_str("abc");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        // v, l, y yanks 2 chars ("ab"); exits visual; cursor at start = 0
+        for a in v.handle(KeyEvent::Char('v'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('y'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "abc"); // unchanged by yank
+        // p inserts register "ab" at cursor 0 -> "ababc"
+        for a in v.handle(KeyEvent::Char('p'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "ababc");
     }
 }

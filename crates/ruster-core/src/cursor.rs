@@ -41,6 +41,13 @@ impl CursorSet {
         self.collapse_at(at);
     }
 
+    /// In visual mode: set the cursor's `anchor` to `anchor` while preserving the current `head`.
+    /// This lets the head move freely (extending the selection) while the anchor stays fixed.
+    pub fn set_visual_anchor(&mut self, anchor: usize) {
+        let head = self.cursors[self.primary].head;
+        self.cursors[self.primary] = Range { anchor, head };
+    }
+
     fn collapse_at(&mut self, at: usize) {
         self.cursors[self.primary] = Range::caret(at);
     }

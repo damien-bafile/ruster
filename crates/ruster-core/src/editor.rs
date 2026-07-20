@@ -29,15 +29,16 @@ impl Editor {
             Action::EndBatch => self.undo.end_batch(),
             Action::Undo => {
                 self.undo.undo(&mut self.buffer);
-                let clamp = (self.buffer.len_chars()).saturating_sub(0);
-                let at = 0.min(clamp);
+                let at = 0;
                 self.cursors.set_head(at, &self.buffer);
             }
             Action::Redo => {
                 self.undo.redo(&mut self.buffer);
-                let clamp = (self.buffer.len_chars()).saturating_sub(0);
-                let at = 0.min(clamp);
+                let at = 0;
                 self.cursors.set_head(at, &self.buffer);
+            }
+            Action::BeginVisual(anchor) => {
+                self.cursors.set_visual_anchor(anchor);
             }
             Action::Move(m) => self.apply_motion(m),
             Action::Edit(e) => self.apply_edit(e),
@@ -70,7 +71,8 @@ impl Editor {
                 self.cursors.set_head(at + n, &self.buffer);
             }
             EditOp::DeleteRange(start, end) if end > start => {
-                let ch = self.buffer.delete(start..end);
+                let safe_end = end.min(self.buffer.len_chars());
+                let ch = self.buffer.delete(start..safe_end);
                 self.undo.push(ch);
                 self.cursors.set_head(start, &self.buffer);
             }
@@ -122,8 +124,22 @@ mod tests {
     fn line_edge_end_motion() {
         let mut e = Editor::from_str("abc");
         e.execute(Action::Move(Motion::LineEdge(Edge::End)));
-        // End edge lands past the last char (consistent with cursor.rs
-        // `move_line_edge_to_end` semantics: "hello world" -> 11).
         assert_eq!(e.primary_head(), 3);
+    }
+
+    #[test]
+    fn begin_visual_extends_selection_anchor_preserved_on_motion() {
+        let mut e = Editor::from_str("hello");
+        // cursor starts at end (5); move left twice to 3
+        e.execute(Action::Move(Motion::Grapheme(-1)));
+        e.execute(Action::Move(Motion::Grapheme(-1)));
+        let head_before = e.primary_head();
+        e.execute(Action::BeginVisual(head_before));
+        // extend right by 1
+        e.execute(Action::Move(Motion::Grapheme(1)));
+        e.execute(Action::BeginVisual(head_before));
+        let r = e.cursors().primary();
+        assert_eq!(r.anchor, head_before);
+        assert_eq!(r.head, head_before + 1);
     }
 }
