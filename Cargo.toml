@@ -1,3 +1,3 @@
 [workspace]
-members = ["crates/ruster-core"]
+members = ["crates/ruster-core", "crates/ruster-render"]
 resolver = "2"
