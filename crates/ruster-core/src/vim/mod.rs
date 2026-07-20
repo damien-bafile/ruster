@@ -14,6 +14,16 @@ pub enum VimMode { Normal, Insert, VisualChar, VisualLine, Cmdline }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpState { Idle, Pending(char, u32) }
 
+/// Recomputable description of the last change for `.` (dot-repeat).
+/// Real Vim semantics: `.` re-applies the change at the CURRENT cursor, so we
+/// recompute the affected range from the cursor rather than replaying absolute offsets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LastChange {
+    OperatorMotion { op: char, motion: char, count: u32 },
+    OperatorTextobj { op: char, kind: char, target: char },
+    DeleteChar,
+}
+
 pub struct VimState {
     pub mode: VimMode,
     count: Option<u32>,
@@ -21,7 +31,7 @@ pub struct VimState {
     pending: OpState,
     pending_textobj: Option<char>,
     register: Option<String>,
-    last_change: Option<Vec<Action>>,
+    last_change: Option<LastChange>,
 }
 
 impl VimState {
@@ -73,6 +83,9 @@ impl VimState {
                     KeyEvent::Char(c2 @ ('w' | '"' | '\'' | '(' | ')' | '{' | '}')) => {
                         if let Some((start, end)) = crate::vim::textobj::range_for_textobj(kind, c2, editor) {
                             self.apply_operator(op, start, end, editor, out);
+                            if op == 'd' || op == 'c' {
+                                self.last_change = Some(LastChange::OperatorTextobj { op, kind, target: c2 });
+                            }
                         }
                         return;
                     }
@@ -89,6 +102,9 @@ impl VimState {
                     self.pending = OpState::Idle;
                     if let Some((start, end)) = crate::vim::ops::range_for_motion(editor, m, count) {
                         self.apply_operator(op, start, end, editor, out);
+                        if op == 'd' || op == 'c' {
+                            self.last_change = Some(LastChange::OperatorMotion { op, motion: m, count });
+                        }
                     }
                     return;
                 }
@@ -147,28 +163,50 @@ impl VimState {
             KeyEvent::Char('x') => {
                 let at = editor.primary_head();
                 if at < editor.buffer().len_chars() {
-                    let change = vec![
-                        Action::BeginBatch,
-                        Action::Edit(EditOp::DeleteRange(at, at + 1)),
-                        Action::EndBatch,
-                    ];
-                    self.last_change = Some(change.clone());
-                    out.extend(change);
+                    out.push(Action::BeginBatch);
+                    out.push(Action::Edit(EditOp::DeleteRange(at, at + 1)));
+                    out.push(Action::EndBatch);
+                    self.last_change = Some(LastChange::DeleteChar);
                 }
                 self.count = None;
             }
             KeyEvent::Char('p') => {
                 if let Some(text) = self.register.clone() {
-                    let change = vec![
-                        Action::BeginBatch,
-                        Action::Edit(EditOp::InsertString(text)),
-                        Action::EndBatch,
-                    ];
-                    out.extend(change);
+                    out.push(Action::BeginBatch);
+                    out.push(Action::Edit(EditOp::InsertString(text)));
+                    out.push(Action::EndBatch);
                 }
                 self.count = None;
             }
+            KeyEvent::Char('.') => {
+                self.replay_last_change(editor, out);
+                self.count = None;
+            }
             _ => { self.count = None; }
+        }
+    }
+
+    fn replay_last_change(&mut self, editor: &Editor, out: &mut Vec<Action>) {
+        let lc = match self.last_change { Some(lc) => lc, None => return };
+        match lc {
+            LastChange::OperatorMotion { op, motion, count } => {
+                if let Some((start, end)) = crate::vim::ops::range_for_motion(editor, motion, count) {
+                    self.apply_operator(op, start, end, editor, out);
+                }
+            }
+            LastChange::OperatorTextobj { op, kind, target } => {
+                if let Some((start, end)) = crate::vim::textobj::range_for_textobj(kind, target, editor) {
+                    self.apply_operator(op, start, end, editor, out);
+                }
+            }
+            LastChange::DeleteChar => {
+                let at = editor.primary_head();
+                if at < editor.buffer().len_chars() {
+                    out.push(Action::BeginBatch);
+                    out.push(Action::Edit(EditOp::DeleteRange(at, at + 1)));
+                    out.push(Action::EndBatch);
+                }
+            }
         }
     }
 
@@ -177,13 +215,9 @@ impl VimState {
         let text = editor.buffer().slice_string(start, safe_end);
         match op {
             'd' => {
-                let change = vec![
-                    Action::BeginBatch,
-                    Action::Edit(EditOp::DeleteRange(start, end)),
-                    Action::EndBatch,
-                ];
-                self.last_change = Some(change.clone());
-                out.extend(change);
+                out.push(Action::BeginBatch);
+                out.push(Action::Edit(EditOp::DeleteRange(start, end)));
+                out.push(Action::EndBatch);
             }
             'y' => {
                 self.register = Some(text);
@@ -231,5 +265,68 @@ impl VimState {
     fn handle_visual(&mut self, key: KeyEvent, _editor: &Editor, _n: u32, out: &mut Vec<Action>) {
         if key == KeyEvent::Esc { self.mode = VimMode::Normal; }
         let _ = out;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::editor::Editor;
+    use crate::key::KeyEvent;
+
+    fn to_start(e: &mut Editor, v: &mut VimState) {
+        for a in v.handle(KeyEvent::Char('g'), e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('g'), e) { e.execute(a); }
+    }
+
+    #[test]
+    fn dot_repeats_dw_at_cursor() {
+        let mut e = Editor::from_str("foo bar baz");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('d'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('w'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "bar baz");
+        for a in v.handle(KeyEvent::Char('w'), &e) { e.execute(a); } // cursor -> 4 (on 'b' of baz)
+        assert_eq!(e.primary_head(), 4);
+        for a in v.handle(KeyEvent::Char('.'), &e) { e.execute(a); }
+        // . re-applies dw at cursor 4: deletes "baz" -> "bar " (with trailing space)
+        assert_eq!(e.buffer().to_string(), "bar ");
+    }
+
+    #[test]
+    fn dot_repeats_x_at_cursor() {
+        let mut e = Editor::from_str("abc");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('x'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "bc");
+        for a in v.handle(KeyEvent::Char('.'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "c");
+    }
+
+    #[test]
+    fn dot_repeats_di_paren_textobj() {
+        let mut e = Editor::from_str("(a)(b)");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('d'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('i'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('('), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "()(b)");
+        assert_eq!(e.primary_head(), 1);
+        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); } // cursor -> 2 (on '(')
+        assert_eq!(e.primary_head(), 2);
+        for a in v.handle(KeyEvent::Char('.'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "()()");
+    }
+
+    #[test]
+    fn dot_does_nothing_without_prior_change() {
+        let mut e = Editor::from_str("hello");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('.'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "hello");
     }
 }
