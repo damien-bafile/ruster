@@ -87,9 +87,8 @@ impl Widget for BufferWidget {
                     if is_cursor_line && j as u16 == self.cursor.1 && self.cursor_visible {
                         match self.cursor_kind {
                             CursorKind::Bar => {
-                                cell.set_char('\u{258f}');
+                                cell.set_bg(Color::DarkGray);
                                 cell.set_fg(Color::White);
-                                cell.set_bg(Color::Reset);
                             }
                             CursorKind::Block => {
                                 cell.set_bg(Color::White);
