@@ -1,5 +1,6 @@
 pub mod motions;
 pub mod ops;
+pub mod textobj;
 
 use crate::action::{Action, EditOp, Motion};
 use crate::cursor::Edge;
@@ -18,6 +19,7 @@ pub struct VimState {
     count: Option<u32>,
     pending_g: bool,
     pending: OpState,
+    pending_textobj: Option<char>,
     register: Option<String>,
     last_change: Option<Vec<Action>>,
 }
@@ -29,6 +31,7 @@ impl VimState {
             count: None,
             pending_g: false,
             pending: OpState::Idle,
+            pending_textobj: None,
             register: None,
             last_change: None,
         }
@@ -49,7 +52,6 @@ impl VimState {
     fn stroke_count(&mut self, key: KeyEvent) -> bool {
         if let KeyEvent::Char(c) = key {
             if c.is_ascii_digit() {
-                // '0' alone (no preceding count) is the "line start" motion, not a count digit.
                 if c == '0' && self.count.is_none() { return false; }
                 let d = c.to_digit(10).unwrap_or(0);
                 self.count = Some(self.count.map(|v| v * 10 + d).unwrap_or(d));
@@ -62,18 +64,38 @@ impl VimState {
     fn handle_normal(&mut self, key: KeyEvent, editor: &Editor, n: u32, out: &mut Vec<Action>) {
         if self.stroke_count(key) { return; }
 
-        // Operator-pending: an operator was pressed, awaiting a motion.
         let pending_now = self.pending;
         if let OpState::Pending(op, count) = pending_now {
-            self.pending = OpState::Idle;
+            if let Some(kind) = self.pending_textobj {
+                self.pending_textobj = None;
+                self.pending = OpState::Idle;
+                match key {
+                    KeyEvent::Char(c2 @ ('w' | '"' | '\'' | '(' | ')' | '{' | '}')) => {
+                        if let Some((start, end)) = crate::vim::textobj::range_for_textobj(kind, c2, editor) {
+                            self.apply_operator(op, start, end, editor, out);
+                        }
+                        return;
+                    }
+                    _ => { return; }
+                }
+            }
             match key {
+                KeyEvent::Char(i @ ('i' | 'a')) => {
+                    self.pending_textobj = Some(i);
+                    self.pending = OpState::Pending(op, count);
+                    return;
+                }
                 KeyEvent::Char(m @ ('w' | 'b' | 'e' | '$' | 'd' | 'y' | 'c')) => {
+                    self.pending = OpState::Idle;
                     if let Some((start, end)) = crate::vim::ops::range_for_motion(editor, m, count) {
                         self.apply_operator(op, start, end, editor, out);
                     }
                     return;
                 }
-                _ => { return; } // unsupported motion in slice; abort operator
+                _ => {
+                    self.pending = OpState::Idle;
+                    return;
+                }
             }
         }
 
@@ -105,12 +127,11 @@ impl VimState {
             KeyEvent::Char('w') => { self.do_word_motion(editor, n, next_word_start, out); self.count = None; }
             KeyEvent::Char('b') => { self.do_word_motion(editor, n, prev_word_start, out); self.count = None; }
             KeyEvent::Char('e') => { self.do_word_motion(editor, n, word_end, out); self.count = None; }
-            KeyEvent::Char('i') if self.pending == OpState::Idle => {
+            KeyEvent::Char('i') if self.pending == OpState::Idle && self.pending_textobj.is_none() => {
                 self.mode = VimMode::Insert;
                 self.count = None;
                 out.push(Action::BeginBatch);
             }
-            // Operators (Task 8): d/y/c start operator-pending; count is captured.
             KeyEvent::Char('d') if self.pending == OpState::Idle => {
                 self.pending = OpState::Pending('d', n);
                 self.count = None;
@@ -123,7 +144,6 @@ impl VimState {
                 self.pending = OpState::Pending('c', n);
                 self.count = None;
             }
-            // x: delete the single char under the cursor
             KeyEvent::Char('x') => {
                 let at = editor.primary_head();
                 if at < editor.buffer().len_chars() {
@@ -137,7 +157,6 @@ impl VimState {
                 }
                 self.count = None;
             }
-            // p: paste register at cursor (slice semantic — insert at cursor, advance cursor to end of inserted text)
             KeyEvent::Char('p') => {
                 if let Some(text) = self.register.clone() {
                     let change = vec![
@@ -168,14 +187,13 @@ impl VimState {
             }
             'y' => {
                 self.register = Some(text);
-                // yank does not move the cursor in the slice
             }
             'c' => {
                 out.push(Action::BeginBatch);
                 out.push(Action::Edit(EditOp::DeleteRange(start, end)));
                 out.push(Action::EndBatch);
                 self.mode = VimMode::Insert;
-                out.push(Action::BeginBatch); // open insert-time batch so typed chars group into one undo unit
+                out.push(Action::BeginBatch);
             }
             _ => {}
         }
