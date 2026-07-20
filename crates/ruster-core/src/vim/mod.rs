@@ -446,4 +446,55 @@ mod tests {
         for a in v.handle(KeyEvent::Char('p'), &e) { e.execute(a); }
         assert_eq!(e.buffer().to_string(), "ababc");
     }
+
+    // Dot-repeat regression tests (Task 10) — preserved when the test module was rebuilt for Task 11.
+    #[test]
+    fn dot_repeats_dw_at_cursor() {
+        let mut e = Editor::from_str("foo bar baz");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('d'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('w'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "bar baz");
+        for a in v.handle(KeyEvent::Char('w'), &e) { e.execute(a); } // cursor -> 4 (on 'b' of baz)
+        assert_eq!(e.primary_head(), 4);
+        for a in v.handle(KeyEvent::Char('.'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "bar "); // re-applies dw at cursor 4
+    }
+
+    #[test]
+    fn dot_repeats_x_at_cursor() {
+        let mut e = Editor::from_str("abc");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('x'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "bc");
+        for a in v.handle(KeyEvent::Char('.'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "c");
+    }
+
+    #[test]
+    fn dot_repeats_di_paren_textobj() {
+        let mut e = Editor::from_str("(a)(b)");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('d'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('i'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('('), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "()(b)");
+        assert_eq!(e.primary_head(), 1);
+        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); } // cursor -> 2 (on '(')
+        assert_eq!(e.primary_head(), 2);
+        for a in v.handle(KeyEvent::Char('.'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "()()");
+    }
+
+    #[test]
+    fn dot_does_nothing_without_prior_change() {
+        let mut e = Editor::from_str("hello");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('.'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "hello");
+    }
 }
