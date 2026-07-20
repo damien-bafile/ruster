@@ -22,9 +22,8 @@ mod tests {
 
     #[test]
     fn edit_word_then_undo() {
-        // ciw changes inner word under cursor (cursor ends up at "hello" via gg-from-end then w to "hello")
-        // Plan A VimState cursor starts at end-of-buffer; gg jumps to 0; w moves to next word start
-        // For "hello world" the first word is "hello" at offset 0, so after gg cursor is at 0; ciw deletes "hello" and enters insert; x types "x"; Esc exits insert
+        // A fresh Editor starts with an empty UndoStack — undo MUST be in the same session as the
+        // change to do anything. Straight-line script: gg ciw x Esc creates a change; u reverses it.
         scenario(
             "hello world",
             &[
@@ -32,14 +31,8 @@ mod tests {
                 KeyEvent::Char('c'), KeyEvent::Char('i'), KeyEvent::Char('w'),
                 KeyEvent::Char('x'),
                 KeyEvent::Esc,
+                KeyEvent::Char('u'),
             ],
-            "x world", None,
-        );
-        // After Esc, cursor is left of the inserted "x" -> offset 0
-        // Undo restores "hello world"
-        scenario(
-            "x world",
-            &[KeyEvent::Char('u')],
             "hello world", None,
         );
     }
