@@ -33,15 +33,21 @@ pub struct BufferWidget {
     lines: Vec<StyledLine>,
     cursor: (u16, u16),
     syntax: bool,
+    cursor_visible: bool,
 }
 
 impl BufferWidget {
     pub fn new(lines: Vec<StyledLine>, cursor: (u16, u16)) -> Self {
-        BufferWidget { lines, cursor, syntax: false }
+        BufferWidget { lines, cursor, syntax: false, cursor_visible: true }
     }
 
     pub fn with_syntax(mut self, yes: bool) -> Self {
         self.syntax = yes;
+        self
+    }
+
+    pub fn with_cursor_visible(mut self, visible: bool) -> Self {
+        self.cursor_visible = visible;
         self
     }
 }
@@ -72,7 +78,7 @@ impl Widget for BufferWidget {
                 if x >= area.right() { break; }
                 if let Some(cell) = buf.cell_mut((x, y)) {
                     cell.set_char(ch);
-                    if is_cursor_line && j as u16 == self.cursor.1 {
+                    if is_cursor_line && j as u16 == self.cursor.1 && self.cursor_visible {
                         cell.set_bg(Color::White);
                         cell.set_fg(Color::Black);
                     } else if let Some((fg, bg)) = style_map.get(&(i as u16, j as u16)) {

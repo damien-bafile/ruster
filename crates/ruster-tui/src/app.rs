@@ -17,6 +17,33 @@ enum CmdAction {
     SaveAndQuit,
 }
 
+use tachyonfx::EffectTimer;
+use tachyonfx::Interpolation;
+
+#[derive(Clone)]
+pub struct AnimationState {
+    cursor_visible: bool,
+    cursor_timer: EffectTimer,
+}
+
+impl AnimationState {
+    pub fn new() -> Self {
+        AnimationState {
+            cursor_visible: true,
+            cursor_timer: EffectTimer::from_ms(500, Interpolation::Linear),
+        }
+    }
+
+    pub fn tick(&mut self, delta: std::time::Duration) {
+        let remaining = self.cursor_timer
+            .process(tachyonfx::Duration::from_secs_f32(delta.as_secs_f64() as f32));
+        if remaining.is_some() {
+            self.cursor_timer = EffectTimer::from_ms(500, Interpolation::Linear);
+            self.cursor_visible = !self.cursor_visible;
+        }
+    }
+}
+
 pub struct App {
     pub editor: Editor,
     pub vim: VimState,
@@ -209,6 +236,19 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn animation_state_cursor_toggles() {
+        use std::time::Duration;
+        let mut anim = AnimationState::new();
+        assert!(anim.cursor_visible);
+        // Advance 600ms — should toggle to invisible
+        for _ in 0..36 { anim.tick(Duration::from_secs_f64(1.0 / 60.0)); }
+        assert!(!anim.cursor_visible);
+        // Advance another 600ms — should toggle back
+        for _ in 0..36 { anim.tick(Duration::from_secs_f64(1.0 / 60.0)); }
+        assert!(anim.cursor_visible);
+    }
 
     #[test]
     fn cmd_w_saves() {
