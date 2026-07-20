@@ -6,4 +6,5 @@ pub mod action;
 pub mod command;
 pub mod editor;
 pub mod vim;
+#[cfg(test)]
 mod scenario;

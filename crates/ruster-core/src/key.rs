@@ -62,7 +62,7 @@ impl<T> KeyTrie<T> {
         match (node, pressed) {
             // Leaf is terminal: a shorter binding shadows any longer one whose prefix overlaps.
             (Node::Leaf(v), _) => Lookup::Match(v),
-            (Node::Branch(map), []) => Lookup::Pending,
+            (Node::Branch(_map), []) => Lookup::Pending,
             (Node::Branch(map), [first, rest @ ..]) => {
                 match map.get(first) {
                     Some(child) => Self::walk(child, rest),

@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-20
 **Status:** Approved (brainstorming complete)
-**Scope:** Sub-project 1 of the `AGENT.md` vision — the bootable, usable editor core. Phases 2–7 (window management, tree-sitter/LSP, embedded terminal, IDE tools, ecosystem, application platform) are explicitly **out of scope** and get their own spec → plan → implementation cycles later.
+**Scope:** Sub-project 1 of the `AGENTS.md` vision — the bootable, usable editor core. Phases 2–7 (window management, tree-sitter/LSP, embedded terminal, IDE tools, ecosystem, application platform) are explicitly **out of scope** and get their own spec → plan → implementation cycles later.
 
 ---
 
@@ -25,7 +25,7 @@
 | Architecture | Cargo workspace, crate per layer |
 | Acceptance | Usable daily-driver demo, manually verified |
 
-### Spec corrections to `AGENT.md` (apply to that doc when convenient)
+### Spec corrections to `AGENTS.md` (apply to that doc when convenient)
 
 1. `ropey` is a rope, not a CRDT. Fine choice; the description was wrong. (CRDTs would matter for Phase 7 client-server collaboration — revisit then.)
 2. `tachyonfx` is a ratatui *effects* library, not a frame clock. Moved to Phase 6 polish. Each frontend runs its own 60fps tick feeding `Tick` events into the shared event channel.

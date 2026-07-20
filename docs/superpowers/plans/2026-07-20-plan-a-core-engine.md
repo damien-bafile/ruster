@@ -208,17 +208,15 @@ mod tests {
         assert_eq!(ch, Change { at: 5, deleted: " world".to_string(), inserted: String::new() });
     }
 
-    #[test]
+#[test]
     fn apply_inverse_round_trips() {
         let mut b = Buffer::from_str("hello");
-        let ch = b.delete(0..2);
-        let inv = b.apply(&ch);
-        assert_eq!(b.to_string(), "llo");
-        assert_eq!(inv.inserted, ch.deleted);
-        // applying the inverse should restore the original
-        let inv2 = b.apply(&inv);
+        let ch = b.delete(0..2);      // b: "hello" -> "llo"; ch: del="he", ins=""
+        let inv = b.apply(&ch);        // applying ch inverts the deletion: b -> "hello"
         assert_eq!(b.to_string(), "hello");
-        // and the inverse-of-inverse equals the original change
+        assert_eq!(inv.inserted, ch.deleted);
+        let inv2 = b.apply(&inv);      // applying inv re-applies the deletion: b -> "llo"
+        assert_eq!(b.to_string(), "llo");
         assert_eq!(inv2, ch);
     }
 }
@@ -430,16 +428,17 @@ enum Dir { Left, Right }
 pub struct CursorSet {
     pub(crate) cursors: Vec<Range>,
     pub(crate) primary: usize,
-    pub(crate) desired_col: usize,
+    pub(crate) desired_col: usize, // usize::MAX is the sentinel "unset" used by single()
 }
 
 impl CursorSet {
     pub fn single(at: usize) -> Self {
-        CursorSet { cursors: vec![Range::caret(at)], primary: 0, desired_col: 0 }
+        CursorSet { cursors: vec![Range::caret(at)], primary: 0, desired_col: usize::MAX }
     }
 
     pub fn primary(&self) -> Range { self.cursors[self.primary] }
     pub fn head(&self) -> usize { self.primary().head }
+
     pub fn set_head(&mut self, at: usize, buffer: &Buffer) {
         let anchor = self.cursors[self.primary].anchor;
         self.cursors[self.primary] = Range { anchor, head: at };
@@ -459,6 +458,13 @@ impl CursorSet {
             if start <= char_idx { acc = line; } else { break; }
         }
         acc
+    }
+
+    // line length EXCLUDING a trailing '\n'; ropey's line_end_char points past the newline
+    fn line_content_len(&self, buffer: &Buffer, line: usize) -> usize {
+        let end = buffer.line_end_char(line);
+        let start = buffer.line_start_char(line);
+        if end > start && buffer.char_at(end - 1) == '\n' { end - start - 1 } else { end - start }
     }
 
     fn grapheme_step(&self, buffer: &Buffer, from: usize, dir: Dir) -> usize {
@@ -497,15 +503,19 @@ impl CursorSet {
     pub fn move_line(&mut self, buffer: &Buffer, delta: i32) {
         let from = self.head();
         let line = self.line_of(buffer, from);
+        if self.desired_col == usize::MAX {
+            self.desired_col = from - buffer.line_start_char(line);
+        }
         let target_line = (line as i32 + delta).max(0) as usize;
         let last = buffer.line_count().saturating_sub(1);
         let target_line = target_line.min(last);
         let start = buffer.line_start_char(target_line);
-        let end = buffer.line_end_char(target_line);
-        let line_len = end.saturating_sub(start);
-        let col = self.desired_col.min(line_len.saturating_sub(if line_len > 0 { 1 } else { 0 }));
+        let content_len = self.line_content_len(buffer, target_line);
+        let col = self.desired_col.min(content_len);
         let new_head = start + col;
-        self.set_head(new_head, buffer);
+        let anchor = self.cursors[self.primary].anchor;
+        self.cursors[self.primary] = Range { anchor, head: new_head };
+        self.collapse_at(new_head);
     }
 
     pub fn move_line_edge(&mut self, buffer: &Buffer, edge: Edge) {
@@ -513,11 +523,7 @@ impl CursorSet {
         let line = self.line_of(buffer, from);
         let at = match edge {
             Edge::Start => buffer.line_start_char(line),
-            Edge::End => {
-                let end = buffer.line_end_char(line);
-                let line_len = end.saturating_sub(buffer.line_start_char(line));
-                if line_len > 0 { end - 1 } else { end } // stop before newline
-            }
+            Edge::End => buffer.line_start_char(line) + self.line_content_len(buffer, line),
         };
         self.set_head(at, buffer);
     }
@@ -529,7 +535,7 @@ impl CursorSet {
 }
 ```
 
-Note on `move_line`: line_len > 0 means we stop one char before the trailing `\n`; if the line is empty we land on start (which equals end). `desired_col` is updated each `set_head`. The test asserts this.
+Note on `move_line`: `desired_col` is the sticky column intent, initialized to `usize::MAX` (sentinel "unset") by `single()`. The first vertical movement derives it from the current head's column, then preserves it across clamping. `line_content_len` excludes the trailing `\n` — ropey's `line_end_char` points past the newline. `set_head` collapses any range to a caret at `at`; visual selection (Task 11) uses a separate `set_visual`.
 
 The `move_line_edge` End stops before the newline so Vim's `$` lands on the last printable char rather than the `\n`.
 
@@ -684,8 +690,9 @@ impl UndoStack {
         }
         // store inverses in original order so redo replays forward
         inverses.reverse();
+        let n = inverses.len();
         self.redo.push(inverses);
-        Some(inverses.len())
+        Some(n)
     }
 
     pub fn redo(&mut self, buffer: &mut Buffer) -> Option<usize> {
@@ -696,8 +703,9 @@ impl UndoStack {
             inverses.push(inv);
         }
         inverses.reverse();
+        let n = inverses.len();
         self.undo.push(inverses);
-        Some(inverses.len())
+        Some(n)
     }
 }
 
@@ -2260,3 +2268,22 @@ Gaps closed; Plan A is internally consistent and complete for its scope.
 **2. Inline Execution** — Execute tasks in this session using `executing-plans`, batch execution with checkpoints.
 
 **Which approach?**
+
+---
+
+## Execution Log (Post-Implementation Corrections)
+
+Corrections applied during subagent execution. The plan tasks above describe the ORIGINAL brief code; the corrections below reflect the final committed state.
+
+- Task 2 (apply_inverse_round_trips): original test assertions were swapped — `apply(ch)` inverts the change (buffer returns to pre-edit), not preserves. Fixed inline.
+- Task 3 (CursorSet): ropey's `line_end_char` returns offset PAST the trailing newline; `single(at)` lost column intent by init `desired_col = 0`. Implementer replaced with `desired_col = usize::MAX` sentinel, `line_content_len` helper excluding the newline, sticky `desired_col` through clamping. Public API preserved.
+- Task 4 (UndoStack): brief used `Some(inverses.len())` after `self.redo.push(inverses)` (use-after-move). Fixed with `let n = inverses.len();` binding.
+- Task 7 (VimState): (a) `0` alone is line-start motion, not a count digit — `stroke_count` now rejects bare `0`, only extends an existing count. (b) `gg`/`G` cannot use `Motion::Line(±big)` because `move_line` preserves `desired_col`; they emit `Motion::To(line_start_char(line))` instead. (c) Vim `$` must land ON the last printable char; `Edge::End` lands PAST it. `$` handler emits `Motion::To(last_printable_in_line(editor))`.
+- Task 8 (Operators): doubled-operator convention (`dd`/`yy`/`cc` all act line-wise) was missing for `y` and `c` in the brief — extended to all three.
+- Task 9 (Text objects): brief's `find_matching_close` decrement-after-check missed the first matching close for non-nested pairs; corrected order. Also added symmetric-pair branches for `"` and `'` where `open == close` overloaded the same `c == close` test.
+- Task 10 (Dot-repeat): upgraded from `Option<Vec<Action>>` (absolute-offset replay) to `LastChange` enum (recomputable at current cursor — real Vim `.` semantics). Test asserts `bar ` for `foo bar baz -> dw -> w -> .`, matching Vim.
+- Task 11 (Visual): (a) added `set_visual_anchor` to `CursorSet`; new `Action::BeginVisual(usize)`. (b) Visual selection is inclusive on the cursor side: `v + w + x` on `hello world` deletes `hello w` leaving `orld`, NOT `world`. (c) Visual `y` emits cursor reset to selection start (`Motion::To(start)`).
+- Task 11 regression: when `vim/mod.rs` was rebuilt from the full Task 11 brief, it dropped Task 10's four `dot_*` regression tests; restored in commit `a019576`.
+- Task 12 (Scenario): brief's `edit_word_then_undo` split the undo across TWO fresh Editor sessions — but a freshly-constructed Editor has an empty UndoStack, so `u` in session 2 is a no-op. Folded both halves into one session (key-script ends with `u`).
+- Plan-wide gap discovered at Task 12: no Normal-mode handler for `u` (undo) or `Ctrl-r` (redo) — they existed only as `Action::Undo`/`Action::Redo`. Added in `handle_normal`.
+- Plan-wide gap fixed at Task 12: `apply_operator('c')` (and Visual `c`) closed the deletion's `BeginBatch` and opened a new one for typing, producing TWO undo units for `c{motion}...Esc`; a single `u` could only reverse the typing. Removed the intermediate `EndBatch`/`BeginBatch`; Esc fires the single `EndBatch` so the whole change is one undo unit, matching Vim.
