@@ -28,14 +28,14 @@ impl Editor {
             Action::BeginBatch => self.undo.begin_batch(),
             Action::EndBatch => self.undo.end_batch(),
             Action::Undo => {
-                self.undo.undo(&mut self.buffer);
-                let at = 0;
-                self.cursors.set_head(at, &self.buffer);
+                if let Some((_n, at)) = self.undo.undo(&mut self.buffer) {
+                    self.cursors.set_head(at, &self.buffer);
+                }
             }
             Action::Redo => {
-                self.undo.redo(&mut self.buffer);
-                let at = 0;
-                self.cursors.set_head(at, &self.buffer);
+                if let Some((_n, at)) = self.undo.redo(&mut self.buffer) {
+                    self.cursors.set_head(at, &self.buffer);
+                }
             }
             Action::BeginVisual(anchor) => {
                 self.cursors.set_visual_anchor(anchor);

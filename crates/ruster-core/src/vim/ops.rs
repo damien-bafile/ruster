@@ -29,6 +29,19 @@ pub fn range_for_motion(editor: &Editor, motion: char, count: u32) -> Option<(us
             let last = last_printable_in_line(editor);
             Some((head, (last + 1).min(total)))
         }
+        '0' => {
+            let line = char_to_line(editor, head);
+            let start = buf.line_start_char(line);
+            // operator on `0` deletes/yanks the range from line start to current head (backward)
+            Some((start, head + 1))
+        }
+        'G' => {
+            // operator on `G` extends from head to the END of the last line (whole tail of buffer)
+            let last_line = buf.line_count().saturating_sub(1);
+            let start = head;
+            let end = buf.line_end_char(last_line);
+            Some((start, end))
+        }
         'd' | 'y' | 'c' => {
             // dd/yy/cc and {count}dd etc.: operate on whole lines starting at current line,
             // INCLUDING the trailing newline (ropey's line_end_char points past the newline
@@ -108,6 +121,58 @@ mod tests {
         for a in v.handle(KeyEvent::Char('p'), &e) { e.execute(a); }
         assert_eq!(e.buffer().to_string(), "hellohello");
         assert_eq!(e.primary_head(), 5);
+    }
+
+    #[test]
+    fn d0_deletes_from_line_start_to_cursor() {
+        let mut e = Editor::from_str("hello world");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('d'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('0'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "lo world");
+        assert_eq!(e.primary_head(), 0);
+    }
+
+    #[test]
+    fn d_capital_g_deletes_from_cursor_to_buffer_end() {
+        let mut e = Editor::from_str("foo\nbar\nbaz");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('j'), &e) { e.execute(a); } // cursor -> line 1
+        for a in v.handle(KeyEvent::Char('d'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('G'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "foo\n");
+    }
+
+    #[test]
+    fn y_capital_g_yanks_from_cursor_to_buffer_end() {
+        let mut e = Editor::from_str("foo\nbar\nbaz");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('y'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('G'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "foo\nbar\nbaz");
+        for a in v.handle(KeyEvent::Char('p'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "foo\nbar\nbazfoo\nbar\nbaz");
+    }
+
+    #[test]
+    fn c0_deletes_to_line_start_and_enters_insert() {
+        let mut e = Editor::from_str("hello world");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); }
+        // cursor at 2; c0 deletes 0..3 → "lo world", enters Insert
+        for a in v.handle(KeyEvent::Char('c'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('0'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "lo world");
+        assert_eq!(v.mode, VimMode::Insert);
+        for a in v.handle(KeyEvent::Char('H'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "Hlo world");
     }
 
     #[test]

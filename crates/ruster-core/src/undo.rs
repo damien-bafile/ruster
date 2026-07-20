@@ -33,7 +33,7 @@ impl UndoStack {
         }
     }
 
-    pub fn undo(&mut self, buffer: &mut Buffer) -> Option<usize> {
+    pub fn undo(&mut self, buffer: &mut Buffer) -> Option<(usize, usize)> {
         self.end_batch(); // close any open batch so it's undoable too
         let batch = self.undo.pop()?;
         let mut inverses = Vec::with_capacity(batch.len());
@@ -42,12 +42,13 @@ impl UndoStack {
             inverses.push(inv);
         }
         inverses.reverse();
+        let at = inverses[0].at;
         let n = inverses.len();
         self.redo.push(inverses);
-        Some(n)
+        Some((n, at))
     }
 
-    pub fn redo(&mut self, buffer: &mut Buffer) -> Option<usize> {
+    pub fn redo(&mut self, buffer: &mut Buffer) -> Option<(usize, usize)> {
         let batch = self.redo.pop()?;
         let mut inverses = Vec::with_capacity(batch.len());
         for ch in batch.into_iter().rev() {
@@ -55,9 +56,10 @@ impl UndoStack {
             inverses.push(inv);
         }
         inverses.reverse();
+        let at = inverses[0].at;
         let n = inverses.len();
         self.undo.push(inverses);
-        Some(n)
+        Some((n, at))
     }
 }
 
@@ -81,8 +83,9 @@ mod tests {
         u.push(b.insert(4, "?"));
         u.end_batch();
         assert_eq!(b.to_string(), "abc!?");
-        let n = u.undo(&mut b).unwrap();
+        let (n, at) = u.undo(&mut b).unwrap();
         assert_eq!(n, 2);
+        assert_eq!(at, 3);
         assert_eq!(b.to_string(), "abc");
     }
 
@@ -109,8 +112,9 @@ mod tests {
         u.end_batch();
         u.undo(&mut b);
         assert_eq!(b.to_string(), "abc");
-        let n = u.redo(&mut b).unwrap();
+        let (n, at) = u.redo(&mut b).unwrap();
         assert_eq!(n, 1);
+        assert_eq!(at, 3);
         assert_eq!(b.to_string(), "abc!");
     }
 

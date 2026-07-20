@@ -97,11 +97,12 @@ impl VimState {
                     self.pending = OpState::Pending(op, count);
                     return;
                 }
-                KeyEvent::Char(m @ ('w' | 'b' | 'e' | '$' | 'd' | 'y' | 'c')) => {
+                KeyEvent::Char(m @ ('w' | 'b' | 'e' | '0' | '$' | 'G' | 'd' | 'y' | 'c')) => {
                     self.pending = OpState::Idle;
                     if let Some((start, end)) = crate::vim::ops::range_for_motion(editor, m, count) {
                         self.apply_operator(op, start, end, editor, out);
                         if op == 'd' || op == 'c' {
+                            // for `c`, `.` will re-enter Insert without replaying typed text (Plan A scope cut).
                             self.last_change = Some(LastChange::OperatorMotion { op, motion: m, count });
                         }
                     }

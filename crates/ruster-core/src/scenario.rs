@@ -38,6 +38,22 @@ mod tests {
     }
 
     #[test]
+    fn undo_lands_cursor_at_change_position_not_zero() {
+        // After deleting text in the middle of the buffer, `u` should land
+        // cursor at the position of the change, not hardcoded to offset 0.
+        scenario(
+            "foo bar baz",
+            &[
+                KeyEvent::Char('g'), KeyEvent::Char('g'),
+                KeyEvent::Char('w'), // cursor -> 4 (start of "bar")
+                KeyEvent::Char('d'), KeyEvent::Char('w'), // delete "bar " -> "foo baz"
+                KeyEvent::Char('u'), // undo: restores "bar " at offset 4
+            ],
+            "foo bar baz", Some(4),
+        );
+    }
+
+    #[test]
     fn full_vim_pipeline_delete_word_dot_repeat() {
         // dw on "foo " then w to "bar " then . deletes "bar " -> "baz"
         // cursor starts at end-of-buffer; gg jumps to 0; dw deletes "foo " -> "bar baz"
