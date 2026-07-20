@@ -1,3 +1,4 @@
+pub mod app;
 pub mod key;
 pub mod renderer;
 pub mod widgets;
