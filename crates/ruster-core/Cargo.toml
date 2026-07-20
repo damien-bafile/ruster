@@ -1,0 +1,12 @@
+[package]
+name = "ruster-core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+ropey = "1.6"
+unicode-segmentation = "1.11"
+thiserror = "1"
