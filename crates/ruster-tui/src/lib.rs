@@ -1,5 +1,6 @@
 pub mod key;
 pub mod renderer;
+pub mod widgets;
 
 #[cfg(test)]
 mod tests {

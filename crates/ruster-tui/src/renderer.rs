@@ -20,13 +20,54 @@ impl TuiRenderer {
 }
 
 impl Renderer for TuiRenderer {
-    fn render_frame(&mut self, _state: &EditorState) {
+    fn render_frame(&mut self, state: &EditorState) {
         let term = match &mut self.terminal {
             Some(t) => t,
             None => return,
         };
         let _ = term.draw(|frame| {
-            frame.render_widget(ratatui::widgets::Clear, frame.area());
+            let area = frame.area();
+            let has_cmdline = state.cmdline.is_some() || state.message.is_some();
+            let constraints: Vec<ratatui::layout::Constraint> = if has_cmdline {
+                vec![
+                    ratatui::layout::Constraint::Fill(1),
+                    ratatui::layout::Constraint::Length(1),
+                    ratatui::layout::Constraint::Length(1),
+                ]
+            } else {
+                vec![
+                    ratatui::layout::Constraint::Fill(1),
+                    ratatui::layout::Constraint::Length(1),
+                ]
+            };
+            let chunks = ratatui::layout::Layout::default()
+                .direction(ratatui::layout::Direction::Vertical)
+                .constraints(constraints)
+                .split(area);
+
+            // Buffer area
+            let buf_widget = crate::widgets::BufferWidget::new(
+                state.lines.clone(),
+                state.cursor,
+            );
+            frame.render_widget(buf_widget, chunks[0]);
+
+            // Statusline
+            let sl = crate::widgets::StatuslineWidget::new(
+                state.mode_label,
+                state.file_path,
+                state.cursor,
+            );
+            frame.render_widget(sl, chunks[1]);
+
+            // Cmdline / message area
+            if let Some(cmd) = state.cmdline {
+                let cl = crate::widgets::CmdlineWidget::new(cmd);
+                frame.render_widget(cl, chunks.last().copied().unwrap_or(chunks[1]));
+            } else if let Some(msg) = state.message {
+                let cl = crate::widgets::CmdlineWidget::new(msg);
+                frame.render_widget(cl, chunks.last().copied().unwrap_or(chunks[1]));
+            }
         });
     }
 }
