@@ -7,6 +7,7 @@ use ruster_core::vim::VimState;
 use ruster_render::{CursorKind, EditorState, Renderer, StyledLine};
 use ruster_syntax::SyntaxEngine;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CmdAction {
@@ -15,6 +16,10 @@ enum CmdAction {
     Quit,
     ForceQuit,
     SaveAndQuit,
+}
+
+enum AppEvent {
+    Input(crossterm::event::Event),
 }
 
 use tachyonfx::EffectTimer;
@@ -52,6 +57,7 @@ pub struct App {
     pub should_quit: bool,
     message: Option<String>,
     syntax: Option<SyntaxEngine>,
+    anim: AnimationState,
 }
 
 impl App {
@@ -64,58 +70,127 @@ impl App {
             .and_then(|e| e.to_str())
             .unwrap_or("");
         let syntax = SyntaxEngine::new(&content, ext).ok();
-        App { editor, vim, renderer, file_path, should_quit: false, message: None, syntax }
+        let anim = AnimationState::new();
+        App { editor, vim, renderer, file_path, should_quit: false, message: None, syntax, anim }
+    }
+
+    pub fn handle_key(&mut self, ck: crossterm::event::KeyEvent) {
+        let key = crossterm_to_ruster_key(ck);
+        for action in self.vim.handle(key, &self.editor) {
+            match action {
+                Action::Textobject { op, kind, target, count: _ } => {
+                    let cursor = self.editor.primary_head();
+                    if let Some((start, end)) = self.syntax.as_ref()
+                        .and_then(|s| s.ts_textobject(kind, target, cursor))
+                    {
+                        self.exec_operator(op, start, end);
+                    }
+                }
+                Action::CmdlineResult(cmd) => {
+                    self.message = None;
+                    match self.parse_cmdline(&cmd) {
+                        Ok(CmdAction::Save(force)) => self.save_file(force),
+                        Ok(CmdAction::SaveAs(p)) => self.save_as(&p),
+                        Ok(CmdAction::Quit) | Ok(CmdAction::ForceQuit) => {
+                            self.should_quit = true;
+                        }
+                        Ok(CmdAction::SaveAndQuit) => {
+                            self.save_file(false);
+                            self.should_quit = true;
+                        }
+                        Err(e) => self.message = Some(e),
+                    }
+                }
+                other => self.editor.execute(other),
+            }
+        }
     }
 
     pub fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         crossterm::terminal::enable_raw_mode()?;
         let mut stdout = std::io::stdout();
         crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen)?;
-
         self.renderer = TuiRenderer::new()?;
 
         loop {
             self.render();
             if self.should_quit { break; }
-
             let ev = crossterm::event::read()?;
             let ck = match ev {
                 crossterm::event::Event::Key(k) => k,
                 _ => continue,
             };
-            let key = crossterm_to_ruster_key(ck);
-            for action in self.vim.handle(key, &self.editor) {
-                match action {
-                    Action::Textobject { op, kind, target, count: _ } => {
-                        let cursor = self.editor.primary_head();
-                        if let Some((start, end)) = self.syntax.as_ref()
-                            .and_then(|s| s.ts_textobject(kind, target, cursor))
-                        {
-                            self.exec_operator(op, start, end);
-                        }
-                    }
-                    Action::CmdlineResult(cmd) => {
-                        self.message = None;
-                        match self.parse_cmdline(&cmd) {
-                            Ok(CmdAction::Save(force)) => self.save_file(force),
-                            Ok(CmdAction::SaveAs(p)) => self.save_as(&p),
-                            Ok(CmdAction::Quit) | Ok(CmdAction::ForceQuit) => {
-                                self.should_quit = true;
-                            }
-                            Ok(CmdAction::SaveAndQuit) => {
-                                self.save_file(false);
-                                self.should_quit = true;
-                            }
-                            Err(e) => self.message = Some(e),
-                        }
-                    }
-                    other => self.editor.execute(other),
-                }
-            }
+            self.handle_key(ck);
         }
 
         crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen)?;
         crossterm::terminal::disable_raw_mode()?;
+        Ok(())
+    }
+
+    pub fn run_async(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        crossterm::terminal::enable_raw_mode()?;
+        crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen)?;
+        self.renderer = TuiRenderer::new()?;
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()?;
+
+        let result = rt.block_on(self.async_run());
+
+        crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen)?;
+        crossterm::terminal::disable_raw_mode()?;
+        result
+    }
+
+    async fn async_run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        // Spawn blocking reader
+        let tx_reader = tx.clone();
+        tokio::task::spawn_blocking(move || {
+            loop {
+                match crossterm::event::read() {
+                    Ok(ev) => {
+                        if tx_reader.send(AppEvent::Input(ev)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let mut interval = tokio::time::interval(Duration::from_secs_f64(1.0 / 60.0));
+        interval.tick().await; // discard first immediate tick
+
+        let mut last_frame = Instant::now();
+
+        loop {
+            tokio::select! {
+                event = rx.recv() => {
+                    match event {
+                        Some(AppEvent::Input(ev)) => {
+                            match ev {
+                                crossterm::event::Event::Key(k) => self.handle_key(k),
+                                _ => {}
+                            }
+                        }
+                        None => break,
+                    }
+                }
+                _ = interval.tick() => {}
+            }
+
+            let now = Instant::now();
+            let delta = now.duration_since(last_frame);
+            last_frame = now;
+            self.anim.tick(delta);
+            self.render();
+            if self.should_quit { break; }
+        }
+
         Ok(())
     }
 
@@ -155,7 +230,7 @@ impl App {
             lines: styled_lines,
             cursor: (line, col),
             cursor_kind,
-            cursor_visible: true,
+            cursor_visible: self.anim.cursor_visible,
             mode_label,
             file_path: &file_path,
             modified: false,

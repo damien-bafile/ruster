@@ -15,3 +15,4 @@ Task 11: complete (commits e10ba55..f28cdbc, 44 tests). Subagent added visual y 
 Task 12: complete (commits a58ef6f..0f0c998, 50 tests). Subagent caught split-session test bug; folded into one session. ALSO fixed: 'c' operator keeps single open batch (real Vim one-undo-unit), wired u/Ctrl-r keys (plan had no Normal-mode handler).
 Task 13: complete (milestone tagged plan-a-core-complete)
 Task 1: complete (commits 114f454..ff60730, review clean)
+Task 2: complete (commits ff60730..5c59b11, review clean)

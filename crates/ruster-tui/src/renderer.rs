@@ -66,7 +66,9 @@ impl Renderer for TuiRenderer {
             let buf_widget = crate::widgets::BufferWidget::new(
                 state.lines.clone(),
                 state.cursor,
-            ).with_syntax(has_highlights);
+            )
+            .with_syntax(has_highlights)
+            .with_cursor_visible(state.cursor_visible);
             frame.render_widget(buf_widget, chunks[0]);
 
             // Statusline
