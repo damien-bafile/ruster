@@ -1,7 +1,33 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Color {
+    Default,
+    Rgb(u8, u8, u8),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyntaxStyle {
+    pub fg: Color,
+    pub bg: Color,
+    pub bold: bool,
+    pub italic: bool,
+}
+
+impl Default for SyntaxStyle {
+    fn default() -> Self {
+        SyntaxStyle { fg: Color::Default, bg: Color::Default, bold: false, italic: false }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StyledLine {
+    pub text: String,
+    pub highlights: Vec<(usize, usize, SyntaxStyle)>,
+}
+
 pub enum CursorKind { Block, Bar }
 
 pub struct EditorState<'a> {
-    pub lines: Vec<String>,
+    pub lines: Vec<StyledLine>,
     pub cursor: (u16, u16),
     pub cursor_kind: CursorKind,
     pub mode_label: &'a str,
@@ -17,7 +43,7 @@ pub trait Renderer {
 
 #[cfg(test)]
 mod tests {
-    use crate::{CursorKind, EditorState, Renderer};
+    use crate::{CursorKind, EditorState, Renderer, StyledLine};
 
     struct TestRenderer;
     impl Renderer for TestRenderer {
@@ -27,7 +53,7 @@ mod tests {
     #[test]
     fn renderer_trait_is_object_safe() {
         let state = EditorState {
-            lines: vec!["hello".to_string()],
+            lines: vec![StyledLine { text: "hello".to_string(), highlights: vec![] }],
             cursor: (0, 0),
             cursor_kind: CursorKind::Block,
             mode_label: "NORMAL",
