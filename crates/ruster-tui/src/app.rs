@@ -128,6 +128,7 @@ impl App {
             lines: styled_lines,
             cursor: (line, col),
             cursor_kind,
+            cursor_visible: true,
             mode_label,
             file_path: &file_path,
             modified: false,

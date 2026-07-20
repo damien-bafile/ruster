@@ -14,6 +14,7 @@ mod tests {
             lines: vec![StyledLine { text: "hi".to_string(), highlights: vec![] }],
             cursor: (0, 1),
             cursor_kind: CursorKind::Bar,
+            cursor_visible: true,
             mode_label: "INSERT",
             file_path: "f",
             modified: false,
