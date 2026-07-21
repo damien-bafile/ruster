@@ -151,3 +151,17 @@
   selection = "#585b70"
   comment = "#6c7086"
   # ... plus syntax‑highlighting groups (function, keyword, string, etc.)
+
+## Documentation Maintenance
+
+**All documentation in `docs/` must be kept in sync with the codebase.**
+When you implement a new feature, change an existing setting, or modify the Lua API:
+1. Update `docs/config-reference.md` if settings change
+2. Update `docs/lua-api.md` if the Lua surface changes
+3. If you created a new doc, add a reference in the relevant phase section above
+
+**This includes:**
+- Adding new `ruster.config` settings
+- Adding new `ruster.api.*` functions
+- Adding new events for `ruster.on()`
+- Changing default values or behavior
