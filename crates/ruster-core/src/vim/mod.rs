@@ -6,7 +6,7 @@ use crate::action::{Action, EditOp, Motion};
 use crate::cursor::Edge;
 use crate::editor::Editor;
 use crate::key::KeyEvent;
-use crate::vim::motions::{next_word_start, prev_word_start, word_end, last_printable_in_line};
+use crate::vim::motions::{next_word_start, prev_word_start, word_end, last_printable_in_line, char_to_line};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VimMode { Normal, Insert, VisualChar, VisualLine, Cmdline }
@@ -19,6 +19,32 @@ enum LastChange {
     OperatorMotion { op: char, motion: char, count: u32 },
     OperatorTextobj { op: char, kind: char, target: char },
     DeleteChar,
+}
+
+fn next_word_occurrence(editor: &Editor) -> Option<usize> {
+    let head = editor.primary_head();
+    let buf = editor.buffer();
+    let text = buf.to_string();
+    let line = char_to_line(editor, head);
+    let line_start = buf.line_start_char(line);
+    let line_end = buf.line_end_char(line);
+    let content = buf.slice_string(line_start, line_end);
+    let col = head - line_start;
+    let chars: Vec<char> = content.chars().collect();
+    if col >= chars.len() || !chars[col].is_alphanumeric() && chars[col] != '_' {
+        return None;
+    }
+    let word_start = (0..=col).rev().take_while(|&i| i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_')).last().unwrap_or(col);
+    let word_end = (col..chars.len()).take_while(|&i| chars[i].is_alphanumeric() || chars[i] == '_').last().unwrap_or(col);
+    let word: String = chars[word_start..=word_end].iter().collect();
+    if word.is_empty() {
+        return None;
+    }
+    let search_from = head + 1;
+    if search_from >= text.len() {
+        return None;
+    }
+    text[search_from..].find(&word).map(|pos| search_from + pos)
 }
 
 pub struct VimState {
@@ -157,7 +183,12 @@ impl VimState {
         }
 
         match key {
-            KeyEvent::Esc => { self.count = None; }
+            KeyEvent::Esc => {
+                if editor.cursors().count() > 1 {
+                    out.push(Action::ClearExtraCursors);
+                }
+                self.count = None;
+            }
             KeyEvent::Char(':') => {
                 self.mode = VimMode::Cmdline;
                 self.cmdline_buffer = String::from(":");
@@ -240,6 +271,12 @@ impl VimState {
                 self.mode = VimMode::VisualLine;
                 self.anchor = Some(at);
                 out.push(Action::BeginVisual(at));
+                self.count = None;
+            }
+            KeyEvent::Ctrl('d') => {
+                if let Some(pos) = next_word_occurrence(editor) {
+                    out.push(Action::AddCursor(pos));
+                }
                 self.count = None;
             }
             _ => { self.count = None; }
@@ -584,5 +621,33 @@ mod tests {
         for a in v.handle(KeyEvent::Char('i'), &e) { e.execute(a); }
         let actions = v.handle(KeyEvent::Char('f'), &e);
         assert!(actions.iter().any(|a| matches!(a, Action::Textobject { op: 'd', kind: 'i', target: 'f', .. })));
+    }
+
+    #[test]
+    fn ctrl_d_adds_cursor_at_next_word() {
+        let mut e = Editor::from_str("foo foo foo");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        let actions: Vec<Action> = v.handle(KeyEvent::Ctrl('d'), &e);
+        assert!(actions.iter().any(|a| matches!(a, Action::AddCursor(_))));
+    }
+
+    #[test]
+    fn ctrl_d_no_word_does_nothing() {
+        let mut e = Editor::from_str("... ...");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        let actions: Vec<Action> = v.handle(KeyEvent::Ctrl('d'), &e);
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn esc_clears_extra_cursors() {
+        let mut e = Editor::from_str("hello");
+        let mut v = VimState::new();
+        e.execute(Action::AddCursor(3));
+        assert_eq!(e.cursors().count(), 2);
+        let actions: Vec<Action> = v.handle(KeyEvent::Esc, &e);
+        assert!(actions.iter().any(|a| matches!(a, Action::ClearExtraCursors)));
     }
 }
