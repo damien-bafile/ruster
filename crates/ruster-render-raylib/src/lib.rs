@@ -86,8 +86,14 @@ impl Renderer for RaylibRenderer {
         }
 
         if state.cursor_visible {
-            let cx = PAD_X + state.cursor.1 as i32 * CHAR_W;
-            let cy = PAD_Y + state.cursor.0 as i32 * LINE_H;
+            let col = state.cursor.1 as i32;
+            let line = state.cursor.0 as i32;
+            let mut cx = PAD_X + col * CHAR_W;
+            let mut cy = PAD_Y + line * LINE_H;
+            if let Some((dcx, dcy)) = state.cursor_smooth {
+                cx = (cx as f32 + dcx * CHAR_W as f32) as i32;
+                cy = (cy as f32 + dcy * LINE_H as f32) as i32;
+            }
             match state.cursor_kind {
                 CursorKind::Block => {
                     d.draw_rectangle(cx, cy, CHAR_W, LINE_H, Color::new(245, 224, 220, 200));
