@@ -1,6 +1,7 @@
 mod key;
 
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use raylib::consts::KeyboardKey;
 use raylib::prelude::*;
 use ruster_render::{CursorKind, EditorState, Renderer};
 
@@ -14,6 +15,7 @@ pub struct RaylibRenderer {
     rl: RaylibHandle,
     thread: RaylibThread,
     font: WeakFont,
+    event_buffer: Vec<KeyEvent>,
 }
 
 impl RaylibRenderer {
@@ -24,7 +26,45 @@ impl RaylibRenderer {
             .build();
         rl.set_target_fps(60);
         let font = rl.get_font_default();
-        RaylibRenderer { rl, thread, font }
+        RaylibRenderer { rl, thread, font, event_buffer: Vec::new() }
+    }
+
+    fn drain_raylib(&mut self) {
+        let mut mods = KeyModifiers::empty();
+        if self.rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
+            || self.rl.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT)
+        {
+            mods |= KeyModifiers::SHIFT;
+        }
+        if self.rl.is_key_down(KeyboardKey::KEY_LEFT_CONTROL)
+            || self.rl.is_key_down(KeyboardKey::KEY_RIGHT_CONTROL)
+        {
+            mods |= KeyModifiers::CONTROL;
+        }
+        if self.rl.is_key_down(KeyboardKey::KEY_LEFT_ALT)
+            || self.rl.is_key_down(KeyboardKey::KEY_RIGHT_ALT)
+        {
+            mods |= KeyModifiers::ALT;
+        }
+        if self.rl.is_key_down(KeyboardKey::KEY_LEFT_SUPER)
+            || self.rl.is_key_down(KeyboardKey::KEY_RIGHT_SUPER)
+        {
+            mods |= KeyModifiers::SUPER;
+        }
+
+        while let Some(c) = self.rl.get_char_pressed() {
+            if let Some(ch) = char::from_u32(c as u32) {
+                self.event_buffer.push(KeyEvent::new(KeyCode::Char(ch), mods));
+            }
+        }
+
+        while let Some(k) = self.rl.get_key_pressed() {
+            if let Some(event) = key::map_raylib_key(k) {
+                self.event_buffer.push(KeyEvent::new(event.code, mods));
+            }
+        }
+
+        self.event_buffer.reverse();
     }
 }
 
@@ -45,7 +85,6 @@ impl Renderer for RaylibRenderer {
             );
         }
 
-        // Cursor
         if state.cursor_visible {
             let cx = PAD_X + state.cursor.1 as i32 * CHAR_W;
             let cy = PAD_Y + state.cursor.0 as i32 * LINE_H;
@@ -61,8 +100,10 @@ impl Renderer for RaylibRenderer {
     }
 
     fn poll_input(&mut self) -> Option<KeyEvent> {
-        let k = self.rl.get_key_pressed()?;
-        key::map_raylib_key(k)
+        if self.event_buffer.is_empty() {
+            self.drain_raylib();
+        }
+        self.event_buffer.pop()
     }
 
     fn should_close(&self) -> bool {

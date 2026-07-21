@@ -11,7 +11,6 @@ ruster-core = { path = "../ruster-core" }
 ruster-render = { path = "../ruster-render" }
 ruster-syntax = { path = "../ruster-syntax" }
 ruster-lua = { path = "../ruster-lua" }
-tachyonfx = "0.25"
 ratatui = "0.28"
 crossterm = "0.28"
 tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
