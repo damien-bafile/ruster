@@ -1,6 +1,4 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 use mlua::{Function, Lua, MultiValue, RegistryKey};
 
 pub struct EventBus {
@@ -32,6 +30,8 @@ impl EventBus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
 
     #[test]
     fn event_bus_new_is_empty() {

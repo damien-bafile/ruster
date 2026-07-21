@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::path::Path;
 use mlua::{Function, Lua};
+use crate::config::Config;
 use crate::event::EventBus;
 use crate::keymap::LuaKeymap;
 
@@ -70,6 +71,26 @@ impl LuaRuntime {
             .map(|s| mlua::Value::String(self.lua.create_string(s).unwrap()))
             .collect();
         self.fire_event(name, &vals);
+    }
+
+    pub fn config(&self) -> Config {
+        let defaults = Config::default();
+        let ruster = match self.lua.globals().get::<mlua::Table>("ruster") {
+            Ok(t) => t,
+            Err(_) => return defaults,
+        };
+        let cfg = match ruster.get::<mlua::Table>("config") {
+            Ok(t) => t,
+            Err(_) => return defaults,
+        };
+        Config {
+            tabstop: cfg.get("tabstop").unwrap_or(defaults.tabstop),
+            softtabstop: cfg.get("softtabstop").unwrap_or(defaults.softtabstop),
+            expandtab: cfg.get("expandtab").unwrap_or(defaults.expandtab),
+            number: cfg.get("number").unwrap_or(defaults.number),
+            relativenumber: cfg.get("relativenumber").unwrap_or(defaults.relativenumber),
+            theme: cfg.get("theme").unwrap_or(defaults.theme),
+        }
     }
 
     pub fn load_init(&mut self, path: &Path) -> Result<(), String> {

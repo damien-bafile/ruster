@@ -1,3 +1,4 @@
+pub mod config;
 mod api;
 pub mod event;
 pub mod keymap;

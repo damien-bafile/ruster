@@ -4,7 +4,7 @@ use ruster_core::action::{Action, EditOp, Motion};
 use ruster_core::editor::Editor;
 use ruster_core::vim::VimMode;
 use ruster_core::vim::VimState;
-use ruster_lua::{LuaAction, LuaRuntime};
+use ruster_lua::{config::Config, LuaAction, LuaRuntime};
 use ruster_render::{CursorKind, EditorState, Renderer, StyledLine};
 use ruster_syntax::SyntaxEngine;
 use std::cell::RefCell;
@@ -34,6 +34,7 @@ pub struct App {
     message: Option<String>,
     syntax: Option<SyntaxEngine>,
     lua: LuaRuntime,
+    config: Config,
 }
 
 impl App {
@@ -112,9 +113,10 @@ impl App {
         );
 
         lua.fire_event("VimEnter", &[]);
+        let config = lua.config();
         App {
             editor, vim, renderer, file_path,
-            should_quit: false, message: None, syntax, lua
+            should_quit: false, message: None, syntax, lua, config
         }
     }
 
