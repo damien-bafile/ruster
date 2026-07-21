@@ -4,6 +4,7 @@ use ruster_core::action::{Action, EditOp, Motion};
 use ruster_core::editor::Editor;
 use ruster_core::vim::VimMode;
 use ruster_core::vim::VimState;
+use ruster_lua::{LuaAction, LuaRuntime};
 use ruster_render::{CursorKind, EditorState, Renderer, StyledLine};
 use ruster_syntax::SyntaxEngine;
 use std::path::PathBuf;
@@ -30,6 +31,7 @@ pub struct App {
     pub should_quit: bool,
     message: Option<String>,
     syntax: Option<SyntaxEngine>,
+    lua: LuaRuntime,
 }
 
 impl App {
@@ -42,10 +44,32 @@ impl App {
             .and_then(|e| e.to_str())
             .unwrap_or("");
         let syntax = SyntaxEngine::new(&content, ext).ok();
-        App { editor, vim, renderer, file_path, should_quit: false, message: None, syntax }
+        let mut lua = LuaRuntime::new().unwrap_or_else(|e| {
+            eprintln!("Lua init failed: {}", e);
+            panic!("Lua init required");
+        });
+        let config_path = dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("~/.config"))
+            .join("ruster")
+            .join("init.lua");
+        if config_path.exists() {
+            if let Err(e) = lua.load_init(&config_path) {
+                eprintln!("Lua config: {}", e);
+            }
+        }
+        App { editor, vim, renderer, file_path, should_quit: false, message: None, syntax, lua }
     }
 
     pub fn handle_key(&mut self, ck: crossterm::event::KeyEvent) {
+        let mode = match self.vim.mode {
+            VimMode::Normal => "n",
+            VimMode::Insert => "i",
+            VimMode::VisualChar | VimMode::VisualLine => "v",
+            VimMode::Cmdline => "x",
+        };
+        if self.lua.handle_key(mode, &ck) {
+            return;
+        }
         let key = crossterm_to_ruster_key(ck);
         for action in self.vim.handle(key, &self.editor) {
             match action {
@@ -150,6 +174,29 @@ impl App {
                     }
                 }
                 _ = interval.tick() => {}
+            }
+
+            // Process queued Lua actions
+            for action in self.lua.drain_actions() {
+                match action {
+                    LuaAction::Cmd(cmd) => {
+                        match self.parse_cmdline(&cmd) {
+                            Ok(CmdAction::Save(force)) => self.save_file(force),
+                            Ok(CmdAction::SaveAs(p)) => self.save_as(&p),
+                            Ok(CmdAction::Quit) | Ok(CmdAction::ForceQuit) => {
+                                self.should_quit = true;
+                            }
+                            Ok(CmdAction::SaveAndQuit) => {
+                                self.save_file(false);
+                                self.should_quit = true;
+                            }
+                            Err(e) => self.message = Some(e),
+                        }
+                    }
+                    LuaAction::Print(msg) => {
+                        self.message = Some(msg);
+                    }
+                }
             }
 
             self.render();

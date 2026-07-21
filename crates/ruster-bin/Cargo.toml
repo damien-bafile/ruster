@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 ruster-core = { path = "../ruster-core" }
 ruster-render = { path = "../ruster-render" }
+ruster-lua = { path = "../ruster-lua" }
 ruster-tui = { path = "../ruster-tui" }
 
 [[bin]]
