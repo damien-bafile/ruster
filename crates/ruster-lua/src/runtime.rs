@@ -16,6 +16,7 @@ pub struct LuaRuntime {
     pub(crate) keymaps: RefCell<Vec<LuaKeymap>>,
     pub(crate) pending: RefCell<Vec<LuaAction>>,
     pub events: RefCell<EventBus>,
+    pub current_dt: RefCell<f64>,
     pub(crate) get_lines: RefCell<Option<Box<dyn FnMut(i32, Option<i32>) -> Vec<String>>>>,
     pub(crate) set_lines: RefCell<Option<Box<dyn FnMut(i32, i32, Vec<String>)>>>,
     pub(crate) get_cursor: RefCell<Option<Box<dyn FnMut() -> (i32, i32)>>>,
@@ -32,6 +33,7 @@ impl LuaRuntime {
             keymaps: RefCell::new(Vec::new()),
             pending,
             events,
+            current_dt: RefCell::new(0.0),
             get_lines: RefCell::new(None),
             set_lines: RefCell::new(None),
             get_cursor: RefCell::new(None),
@@ -58,6 +60,12 @@ impl LuaRuntime {
 
     pub fn fire_event(&self, name: &str, args: &[mlua::Value]) {
         self.events.borrow().emit(&self.lua, name, args);
+    }
+
+    pub fn set_frame_dt(&self, dt: f64) {
+        *self.current_dt.borrow_mut() = dt;
+        let val = mlua::Value::Number(dt);
+        self.fire_event("Frame", &[val]);
     }
 
     pub fn set_mode(&self, mode: &str) {
@@ -90,6 +98,8 @@ impl LuaRuntime {
             number: cfg.get("number").unwrap_or(defaults.number),
             relativenumber: cfg.get("relativenumber").unwrap_or(defaults.relativenumber),
             theme: cfg.get("theme").unwrap_or(defaults.theme),
+            cursor_anim_enabled: cfg.get("cursor_anim_enabled").unwrap_or(defaults.cursor_anim_enabled),
+            cursor_anim_speed: cfg.get("cursor_anim_speed").unwrap_or(defaults.cursor_anim_speed),
         }
     }
 

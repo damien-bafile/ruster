@@ -133,6 +133,16 @@ pub fn create_table(runtime: &LuaRuntime) -> mlua::Result<Table> {
     })?;
     api.set("nvim_win_set_cursor", set_cursor)?;
 
+    // ruster.api.get_frame_delta()
+    let rt = runtime as *const LuaRuntime;
+    let get_frame_delta = runtime.lua.create_function(move |_, ()| {
+        unsafe {
+            let dt = (*rt).current_dt.borrow();
+            Ok(*dt)
+        }
+    })?;
+    api.set("get_frame_delta", get_frame_delta)?;
+
     t.set("api", api)?;
 
     Ok(t)
@@ -201,6 +211,44 @@ mod tests {
         let get_cursor: Function = api.get("nvim_win_get_cursor").unwrap();
         let result: Value = get_cursor.call(0).unwrap();
         assert!(matches!(result, Value::Nil));
+    }
+
+    #[test]
+    fn get_frame_delta_returns_initial_zero() {
+        let rt = make_runtime();
+        let t = create_table(&rt).unwrap();
+        let api: Table = t.get("api").unwrap();
+        let get_frame_delta: Function = api.get("get_frame_delta").unwrap();
+        let result: f64 = get_frame_delta.call(()).unwrap();
+        assert_eq!(result, 0.0);
+    }
+
+    #[test]
+    fn get_frame_delta_returns_set_value() {
+        let rt = make_runtime();
+        let t = create_table(&rt).unwrap();
+        let api: Table = t.get("api").unwrap();
+        let get_frame_delta: Function = api.get("get_frame_delta").unwrap();
+        rt.set_frame_dt(16.5);
+        let result: f64 = get_frame_delta.call(()).unwrap();
+        assert!((result - 16.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn set_frame_dt_fires_frame_event() {
+        let rt = make_runtime();
+        let t = create_table(&rt).unwrap();
+        let on_fn: Function = t.get("on").unwrap();
+        let received = std::rc::Rc::new(std::cell::RefCell::new(None::<f64>));
+        let received_clone = received.clone();
+        let func = rt.lua.create_function(move |_, dt: f64| {
+            *received_clone.borrow_mut() = Some(dt);
+            Ok(())
+        }).unwrap();
+        on_fn.call::<()>(("Frame", func)).unwrap();
+        rt.set_frame_dt(33.3);
+        let val = received.borrow();
+        assert!((val.unwrap() - 33.3).abs() < 1e-9);
     }
 
     #[test]

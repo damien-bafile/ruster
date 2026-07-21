@@ -5,6 +5,8 @@ pub struct Config {
     pub number: bool,
     pub relativenumber: bool,
     pub theme: String,
+    pub cursor_anim_enabled: bool,
+    pub cursor_anim_speed: f32,
 }
 
 impl Default for Config {
@@ -16,6 +18,8 @@ impl Default for Config {
             number: false,
             relativenumber: false,
             theme: "default".into(),
+            cursor_anim_enabled: true,
+            cursor_anim_speed: 12.0,
         }
     }
 }
