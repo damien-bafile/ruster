@@ -12,6 +12,23 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
+struct FrameTimer {
+    last: std::time::Instant,
+}
+
+impl FrameTimer {
+    fn new() -> Self {
+        Self { last: std::time::Instant::now() }
+    }
+
+    fn tick(&mut self) -> Duration {
+        let now = std::time::Instant::now();
+        let dt = now.saturating_duration_since(self.last);
+        self.last = now;
+        dt
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CmdAction {
     Save(bool),
@@ -35,6 +52,7 @@ pub struct App {
     syntax: Option<SyntaxEngine>,
     lua: LuaRuntime,
     config: Config,
+    timer: FrameTimer,
 }
 
 impl App {
@@ -114,9 +132,10 @@ impl App {
 
         lua.fire_event("VimEnter", &[]);
         let config = lua.config();
+        let timer = FrameTimer::new();
         App {
             editor, vim, renderer, file_path,
-            should_quit: false, message: None, syntax, lua, config
+            should_quit: false, message: None, syntax, lua, config, timer
         }
     }
 
@@ -265,6 +284,8 @@ impl App {
                     }
                 }
             }
+
+            let _dt = self.timer.tick();
 
             self.render();
             if self.should_quit { break; }

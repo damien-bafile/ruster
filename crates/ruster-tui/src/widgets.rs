@@ -21,6 +21,19 @@ pub fn cmdline_label(buf: &str) -> String {
     if buf.is_empty() { ":".to_string() } else { buf.to_string() }
 }
 
+fn apply_cursor(cell: &mut ratatui::buffer::Cell, kind: CursorKind) {
+    match kind {
+        CursorKind::Bar => {
+            cell.set_bg(Color::DarkGray);
+            cell.set_fg(Color::White);
+        }
+        CursorKind::Block => {
+            cell.set_bg(Color::White);
+            cell.set_fg(Color::Black);
+        }
+    }
+}
+
 fn ruster_render_color_to_tui(c: &RColor) -> Color {
     match c {
         RColor::Default => Color::Reset,
@@ -79,27 +92,28 @@ impl Widget for BufferWidget {
             if i as u16 >= area.height { break; }
             let y = area.y + i as u16;
             let is_cursor_line = i as u16 == self.cursor.0;
+            let line_len = line.text.chars().count() as u16;
             for (j, ch) in line.text.chars().enumerate() {
                 let x = area.x + j as u16;
                 if x >= area.right() { break; }
                 if let Some(cell) = buf.cell_mut((x, y)) {
                     cell.set_char(ch);
                     if is_cursor_line && j as u16 == self.cursor.1 && self.cursor_visible {
-                        match self.cursor_kind {
-                            CursorKind::Bar => {
-                                cell.set_bg(Color::DarkGray);
-                                cell.set_fg(Color::White);
-                            }
-                            CursorKind::Block => {
-                                cell.set_bg(Color::White);
-                                cell.set_fg(Color::Black);
-                            }
-                        }
+                        apply_cursor(cell, self.cursor_kind);
                     } else if let Some((fg, bg)) = style_map.get(&(i as u16, j as u16)) {
                         cell.set_fg(ruster_render_color_to_tui(fg));
                         if !matches!(bg, RColor::Default) {
                             cell.set_bg(ruster_render_color_to_tui(bg));
                         }
+                    }
+                }
+            }
+            if is_cursor_line && self.cursor_visible && self.cursor.1 >= line_len {
+                let x = area.x + self.cursor.1;
+                if x < area.right() {
+                    if let Some(cell) = buf.cell_mut((x, y)) {
+                        cell.set_char(' ');
+                        apply_cursor(cell, self.cursor_kind);
                     }
                 }
             }
