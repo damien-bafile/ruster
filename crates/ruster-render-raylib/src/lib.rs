@@ -75,16 +75,44 @@ impl Renderer for RaylibRenderer {
         let mut d = self.rl.begin_drawing(&self.thread);
         d.clear_background(Color::new(30, 30, 30, 255));
 
+        let default_color = Color::new(205, 214, 244, 255);
         for (i, line) in state.lines.iter().enumerate() {
             let y = PAD_Y + i as i32 * LINE_H;
-            d.draw_text_ex(
-                &self.font,
-                &line.text,
-                Vector2::new(PAD_X as f32, y as f32),
-                FONT_SIZE as f32,
-                1.0,
-                Color::new(205, 214, 244, 255),
-            );
+            let n = line.text.len();
+            if n == 0 {
+                continue;
+            }
+
+            let mut char_colors: Vec<Color> = vec![default_color; n];
+            for &(offset, len, ref style) in &line.highlights {
+                let fg = match style.fg {
+                    ruster_render::Color::Rgb(r, g, b) => Color::new(r, g, b, 255),
+                    ruster_render::Color::Default => default_color,
+                };
+                let end = (offset + len).min(n);
+                for pos in offset..end {
+                    char_colors[pos] = fg;
+                }
+            }
+
+            let mut x_offset = PAD_X as f32;
+            let mut pos = 0;
+            while pos < n {
+                let c = char_colors[pos];
+                let start = pos;
+                while pos < n && char_colors[pos] == c {
+                    pos += 1;
+                }
+                d.draw_text_ex(
+                    &self.font,
+                    &line.text[start..pos],
+                    Vector2::new(x_offset, y as f32),
+                    FONT_SIZE as f32,
+                    1.0,
+                    c,
+                );
+                x_offset += self.char_w * (pos - start) as f32;
+            }
         }
 
         if state.cursor_visible {
