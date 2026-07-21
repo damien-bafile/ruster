@@ -44,6 +44,8 @@ impl Editor {
             }
             Action::Move(m) => self.apply_motion(m),
             Action::Edit(e) => self.apply_edit(e),
+            Action::AddCursor(pos) => self.cursors.add_cursor(pos),
+            Action::ClearExtraCursors => self.cursors.clear_extra(),
             Action::CmdlineResult(_) => {}
             Action::Textobject { .. } => {}
         }
@@ -59,33 +61,52 @@ impl Editor {
     }
 
     fn apply_edit(&mut self, e: EditOp) {
-        let at = self.cursors.head();
-        match e {
-            EditOp::InsertChar(c) => {
-                let mut buf = [0u8; 4];
-                let text = c.encode_utf8(&mut buf);
-                let ch = self.buffer.insert(at, text);
-                self.undo.push(ch);
-                self.cursors.set_head(at + 1, &self.buffer);
-            }
-            EditOp::InsertString(s) => {
-                let n = s.chars().count();
-                let ch = self.buffer.insert(at, &s);
-                self.undo.push(ch);
-                self.cursors.set_head(at + n, &self.buffer);
-            }
-            EditOp::DeleteRange(start, end) if end > start => {
-                let safe_end = end.min(self.buffer.len_chars());
-                let ch = self.buffer.delete(start..safe_end);
-                self.undo.push(ch);
-                self.cursors.set_head(start, &self.buffer);
-            }
-            EditOp::DeleteRange(_, _) => {}
-            EditOp::Backspace => {
-                if at > 0 {
-                    let ch = self.buffer.delete(at - 1..at);
+        let all: Vec<usize> = if self.cursors.count() > 1 {
+            let mut positions: Vec<usize> = (0..self.cursors.count())
+                .map(|i| self.cursors.cursors[i].head)
+                .collect();
+            positions.sort_unstable_by(|a, b| b.cmp(a));
+            positions
+        } else {
+            vec![self.cursors.head()]
+        };
+
+        for &at in &all {
+            match e.clone() {
+                EditOp::InsertChar(c) => {
+                    let mut buf = [0u8; 4];
+                    let text = c.encode_utf8(&mut buf);
+                    let ch = self.buffer.insert(at, text);
                     self.undo.push(ch);
-                    self.cursors.set_head(at - 1, &self.buffer);
+                    if all.len() == 1 {
+                        self.cursors.set_head(at + 1, &self.buffer);
+                    }
+                }
+                EditOp::InsertString(s) => {
+                    let n = s.chars().count();
+                    let ch = self.buffer.insert(at, &s);
+                    self.undo.push(ch);
+                    if all.len() == 1 {
+                        self.cursors.set_head(at + n, &self.buffer);
+                    }
+                }
+                EditOp::DeleteRange(start, end) if end > start => {
+                    let safe_end = end.min(self.buffer.len_chars());
+                    let ch = self.buffer.delete(start..safe_end);
+                    self.undo.push(ch);
+                    if all.len() == 1 {
+                        self.cursors.set_head(start, &self.buffer);
+                    }
+                }
+                EditOp::DeleteRange(_, _) => {}
+                EditOp::Backspace => {
+                    if at > 0 {
+                        let ch = self.buffer.delete(at - 1..at);
+                        self.undo.push(ch);
+                        if all.len() == 1 {
+                            self.cursors.set_head(at - 1, &self.buffer);
+                        }
+                    }
                 }
             }
         }

@@ -20,6 +20,8 @@ pub enum EditOp {
 pub enum Action {
     Move(Motion),
     Edit(EditOp),
+    AddCursor(usize),
+    ClearExtraCursors,
     BeginBatch,
     EndBatch,
     Undo,
