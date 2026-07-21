@@ -29,6 +29,36 @@ impl FrameTimer {
     }
 }
 
+struct CursorAnim {
+    cell_x: f32,
+    cell_y: f32,
+}
+
+impl CursorAnim {
+    fn new() -> Self {
+        Self { cell_x: 0.0, cell_y: 0.0 }
+    }
+
+    fn update(&mut self, dt: Duration, target_col: u16, target_line: u16, enabled: bool, speed: f32) {
+        let dt = dt.as_secs_f32();
+        let tx = target_col as f32;
+        let ty = target_line as f32;
+
+        if !enabled {
+            self.cell_x = tx;
+            self.cell_y = ty;
+            return;
+        }
+
+        let dx = tx - self.cell_x;
+        let dy = ty - self.cell_y;
+        let dist = (dx * dx + dy * dy).sqrt();
+        let s = speed / (1.0 + dist * 0.1);
+        self.cell_x += dx * (1.0 - (-s * dt).exp());
+        self.cell_y += dy * (1.0 - (-s * dt).exp());
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CmdAction {
     Save(bool),
@@ -53,6 +83,8 @@ pub struct App {
     lua: LuaRuntime,
     config: Config,
     timer: FrameTimer,
+    pub has_smooth_cursor: bool,
+    cursor_anim: CursorAnim,
 }
 
 impl App {
@@ -133,9 +165,11 @@ impl App {
         lua.fire_event("VimEnter", &[]);
         let config = lua.config();
         let timer = FrameTimer::new();
+        let cursor_anim = CursorAnim::new();
         App {
             editor, vim, renderer, file_path,
-            should_quit: false, message: None, syntax, lua, config, timer
+            should_quit: false, message: None, syntax, lua, config, timer,
+            has_smooth_cursor: false, cursor_anim
         }
     }
 
@@ -194,6 +228,9 @@ impl App {
         self.renderer = Box::new(TuiRenderer::new()?);
 
         loop {
+            let dt = self.timer.tick();
+            let secs = dt.as_secs_f64();
+            self.lua.set_frame_dt(secs);
             self.render();
             if self.should_quit { break; }
             let ev = crossterm::event::read()?;
@@ -285,7 +322,12 @@ impl App {
                 }
             }
 
-            let _dt = self.timer.tick();
+            let dt = self.timer.tick();
+            let secs = dt.as_secs_f64();
+            self.lua.set_frame_dt(secs);
+
+            let (line, col) = self.cursor_line_col();
+            self.cursor_anim.update(dt, col, line, self.config.cursor_anim_enabled, self.config.cursor_anim_speed);
 
             self.render();
             if self.should_quit { break; }
@@ -296,9 +338,15 @@ impl App {
 
     pub fn run_gui(&mut self) {
         loop {
+            let dt = self.timer.tick();
             while let Some(key) = self.renderer.poll_input() {
                 self.handle_key(key);
             }
+            let secs = dt.as_secs_f64();
+            self.lua.set_frame_dt(secs);
+
+            let (line, col) = self.cursor_line_col();
+            self.cursor_anim.update(dt, col, line, self.config.cursor_anim_enabled, self.config.cursor_anim_speed);
             self.render();
             if self.renderer.should_close() || self.should_quit { break; }
             std::thread::sleep(Duration::from_millis(16));
@@ -326,6 +374,12 @@ impl App {
             line += 1;
         }
 
+        let cursor_smooth = if self.has_smooth_cursor {
+            Some((self.cursor_anim.cell_x - col as f32, self.cursor_anim.cell_y - line as f32))
+        } else {
+            None
+        };
+
         let cursor_kind = match self.vim.mode {
             VimMode::Insert | VimMode::Cmdline => CursorKind::Bar,
             _ => CursorKind::Block,
@@ -342,6 +396,7 @@ impl App {
             cursor: (line, col),
             cursor_kind,
             cursor_visible: true,
+            cursor_smooth,
             mode_label,
             file_path: &file_path,
             modified: false,
@@ -349,6 +404,15 @@ impl App {
             message: None,
         };
         self.renderer.render_frame(&state);
+    }
+
+    fn cursor_line_col(&self) -> (u16, u16) {
+        let editor = self.editor.borrow();
+        let head = editor.primary_head();
+        let buf = editor.buffer();
+        let line = buf.char_to_line(head);
+        let col = head - buf.line_start_char(line);
+        (line as u16, col as u16)
     }
 
     fn parse_cmdline(&self, cmdline: &str) -> Result<CmdAction, String> {

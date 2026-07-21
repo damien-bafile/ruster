@@ -15,6 +15,7 @@ mod tests {
             cursor: (0, 1),
             cursor_kind: CursorKind::Bar,
             cursor_visible: true,
+            cursor_smooth: None,
             mode_label: "INSERT",
             file_path: "f",
             modified: false,
