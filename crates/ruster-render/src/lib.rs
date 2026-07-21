@@ -41,6 +41,8 @@ pub struct EditorState<'a> {
 
 pub trait Renderer {
     fn render_frame(&mut self, state: &EditorState);
+    fn poll_input(&mut self) -> Option<crossterm::event::KeyEvent> { None }
+    fn should_close(&self) -> bool { false }
 }
 
 #[cfg(test)]

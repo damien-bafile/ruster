@@ -5,5 +5,5 @@ fn binary_prints_usage_without_args() {
         .expect("failed to run ruster");
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Usage: ruster <file>"));
+    assert!(stderr.contains("Usage: ruster [--gui] <file>"));
 }

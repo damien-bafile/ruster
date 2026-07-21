@@ -45,7 +45,7 @@ enum AppEvent {
 pub struct App {
     pub editor: Rc<RefCell<Editor>>,
     pub vim: VimState,
-    renderer: TuiRenderer,
+    pub renderer: Box<dyn Renderer>,
     file_path: PathBuf,
     pub should_quit: bool,
     message: Option<String>,
@@ -60,7 +60,7 @@ impl App {
         let editor = Rc::new(RefCell::new(Editor::from_str(&content)));
         editor.borrow_mut().execute(Action::Move(Motion::To(0)));
         let vim = VimState::new();
-        let renderer = TuiRenderer::dummy();
+        let renderer = Box::new(TuiRenderer::dummy());
         let ext = file_path.extension()
             .and_then(|e| e.to_str())
             .unwrap_or("");
@@ -191,7 +191,7 @@ impl App {
         crossterm::terminal::enable_raw_mode()?;
         let mut stdout = std::io::stdout();
         crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen)?;
-        self.renderer = TuiRenderer::new()?;
+        self.renderer = Box::new(TuiRenderer::new()?);
 
         loop {
             self.render();
@@ -212,7 +212,7 @@ impl App {
     pub fn run_async(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         crossterm::terminal::enable_raw_mode()?;
         crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen)?;
-        self.renderer = TuiRenderer::new()?;
+        self.renderer = Box::new(TuiRenderer::new()?);
 
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_time()
@@ -292,6 +292,17 @@ impl App {
         }
 
         Ok(())
+    }
+
+    pub fn run_gui(&mut self) {
+        loop {
+            while let Some(key) = self.renderer.poll_input() {
+                self.handle_key(key);
+            }
+            self.render();
+            if self.renderer.should_close() || self.should_quit { break; }
+            std::thread::sleep(Duration::from_millis(16));
+        }
     }
 
     fn render(&mut self) {
