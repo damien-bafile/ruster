@@ -6,7 +6,6 @@ use raylib::prelude::*;
 use ruster_render::{CursorKind, EditorState, Renderer};
 
 const FONT_SIZE: i32 = 20;
-const CHAR_W: i32 = 12;
 const LINE_H: i32 = 24;
 const PAD_X: i32 = 8;
 const PAD_Y: i32 = 4;
@@ -15,6 +14,7 @@ pub struct RaylibRenderer {
     rl: RaylibHandle,
     thread: RaylibThread,
     font: WeakFont,
+    char_w: f32,
     event_buffer: Vec<KeyEvent>,
 }
 
@@ -25,8 +25,10 @@ impl RaylibRenderer {
             .title(title)
             .build();
         rl.set_target_fps(60);
+        rl.set_exit_key(None);
         let font = rl.get_font_default();
-        RaylibRenderer { rl, thread, font, event_buffer: Vec::new() }
+        let char_w = font.measure_text("m", FONT_SIZE as f32, 1.0).x;
+        RaylibRenderer { rl, thread, font, char_w, event_buffer: Vec::new() }
     }
 
     fn drain_raylib(&mut self) {
@@ -88,15 +90,16 @@ impl Renderer for RaylibRenderer {
         if state.cursor_visible {
             let col = state.cursor.1 as i32;
             let line = state.cursor.0 as i32;
-            let mut cx = PAD_X + col * CHAR_W;
+            let mut cx = PAD_X as f32 + col as f32 * self.char_w;
             let mut cy = PAD_Y + line * LINE_H;
             if let Some((dcx, dcy)) = state.cursor_smooth {
-                cx = (cx as f32 + dcx * CHAR_W as f32) as i32;
+                cx += dcx * self.char_w;
                 cy = (cy as f32 + dcy * LINE_H as f32) as i32;
             }
+            let cx = cx as i32;
             match state.cursor_kind {
                 CursorKind::Block => {
-                    d.draw_rectangle(cx, cy, CHAR_W, LINE_H, Color::new(245, 224, 220, 200));
+                    d.draw_rectangle(cx, cy, self.char_w as i32, LINE_H, Color::new(245, 224, 220, 200));
                 }
                 CursorKind::Bar => {
                     d.draw_rectangle(cx, cy, 2, LINE_H, Color::new(245, 224, 220, 255));
