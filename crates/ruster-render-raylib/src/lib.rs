@@ -77,7 +77,7 @@ impl Renderer for RaylibRenderer {
         let mut d = self.rl.begin_drawing(&self.thread);
         d.clear_background(Color::new(30, 30, 30, 255));
 
-        let has_cmdline = state.cmdline.is_some();
+        let has_cmdline = state.cmdline.is_some() || state.message.is_some();
         let status_h = if has_cmdline { 2 * LINE_H } else { LINE_H };
         let max_lines = (screen_h - PAD_Y - status_h) / LINE_H;
 
@@ -177,8 +177,9 @@ impl Renderer for RaylibRenderer {
             );
         }
 
-        // Cmdline (if present)
-        if let Some(cmd) = state.cmdline {
+        // Cmdline / message (if present)
+        let cmd_text = state.cmdline.or(state.message);
+        if let Some(cmd) = cmd_text {
             let cmd_y = screen_h - LINE_H;
             d.draw_rectangle(0, cmd_y, screen_w, LINE_H, Color::new(30, 30, 30, 255));
             d.draw_text_ex(
