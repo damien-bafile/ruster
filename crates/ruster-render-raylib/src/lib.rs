@@ -137,7 +137,7 @@ impl Renderer for RaylibRenderer {
         );
 
         // Right: cursor position (1-indexed)
-        let right_str = format!(" {},{} ", state.cursor.0 + 1, state.cursor.1 + 1);
+        let right_str = format!(" ({},{}) ", state.cursor.0 + 1, state.cursor.1 + 1);
         let right_w = self.char_w * right_str.len() as f32;
         let right_x = screen_w as f32 - right_w - PAD_X as f32;
         d.draw_text_ex(
