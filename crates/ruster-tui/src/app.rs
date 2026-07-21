@@ -231,6 +231,10 @@ impl App {
             let dt = self.timer.tick();
             let secs = dt.as_secs_f64();
             self.lua.set_frame_dt(secs);
+            if self.has_smooth_cursor {
+                let (line, col) = self.cursor_line_col();
+                self.cursor_anim.update(dt, col, line, self.config.cursor_anim_enabled, self.config.cursor_anim_speed);
+            }
             self.render();
             if self.should_quit { break; }
             let ev = crossterm::event::read()?;
@@ -363,16 +367,7 @@ impl App {
             None => content.split('\n').map(|s| StyledLine { text: s.to_string(), highlights: vec![] }).collect(),
         };
 
-        let head = self.editor.borrow().primary_head();
-        let mut line = 0u16;
-        let mut col = 0u16;
-        let mut remaining = head;
-        for l in &styled_lines {
-            let lc = l.text.chars().count();
-            if remaining <= lc { col = remaining as u16; break; }
-            remaining = remaining.saturating_sub(lc + 1);
-            line += 1;
-        }
+        let (line, col) = self.cursor_line_col();
 
         let cursor_smooth = if self.has_smooth_cursor {
             Some((self.cursor_anim.cell_x - col as f32, self.cursor_anim.cell_y - line as f32))
@@ -530,5 +525,29 @@ mod tests {
     fn cmd_unknown_errors() {
         let a = App::new("content".into(), PathBuf::from("f.txt"));
         assert!(a.parse_cmdline(":xyz").is_err());
+    }
+
+    #[test]
+    fn cursor_anim_converges_to_target() {
+        let mut anim = CursorAnim::new();
+        let dt = std::time::Duration::from_secs_f64(1.0/60.0);
+        // After many frames at 60fps, should be very close to target
+        for _ in 0..60 {
+            anim.update(dt, 10, 5, true, 12.0);
+        }
+        let dx = (anim.cell_x - 10.0).abs();
+        let dy = (anim.cell_y - 5.0).abs();
+        assert!(dx < 0.01, "cell_x should converge to target: {dx}");
+        assert!(dy < 0.01, "cell_y should converge to target: {dy}");
+    }
+
+    #[test]
+    fn cursor_anim_disabled_snaps() {
+        let mut anim = CursorAnim::new();
+        anim.cell_x = 100.0;
+        anim.cell_y = 200.0;
+        anim.update(std::time::Duration::from_secs_f64(0.5), 5, 3, false, 12.0);
+        assert_eq!(anim.cell_x, 5.0);
+        assert_eq!(anim.cell_y, 3.0);
     }
 }

@@ -72,11 +72,17 @@ impl RaylibRenderer {
 
 impl Renderer for RaylibRenderer {
     fn render_frame(&mut self, state: &EditorState) {
+        let screen_w = self.rl.get_screen_width();
+        let screen_h = self.rl.get_screen_height();
         let mut d = self.rl.begin_drawing(&self.thread);
         d.clear_background(Color::new(30, 30, 30, 255));
 
+        let has_cmdline = state.cmdline.is_some();
+        let status_h = if has_cmdline { 2 * LINE_H } else { LINE_H };
+        let max_lines = (screen_h - PAD_Y - status_h) / LINE_H;
+
         let default_color = Color::new(205, 214, 244, 255);
-        for (i, line) in state.lines.iter().enumerate() {
+        for (i, line) in state.lines.iter().enumerate().take(max_lines as usize) {
             let y = PAD_Y + i as i32 * LINE_H;
             let n = line.text.len();
             if n == 0 {
@@ -115,6 +121,77 @@ impl Renderer for RaylibRenderer {
             }
         }
 
+        // Statusline
+        let status_y = screen_h - status_h;
+        let sl_color = Color::new(205, 214, 244, 255);
+        d.draw_rectangle(0, status_y, screen_w, status_h, Color::new(45, 45, 45, 255));
+
+        // Left: mode label
+        d.draw_text_ex(
+            &self.font,
+            state.mode_label,
+            Vector2::new(PAD_X as f32, status_y as f32),
+            FONT_SIZE as f32,
+            1.0,
+            sl_color,
+        );
+
+        // Right: cursor position (1-indexed)
+        let right_str = format!(" {},{} ", state.cursor.0 + 1, state.cursor.1 + 1);
+        let right_w = self.char_w * right_str.len() as f32;
+        let right_x = screen_w as f32 - right_w - PAD_X as f32;
+        d.draw_text_ex(
+            &self.font,
+            &right_str,
+            Vector2::new(right_x, status_y as f32),
+            FONT_SIZE as f32,
+            1.0,
+            sl_color,
+        );
+
+        // Center: file path (truncated to fit between left and right text)
+        let left_w = self.char_w * state.mode_label.len() as f32;
+        let gap = screen_w as f32 - left_w - right_w - 3.0 * PAD_X as f32;
+        let center_str = if gap > 0.0 && state.file_path.len() as f32 * self.char_w > gap {
+            let max_chars = (gap / self.char_w) as usize;
+            if max_chars > 3 {
+                let mut s = String::from("...");
+                s.push_str(&state.file_path[state.file_path.len().saturating_sub(max_chars - 3)..]);
+                s
+            } else {
+                String::new()
+            }
+        } else {
+            state.file_path.to_string()
+        };
+        if !center_str.is_empty() {
+            let center_x = PAD_X as f32 + left_w + PAD_X as f32
+                + (gap - self.char_w * center_str.len() as f32) / 2.0;
+            d.draw_text_ex(
+                &self.font,
+                &center_str,
+                Vector2::new(center_x, status_y as f32),
+                FONT_SIZE as f32,
+                1.0,
+                sl_color,
+            );
+        }
+
+        // Cmdline (if present)
+        if let Some(cmd) = state.cmdline {
+            let cmd_y = screen_h - LINE_H;
+            d.draw_rectangle(0, cmd_y, screen_w, LINE_H, Color::new(30, 30, 30, 255));
+            d.draw_text_ex(
+                &self.font,
+                cmd,
+                Vector2::new(PAD_X as f32, cmd_y as f32),
+                FONT_SIZE as f32,
+                1.0,
+                sl_color,
+            );
+        }
+
+        // Cursor
         if state.cursor_visible {
             let col = state.cursor.1 as i32;
             let line = state.cursor.0 as i32;
