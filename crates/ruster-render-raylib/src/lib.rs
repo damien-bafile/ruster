@@ -4,6 +4,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use raylib::consts::KeyboardKey;
 use raylib::prelude::*;
 use ruster_render::{CursorKind, EditorState, Renderer};
+use std::path::PathBuf;
 
 const FONT_SIZE: i32 = 20;
 const LINE_H: i32 = 24;
@@ -19,6 +20,21 @@ pub struct RaylibRenderer {
 }
 
 impl RaylibRenderer {
+    fn try_load_mono_font(rl: &mut RaylibHandle, thread: &RaylibThread) -> WeakFont {
+        let home = std::env::var("HOME").unwrap_or_default();
+        let candidates = [
+            PathBuf::from(&home).join("Library/Fonts/JetBrainsMonoNerdFont-Regular.ttf").to_string_lossy().to_string(),
+            "/System/Library/Fonts/SFNSMono.ttf".to_string(),
+            "/System/Library/Fonts/Supplemental/Andale Mono.ttf".to_string(),
+        ];
+        for path in &candidates {
+            if let Ok(font) = rl.load_font_ex(thread, path, FONT_SIZE, None) {
+                return font.make_weak();
+            }
+        }
+        rl.get_font_default()
+    }
+
     pub fn new(width: i32, height: i32, title: &str) -> Self {
         let (mut rl, thread) = raylib::init()
             .size(width, height)
@@ -26,7 +42,7 @@ impl RaylibRenderer {
             .build();
         rl.set_target_fps(60);
         rl.set_exit_key(None);
-        let font = rl.get_font_default();
+        let font = Self::try_load_mono_font(&mut rl, &thread);
         let char_w = font.measure_text("m", FONT_SIZE as f32, 1.0).x;
         RaylibRenderer { rl, thread, font, char_w, event_buffer: Vec::new() }
     }
