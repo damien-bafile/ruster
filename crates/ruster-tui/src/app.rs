@@ -57,6 +57,7 @@ impl App {
                 eprintln!("Lua config: {}", e);
             }
         }
+        lua.fire_event("VimEnter", &[]);
         App { editor, vim, renderer, file_path, should_quit: false, message: None, syntax, lua }
     }
 
@@ -276,6 +277,7 @@ impl App {
     }
 
     fn save_file(&mut self, force: bool) {
+        self.lua.fire_event_str("BufWritePre", &[self.file_path.to_str().unwrap_or("")]);
         let content = self.editor.buffer().to_string();
         match std::fs::write(&self.file_path, &content) {
             Ok(()) => self.message = Some(format!("Saved: {}", self.file_path.display())),
@@ -285,6 +287,7 @@ impl App {
             }
             Err(e) => self.message = Some(format!("Error: {}", e)),
         }
+        self.lua.fire_event_str("BufWritePost", &[self.file_path.to_str().unwrap_or("")]);
     }
 
     fn exec_operator(&mut self, op: char, start: usize, end: usize) {

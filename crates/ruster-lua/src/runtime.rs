@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::path::Path;
 use mlua::{Function, Lua};
+use crate::event::EventBus;
 use crate::keymap::LuaKeymap;
 
 #[derive(Debug)]
@@ -10,20 +11,65 @@ pub enum LuaAction {
 }
 
 pub struct LuaRuntime {
-    pub(crate) lua: Lua,
+    pub lua: Lua,
     pub(crate) keymaps: RefCell<Vec<LuaKeymap>>,
     pub(crate) pending: RefCell<Vec<LuaAction>>,
+    pub events: RefCell<EventBus>,
+    pub(crate) get_lines: RefCell<Option<Box<dyn FnMut(i32, Option<i32>) -> Vec<String>>>>,
+    pub(crate) set_lines: RefCell<Option<Box<dyn FnMut(i32, i32, Vec<String>)>>>,
+    pub(crate) get_cursor: RefCell<Option<Box<dyn FnMut() -> (i32, i32)>>>,
+    pub(crate) set_cursor: RefCell<Option<Box<dyn FnMut(i32, i32)>>>,
 }
 
 impl LuaRuntime {
     pub fn new() -> mlua::Result<Self> {
         let lua = Lua::new();
         let pending = RefCell::new(Vec::new());
-        let runtime = LuaRuntime { lua, keymaps: RefCell::new(Vec::new()), pending };
+        let events = RefCell::new(EventBus::new());
+        let runtime = LuaRuntime {
+            lua,
+            keymaps: RefCell::new(Vec::new()),
+            pending,
+            events,
+            get_lines: RefCell::new(None),
+            set_lines: RefCell::new(None),
+            get_cursor: RefCell::new(None),
+            set_cursor: RefCell::new(None),
+        };
 
         let ruster = crate::api::create_table(&runtime)?;
         runtime.lua.globals().set("ruster", ruster)?;
         Ok(runtime)
+    }
+
+    pub fn set_buffer_callbacks(
+        &self,
+        get_lines: Box<dyn FnMut(i32, Option<i32>) -> Vec<String>>,
+        set_lines: Box<dyn FnMut(i32, i32, Vec<String>)>,
+        get_cursor: Box<dyn FnMut() -> (i32, i32)>,
+        set_cursor: Box<dyn FnMut(i32, i32)>,
+    ) {
+        self.get_lines.replace(Some(get_lines));
+        self.set_lines.replace(Some(set_lines));
+        self.get_cursor.replace(Some(get_cursor));
+        self.set_cursor.replace(Some(set_cursor));
+    }
+
+    pub fn fire_event(&self, name: &str, args: &[mlua::Value]) {
+        self.events.borrow().emit(&self.lua, name, args);
+    }
+
+    pub fn set_mode(&self, mode: &str) {
+        if let Ok(ruster) = self.lua.globals().get::<mlua::Table>("ruster") {
+            let _ = ruster.set("mode", mode);
+        }
+    }
+
+    pub fn fire_event_str(&self, name: &str, string_args: &[&str]) {
+        let vals: Vec<mlua::Value> = string_args.iter()
+            .map(|s| mlua::Value::String(self.lua.create_string(s).unwrap()))
+            .collect();
+        self.fire_event(name, &vals);
     }
 
     pub fn load_init(&mut self, path: &Path) -> Result<(), String> {

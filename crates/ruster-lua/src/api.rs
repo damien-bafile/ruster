@@ -45,12 +45,95 @@ pub fn create_table(runtime: &LuaRuntime) -> mlua::Result<Table> {
     keymap.set("set", keymap_set)?;
     t.set("keymap", keymap)?;
 
-    // ruster.g
+    // ruster.g - global variable table
     let g = runtime.lua.create_table()?;
     t.set("g", g)?;
 
     // ruster.mode - read-only, set by App
     t.set("mode", "normal")?;
+
+    // ruster.on(event, callback) — event registration
+    let rt = runtime as *const LuaRuntime;
+    let on_fn = runtime.lua.create_function(move |_, (event, func): (String, Function)| {
+        unsafe {
+            let mut events = (*rt).events.borrow_mut();
+            events.on(&(*rt).lua, &event, func)
+        }
+    })?;
+    t.set("on", on_fn)?;
+
+    // ruster.api table
+    let api = runtime.lua.create_table()?;
+
+    // nvim_buf_get_lines(buf, start, end_opt)
+    let rt = runtime as *const LuaRuntime;
+    let get_lines = runtime.lua.create_function(move |lua, (_buf, start, end_opt): (i32, i32, Option<i32>)| {
+        let mut cb = unsafe { (*rt).get_lines.borrow_mut() };
+        let lines = match &mut *cb {
+            Some(f) => f(start, end_opt),
+            None => Vec::new(),
+        };
+        let t = lua.create_table()?;
+        for (i, line) in lines.iter().enumerate() {
+            t.set(i as i32 + 1, line.as_str())?;
+        }
+        Ok(mlua::Value::Table(t))
+    })?;
+    api.set("nvim_buf_get_lines", get_lines)?;
+
+    // nvim_buf_set_lines(buf, start, end, lines)
+    let rt = runtime as *const LuaRuntime;
+    let set_lines = runtime.lua.create_function(move |_, (_buf, start, end, lines): (i32, i32, i32, mlua::Value)| {
+        let lines_vec: Vec<String> = match lines {
+            mlua::Value::String(s) => vec![s.to_str().map(|s| s.to_string()).unwrap_or_default()],
+            mlua::Value::Table(t) => {
+                let mut v = Vec::new();
+                for i in 1..=t.len()? {
+                    if let Ok(s) = t.get::<String>(i) { v.push(s); }
+                }
+                v
+            }
+            _ => return Err(mlua::Error::external("set_lines expects string or table")),
+        };
+        let mut cb = unsafe { (*rt).set_lines.borrow_mut() };
+        if let Some(f) = cb.as_mut() {
+            f(start, end, lines_vec);
+        }
+        Ok(())
+    })?;
+    api.set("nvim_buf_set_lines", set_lines)?;
+
+    // nvim_win_get_cursor(win)
+    let rt = runtime as *const LuaRuntime;
+    let get_cursor = runtime.lua.create_function(move |lua, _win: i32| {
+        let mut cb = unsafe { (*rt).get_cursor.borrow_mut() };
+        match &mut *cb {
+            Some(f) => {
+                let (row, col) = f();
+                let t = lua.create_table()?;
+                t.set("row", row)?;
+                t.set("col", col)?;
+                Ok(mlua::Value::Table(t))
+            }
+            None => Ok(mlua::Value::Nil),
+        }
+    })?;
+    api.set("nvim_win_get_cursor", get_cursor)?;
+
+    // nvim_win_set_cursor(win, {row, col})
+    let rt = runtime as *const LuaRuntime;
+    let set_cursor = runtime.lua.create_function(move |_, (_win, pos): (i32, mlua::Table)| {
+        let row: i32 = pos.get("row").unwrap_or(0);
+        let col: i32 = pos.get("col").unwrap_or(0);
+        let mut cb = unsafe { (*rt).set_cursor.borrow_mut() };
+        if let Some(f) = cb.as_mut() {
+            f(row, col);
+        }
+        Ok(())
+    })?;
+    api.set("nvim_win_set_cursor", set_cursor)?;
+
+    t.set("api", api)?;
 
     Ok(t)
 }
@@ -63,5 +146,69 @@ fn format_value(v: &Value) -> String {
         Value::Number(n) => n.to_string(),
         Value::Boolean(b) => b.to_string(),
         _ => format!("{:?}", v),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::LuaRuntime;
+
+    fn make_runtime() -> LuaRuntime {
+        LuaRuntime::new().expect("LuaRuntime init")
+    }
+
+    #[test]
+    fn print_queues_action() {
+        let rt = make_runtime();
+        let t = create_table(&rt).unwrap();
+        let print_fn: Function = t.get("print").unwrap();
+        print_fn.call::<()>("hello").unwrap();
+        let actions = rt.drain_actions();
+        assert!(matches!(actions.as_slice(), [runtime::LuaAction::Print(m)] if m == "hello"));
+    }
+
+    #[test]
+    fn cmd_queues_action() {
+        let rt = make_runtime();
+        let t = create_table(&rt).unwrap();
+        let cmd_fn: Function = t.get("cmd").unwrap();
+        cmd_fn.call::<()>(":w").unwrap();
+        let actions = rt.drain_actions();
+        assert!(matches!(actions.as_slice(), [runtime::LuaAction::Cmd(m)] if m == ":w"));
+    }
+
+    #[test]
+    fn api_get_lines_no_callback_returns_empty() {
+        let rt = make_runtime();
+        let t = create_table(&rt).unwrap();
+        let api: Table = t.get("api").unwrap();
+        let get_lines: Function = api.get("nvim_buf_get_lines").unwrap();
+        let result: Value = get_lines.call((0, 0, Option::<i32>::None)).unwrap();
+        assert!(matches!(result, Value::Table(_)));
+        let table = match result {
+            Value::Table(t) => t,
+            _ => panic!("expected table"),
+        };
+        assert_eq!(table.len().unwrap(), 0);
+    }
+
+    #[test]
+    fn api_get_cursor_no_callback_returns_nil() {
+        let rt = make_runtime();
+        let t = create_table(&rt).unwrap();
+        let api: Table = t.get("api").unwrap();
+        let get_cursor: Function = api.get("nvim_win_get_cursor").unwrap();
+        let result: Value = get_cursor.call(0).unwrap();
+        assert!(matches!(result, Value::Nil));
+    }
+
+    #[test]
+    fn on_registers_event_listener() {
+        let rt = make_runtime();
+        let t = create_table(&rt).unwrap();
+        let on_fn: Function = t.get("on").unwrap();
+        let func = rt.lua.create_function(|_, ()| Ok(())).unwrap();
+        assert!(on_fn.call::<()>(("TestEvent", func)).is_ok());
     }
 }

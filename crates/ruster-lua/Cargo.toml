@@ -7,6 +7,6 @@ edition = "2021"
 path = "src/lib.rs"
 
 [dependencies]
-mlua = { version = "0.10", features = ["lua54"] }
+mlua = { version = "0.10", features = ["lua54", "vendored"] }
 ruster-core = { path = "../ruster-core" }
 crossterm = "0.28"
