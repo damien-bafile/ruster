@@ -1,1 +1,600 @@
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Locking 7 packages to latest compatible versions
+      Adding env_home v0.1.0
+      Adding linux-raw-sys v0.12.1
+      Adding lua-src v547.0.0 (available: v547.1.0)
+      Adding luajit-src v210.5.12+a4f56a4 (available: v210.7.2+b925b3e)
+      Adding rustix v1.1.4
+      Adding which v7.0.3
+      Adding winsafe v0.0.19
+   0.074734042s  INFO prepare_target{force=false package_id=ruster-bin v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-bin) target="ruster"}: cargo::core::compiler::fingerprint: fingerprint error for ruster-bin v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-bin)/Check { test: false }/TargetInner { name: "ruster", doc: true, ..: with_path("/Users/daimyo/Dev/ruster/crates/ruster-bin/src/main.rs", Edition2021) }
+   0.074764709s  INFO prepare_target{force=false package_id=ruster-bin v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-bin) target="ruster"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/daimyo/Dev/ruster/target/debug/.fingerprint/ruster-bin-4f8fd275503f08e0/bin-ruster`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   7: cargo::ops::cargo_compile::compile_ws
+   8: cargo::ops::cargo_compile::compile_with_exec
+   9: cargo::ops::cargo_compile::compile
+  10: cargo::commands::check::exec
+  11: <cargo::cli::Exec>::exec
+  12: cargo::main
+  13: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  14: std::rt::lang_start::<()>::{closure#0}
+  15: std::rt::lang_start_internal
+  16: _main
+   0.089681584s  INFO prepare_target{force=false package_id=ruster-lua v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-lua) target="ruster_lua"}: cargo::core::compiler::fingerprint: fingerprint error for ruster-lua v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-lua)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("ruster_lua", ["lib"], "/Users/daimyo/Dev/ruster/crates/ruster-lua/src/lib.rs", Edition2021) }
+   0.089710542s  INFO prepare_target{force=false package_id=ruster-lua v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-lua) target="ruster_lua"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/daimyo/Dev/ruster/target/debug/.fingerprint/ruster-lua-bf98db27e860f559/lib-ruster_lua`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   8: cargo::ops::cargo_compile::compile_ws
+   9: cargo::ops::cargo_compile::compile_with_exec
+  10: cargo::ops::cargo_compile::compile
+  11: cargo::commands::check::exec
+  12: <cargo::cli::Exec>::exec
+  13: cargo::main
+  14: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  15: std::rt::lang_start::<()>::{closure#0}
+  16: std::rt::lang_start_internal
+  17: _main
+   0.090042250s  INFO prepare_target{force=false package_id=crossterm v0.28.1 target="crossterm"}: cargo::core::compiler::fingerprint: fingerprint error for crossterm v0.28.1/Check { test: false }/TargetInner { ..: lib_target("crossterm", ["lib"], "/Users/daimyo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crossterm-0.28.1/src/lib.rs", Edition2021) }
+   0.090050000s  INFO prepare_target{force=false package_id=crossterm v0.28.1 target="crossterm"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/daimyo/Dev/ruster/target/debug/.fingerprint/crossterm-4fb451c708542b33/lib-crossterm`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   9: cargo::ops::cargo_compile::compile_ws
+  10: cargo::ops::cargo_compile::compile_with_exec
+  11: cargo::ops::cargo_compile::compile
+  12: cargo::commands::check::exec
+  13: <cargo::cli::Exec>::exec
+  14: cargo::main
+  15: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  16: std::rt::lang_start::<()>::{closure#0}
+  17: std::rt::lang_start_internal
+  18: _main
+   0.091353459s  INFO prepare_target{force=false package_id=parking_lot v0.12.5 target="parking_lot"}: cargo::core::compiler::fingerprint: fingerprint error for parking_lot v0.12.5/Check { test: false }/TargetInner { ..: lib_target("parking_lot", ["lib"], "/Users/daimyo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/parking_lot-0.12.5/src/lib.rs", Edition2021) }
+   0.091363000s  INFO prepare_target{force=false package_id=parking_lot v0.12.5 target="parking_lot"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/daimyo/Dev/ruster/target/debug/.fingerprint/parking_lot-d5abc7b024a268d0/lib-parking_lot`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  10: cargo::ops::cargo_compile::compile_ws
+  11: cargo::ops::cargo_compile::compile_with_exec
+  12: cargo::ops::cargo_compile::compile
+  13: cargo::commands::check::exec
+  14: <cargo::cli::Exec>::exec
+  15: cargo::main
+  16: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  17: std::rt::lang_start::<()>::{closure#0}
+  18: std::rt::lang_start_internal
+  19: _main
+   0.091799375s  INFO prepare_target{force=false package_id=lock_api v0.4.14 target="lock_api"}: cargo::core::compiler::fingerprint: fingerprint error for lock_api v0.4.14/Check { test: false }/TargetInner { ..: lib_target("lock_api", ["lib"], "/Users/daimyo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/lock_api-0.4.14/src/lib.rs", Edition2021) }
+   0.091807750s  INFO prepare_target{force=false package_id=lock_api v0.4.14 target="lock_api"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/daimyo/Dev/ruster/target/debug/.fingerprint/lock_api-6f3d505fee81f3b1/lib-lock_api`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  11: cargo::ops::cargo_compile::compile_ws
+  12: cargo::ops::cargo_compile::compile_with_exec
+  13: cargo::ops::cargo_compile::compile
+  14: cargo::commands::check::exec
+  15: <cargo::cli::Exec>::exec
+  16: cargo::main
+  17: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  18: std::rt::lang_start::<()>::{closure#0}
+  19: std::rt::lang_start_internal
+  20: _main
+   0.093977334s  INFO prepare_target{force=false package_id=mlua v0.10.5 target="mlua"}: cargo::core::compiler::fingerprint: fingerprint error for mlua v0.10.5/Check { test: false }/TargetInner { ..: lib_target("mlua", ["lib"], "/Users/daimyo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mlua-0.10.5/src/lib.rs", Edition2021) }
+   0.093987959s  INFO prepare_target{force=false package_id=mlua v0.10.5 target="mlua"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/daimyo/Dev/ruster/target/debug/.fingerprint/mlua-fb85ed010c737369/lib-mlua`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   9: cargo::ops::cargo_compile::compile_ws
+  10: cargo::ops::cargo_compile::compile_with_exec
+  11: cargo::ops::cargo_compile::compile
+  12: cargo::commands::check::exec
+  13: <cargo::cli::Exec>::exec
+  14: cargo::main
+  15: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  16: std::rt::lang_start::<()>::{closure#0}
+  17: std::rt::lang_start_internal
+  18: _main
+   0.094416459s  INFO prepare_target{force=false package_id=bstr v1.13.0 target="bstr"}: cargo::core::compiler::fingerprint: fingerprint error for bstr v1.13.0/Check { test: false }/TargetInner { benched: false, ..: lib_target("bstr", ["lib"], "/Users/daimyo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/bstr-1.13.0/src/lib.rs", Edition2021) }
+   0.094423042s  INFO prepare_target{force=false package_id=bstr v1.13.0 target="bstr"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/daimyo/Dev/ruster/target/debug/.fingerprint/bstr-76dcdcd40bc726d4/lib-bstr`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  10: cargo::ops::cargo_compile::compile_ws
+  11: cargo::ops::cargo_compile::compile_with_exec
+  12: cargo::ops::cargo_compile::compile
+  13: cargo::commands::check::exec
+  14: <cargo::cli::Exec>::exec
+  15: cargo::main
+  16: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  17: std::rt::lang_start::<()>::{closure#0}
+  18: std::rt::lang_start_internal
+  19: _main
+   0.094806792s  INFO prepare_target{force=false package_id=either v1.16.0 target="either"}: cargo::core::compiler::fingerprint: fingerprint error for either v1.16.0/Check { test: false }/TargetInner { ..: lib_target("either", ["lib"], "/Users/daimyo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/either-1.16.0/src/lib.rs", Edition2021) }
+   0.094811959s  INFO prepare_target{force=false package_id=either v1.16.0 target="either"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/daimyo/Dev/ruster/target/debug/.fingerprint/either-c6141b1c55486983/lib-either`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  10: cargo::ops::cargo_compile::compile_ws
+  11: cargo::ops::cargo_compile::compile_with_exec
+  12: cargo::ops::cargo_compile::compile
+  13: cargo::commands::check::exec
+  14: <cargo::cli::Exec>::exec
+  15: cargo::main
+  16: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  17: std::rt::lang_start::<()>::{closure#0}
+  18: std::rt::lang_start_internal
+  19: _main
+   0.094988500s  INFO prepare_target{force=false package_id=mlua-sys v0.6.8 target="mlua_sys"}: cargo::core::compiler::fingerprint: fingerprint error for mlua-sys v0.6.8/Check { test: false }/TargetInner { ..: lib_target("mlua_sys", ["lib"], "/Users/daimyo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/mlua-sys-0.6.8/src/lib.rs", Edition2021) }
+   0.094994125s  INFO prepare_target{force=false package_id=mlua-sys v0.6.8 target="mlua_sys"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/daimyo/Dev/ruster/target/debug/.fingerprint/mlua-sys-3e65606c1f9ab71f/lib-mlua_sys`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  10: cargo::ops::cargo_compile::compile_ws
+  11: cargo::ops::cargo_compile::compile_with_exec
+  12: cargo::ops::cargo_compile::compile
+  13: cargo::commands::check::exec
+  14: <cargo::cli::Exec>::exec
+  15: cargo::main
+  16: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  17: std::rt::lang_start::<()>::{closure#0}
+  18: std::rt::lang_start_internal
+  19: _main
+   0.096231584s  INFO prepare_target{force=false package_id=num-traits v0.2.19 target="num_traits"}: cargo::core::compiler::fingerprint: fingerprint error for num-traits v0.2.19/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("num_traits", ["lib"], "/Users/daimyo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/num-traits-0.2.19/src/lib.rs", Edition2021) }
+   0.096240084s  INFO prepare_target{force=false package_id=num-traits v0.2.19 target="num_traits"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/daimyo/Dev/ruster/target/debug/.fingerprint/num-traits-c2af88e0dda6334c/lib-num_traits`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  10: cargo::ops::cargo_compile::compile_ws
+  11: cargo::ops::cargo_compile::compile_with_exec
+  12: cargo::ops::cargo_compile::compile
+  13: cargo::commands::check::exec
+  14: <cargo::cli::Exec>::exec
+  15: cargo::main
+  16: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  17: std::rt::lang_start::<()>::{closure#0}
+  18: std::rt::lang_start_internal
+  19: _main
+   0.096655250s  INFO prepare_target{force=false package_id=rustc-hash v2.1.3 target="rustc_hash"}: cargo::core::compiler::fingerprint: fingerprint error for rustc-hash v2.1.3/Check { test: false }/TargetInner { ..: lib_target("rustc_hash", ["lib"], "/Users/daimyo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/rustc-hash-2.1.3/src/lib.rs", Edition2021) }
+   0.096661584s  INFO prepare_target{force=false package_id=rustc-hash v2.1.3 target="rustc_hash"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/daimyo/Dev/ruster/target/debug/.fingerprint/rustc-hash-b6f8d4da140d0e4a/lib-rustc_hash`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  10: cargo::ops::cargo_compile::compile_ws
+  11: cargo::ops::cargo_compile::compile_with_exec
+  12: cargo::ops::cargo_compile::compile
+  13: cargo::commands::check::exec
+  14: <cargo::cli::Exec>::exec
+  15: cargo::main
+  16: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  17: std::rt::lang_start::<()>::{closure#0}
+  18: std::rt::lang_start_internal
+  19: _main
+   0.097461542s  INFO prepare_target{force=false package_id=ruster-tui v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-tui) target="ruster_tui"}: cargo::core::compiler::fingerprint: fingerprint error for ruster-tui v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-tui)/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("ruster_tui", ["lib"], "/Users/daimyo/Dev/ruster/crates/ruster-tui/src/lib.rs", Edition2021) }
+   0.097468959s  INFO prepare_target{force=false package_id=ruster-tui v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-tui) target="ruster_tui"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/daimyo/Dev/ruster/target/debug/.fingerprint/ruster-tui-9dce88ab965a1f16/lib-ruster_tui`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   8: cargo::ops::cargo_compile::compile_ws
+   9: cargo::ops::cargo_compile::compile_with_exec
+  10: cargo::ops::cargo_compile::compile
+  11: cargo::commands::check::exec
+  12: <cargo::cli::Exec>::exec
+  13: cargo::main
+  14: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  15: std::rt::lang_start::<()>::{closure#0}
+  16: std::rt::lang_start_internal
+  17: _main
+   0.097960250s  INFO prepare_target{force=false package_id=dirs v5.0.1 target="dirs"}: cargo::core::compiler::fingerprint: fingerprint error for dirs v5.0.1/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("dirs", ["lib"], "/Users/daimyo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/dirs-5.0.1/src/lib.rs", Edition2015) }
+   0.097965375s  INFO prepare_target{force=false package_id=dirs v5.0.1 target="dirs"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/daimyo/Dev/ruster/target/debug/.fingerprint/dirs-fd38fb695402b08e/lib-dirs`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   9: cargo::ops::cargo_compile::compile_ws
+  10: cargo::ops::cargo_compile::compile_with_exec
+  11: cargo::ops::cargo_compile::compile
+  12: cargo::commands::check::exec
+  13: <cargo::cli::Exec>::exec
+  14: cargo::main
+  15: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  16: std::rt::lang_start::<()>::{closure#0}
+  17: std::rt::lang_start_internal
+  18: _main
+   0.098152875s  INFO prepare_target{force=false package_id=dirs-sys v0.4.1 target="dirs_sys"}: cargo::core::compiler::fingerprint: fingerprint error for dirs-sys v0.4.1/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("dirs_sys", ["lib"], "/Users/daimyo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/dirs-sys-0.4.1/src/lib.rs", Edition2015) }
+   0.098157042s  INFO prepare_target{force=false package_id=dirs-sys v0.4.1 target="dirs_sys"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/daimyo/Dev/ruster/target/debug/.fingerprint/dirs-sys-aae5b4535e92f307/lib-dirs_sys`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  10: cargo::ops::cargo_compile::compile_ws
+  11: cargo::ops::cargo_compile::compile_with_exec
+  12: cargo::ops::cargo_compile::compile
+  13: cargo::commands::check::exec
+  14: <cargo::cli::Exec>::exec
+  15: cargo::main
+  16: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  17: std::rt::lang_start::<()>::{closure#0}
+  18: std::rt::lang_start_internal
+  19: _main
+   0.098363250s  INFO prepare_target{force=false package_id=option-ext v0.2.0 target="option_ext"}: cargo::core::compiler::fingerprint: fingerprint error for option-ext v0.2.0/Check { test: false }/TargetInner { name_inferred: true, ..: lib_target("option_ext", ["lib"], "/Users/daimyo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/option-ext-0.2.0/src/lib.rs", Edition2015) }
+   0.098367334s  INFO prepare_target{force=false package_id=option-ext v0.2.0 target="option_ext"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/daimyo/Dev/ruster/target/debug/.fingerprint/option-ext-8a6b579a46016ab5/lib-option_ext`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: cargo::core::compiler::compile
+  10: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  11: cargo::ops::cargo_compile::compile_ws
+  12: cargo::ops::cargo_compile::compile_with_exec
+  13: cargo::ops::cargo_compile::compile
+  14: cargo::commands::check::exec
+  15: <cargo::cli::Exec>::exec
+  16: cargo::main
+  17: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  18: std::rt::lang_start::<()>::{closure#0}
+  19: std::rt::lang_start_internal
+  20: _main
+   0.098513334s  INFO prepare_target{force=false package_id=ratatui v0.28.1 target="ratatui"}: cargo::core::compiler::fingerprint: fingerprint error for ratatui v0.28.1/Check { test: false }/TargetInner { benched: false, ..: lib_target("ratatui", ["lib"], "/Users/daimyo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/ratatui-0.28.1/src/lib.rs", Edition2021) }
+   0.098517334s  INFO prepare_target{force=false package_id=ratatui v0.28.1 target="ratatui"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/daimyo/Dev/ruster/target/debug/.fingerprint/ratatui-168c01f625d07809/lib-ratatui`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   9: cargo::ops::cargo_compile::compile_ws
+  10: cargo::ops::cargo_compile::compile_with_exec
+  11: cargo::ops::cargo_compile::compile
+  12: cargo::commands::check::exec
+  13: <cargo::cli::Exec>::exec
+  14: cargo::main
+  15: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  16: std::rt::lang_start::<()>::{closure#0}
+  17: std::rt::lang_start_internal
+  18: _main
+   0.100807375s  INFO prepare_target{force=false package_id=itertools v0.13.0 target="itertools"}: cargo::core::compiler::fingerprint: fingerprint error for itertools v0.13.0/Check { test: false }/TargetInner { name_inferred: true, tested: false, benched: false, ..: lib_target("itertools", ["lib"], "/Users/daimyo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/itertools-0.13.0/src/lib.rs", Edition2018) }
+   0.100814875s  INFO prepare_target{force=false package_id=itertools v0.13.0 target="itertools"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/daimyo/Dev/ruster/target/debug/.fingerprint/itertools-8686a27213b3e853/lib-itertools`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  10: cargo::ops::cargo_compile::compile_ws
+  11: cargo::ops::cargo_compile::compile_with_exec
+  12: cargo::ops::cargo_compile::compile
+  13: cargo::commands::check::exec
+  14: <cargo::cli::Exec>::exec
+  15: cargo::main
+  16: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  17: std::rt::lang_start::<()>::{closure#0}
+  18: std::rt::lang_start_internal
+  19: _main
+   0.102224917s  INFO prepare_target{force=false package_id=unicode-truncate v1.1.0 target="unicode_truncate"}: cargo::core::compiler::fingerprint: fingerprint error for unicode-truncate v1.1.0/Check { test: false }/TargetInner { name_inferred: true, benched: false, ..: lib_target("unicode_truncate", ["lib"], "/Users/daimyo/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/unicode-truncate-1.1.0/src/lib.rs", Edition2018) }
+   0.102231959s  INFO prepare_target{force=false package_id=unicode-truncate v1.1.0 target="unicode_truncate"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/daimyo/Dev/ruster/target/debug/.fingerprint/unicode-truncate-11d1bd735c95cdee/lib-unicode_truncate`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: cargo::core::compiler::compile
+   7: cargo::core::compiler::compile
+   8: cargo::core::compiler::compile
+   9: <cargo::core::compiler::build_runner::BuildRunner>::compile
+  10: cargo::ops::cargo_compile::compile_ws
+  11: cargo::ops::cargo_compile::compile_with_exec
+  12: cargo::ops::cargo_compile::compile
+  13: cargo::commands::check::exec
+  14: <cargo::cli::Exec>::exec
+  15: cargo::main
+  16: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  17: std::rt::lang_start::<()>::{closure#0}
+  18: std::rt::lang_start_internal
+  19: _main
+   0.108925167s  INFO prepare_target{force=false package_id=ruster-bin v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-bin) target="ruster"}: cargo::core::compiler::fingerprint: fingerprint error for ruster-bin v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-bin)/Check { test: true }/TargetInner { name: "ruster", doc: true, ..: with_path("/Users/daimyo/Dev/ruster/crates/ruster-bin/src/main.rs", Edition2021) }
+   0.108939334s  INFO prepare_target{force=false package_id=ruster-bin v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-bin) target="ruster"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/daimyo/Dev/ruster/target/debug/.fingerprint/ruster-bin-ead7c6979a91b5c4/test-bin-ruster`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   7: cargo::ops::cargo_compile::compile_ws
+   8: cargo::ops::cargo_compile::compile_with_exec
+   9: cargo::ops::cargo_compile::compile
+  10: cargo::commands::check::exec
+  11: <cargo::cli::Exec>::exec
+  12: cargo::main
+  13: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  14: std::rt::lang_start::<()>::{closure#0}
+  15: std::rt::lang_start_internal
+  16: _main
+   0.109529459s  INFO prepare_target{force=false package_id=ruster-bin v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-bin) target="cli_args"}: cargo::core::compiler::fingerprint: fingerprint error for ruster-bin v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-bin)/Check { test: true }/TargetInner { kind: "test", name: "cli_args", benched: false, ..: with_path("/Users/daimyo/Dev/ruster/crates/ruster-bin/tests/cli_args.rs", Edition2021) }
+   0.109536834s  INFO prepare_target{force=false package_id=ruster-bin v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-bin) target="cli_args"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/daimyo/Dev/ruster/target/debug/.fingerprint/ruster-bin-e2a33beda9451fd7/test-integration-test-cli_args`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   7: cargo::ops::cargo_compile::compile_ws
+   8: cargo::ops::cargo_compile::compile_with_exec
+   9: cargo::ops::cargo_compile::compile
+  10: cargo::commands::check::exec
+  11: <cargo::cli::Exec>::exec
+  12: cargo::main
+  13: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  14: std::rt::lang_start::<()>::{closure#0}
+  15: std::rt::lang_start_internal
+  16: _main
+   0.110443125s  INFO prepare_target{force=false package_id=ruster-lua v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-lua) target="ruster_lua"}: cargo::core::compiler::fingerprint: fingerprint error for ruster-lua v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-lua)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("ruster_lua", ["lib"], "/Users/daimyo/Dev/ruster/crates/ruster-lua/src/lib.rs", Edition2021) }
+   0.110452125s  INFO prepare_target{force=false package_id=ruster-lua v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-lua) target="ruster_lua"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/daimyo/Dev/ruster/target/debug/.fingerprint/ruster-lua-c202eba1153d7d4b/test-lib-ruster_lua`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   7: cargo::ops::cargo_compile::compile_ws
+   8: cargo::ops::cargo_compile::compile_with_exec
+   9: cargo::ops::cargo_compile::compile
+  10: cargo::commands::check::exec
+  11: <cargo::cli::Exec>::exec
+  12: cargo::main
+  13: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  14: std::rt::lang_start::<()>::{closure#0}
+  15: std::rt::lang_start_internal
+  16: _main
+   0.111415042s  INFO prepare_target{force=false package_id=ruster-tui v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-tui) target="ruster_tui"}: cargo::core::compiler::fingerprint: fingerprint error for ruster-tui v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-tui)/Check { test: true }/TargetInner { name_inferred: true, ..: lib_target("ruster_tui", ["lib"], "/Users/daimyo/Dev/ruster/crates/ruster-tui/src/lib.rs", Edition2021) }
+   0.111429500s  INFO prepare_target{force=false package_id=ruster-tui v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-tui) target="ruster_tui"}: cargo::core::compiler::fingerprint:     err: failed to read `/Users/daimyo/Dev/ruster/target/debug/.fingerprint/ruster-tui-618b691dc8c7669a/test-lib-ruster_tui`
+
+Caused by:
+    No such file or directory (os error 2)
+
+Stack backtrace:
+   0: <std::backtrace::Backtrace>::create
+   1: cargo_util::paths::read_bytes
+   2: cargo_util::paths::read
+   3: cargo::core::compiler::fingerprint::_compare_old_fingerprint
+   4: cargo::core::compiler::fingerprint::prepare_target
+   5: cargo::core::compiler::compile
+   6: <cargo::core::compiler::build_runner::BuildRunner>::compile
+   7: cargo::ops::cargo_compile::compile_ws
+   8: cargo::ops::cargo_compile::compile_with_exec
+   9: cargo::ops::cargo_compile::compile
+  10: cargo::commands::check::exec
+  11: <cargo::cli::Exec>::exec
+  12: cargo::main
+  13: std::sys::backtrace::__rust_begin_short_backtrace::<fn(), ()>
+  14: std::rt::lang_start::<()>::{closure#0}
+  15: std::rt::lang_start_internal
+  16: _main
+    Checking lock_api v0.4.14
+    Checking either v1.16.0
+    Checking num-traits v0.2.19
+    Checking mlua-sys v0.6.8
+    Checking bstr v1.13.0
+    Checking rustc-hash v2.1.3
+    Checking option-ext v0.2.0
+    Checking dirs-sys v0.4.1
+    Checking itertools v0.13.0
+    Checking dirs v5.0.1
+    Checking parking_lot v0.12.5
+    Checking crossterm v0.28.1
+    Checking mlua v0.10.5
+    Checking unicode-truncate v1.1.0
+    Checking ratatui v0.28.1
+    Checking ruster-lua v0.1.0 (/Users/daimyo/Dev/ruster/crates/ruster-lua)
+error: could not compile `ruster-lua` (lib) due to 1 previous error
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `ruster-lua` (lib test) due to 1 previous error

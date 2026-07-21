@@ -7,7 +7,9 @@ use ruster_core::vim::VimState;
 use ruster_lua::{LuaAction, LuaRuntime};
 use ruster_render::{CursorKind, EditorState, Renderer, StyledLine};
 use ruster_syntax::SyntaxEngine;
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,7 +26,7 @@ enum AppEvent {
 }
 
 pub struct App {
-    pub editor: Editor,
+    pub editor: Rc<RefCell<Editor>>,
     pub vim: VimState,
     renderer: TuiRenderer,
     file_path: PathBuf,
@@ -36,8 +38,8 @@ pub struct App {
 
 impl App {
     pub fn new(content: String, file_path: PathBuf) -> Self {
-        let mut editor = Editor::from_str(&content);
-        editor.execute(Action::Move(Motion::To(0)));
+        let editor = Rc::new(RefCell::new(Editor::from_str(&content)));
+        editor.borrow_mut().execute(Action::Move(Motion::To(0)));
         let vim = VimState::new();
         let renderer = TuiRenderer::dummy();
         let ext = file_path.extension()
@@ -57,12 +59,68 @@ impl App {
                 eprintln!("Lua config: {}", e);
             }
         }
+
+        // Wire buffer callbacks
+        let ed_get = editor.clone();
+        let ed_set = editor.clone();
+        let ed_get_cursor = editor.clone();
+        let ed_set_cursor = editor.clone();
+        lua.set_buffer_callbacks(
+            Box::new(move |start, end_opt| {
+                let b = ed_get.borrow();
+                let buf = b.buffer();
+                let count = buf.line_count() as i32;
+                let end = end_opt.unwrap_or_else(|| start + 1);
+                let end = if end == -1 { count } else { end.min(count) };
+                (start..end).map(|i| buf.line_to_string(i as usize)).collect()
+            }),
+            Box::new(move |start, end, lines_vec| {
+                let line_count = {
+                    let b = ed_set.borrow();
+                    b.buffer().line_count()
+                };
+                let end = (end as usize).min(line_count.saturating_sub(1));
+                let (char_start, char_end) = {
+                    let b = ed_set.borrow();
+                    let buf = b.buffer();
+                    let cs = buf.line_start_char(start as usize);
+                    let ce = if end + 1 >= line_count { buf.len_chars() }
+                             else { buf.line_start_char(end + 1) };
+                    (cs, ce)
+                };
+                let mut b = ed_set.borrow_mut();
+                b.execute(Action::BeginBatch);
+                b.execute(Action::Edit(EditOp::DeleteRange(char_start, char_end)));
+                let text = lines_vec.join("\n");
+                if !text.is_empty() {
+                    b.execute(Action::Edit(EditOp::InsertString(text)));
+                }
+                b.execute(Action::EndBatch);
+            }),
+            Box::new(move || {
+                let b = ed_get_cursor.borrow();
+                let head = b.primary_head();
+                let row = b.char_to_line(head);
+                let col = head - b.buffer().line_start_char(row);
+                (row as i32, col as i32)
+            }),
+            Box::new(move |row, col| {
+                let mut b = ed_set_cursor.borrow_mut();
+                let pos = b.buffer().line_start_char(row as usize) + col as usize;
+                b.execute(Action::Move(Motion::To(pos)));
+            }),
+        );
+
         lua.fire_event("VimEnter", &[]);
-        App { editor, vim, renderer, file_path, should_quit: false, message: None, syntax, lua }
+        App {
+            editor, vim, renderer, file_path,
+            should_quit: false, message: None, syntax, lua
+        }
     }
 
     pub fn handle_key(&mut self, ck: crossterm::event::KeyEvent) {
-        let mode = match self.vim.mode {
+        let prev_mode = self.vim.mode;
+        let mode = match prev_mode {
             VimMode::Normal => "n",
             VimMode::Insert => "i",
             VimMode::VisualChar | VimMode::VisualLine => "v",
@@ -72,10 +130,11 @@ impl App {
             return;
         }
         let key = crossterm_to_ruster_key(ck);
-        for action in self.vim.handle(key, &self.editor) {
+        let actions = self.vim.handle(key, &*self.editor.borrow());
+        for action in actions {
             match action {
                 Action::Textobject { op, kind, target, count: _ } => {
-                    let cursor = self.editor.primary_head();
+                    let cursor = self.editor.borrow().primary_head();
                     if let Some((start, end)) = self.syntax.as_ref()
                         .and_then(|s| s.ts_textobject(kind, target, cursor))
                     {
@@ -97,8 +156,13 @@ impl App {
                         Err(e) => self.message = Some(e),
                     }
                 }
-                other => self.editor.execute(other),
+                other => self.editor.borrow_mut().execute(other),
             }
+        }
+        if self.vim.mode != prev_mode {
+            let mode_str = format!("{:?}", self.vim.mode);
+            self.lua.set_mode(&mode_str);
+            self.lua.fire_event_str("ModeChanged", &[&mode_str]);
         }
     }
 
@@ -208,7 +272,7 @@ impl App {
     }
 
     fn render(&mut self) {
-        let content = self.editor.buffer().to_string();
+        let content = self.editor.borrow().buffer().to_string();
         if let Some(syn) = &mut self.syntax {
             syn.reparse(&content);
         }
@@ -217,7 +281,7 @@ impl App {
             None => content.split('\n').map(|s| StyledLine { text: s.to_string(), highlights: vec![] }).collect(),
         };
 
-        let head = self.editor.primary_head();
+        let head = self.editor.borrow().primary_head();
         let mut line = 0u16;
         let mut col = 0u16;
         let mut remaining = head;
@@ -278,7 +342,7 @@ impl App {
 
     fn save_file(&mut self, force: bool) {
         self.lua.fire_event_str("BufWritePre", &[self.file_path.to_str().unwrap_or("")]);
-        let content = self.editor.buffer().to_string();
+        let content = self.editor.borrow().buffer().to_string();
         match std::fs::write(&self.file_path, &content) {
             Ok(()) => self.message = Some(format!("Saved: {}", self.file_path.display())),
             Err(_e) if force => {
@@ -291,20 +355,27 @@ impl App {
     }
 
     fn exec_operator(&mut self, op: char, start: usize, end: usize) {
-        let safe_end = end.min(self.editor.buffer().len_chars());
+        let safe_end = end.min({
+            let b = self.editor.borrow();
+            b.buffer().len_chars()
+        });
         match op {
             'd' => {
-                self.editor.execute(Action::BeginBatch);
-                self.editor.execute(Action::Edit(EditOp::DeleteRange(start, safe_end)));
-                self.editor.execute(Action::EndBatch);
+                let mut b = self.editor.borrow_mut();
+                b.execute(Action::BeginBatch);
+                b.execute(Action::Edit(EditOp::DeleteRange(start, safe_end)));
+                b.execute(Action::EndBatch);
             }
             'c' => {
-                self.editor.execute(Action::BeginBatch);
-                self.editor.execute(Action::Edit(EditOp::DeleteRange(start, safe_end)));
+                {
+                    let mut b = self.editor.borrow_mut();
+                    b.execute(Action::BeginBatch);
+                    b.execute(Action::Edit(EditOp::DeleteRange(start, safe_end)));
+                }
                 self.vim.mode = VimMode::Insert;
             }
             'y' => {
-                let text = self.editor.buffer().slice_string(start, safe_end);
+                let text = self.editor.borrow().buffer().slice_string(start, safe_end);
                 self.vim.set_register(text);
             }
             _ => {}
@@ -312,7 +383,7 @@ impl App {
     }
 
     fn save_as(&mut self, path: &str) {
-        let content = self.editor.buffer().to_string();
+        let content = self.editor.borrow().buffer().to_string();
         match std::fs::write(path, &content) {
             Ok(()) => {
                 self.file_path = PathBuf::from(path);

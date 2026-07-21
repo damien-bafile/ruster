@@ -23,6 +23,8 @@ impl Editor {
     pub fn cursors(&self) -> &CursorSet { &self.cursors }
     pub fn primary_head(&self) -> usize { self.cursors.head() }
 
+    pub fn char_to_line(&self, char_idx: usize) -> usize { self.buffer.char_to_line(char_idx) }
+
     pub fn execute(&mut self, action: Action) {
         match action {
             Action::BeginBatch => self.undo.begin_batch(),
