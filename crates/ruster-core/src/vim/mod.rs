@@ -475,14 +475,12 @@ impl VimState {
                 self.count = None;
             }
             KeyEvent::Char('>') => {
-                let (start, end) = self.visual_range(editor);
                 out.push(Action::IndentLine);
                 self.mode = VimMode::Normal;
                 self.anchor = None;
                 self.count = None;
             }
             KeyEvent::Char('<') => {
-                let (start, end) = self.visual_range(editor);
                 out.push(Action::DeindentLine);
                 self.mode = VimMode::Normal;
                 self.anchor = None;
