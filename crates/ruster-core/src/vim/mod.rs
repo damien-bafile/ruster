@@ -7,6 +7,9 @@ use crate::cursor::Edge;
 use crate::editor::Editor;
 use crate::key::KeyEvent;
 use crate::vim::motions::{next_word_start, prev_word_start, word_end, last_printable_in_line, char_to_line};
+use std::cell::RefCell;
+
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VimMode { Normal, Insert, VisualChar, VisualLine, Cmdline }
@@ -57,6 +60,8 @@ pub struct VimState {
     last_change: Option<LastChange>,
     anchor: Option<usize>,
     cmdline_buffer: String,
+    clipboard: RefCell<Option<arboard::Clipboard>>,
+    clipboard_buf: RefCell<Option<String>>,
 }
 
 impl VimState {
@@ -71,12 +76,29 @@ impl VimState {
             last_change: None,
             anchor: None,
             cmdline_buffer: String::new(),
+            clipboard: RefCell::new(arboard::Clipboard::new().ok()),
+            clipboard_buf: RefCell::new(None),
         }
     }
 
     pub fn cmdline_buffer(&self) -> &str { &self.cmdline_buffer }
 
     pub fn set_register(&mut self, text: String) { self.register = Some(text); }
+
+    pub fn clipboard_get(&self) -> Option<String> {
+        self.clipboard_buf.borrow().clone()
+            .or_else(|| {
+                self.clipboard.borrow_mut().as_mut()
+                    .and_then(|c| c.get_text().ok())
+            })
+    }
+
+    pub fn clipboard_set(&self, text: &str) {
+        *self.clipboard_buf.borrow_mut() = Some(text.to_string());
+        if let Some(ref mut c) = *self.clipboard.borrow_mut() {
+            let _ = c.set_text(text);
+        }
+    }
 
     pub fn handle(&mut self, key: KeyEvent, editor: &Editor) -> Vec<Action> {
         let n = self.count.unwrap_or(1);
@@ -240,7 +262,10 @@ impl VimState {
                 self.count = None;
             }
             KeyEvent::Char('p') => {
-                if let Some(text) = self.register.clone() {
+                let text = self.clipboard_get()
+                    .or_else(|| self.register.clone())
+                    .unwrap_or_default();
+                if !text.is_empty() {
                     out.push(Action::BeginBatch);
                     out.push(Action::Edit(EditOp::InsertString(text)));
                     out.push(Action::EndBatch);
@@ -317,7 +342,8 @@ impl VimState {
                 out.push(Action::EndBatch);
             }
             'y' => {
-                self.register = Some(text);
+                self.register = Some(text.clone());
+                self.clipboard_set(&text);
             }
             'c' => {
                 out.push(Action::BeginBatch);
@@ -413,7 +439,9 @@ impl VimState {
             KeyEvent::Char('y') => {
                 let (start, end) = self.visual_range(editor);
                 let safe_end = end.min(editor.buffer().len_chars());
-                self.register = Some(editor.buffer().slice_string(start, safe_end));
+                let text = editor.buffer().slice_string(start, safe_end);
+                self.register = Some(text.clone());
+                self.clipboard_set(&text);
                 // Vim: after visual yank, cursor jumps to start of selection.
                 out.push(Action::Move(Motion::To(start)));
                 self.mode = VimMode::Normal;
@@ -530,6 +558,28 @@ mod tests {
         // p inserts register "ab" at cursor 0 -> "ababc"
         for a in v.handle(KeyEvent::Char('p'), &e) { e.execute(a); }
         assert_eq!(e.buffer().to_string(), "ababc");
+    }
+
+    #[test]
+    fn yank_sets_register() {
+        let e = Editor::from_str("hello world");
+        let mut v = VimState::new();
+        // yy yanks current line
+        let _actions: Vec<Action> = v.handle(KeyEvent::Char('y'), &e);
+        // 'y' is a pending operator; second 'y' triggers
+        let _actions: Vec<Action> = v.handle(KeyEvent::Char('y'), &e);
+        assert!(v.register.is_some());
+        // Note: clipboard write is best-effort, can't test in CI without display
+    }
+
+    #[test]
+    fn paste_uses_register_fallback() {
+        let mut e = Editor::from_str("ab");
+        let mut v = VimState::new();
+        v.set_register("X".to_string());
+        let actions: Vec<Action> = v.handle(KeyEvent::Char('p'), &e);
+        for a in actions { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "abX");
     }
 
     // Dot-repeat regression tests (Task 10) — preserved when the test module was rebuilt for Task 11.
