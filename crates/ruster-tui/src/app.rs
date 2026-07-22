@@ -164,7 +164,23 @@ impl App {
         );
 
         lua.fire_event("VimEnter", &[]);
-        let config = lua.config();
+        let mut config = lua.config();
+        // Apply EditorConfig overrides
+        let ec_props = ruster_core::editorconfig::parse(&file_path);
+        if let Some(val) = ec_props.get("indent_style") {
+            config.expandtab = *val != "tab";
+        }
+        if let Some(val) = ec_props.get("indent_size") {
+            if let Ok(n) = val.parse::<u32>() {
+                config.tabstop = n;
+            }
+        }
+        if let Some(val) = ec_props.get("tab_width") {
+            if let Ok(n) = val.parse::<u32>() {
+                config.tabstop = n;
+            }
+        }
+        editor.borrow_mut().set_config_indent(config.tabstop);
         let timer = FrameTimer::new();
         let cursor_anim = CursorAnim::new();
         App {

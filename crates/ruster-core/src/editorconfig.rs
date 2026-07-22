@@ -111,4 +111,19 @@ mod tests {
         let result = parse(&tmp.join("nonexistent.txt"));
         assert!(result.is_empty());
     }
+
+    #[test]
+    fn parse_with_dot_editorconfig() {
+        use std::io::Write;
+        let tmp = std::env::temp_dir().join("ruster_ec_test");
+        let _ = std::fs::create_dir_all(&tmp);
+        let mut f = std::fs::File::create(tmp.join(".editorconfig")).unwrap();
+        write!(f, "root = true\n\n[*]\nindent_style = space\nindent_size = 2\n").unwrap();
+        let file = tmp.join("test.rs");
+        std::fs::File::create(&file).unwrap();
+        let props = parse(&file);
+        assert_eq!(props.get("indent_style").map(|s| s.as_str()), Some("space"));
+        assert_eq!(props.get("indent_size").map(|s| s.as_str()), Some("2"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }
