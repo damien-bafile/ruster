@@ -397,6 +397,7 @@ impl App {
             modified: false,
             cmdline: cmdline.as_deref(),
             message: None,
+            scroll_offset: 0,
         };
         self.renderer.render_frame(&state);
     }

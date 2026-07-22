@@ -38,6 +38,7 @@ pub struct EditorState<'a> {
     pub modified: bool,
     pub cmdline: Option<&'a str>,
     pub message: Option<&'a str>,
+    pub scroll_offset: u16,
 }
 
 pub trait Renderer {
@@ -68,6 +69,7 @@ mod tests {
             modified: false,
             cmdline: None,
             message: None,
+            scroll_offset: 0,
         };
         let mut r = TestRenderer;
         r.render_frame(&state);

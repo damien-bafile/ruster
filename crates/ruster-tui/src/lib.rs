@@ -21,6 +21,7 @@ mod tests {
             modified: false,
             cmdline: None,
             message: None,
+            scroll_offset: 0,
         };
         r.render_frame(&state);
     }

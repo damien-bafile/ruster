@@ -71,7 +71,10 @@ impl RaylibRenderer {
         }
 
         while let Some(c) = self.rl.get_char_pressed() {
-            if let Some(ch) = char::from_u32(c as u32) {
+            if mods.contains(KeyModifiers::CONTROL) && (1..=26).contains(&(c as u32)) {
+                let letter = char::from_u32((c as u32) + 96).unwrap_or('?');
+                self.event_buffer.push(KeyEvent::new(KeyCode::Char(letter), mods));
+            } else if let Some(ch) = char::from_u32(c as u32) {
                 self.event_buffer.push(KeyEvent::new(KeyCode::Char(ch), mods));
             }
         }
@@ -98,14 +101,36 @@ impl Renderer for RaylibRenderer {
         let max_lines = (screen_h - PAD_Y - status_h) / LINE_H;
 
         let default_color = Color::new(205, 214, 244, 255);
-        for (i, line) in state.lines.iter().enumerate().take(max_lines as usize) {
-            let y = PAD_Y + i as i32 * LINE_H;
+        let cursor_line = state.cursor.0 as i32;
+        let scroll_offset = if cursor_line >= max_lines {
+            (cursor_line - max_lines + 1) as usize
+        } else {
+            0
+        };
+
+        for (vi, line) in state.lines.iter().skip(scroll_offset).enumerate().take(max_lines as usize) {
+            let y = PAD_Y + vi as i32 * LINE_H;
             let n = line.text.len();
             if n == 0 {
                 continue;
             }
 
-            let mut char_colors: Vec<Color> = vec![default_color; n];
+            if line.highlights.is_empty() {
+                d.draw_text_ex(
+                    &self.font,
+                    &line.text,
+                    Vector2::new(PAD_X as f32, y as f32),
+                    FONT_SIZE as f32,
+                    1.0,
+                    default_color,
+                );
+                continue;
+            }
+
+            let mut char_colors: Vec<Color> = Vec::with_capacity(n);
+            for _ in 0..n {
+                char_colors.push(default_color);
+            }
             for &(offset, len, ref style) in &line.highlights {
                 let fg = match style.fg {
                     ruster_render::Color::Rgb(r, g, b) => Color::new(r, g, b, 255),
@@ -125,15 +150,16 @@ impl Renderer for RaylibRenderer {
                 while pos < n && char_colors[pos] == c {
                     pos += 1;
                 }
+                let seg = &line.text[start..pos];
                 d.draw_text_ex(
                     &self.font,
-                    &line.text[start..pos],
+                    seg,
                     Vector2::new(x_offset, y as f32),
                     FONT_SIZE as f32,
                     1.0,
                     c,
                 );
-                x_offset += self.char_w * (pos - start) as f32;
+                x_offset += self.font.measure_text(seg, FONT_SIZE as f32, 1.0).x;
             }
         }
 
@@ -210,9 +236,13 @@ impl Renderer for RaylibRenderer {
 
         // Cursor
         if state.cursor_visible {
-            let col = state.cursor.1 as i32;
-            let line = state.cursor.0 as i32;
-            let mut cx = PAD_X as f32 + col as f32 * self.char_w;
+            let col = state.cursor.1 as usize;
+            let line = state.cursor.0 as i32 - scroll_offset as i32;
+            let line_idx = state.cursor.0 as usize;
+            let text_before: &str = state.lines.get(line_idx)
+                .map(|l| if col < l.text.len() { &l.text[..col] } else { &l.text[..] })
+                .unwrap_or("");
+            let mut cx = PAD_X as f32 + self.font.measure_text(text_before, FONT_SIZE as f32, 1.0).x;
             let mut cy = PAD_Y + line * LINE_H;
             if let Some((dcx, dcy)) = state.cursor_smooth {
                 cx += dcx * self.char_w;
