@@ -7,6 +7,7 @@ pub struct Editor {
     buffer: Buffer,
     cursors: CursorSet,
     undo: UndoStack,
+    indent: String,
 }
 
 impl Editor {
@@ -16,14 +17,24 @@ impl Editor {
             buffer: Buffer::from_str(s),
             cursors: CursorSet::single(len),
             undo: UndoStack::new(),
+            indent: "    ".to_string(),
         }
     }
 
     pub fn buffer(&self) -> &Buffer { &self.buffer }
+    pub fn buffer_mut(&mut self) -> &mut Buffer { &mut self.buffer }
     pub fn cursors(&self) -> &CursorSet { &self.cursors }
     pub fn primary_head(&self) -> usize { self.cursors.head() }
 
     pub fn char_to_line(&self, char_idx: usize) -> usize { self.buffer.char_to_line(char_idx) }
+
+    pub fn set_config_indent(&mut self, tabstop: u32) {
+        self.indent = " ".repeat(tabstop as usize);
+    }
+
+    fn cursor_line(&self) -> usize {
+        self.buffer.char_to_line(self.cursors.head())
+    }
 
     pub fn execute(&mut self, action: Action) {
         match action {
@@ -48,6 +59,23 @@ impl Editor {
             Action::ClearExtraCursors => self.cursors.clear_extra(),
             Action::CmdlineResult(_) => {}
             Action::Textobject { .. } => {}
+            Action::IndentLine => {
+                let line = self.cursor_line();
+                let start = self.buffer.line_start_char(line);
+                let ch = self.buffer.insert(start, &self.indent);
+                self.undo.push(ch);
+            }
+            Action::DeindentLine => {
+                let line = self.cursor_line();
+                let start = self.buffer.line_start_char(line);
+                let content = self.buffer.line_to_string(line);
+                let to_remove = content.chars().take_while(|c| *c == ' ').take(self.indent.len()).count();
+                if to_remove > 0 {
+                    let ch = self.buffer.delete(start..start + to_remove);
+                    self.undo.push(ch);
+                    self.cursors.set_head(start, &self.buffer);
+                }
+            }
         }
     }
 
@@ -166,5 +194,26 @@ mod tests {
         let r = e.cursors().primary();
         assert_eq!(r.anchor, head_before);
         assert_eq!(r.head, head_before + 1);
+    }
+
+    #[test]
+    fn indent_adds_spaces() {
+        let mut e = Editor::from_str("hello");
+        e.execute(Action::IndentLine);
+        assert_eq!(e.buffer().to_string(), "    hello");
+    }
+
+    #[test]
+    fn deindent_removes_spaces() {
+        let mut e = Editor::from_str("    hello");
+        e.execute(Action::DeindentLine);
+        assert_eq!(e.buffer().to_string(), "hello");
+    }
+
+    #[test]
+    fn deindent_empty_line_does_nothing() {
+        let mut e = Editor::from_str("");
+        e.execute(Action::DeindentLine);
+        assert_eq!(e.buffer().to_string(), "");
     }
 }

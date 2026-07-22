@@ -2,6 +2,7 @@ use crate::key::crossterm_to_ruster_key;
 use crate::renderer::TuiRenderer;
 use ruster_core::action::{Action, EditOp, Motion};
 use ruster_core::editor::Editor;
+use ruster_core::key::KeyEvent;
 use ruster_core::vim::VimMode;
 use ruster_core::vim::VimState;
 use ruster_lua::{config::Config, LuaAction, LuaRuntime};
@@ -185,6 +186,17 @@ impl App {
             return;
         }
         let key = crossterm_to_ruster_key(ck);
+
+        if self.vim.mode == VimMode::Insert && key == KeyEvent::Tab {
+            if self.config.expandtab {
+                let spaces = " ".repeat(self.config.tabstop as usize);
+                self.editor.borrow_mut().execute(Action::BeginBatch);
+                self.editor.borrow_mut().execute(Action::Edit(EditOp::InsertString(spaces)));
+                self.editor.borrow_mut().execute(Action::EndBatch);
+            }
+            return;
+        }
+
         let actions = self.vim.handle(key, &*self.editor.borrow());
         for action in actions {
             match action {

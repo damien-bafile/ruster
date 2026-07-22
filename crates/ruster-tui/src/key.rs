@@ -11,6 +11,8 @@ pub fn crossterm_to_ruster_key(ck: CKEvent) -> KeyEvent {
             KeyEvent::Ctrl(c)
         }
         KeyCode::Char(c) => KeyEvent::Char(c),
+        KeyCode::Tab if ck.modifiers == KeyModifiers::SHIFT => KeyEvent::ShiftTab,
+        KeyCode::Tab => KeyEvent::Tab,
         _ => KeyEvent::Char(' '),
     }
 }

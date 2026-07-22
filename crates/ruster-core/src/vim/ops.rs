@@ -176,6 +176,16 @@ mod tests {
     }
 
     #[test]
+    fn double_angle_indent_line() {
+        let mut e = Editor::from_str("hello");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('>'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('>'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "    hello");
+    }
+
+    #[test]
     fn cw_changes_word_and_enters_insert() {
         let mut e = Editor::from_str("hello world");
         let mut v = VimState::new();

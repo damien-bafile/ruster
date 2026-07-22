@@ -189,6 +189,14 @@ impl VimState {
                     }
                     return;
                 }
+                KeyEvent::Char('>') if op == '>' => {
+                    self.pending = OpState::Idle;
+                    out.push(Action::IndentLine);
+                }
+                KeyEvent::Char('<') if op == '<' => {
+                    self.pending = OpState::Idle;
+                    out.push(Action::DeindentLine);
+                }
                 _ => {
                     self.pending = OpState::Idle;
                     return;
@@ -249,6 +257,14 @@ impl VimState {
             }
             KeyEvent::Char('c') if self.pending == OpState::Idle => {
                 self.pending = OpState::Pending('c', n);
+                self.count = None;
+            }
+            KeyEvent::Char('>') if self.pending == OpState::Idle => {
+                self.pending = OpState::Pending('>', n);
+                self.count = None;
+            }
+            KeyEvent::Char('<') if self.pending == OpState::Idle => {
+                self.pending = OpState::Pending('<', n);
                 self.count = None;
             }
             KeyEvent::Char('x') => {
@@ -456,6 +472,20 @@ impl VimState {
                 self.anchor = None;
                 // No EndBatch + re-BeginBatch: Insert-mode edits group with the
                 // deletion; Esc fires EndBatch so the whole visual-c is one undo unit.
+                self.count = None;
+            }
+            KeyEvent::Char('>') => {
+                let (start, end) = self.visual_range(editor);
+                out.push(Action::IndentLine);
+                self.mode = VimMode::Normal;
+                self.anchor = None;
+                self.count = None;
+            }
+            KeyEvent::Char('<') => {
+                let (start, end) = self.visual_range(editor);
+                out.push(Action::DeindentLine);
+                self.mode = VimMode::Normal;
+                self.anchor = None;
                 self.count = None;
             }
             _ => {}

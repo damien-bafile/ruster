@@ -95,6 +95,7 @@ impl LuaRuntime {
             tabstop: cfg.get("tabstop").unwrap_or(defaults.tabstop),
             softtabstop: cfg.get("softtabstop").unwrap_or(defaults.softtabstop),
             expandtab: cfg.get("expandtab").unwrap_or(defaults.expandtab),
+            shiftwidth: cfg.get("shiftwidth").unwrap_or(defaults.shiftwidth),
             number: cfg.get("number").unwrap_or(defaults.number),
             relativenumber: cfg.get("relativenumber").unwrap_or(defaults.relativenumber),
             theme: cfg.get("theme").unwrap_or(defaults.theme),
