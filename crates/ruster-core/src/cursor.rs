@@ -19,6 +19,7 @@ pub enum Edge { Start, End }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Dir { Left, Right }
 
+#[derive(Clone)]
 pub struct CursorSet {
     pub(crate) cursors: Vec<Range>,
     pub(crate) primary: usize,

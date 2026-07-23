@@ -6,6 +6,7 @@ pub mod action;
 pub mod command;
 pub mod document;
 pub mod workspace;
+pub mod windows;
 pub mod editor;
 pub mod vim;
 pub mod editorconfig;
