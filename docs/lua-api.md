@@ -3,6 +3,9 @@
 ruster provides a `ruster.*` namespace in Lua scripts loaded from
 `~/.config/ruster/init.lua` and `~/.config/ruster/plugins/*.lua`.
 
+> See also: [Config Reference](config-reference.md) for settings and
+> [Commands & Keybindings](keybindings.md) for keys and `:` commands.
+
 ## Namespace
 
 ### `ruster.print(...)`
