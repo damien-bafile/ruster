@@ -270,6 +270,26 @@ impl Renderer for RaylibRenderer {
             }
         }
 
+        // Hover popup, near the top-center.
+        if let Some(lines) = &state.hover {
+            if !lines.is_empty() {
+                let accent = Color::new(137, 180, 250, 255);
+                let box_bg = Color::new(24, 24, 37, 255);
+                let longest = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+                let box_w = ((longest as f32 * char_w) as i32 + 16).min(screen_w - 20);
+                let box_h = (lines.len() as i32 * LINE_H + 8).min(screen_h - 20);
+                let box_x = (screen_w - box_w) / 2;
+                let box_y = LINE_H;
+                d.draw_rectangle(box_x, box_y, box_w, box_h, box_bg);
+                d.draw_rectangle_lines(box_x, box_y, box_w, box_h, accent);
+                let mut s = d.begin_scissor_mode(box_x + 1, box_y + 1, box_w - 2, box_h - 2);
+                for (i, line) in lines.iter().enumerate() {
+                    let ly = box_y + 4 + i as i32 * LINE_H;
+                    s.draw_text_ex(font, line, Vector2::new(box_x as f32 + 6.0, ly as f32), FONT_SIZE as f32, 1.0, Color::new(205, 214, 244, 255));
+                }
+            }
+        }
+
         // Bottom which-key panel, sliding up from the screen edge by `anim`.
         if let Some(wk) = &state.whichkey {
             let accent = Color::new(137, 180, 250, 255);

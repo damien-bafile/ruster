@@ -1145,9 +1145,11 @@ dependencies = [
  "nucleo-matcher",
  "ratatui",
  "ruster-core",
+ "ruster-lsp",
  "ruster-lua",
  "ruster-render",
  "ruster-syntax",
+ "serde_json",
  "tokio",
 ]
 

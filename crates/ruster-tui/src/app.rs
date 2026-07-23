@@ -18,6 +18,7 @@ use ruster_render::{
     WindowView,
 };
 use ruster_syntax::SyntaxEngine;
+use ruster_lsp::{LspManager, LspPosition, ServerMessage};
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -93,6 +94,9 @@ enum CmdAction {
     Dired(Option<String>),
     Files,
     Rg(String),
+    Rename(String),
+    Format,
+    WorkspaceSymbol(String),
 }
 
 /// The commands offered by the `:`-Tab command palette: (name, description).
@@ -126,6 +130,13 @@ enum LeaderAction {
     Explorer,
     Quit,
     SaveAndQuit,
+    Hover,
+    Definition,
+    References,
+    Format,
+    Rename,
+    DocumentSymbol,
+    Diagnostics,
 }
 
 enum LeaderNode {
@@ -157,9 +168,20 @@ static QUIT_GROUP: &[(char, LeaderNode)] = &[
     ('w', LeaderNode::Action("save and quit", LeaderAction::SaveAndQuit)),
 ];
 
+static CODE_GROUP: &[(char, LeaderNode)] = &[
+    ('k', LeaderNode::Action("hover", LeaderAction::Hover)),
+    ('g', LeaderNode::Action("go to definition", LeaderAction::Definition)),
+    ('r', LeaderNode::Action("references", LeaderAction::References)),
+    ('f', LeaderNode::Action("format", LeaderAction::Format)),
+    ('n', LeaderNode::Action("rename", LeaderAction::Rename)),
+    ('o', LeaderNode::Action("document symbols", LeaderAction::DocumentSymbol)),
+    ('d', LeaderNode::Action("diagnostics", LeaderAction::Diagnostics)),
+];
+
 static LEADER_ROOT: &[(char, LeaderNode)] = &[
     ('w', LeaderNode::Group("windows", WINDOW_GROUP)),
     ('f', LeaderNode::Group("find", FIND_GROUP)),
+    ('c', LeaderNode::Group("code", CODE_GROUP)),
     ('q', LeaderNode::Group("quit", QUIT_GROUP)),
 ];
 
@@ -167,6 +189,27 @@ enum LeaderResolve {
     Group,
     Action(LeaderAction),
     Unknown,
+}
+
+/// What to do with the response to an LSP request we sent.
+#[derive(Clone, Copy)]
+enum LspAction {
+    Hover,
+    Definition,
+    References,
+    Format,
+    Rename,
+    DocumentSymbol,
+    WorkspaceSymbol,
+}
+
+/// Per-buffer LSP document state (registered with `didOpen`).
+struct LspDoc {
+    uri: String,
+    lang: String,
+    version: i64,
+    /// Last text synced to the server, to detect changes for `didChange`.
+    synced: String,
 }
 
 /// An in-progress dired file operation awaiting input in the mini-buffer.
@@ -309,6 +352,16 @@ pub struct App {
     dired_dirs: std::collections::HashMap<BufferId, PathBuf>,
     /// An in-progress dired file operation awaiting mini-buffer input.
     dired_prompt: Option<DiredPrompt>,
+    /// Language server manager (one server per language).
+    lsp: LspManager,
+    /// Per-buffer LSP document registration state.
+    lsp_docs: std::collections::HashMap<BufferId, LspDoc>,
+    /// Diagnostics per buffer, from `publishDiagnostics`.
+    diagnostics: std::collections::HashMap<BufferId, Vec<ruster_lsp::Diagnostic>>,
+    /// Outstanding LSP requests: (lang, request id) -> what to do with the reply.
+    lsp_pending: std::collections::HashMap<(String, i64), LspAction>,
+    /// Hover popup contents (lines), shown until the next key.
+    hover: Option<Vec<String>>,
 }
 
 impl App {
@@ -481,6 +534,11 @@ impl App {
             leader_since: None,
             dired_dirs: std::collections::HashMap::new(),
             dired_prompt: None,
+            lsp: LspManager::new(),
+            lsp_docs: std::collections::HashMap::new(),
+            diagnostics: std::collections::HashMap::new(),
+            lsp_pending: std::collections::HashMap::new(),
+            hover: None,
         }
     }
 
@@ -490,6 +548,9 @@ impl App {
             self.handle_picker_key(ck);
             return;
         }
+
+        // Any key dismisses an open hover popup (and still acts).
+        self.hover = None;
 
         // A dired file-operation prompt captures input until confirmed/cancelled.
         if self.dired_prompt.is_some() {
@@ -543,6 +604,14 @@ impl App {
                 self.ws.borrow_mut().windows.focus(dir);
                 return;
             }
+        }
+        // K → LSP hover (like vim's keyword lookup).
+        if self.vim.mode == VimMode::Normal
+            && ck.code == KeyCode::Char('K')
+            && !ck.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            self.lsp_hover();
+            return;
         }
 
         let prev_mode = self.vim.mode;
@@ -809,8 +878,327 @@ impl App {
         }
     }
 
+    /// Sync the active buffer to its language server (didOpen/didChange) and
+    /// drain incoming LSP messages, dispatching diagnostics and responses.
+    fn update_lsp(&mut self) {
+        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        // Register / update the active buffer if it's a supported file.
+        let active = self.ws.borrow().active_buffer();
+        let info = {
+            let w = self.ws.borrow();
+            w.buffers.get(active).and_then(|d| {
+                let path = d.file_path.clone()?;
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                let lang = ruster_syntax::lang_key(ext);
+                if lang.is_empty() {
+                    return None;
+                }
+                Some((path, lang.to_string(), d.buffer.to_string()))
+            })
+        };
+        if let Some((path, lang, text)) = info {
+            if self.lsp.ensure(&lang, &root) {
+                let uri = ruster_lsp::protocol::uri_from_path(&path);
+                match self.lsp_docs.get_mut(&active) {
+                    None => {
+                        let language_id = ruster_lsp::registry::language_id(&lang).to_string();
+                        self.lsp.did_open(&lang, &uri, &language_id, 0, &text);
+                        self.lsp_docs.insert(active, LspDoc { uri, lang, version: 0, synced: text });
+                    }
+                    Some(doc) if doc.synced != text => {
+                        doc.version += 1;
+                        let version = doc.version;
+                        let uri = doc.uri.clone();
+                        let lang = doc.lang.clone();
+                        doc.synced = text.clone();
+                        self.lsp.did_change(&lang, &uri, version, &text);
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+        // Drain and dispatch server messages.
+        for routed in self.lsp.poll() {
+            match routed.message {
+                ServerMessage::Notification { method, params }
+                    if method == "textDocument/publishDiagnostics" =>
+                {
+                    let (path, diags) = ruster_lsp::parse_diagnostics(&params);
+                    if let Some(buf) = self.buffer_for_path(&path) {
+                        self.diagnostics.insert(buf, diags);
+                    }
+                }
+                ServerMessage::Response { id, result, .. } => {
+                    if let Some(action) = self.lsp_pending.remove(&(routed.lang.clone(), id)) {
+                        self.handle_lsp_response(action, result);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// A one-line summary of a diagnostic on the cursor's line, if any.
+    fn current_line_diagnostic(&self) -> Option<String> {
+        let active = self.ws.borrow().active_buffer();
+        let diags = self.diagnostics.get(&active)?;
+        let line = {
+            let w = self.ws.borrow();
+            w.buffer().char_to_line(w.primary_head()) as u32
+        };
+        diags.iter().find(|d| d.start.line == line).map(|d| {
+            let sev = match d.severity {
+                1 => "E",
+                2 => "W",
+                3 => "I",
+                _ => "H",
+            };
+            format!("[{}] {}", sev, d.message.replace('\n', " "))
+        })
+    }
+
+    /// The open buffer whose file path matches `path`, if any.
+    fn buffer_for_path(&self, path: &str) -> Option<BufferId> {
+        let target = std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path));
+        let w = self.ws.borrow();
+        w.buffers.ids().iter().copied().find(|&id| {
+            w.buffers
+                .get(id)
+                .and_then(|d| d.file_path.as_ref())
+                .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()) == target)
+                .unwrap_or(false)
+        })
+    }
+
+    /// The active buffer's (lang, uri, cursor position) for an LSP request.
+    fn active_lsp_target(&self) -> Option<(String, String, LspPosition)> {
+        let active = self.ws.borrow().active_buffer();
+        let doc = self.lsp_docs.get(&active)?;
+        let (content, head) = {
+            let w = self.ws.borrow();
+            let d = w.buffers.get(active)?;
+            (d.buffer.to_string(), w.primary_head())
+        };
+        let pos = ruster_lsp::offset_to_position(&content, head);
+        Some((doc.lang.clone(), doc.uri.clone(), pos))
+    }
+
+    /// Send an LSP request built from the active position and record its action.
+    fn lsp_request(&mut self, method: &str, params: serde_json::Value, action: LspAction) {
+        let lang = match self.active_lsp_target() {
+            Some((lang, _, _)) => lang,
+            None => {
+                self.message = Some("No language server for this buffer".to_string());
+                return;
+            }
+        };
+        if let Some(id) = self.lsp.request(&lang, method, params) {
+            self.lsp_pending.insert((lang, id), action);
+        } else {
+            self.message = Some("Language server still starting…".to_string());
+        }
+    }
+
+    fn lsp_hover(&mut self) {
+        if let Some((_, uri, pos)) = self.active_lsp_target() {
+            let params = ruster_lsp::protocol::text_document_position(&uri, pos);
+            self.lsp_request("textDocument/hover", params, LspAction::Hover);
+        }
+    }
+
+    fn lsp_definition(&mut self) {
+        if let Some((_, uri, pos)) = self.active_lsp_target() {
+            let params = ruster_lsp::protocol::text_document_position(&uri, pos);
+            self.lsp_request("textDocument/definition", params, LspAction::Definition);
+        }
+    }
+
+    fn lsp_references(&mut self) {
+        if let Some((_, uri, pos)) = self.active_lsp_target() {
+            let params = ruster_lsp::protocol::references_params(&uri, pos);
+            self.lsp_request("textDocument/references", params, LspAction::References);
+        }
+    }
+
+    fn lsp_format(&mut self) {
+        if let Some((_, uri, _)) = self.active_lsp_target() {
+            let params = ruster_lsp::protocol::formatting_params(
+                &uri,
+                self.config.tabstop,
+                self.config.expandtab,
+            );
+            self.lsp_request("textDocument/formatting", params, LspAction::Format);
+        }
+    }
+
+    fn lsp_document_symbols(&mut self) {
+        if let Some((_, uri, _)) = self.active_lsp_target() {
+            let params = ruster_lsp::protocol::document_symbol_params(&uri);
+            self.lsp_request("textDocument/documentSymbol", params, LspAction::DocumentSymbol);
+        }
+    }
+
+    fn lsp_workspace_symbols(&mut self, query: &str) {
+        if self.active_lsp_target().is_some() {
+            let params = ruster_lsp::protocol::workspace_symbol_params(query);
+            self.lsp_request("workspace/symbol", params, LspAction::WorkspaceSymbol);
+        }
+    }
+
+    fn lsp_rename(&mut self, new_name: &str) {
+        if let Some((_, uri, pos)) = self.active_lsp_target() {
+            let params = ruster_lsp::protocol::rename_params(&uri, pos, new_name);
+            self.lsp_request("textDocument/rename", params, LspAction::Rename);
+        }
+    }
+
+    fn handle_lsp_response(&mut self, action: LspAction, result: serde_json::Value) {
+        match action {
+            LspAction::Hover => {
+                if let Some(text) = ruster_lsp::parse_hover(&result) {
+                    let lines: Vec<String> = text.lines().map(|s| s.to_string()).take(20).collect();
+                    self.hover = Some(lines);
+                } else {
+                    self.message = Some("No hover info".to_string());
+                }
+            }
+            LspAction::Definition => {
+                let locs = ruster_lsp::parse_locations(&result);
+                if let Some(loc) = locs.first() {
+                    self.open_path(
+                        std::path::Path::new(&loc.uri),
+                        Some((loc.start.line as usize + 1, loc.start.character as usize + 1)),
+                    );
+                } else {
+                    self.message = Some("No definition found".to_string());
+                }
+            }
+            LspAction::References => {
+                let locs = ruster_lsp::parse_locations(&result);
+                if locs.is_empty() {
+                    self.message = Some("No references".to_string());
+                    return;
+                }
+                let items = locs
+                    .into_iter()
+                    .map(|loc| {
+                        let line = loc.start.line as usize + 1;
+                        let col = loc.start.character as usize + 1;
+                        PickerItem::new(
+                            format!("{}:{}:{}", loc.uri, line, col),
+                            PickerAction::OpenLocation(PathBuf::from(loc.uri), line, col),
+                        )
+                    })
+                    .collect();
+                self.picker = Some(PickerState::new("References", items));
+            }
+            LspAction::Format => {
+                let edits = ruster_lsp::parse_text_edits(&result);
+                self.apply_lsp_edits_to_active(&edits);
+            }
+            LspAction::Rename => {
+                let per_file = ruster_lsp::parse_workspace_edit(&result);
+                for (path, edits) in per_file {
+                    self.apply_lsp_edits_to_path(&path, &edits);
+                }
+            }
+            LspAction::DocumentSymbol => {
+                let syms = ruster_lsp::parse_document_symbols(&result);
+                let active_uri = self
+                    .active_lsp_target()
+                    .map(|(_, uri, _)| uri)
+                    .unwrap_or_default();
+                let items = syms
+                    .into_iter()
+                    .map(|s| {
+                        let indent = "  ".repeat(s.depth as usize);
+                        let path = s
+                            .uri
+                            .clone()
+                            .unwrap_or_else(|| active_uri.trim_start_matches("file://").to_string());
+                        PickerItem::new(
+                            format!("{}{}", indent, s.name),
+                            PickerAction::OpenLocation(
+                                PathBuf::from(path),
+                                s.start.line as usize + 1,
+                                s.start.character as usize + 1,
+                            ),
+                        )
+                    })
+                    .collect();
+                self.picker = Some(PickerState::new("Symbols", items));
+            }
+            LspAction::WorkspaceSymbol => {
+                let syms = ruster_lsp::parse_workspace_symbols(&result);
+                let items = syms
+                    .into_iter()
+                    .filter_map(|s| {
+                        let uri = s.uri?;
+                        Some(PickerItem::new(
+                            format!("{}  {}", s.name, uri),
+                            PickerAction::OpenLocation(
+                                PathBuf::from(uri),
+                                s.start.line as usize + 1,
+                                s.start.character as usize + 1,
+                            ),
+                        ))
+                    })
+                    .collect();
+                self.picker = Some(PickerState::new("Workspace symbols", items));
+            }
+        }
+    }
+
+    /// Apply LSP text edits to the active buffer, replacing its whole content.
+    fn apply_lsp_edits_to_active(&mut self, edits: &[ruster_lsp::TextEdit]) {
+        if edits.is_empty() {
+            return;
+        }
+        let content = self.ws.borrow().active_doc().buffer.to_string();
+        let new = ruster_lsp::apply_edits(&content, edits);
+        if new != content {
+            self.replace_active_content(&new);
+        }
+    }
+
+    fn apply_lsp_edits_to_path(&mut self, path: &str, edits: &[ruster_lsp::TextEdit]) {
+        if edits.is_empty() {
+            return;
+        }
+        // Only apply to the active buffer for now (multi-file rename opens each
+        // affected file is a follow-up); apply if the path matches the active doc.
+        let active_path = self
+            .ws
+            .borrow()
+            .active_doc()
+            .file_path
+            .clone();
+        let matches = active_path
+            .map(|p| std::fs::canonicalize(&p).ok() == std::fs::canonicalize(path).ok())
+            .unwrap_or(false);
+        if matches {
+            self.apply_lsp_edits_to_active(edits);
+        }
+    }
+
+    /// Replace the active buffer's entire content via a single undo batch.
+    fn replace_active_content(&mut self, new: &str) {
+        let len = self.ws.borrow().active_doc().buffer.len_chars();
+        let mut w = self.ws.borrow_mut();
+        w.execute(Action::BeginBatch);
+        if len > 0 {
+            w.execute(Action::Edit(EditOp::DeleteRange(0, len)));
+        }
+        if !new.is_empty() {
+            w.execute(Action::Edit(EditOp::InsertString(new.to_string())));
+        }
+        w.execute(Action::EndBatch);
+        w.execute(Action::Move(Motion::To(0)));
+    }
+
     fn render(&mut self) {
         self.drain_pending_results();
+        self.update_lsp();
         let (cols, rows) = self.renderer.viewport_cells();
         // Reserve a bottom row for the cmdline/message only while one is shown,
         // so the statusline sits flush at the very bottom otherwise.
@@ -924,7 +1312,7 @@ impl App {
         } else {
             match mode {
                 VimMode::Cmdline => Some(crate::widgets::cmdline_label(self.vim.cmdline_buffer())),
-                _ => self.message.clone(),
+                _ => self.message.clone().or_else(|| self.current_line_diagnostic()),
             }
         };
         let picker_view = self.picker.as_mut().map(|p| p.view());
@@ -966,6 +1354,7 @@ impl App {
             message: None,
             picker: picker_view,
             whichkey,
+            hover: self.hover.clone(),
         };
         self.renderer.render_frame(&state);
     }
@@ -999,6 +1388,7 @@ impl App {
             "bd" | "bdelete" => Ok(CmdAction::BufferDelete),
             "Dired" | "dired" | "Explore" | "Ex" => Ok(CmdAction::Dired(None)),
             "Files" | "files" => Ok(CmdAction::Files),
+            "fmt" | "format" => Ok(CmdAction::Format),
             _ if trimmed.starts_with("w ") || trimmed.starts_with("write ") => {
                 let path = trimmed.splitn(2, ' ').nth(1).unwrap_or("").trim().to_string();
                 if path.is_empty() {
@@ -1018,6 +1408,18 @@ impl App {
                 } else {
                     Ok(CmdAction::Rg(pat))
                 }
+            }
+            _ if trimmed.starts_with("rename ") => {
+                let name = trimmed.splitn(2, ' ').nth(1).unwrap_or("").trim().to_string();
+                if name.is_empty() {
+                    Err("No name given".to_string())
+                } else {
+                    Ok(CmdAction::Rename(name))
+                }
+            }
+            _ if trimmed.starts_with("sym ") => {
+                let q = trimmed.splitn(2, ' ').nth(1).unwrap_or("").trim().to_string();
+                Ok(CmdAction::WorkspaceSymbol(q))
             }
             _ => Err(format!("Unknown command: {}", cmdline)),
         }
@@ -1063,6 +1465,9 @@ impl App {
             CmdAction::Dired(arg) => self.open_dired(arg),
             CmdAction::Files => self.open_files_picker(),
             CmdAction::Rg(pattern) => self.run_rg(&pattern),
+            CmdAction::Rename(name) => self.lsp_rename(&name),
+            CmdAction::Format => self.lsp_format(),
+            CmdAction::WorkspaceSymbol(q) => self.lsp_workspace_symbols(&q),
         }
     }
 
@@ -1535,7 +1940,50 @@ impl App {
                 self.save_file(false);
                 self.should_quit = true;
             }
+            LeaderAction::Hover => self.lsp_hover(),
+            LeaderAction::Definition => self.lsp_definition(),
+            LeaderAction::References => self.lsp_references(),
+            LeaderAction::Format => self.lsp_format(),
+            LeaderAction::Rename => {
+                // Seed the cmdline with :rename for the new name.
+                self.message = Some("Use :rename <new-name>".to_string());
+            }
+            LeaderAction::DocumentSymbol => self.lsp_document_symbols(),
+            LeaderAction::Diagnostics => self.open_diagnostics_picker(),
         }
+    }
+
+    /// Show the active buffer's diagnostics in a picker; Enter jumps to one.
+    fn open_diagnostics_picker(&mut self) {
+        let active = self.ws.borrow().active_buffer();
+        let path = self.ws.borrow().active_doc().file_path.clone();
+        let diags = self.diagnostics.get(&active).cloned().unwrap_or_default();
+        if diags.is_empty() {
+            self.message = Some("No diagnostics".to_string());
+            return;
+        }
+        let path = match path {
+            Some(p) => p,
+            None => return,
+        };
+        let items = diags
+            .into_iter()
+            .map(|d| {
+                let sev = match d.severity {
+                    1 => "E",
+                    2 => "W",
+                    3 => "I",
+                    _ => "H",
+                };
+                let line = d.start.line as usize + 1;
+                let col = d.start.character as usize + 1;
+                PickerItem::new(
+                    format!("{} {}:{}  {}", sev, line, col, d.message.replace('\n', " ")),
+                    PickerAction::OpenLocation(path.clone(), line, col),
+                )
+            })
+            .collect();
+        self.picker = Some(PickerState::new("Diagnostics", items));
     }
 
     /// Interpret the key following a `Ctrl-w` prefix.
@@ -1880,6 +2328,49 @@ mod tests {
         assert_eq!(a.parse_cmdline(":Files"), Ok(CmdAction::Files));
         assert_eq!(a.parse_cmdline(":Rg todo"), Ok(CmdAction::Rg("todo".into())));
         assert!(a.parse_cmdline(":Rg").is_err());
+    }
+
+    #[test]
+    fn parse_lsp_commands() {
+        let a = App::new("x".into(), PathBuf::from("f.rs"));
+        assert_eq!(a.parse_cmdline(":fmt"), Ok(CmdAction::Format));
+        assert_eq!(a.parse_cmdline(":rename Foo"), Ok(CmdAction::Rename("Foo".into())));
+        assert!(a.parse_cmdline(":rename").is_err());
+    }
+
+    #[test]
+    fn leader_code_group_resolves() {
+        assert!(matches!(
+            leader_resolve(&['c', 'k']),
+            LeaderResolve::Action(LeaderAction::Hover)
+        ));
+        assert!(matches!(
+            leader_resolve(&['c', 'g']),
+            LeaderResolve::Action(LeaderAction::Definition)
+        ));
+        let (title, rows) = leader_whichkey(&['c']).expect("code panel");
+        assert_eq!(title, "SPC c");
+        assert!(rows.iter().any(|r| r.contains("hover")));
+        assert!(rows.iter().any(|r| r.contains("references")));
+    }
+
+    #[test]
+    fn diagnostics_stored_and_surfaced_on_line() {
+        let mut a = App::new("let x = 1;\n".into(), PathBuf::from("f.rs"));
+        let buf = a.ws.borrow().active_buffer();
+        a.diagnostics.insert(
+            buf,
+            vec![ruster_lsp::Diagnostic {
+                start: ruster_lsp::results::LspPositionEq { line: 0, character: 4 },
+                end: ruster_lsp::results::LspPositionEq { line: 0, character: 5 },
+                severity: 1,
+                message: "unused".into(),
+            }],
+        );
+        // Cursor is on line 0, so the diagnostic surfaces.
+        let msg = a.current_line_diagnostic().expect("diagnostic on line");
+        assert!(msg.contains("unused"));
+        assert!(msg.starts_with("[E]"));
     }
 
     #[test]

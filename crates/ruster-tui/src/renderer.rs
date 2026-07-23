@@ -89,6 +89,21 @@ impl Renderer for TuiRenderer {
                 }
             }
 
+            // Hover popup, near the top-center.
+            if let Some(lines) = &state.hover {
+                if !lines.is_empty() {
+                    let w = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) as u16 + 2;
+                    let w = w.clamp(8, area.width.saturating_sub(2));
+                    let h = (lines.len() as u16 + 1).min(area.height.saturating_sub(2));
+                    let x = area.x + (area.width.saturating_sub(w)) / 2;
+                    let y = area.y + 1;
+                    frame.render_widget(
+                        crate::widgets::HoverWidget::new(lines.clone()),
+                        Rect::new(x, y, w, h),
+                    );
+                }
+            }
+
             // Floating picker overlay, centered.
             if let Some(picker) = &state.picker {
                 let pw = (area.width * 6 / 10).clamp(20, area.width.saturating_sub(2));

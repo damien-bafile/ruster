@@ -157,6 +157,8 @@ pub struct FrameState<'a> {
     pub message: Option<&'a str>,
     pub picker: Option<PickerView>,
     pub whichkey: Option<WhichKeyView>,
+    /// LSP hover popup lines, shown in a floating box near the top.
+    pub hover: Option<Vec<String>>,
 }
 
 pub trait Renderer {
@@ -213,6 +215,7 @@ mod tests {
             message: None,
             picker: None,
             whichkey: None,
+            hover: None,
         };
         let mut r = TestRenderer;
         r.render_frame(&state);

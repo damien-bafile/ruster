@@ -100,6 +100,16 @@ impl LspClient {
     }
 }
 
+impl Drop for LspClient {
+    fn drop(&mut self) {
+        // Ensure the server process is not orphaned.
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

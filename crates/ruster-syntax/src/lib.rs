@@ -119,7 +119,7 @@ pub fn language_for_ext(ext: &str) -> Option<tree_sitter::Language> {
 }
 
 /// Canonical language key for a file extension, or "" if unsupported.
-fn lang_key(ext: &str) -> &'static str {
+pub fn lang_key(ext: &str) -> &'static str {
     match ext {
         "rs" => "rust",
         "py" => "python",
