@@ -90,6 +90,21 @@ enum CmdAction {
     Ibuffer,
     BufferDelete,
     Dired(Option<String>),
+    Files,
+    Rg(String),
+}
+
+/// Parse one `rg --vimgrep` line (`file:line:col:text`) into its parts.
+fn parse_rg_line(line: &str) -> Option<(PathBuf, usize, usize, String)> {
+    let mut parts = line.splitn(4, ':');
+    let file = parts.next()?;
+    let ln: usize = parts.next()?.parse().ok()?;
+    let col: usize = parts.next()?.parse().ok()?;
+    let text = parts.next().unwrap_or("").to_string();
+    if file.is_empty() {
+        return None;
+    }
+    Some((PathBuf::from(file), ln, col, text))
 }
 
 enum AppEvent {
@@ -584,6 +599,7 @@ impl App {
             "ls" | "buffers" | "ibuffer" => Ok(CmdAction::Ibuffer),
             "bd" | "bdelete" => Ok(CmdAction::BufferDelete),
             "Dired" | "dired" | "Explore" | "Ex" => Ok(CmdAction::Dired(None)),
+            "Files" | "files" => Ok(CmdAction::Files),
             _ if trimmed.starts_with("w ") || trimmed.starts_with("write ") => {
                 let path = trimmed.splitn(2, ' ').nth(1).unwrap_or("").trim().to_string();
                 if path.is_empty() {
@@ -595,6 +611,14 @@ impl App {
             _ if trimmed.starts_with("Dired ") || trimmed.starts_with("dired ") => {
                 let path = trimmed.splitn(2, ' ').nth(1).unwrap_or("").trim().to_string();
                 Ok(CmdAction::Dired(Some(path)))
+            }
+            _ if trimmed.starts_with("Rg ") || trimmed.starts_with("rg ") => {
+                let pat = trimmed.splitn(2, ' ').nth(1).unwrap_or("").trim().to_string();
+                if pat.is_empty() {
+                    Err("No pattern given".to_string())
+                } else {
+                    Ok(CmdAction::Rg(pat))
+                }
             }
             _ => Err(format!("Unknown command: {}", cmdline)),
         }
@@ -638,6 +662,62 @@ impl App {
             CmdAction::Ibuffer => self.open_ibuffer(),
             CmdAction::BufferDelete => self.delete_active_buffer(),
             CmdAction::Dired(arg) => self.open_dired(arg),
+            CmdAction::Files => self.open_files_picker(),
+            CmdAction::Rg(pattern) => self.run_rg(&pattern),
+        }
+    }
+
+    /// Open a fuzzy file picker over the project (gitignore-aware walk).
+    fn open_files_picker(&mut self) {
+        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let mut items: Vec<PickerItem> = Vec::new();
+        for result in ignore::WalkBuilder::new(&root).build() {
+            let entry = match result {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                let path = entry.path().to_path_buf();
+                let label = path
+                    .strip_prefix(&root)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .into_owned();
+                items.push(PickerItem::new(label, PickerAction::OpenPath(path)));
+            }
+        }
+        self.picker = Some(PickerState::new("Files", items));
+    }
+
+    /// Run `rg --vimgrep <pattern>` and show matches in a picker. Reports a
+    /// clear message when ripgrep is not installed.
+    fn run_rg(&mut self, pattern: &str) {
+        let output = std::process::Command::new("rg")
+            .arg("--vimgrep")
+            .arg(pattern)
+            .output();
+        match output {
+            Ok(out) => {
+                let text = String::from_utf8_lossy(&out.stdout);
+                let items: Vec<PickerItem> = text
+                    .lines()
+                    .filter_map(parse_rg_line)
+                    .map(|(path, line, col, body)| {
+                        PickerItem::new(
+                            format!("{}:{}:{}: {}", path.display(), line, col, body),
+                            PickerAction::OpenLocation(path, line, col),
+                        )
+                    })
+                    .collect();
+                if items.is_empty() {
+                    self.message = Some(format!("No matches for '{}'", pattern));
+                } else {
+                    self.picker = Some(PickerState::new(format!("Rg: {}", pattern), items));
+                }
+            }
+            Err(_) => {
+                self.message = Some("ripgrep (rg) not found in PATH".to_string());
+            }
         }
     }
 
@@ -1103,6 +1183,37 @@ mod tests {
         assert!(name.ends_with("sub"), "descended into sub, got {name}");
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn parse_rg_vimgrep_line() {
+        let (path, line, col, body) =
+            parse_rg_line("src/main.rs:12:5:let x = 1").expect("parses");
+        assert_eq!(path, PathBuf::from("src/main.rs"));
+        assert_eq!(line, 12);
+        assert_eq!(col, 5);
+        assert_eq!(body, "let x = 1");
+    }
+
+    #[test]
+    fn parse_rg_line_keeps_colons_in_body() {
+        let (_p, l, c, body) = parse_rg_line("a.rs:3:1:foo: bar: baz").expect("parses");
+        assert_eq!((l, c), (3, 1));
+        assert_eq!(body, "foo: bar: baz");
+    }
+
+    #[test]
+    fn parse_rg_line_rejects_malformed() {
+        assert!(parse_rg_line("not a grep line").is_none());
+        assert!(parse_rg_line("a.rs:notanumber:1:x").is_none());
+    }
+
+    #[test]
+    fn parse_rg_and_files_commands() {
+        let a = App::new("x".into(), PathBuf::from("f.txt"));
+        assert_eq!(a.parse_cmdline(":Files"), Ok(CmdAction::Files));
+        assert_eq!(a.parse_cmdline(":Rg todo"), Ok(CmdAction::Rg("todo".into())));
+        assert!(a.parse_cmdline(":Rg").is_err());
     }
 
     #[test]
