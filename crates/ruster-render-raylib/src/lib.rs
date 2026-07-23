@@ -39,6 +39,7 @@ impl RaylibRenderer {
         let (mut rl, thread) = raylib::init()
             .size(width, height)
             .title(title)
+            .resizable()
             .build();
         rl.set_target_fps(60);
         rl.set_exit_key(None);
@@ -123,93 +124,106 @@ impl Renderer for RaylibRenderer {
             let buf_rows = view.rect.height.saturating_sub(1) as usize;
             let text_x = px + (view.gutter.width as f32 * char_w) as i32;
             let scroll = view.scroll_offset as usize;
+            let win_h = view.rect.height as i32 * LINE_H;
 
-            // Gutter column.
-            for (row, label) in view.gutter.rows.iter().take(buf_rows).enumerate() {
-                let gy = py + row as i32 * LINE_H;
-                d.draw_text_ex(font, label, Vector2::new(px as f32, gy as f32), FONT_SIZE as f32, 1.0, gutter_color);
-            }
+            // Clip everything in this window to its own rect so text/statusline
+            // can't bleed past the divider into a neighbouring pane.
+            {
+                let mut s = d.begin_scissor_mode(px, py, pw, win_h);
 
-            // Buffer text (this window's own scroll).
-            for (row, line) in view.lines.iter().skip(scroll).take(buf_rows).enumerate() {
-                let gy = py + row as i32 * LINE_H;
-                let n = line.text.len();
-                if n == 0 {
-                    continue;
+                // Gutter column.
+                for (row, label) in view.gutter.rows.iter().take(buf_rows).enumerate() {
+                    let gy = py + row as i32 * LINE_H;
+                    s.draw_text_ex(font, label, Vector2::new(px as f32, gy as f32), FONT_SIZE as f32, 1.0, gutter_color);
                 }
-                if line.highlights.is_empty() {
-                    d.draw_text_ex(font, &line.text, Vector2::new(text_x as f32, gy as f32), FONT_SIZE as f32, 1.0, default_color);
-                    continue;
-                }
-                let mut char_colors: Vec<Color> = vec![default_color; n];
-                for &(offset, len, ref style) in &line.highlights {
-                    let fg = match style.fg {
-                        ruster_render::Color::Rgb(r, g, b) => Color::new(r, g, b, 255),
-                        ruster_render::Color::Default => default_color,
-                    };
-                    let end = (offset + len).min(n);
-                    for pos in offset..end {
-                        char_colors[pos] = fg;
+
+                // Buffer text (this window's own scroll).
+                for (row, line) in view.lines.iter().skip(scroll).take(buf_rows).enumerate() {
+                    let gy = py + row as i32 * LINE_H;
+                    let n = line.text.len();
+                    if n == 0 {
+                        continue;
+                    }
+                    if line.highlights.is_empty() {
+                        s.draw_text_ex(font, &line.text, Vector2::new(text_x as f32, gy as f32), FONT_SIZE as f32, 1.0, default_color);
+                        continue;
+                    }
+                    let mut char_colors: Vec<Color> = vec![default_color; n];
+                    for &(offset, len, ref style) in &line.highlights {
+                        let fg = match style.fg {
+                            ruster_render::Color::Rgb(r, g, b) => Color::new(r, g, b, 255),
+                            ruster_render::Color::Default => default_color,
+                        };
+                        let end = (offset + len).min(n);
+                        for pos in offset..end {
+                            char_colors[pos] = fg;
+                        }
+                    }
+                    let mut x_offset = text_x as f32;
+                    let mut pos = 0;
+                    while pos < n {
+                        let c = char_colors[pos];
+                        let start = pos;
+                        while pos < n && char_colors[pos] == c {
+                            pos += 1;
+                        }
+                        let seg = &line.text[start..pos];
+                        s.draw_text_ex(font, seg, Vector2::new(x_offset, gy as f32), FONT_SIZE as f32, 1.0, c);
+                        x_offset += measure(seg);
                     }
                 }
-                let mut x_offset = text_x as f32;
-                let mut pos = 0;
-                while pos < n {
-                    let c = char_colors[pos];
-                    let start = pos;
-                    while pos < n && char_colors[pos] == c {
-                        pos += 1;
-                    }
-                    let seg = &line.text[start..pos];
-                    d.draw_text_ex(font, seg, Vector2::new(x_offset, gy as f32), FONT_SIZE as f32, 1.0, c);
-                    x_offset += measure(seg);
-                }
-            }
 
-            // Cursor (only the active window sets cursor_visible).
-            if view.cursor_visible {
-                let cline = view.cursor.0 as usize;
-                if cline >= scroll && cline < scroll + buf_rows {
-                    let vis_row = (cline - scroll) as i32;
-                    let col = view.cursor.1 as usize;
-                    let text_before = view
-                        .lines
-                        .get(cline)
-                        .map(|l| {
-                            let end = col.min(l.text.len());
-                            &l.text[..end]
-                        })
-                        .unwrap_or("");
-                    let mut cx = text_x as f32 + measure(text_before);
-                    let mut cy = py + vis_row * LINE_H;
-                    if let Some((dcx, dcy)) = view.cursor_smooth {
-                        cx += dcx * char_w;
-                        cy = (cy as f32 + dcy * LINE_H as f32) as i32;
-                    }
-                    let cx = cx as i32;
-                    match view.cursor_kind {
-                        CursorKind::Block => d.draw_rectangle(cx, cy, char_w as i32, LINE_H, Color::new(245, 224, 220, 200)),
-                        CursorKind::Bar => d.draw_rectangle(cx, cy, 2, LINE_H, Color::new(245, 224, 220, 255)),
+                // Cursor (only the active window sets cursor_visible).
+                if view.cursor_visible {
+                    let cline = view.cursor.0 as usize;
+                    if cline >= scroll && cline < scroll + buf_rows {
+                        let vis_row = (cline - scroll) as i32;
+                        let col = view.cursor.1 as usize;
+                        let text_before = view
+                            .lines
+                            .get(cline)
+                            .map(|l| {
+                                let end = col.min(l.text.len());
+                                &l.text[..end]
+                            })
+                            .unwrap_or("");
+                        let mut cx = text_x as f32 + measure(text_before);
+                        let mut cy = py + vis_row * LINE_H;
+                        if let Some((dcx, dcy)) = view.cursor_smooth {
+                            cx += dcx * char_w;
+                            cy = (cy as f32 + dcy * LINE_H as f32) as i32;
+                        }
+                        let cx = cx as i32;
+                        match view.cursor_kind {
+                            CursorKind::Block => s.draw_rectangle(cx, cy, char_w as i32, LINE_H, Color::new(245, 224, 220, 200)),
+                            CursorKind::Bar => s.draw_rectangle(cx, cy, 2, LINE_H, Color::new(245, 224, 220, 255)),
+                        }
                     }
                 }
-            }
 
-            // Per-window statusline on its bottom row.
-            let sl_y = py + buf_rows as i32 * LINE_H;
-            let (sl_bg, sl_fg) = if view.active {
-                (Color::new(69, 71, 90, 255), Color::new(205, 214, 244, 255))
-            } else {
-                (Color::new(40, 40, 48, 255), Color::new(120, 120, 130, 255))
-            };
-            d.draw_rectangle(px, sl_y, pw, LINE_H, sl_bg);
-            let left = format!(" {} ", view.statusline.left);
-            d.draw_text_ex(font, &left, Vector2::new(px as f32, sl_y as f32), FONT_SIZE as f32, 1.0, sl_fg);
-            let right = format!(" {} ", view.statusline.right);
-            let right_x = (px + pw) as f32 - measure(&right);
-            d.draw_text_ex(font, &right, Vector2::new(right_x, sl_y as f32), FONT_SIZE as f32, 1.0, sl_fg);
-            if !view.statusline.center.is_empty() {
-                let center_x = px as f32 + (pw as f32 - measure(&view.statusline.center)) / 2.0;
-                d.draw_text_ex(font, &view.statusline.center, Vector2::new(center_x, sl_y as f32), FONT_SIZE as f32, 1.0, sl_fg);
+                // Per-window statusline on its bottom row.
+                let sl_y = py + buf_rows as i32 * LINE_H;
+                let (sl_bg, sl_fg) = if view.active {
+                    (Color::new(69, 71, 90, 255), Color::new(205, 214, 244, 255))
+                } else {
+                    (Color::new(40, 40, 48, 255), Color::new(120, 120, 130, 255))
+                };
+                s.draw_rectangle(px, sl_y, pw, LINE_H, sl_bg);
+                let left = format!(" {} ", view.statusline.left);
+                s.draw_text_ex(font, &left, Vector2::new(px as f32, sl_y as f32), FONT_SIZE as f32, 1.0, sl_fg);
+                let right = format!(" {} ", view.statusline.right);
+                let right_x = (px + pw) as f32 - measure(&right);
+                s.draw_text_ex(font, &right, Vector2::new(right_x, sl_y as f32), FONT_SIZE as f32, 1.0, sl_fg);
+                if !view.statusline.center.is_empty() {
+                    let center_w = measure(&view.statusline.center);
+                    let center_x = px as f32 + (pw as f32 - center_w) / 2.0;
+                    // Only draw the center group if it fits between left and right.
+                    let left_w = measure(&left);
+                    let right_w = measure(&right);
+                    if pw as f32 > left_w + right_w + center_w {
+                        s.draw_text_ex(font, &view.statusline.center, Vector2::new(center_x, sl_y as f32), FONT_SIZE as f32, 1.0, sl_fg);
+                    }
+                }
             }
 
             // Divider on the right edge for side-by-side windows.
@@ -237,16 +251,18 @@ impl Renderer for RaylibRenderer {
             let box_y = screen_h / 4;
             d.draw_rectangle(box_x, box_y, box_w, box_h, box_bg);
             d.draw_rectangle_lines(box_x, box_y, box_w, box_h, accent);
-            d.draw_text_ex(font, &format!(" {} ", picker.title), Vector2::new(box_x as f32 + 4.0, box_y as f32), FONT_SIZE as f32, 1.0, accent);
-            d.draw_text_ex(font, &format!(" > {}", picker.query), Vector2::new(box_x as f32 + 4.0, (box_y + LINE_H) as f32), FONT_SIZE as f32, 1.0, default_color);
+            // Clip contents to the box so long labels don't overflow.
+            let mut s = d.begin_scissor_mode(box_x + 1, box_y + 1, box_w - 2, box_h - 2);
+            s.draw_text_ex(font, &format!(" {} ", picker.title), Vector2::new(box_x as f32 + 4.0, box_y as f32), FONT_SIZE as f32, 1.0, accent);
+            s.draw_text_ex(font, &format!(" > {}", picker.query), Vector2::new(box_x as f32 + 4.0, (box_y + LINE_H) as f32), FONT_SIZE as f32, 1.0, default_color);
             let max_visible = ((box_h - 2 * LINE_H) / LINE_H).max(0) as usize;
             for (i, row) in picker.rows.iter().take(max_visible).enumerate() {
                 let ry = box_y + (2 + i as i32) * LINE_H;
                 if row.selected {
-                    d.draw_rectangle(box_x, ry, box_w, LINE_H, accent);
-                    d.draw_text_ex(font, &format!(" {}", row.label), Vector2::new(box_x as f32 + 4.0, ry as f32), FONT_SIZE as f32, 1.0, box_bg);
+                    s.draw_rectangle(box_x, ry, box_w, LINE_H, accent);
+                    s.draw_text_ex(font, &format!(" {}", row.label), Vector2::new(box_x as f32 + 4.0, ry as f32), FONT_SIZE as f32, 1.0, box_bg);
                 } else {
-                    d.draw_text_ex(font, &format!(" {}", row.label), Vector2::new(box_x as f32 + 4.0, ry as f32), FONT_SIZE as f32, 1.0, default_color);
+                    s.draw_text_ex(font, &format!(" {}", row.label), Vector2::new(box_x as f32 + 4.0, ry as f32), FONT_SIZE as f32, 1.0, default_color);
                 }
             }
         }
