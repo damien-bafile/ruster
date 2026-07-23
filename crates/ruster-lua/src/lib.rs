@@ -6,4 +6,4 @@ pub mod runtime;
 
 pub use event::EventBus;
 pub use keymap::{parse_lua_key, LuaKey, LuaKeymap};
-pub use runtime::{LuaAction, LuaRuntime};
+pub use runtime::{LuaAction, LuaRuntime, WindowCallbacks};

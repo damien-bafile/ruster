@@ -250,6 +250,59 @@ impl App {
             }),
         );
 
+        // Window/buffer manipulation callbacks for the Lua API.
+        {
+            let ws_lb = ws.clone();
+            let ws_lw = ws.clone();
+            let ws_cw = ws.clone();
+            let ws_scw = ws.clone();
+            let ws_wgb = ws.clone();
+            let ws_wsb = ws.clone();
+            let ws_ow = ws.clone();
+            let ws_cl = ws.clone();
+            lua.set_window_callbacks(ruster_lua::WindowCallbacks {
+                list_bufs: Box::new(move || {
+                    ws_lb.borrow().buffers.ids().iter().map(|id| id.0 as i32).collect()
+                }),
+                list_wins: Box::new(move || {
+                    let w = ws_lw.borrow();
+                    w.windows
+                        .compute_rects(CoreRect::new(0, 0, 1000, 1000))
+                        .into_iter()
+                        .map(|(id, _)| id.0 as i32)
+                        .collect()
+                }),
+                current_win: Box::new(move || ws_cw.borrow().windows.active().0 as i32),
+                set_current_win: Box::new(move |_id| {
+                    // Focus-by-id is not exposed on WindowTree yet; no-op for now.
+                    let _ = &ws_scw;
+                }),
+                win_get_buf: Box::new(move |win| {
+                    let w = ws_wgb.borrow();
+                    w.windows
+                        .window(ruster_core::windows::WindowId(win as u32))
+                        .map(|win| win.buffer.0 as i32)
+                        .unwrap_or(0)
+                }),
+                win_set_buf: Box::new(move |win, buf| {
+                    let mut w = ws_wsb.borrow_mut();
+                    if w.buffers.get(ruster_core::document::BufferId(buf as u32)).is_some() {
+                        if let Some(win) = w.windows.window_mut(ruster_core::windows::WindowId(win as u32)) {
+                            win.buffer = ruster_core::document::BufferId(buf as u32);
+                        }
+                    }
+                }),
+                open_win: Box::new(move |vertical| {
+                    let dir = if vertical { SplitDir::Vertical } else { SplitDir::Horizontal };
+                    ws_ow.borrow_mut().windows.split(dir).0 as i32
+                }),
+                close_win: Box::new(move |_id| {
+                    // Close the active window (id-targeted close is a follow-up).
+                    ws_cl.borrow_mut().windows.close_active();
+                }),
+            });
+        }
+
         lua.fire_event("VimEnter", &[]);
         let mut config = lua.config();
         // Apply EditorConfig overrides

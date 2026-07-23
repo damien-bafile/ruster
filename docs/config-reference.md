@@ -22,5 +22,27 @@ ruster.config = {
 | `softtabstop` | integer | 4 | Number of spaces inserted when pressing Tab |
 | `expandtab` | boolean | true | Use spaces instead of tab characters |
 | `number` | boolean | false | Show absolute line numbers in the gutter |
-| `relativenumber` | boolean | false | Show relative line numbers (distance from cursor) |
+| `relativenumber` | boolean | false | Show relative line numbers (distance from cursor). With `number` also on, the gutter is hybrid: the cursor line shows its absolute number, other lines show the relative distance |
 | `theme` | string | "default" | Color theme name |
+| `cursor_anim_enabled` | boolean | true | Enable smooth cursor animation |
+| `cursor_anim_speed` | float | 12.0 | Smooth-cursor easing speed |
+| `timeoutlen` | integer | 300 | Milliseconds before the which-key panel appears for a pending key prefix |
+
+## Windows & buffers
+
+ruster is multi-buffer and multi-window. Relevant commands:
+
+| Command | Action |
+|---------|--------|
+| `:split` / `:sp` | Split the active window horizontally |
+| `:vsplit` / `:vs` | Split the active window vertically |
+| `:close` / `:clo` | Close the active window (`Ctrl-w c`) |
+| `:only` / `:on` | Close all other windows (`Ctrl-w o`) |
+| `:fullscreen` | Toggle fullscreen for the active window (`Ctrl-w z`) |
+| `:ls` / `:buffers` | Open the buffer-list picker |
+| `:bd` / `:bdelete` | Delete the active buffer |
+| `:Dired [path]` | Open the file explorer |
+| `:Files` | Fuzzy file finder (gitignore-aware) |
+| `:Rg <pattern>` | Live grep via ripgrep |
+
+Window keys: `Ctrl-w s/v` split, `Ctrl-w c` close, `Ctrl-w o` only, `Ctrl-w h/j/k/l` focus, `Ctrl-w z` fullscreen. Press `:` then `Tab` for the command palette.

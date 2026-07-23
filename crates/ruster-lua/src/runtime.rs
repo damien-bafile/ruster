@@ -11,6 +11,20 @@ pub enum LuaAction {
     Print(String),
 }
 
+/// Callbacks the app installs so Lua can query and manipulate buffers and
+/// windows. Ids are the raw `u32` values of `BufferId`/`WindowId` as `i32`.
+pub struct WindowCallbacks {
+    pub list_bufs: Box<dyn FnMut() -> Vec<i32>>,
+    pub list_wins: Box<dyn FnMut() -> Vec<i32>>,
+    pub current_win: Box<dyn FnMut() -> i32>,
+    pub set_current_win: Box<dyn FnMut(i32)>,
+    pub win_get_buf: Box<dyn FnMut(i32) -> i32>,
+    pub win_set_buf: Box<dyn FnMut(i32, i32)>,
+    /// Split the active window; `true` = vertical. Returns the new window id.
+    pub open_win: Box<dyn FnMut(bool) -> i32>,
+    pub close_win: Box<dyn FnMut(i32)>,
+}
+
 pub struct LuaRuntime {
     pub lua: Lua,
     pub(crate) keymaps: RefCell<Vec<LuaKeymap>>,
@@ -23,6 +37,8 @@ pub struct LuaRuntime {
     pub(crate) set_cursor: RefCell<Option<Box<dyn FnMut(i32, i32)>>>,
     /// Lua-registered statusline sections: (position, callback registry key).
     pub(crate) statusline: RefCell<Vec<(String, RegistryKey)>>,
+    /// Window/buffer manipulation callbacks installed by the app.
+    pub(crate) window_cb: RefCell<Option<WindowCallbacks>>,
 }
 
 impl LuaRuntime {
@@ -41,6 +57,7 @@ impl LuaRuntime {
             get_cursor: RefCell::new(None),
             set_cursor: RefCell::new(None),
             statusline: RefCell::new(Vec::new()),
+            window_cb: RefCell::new(None),
         };
 
         let ruster = crate::api::create_table(&runtime)?;
@@ -59,6 +76,11 @@ impl LuaRuntime {
         self.set_lines.replace(Some(set_lines));
         self.get_cursor.replace(Some(get_cursor));
         self.set_cursor.replace(Some(set_cursor));
+    }
+
+    /// Install the window/buffer manipulation callbacks.
+    pub fn set_window_callbacks(&self, cb: WindowCallbacks) {
+        self.window_cb.replace(Some(cb));
     }
 
     /// Evaluate all Lua statusline sections registered for `pos`

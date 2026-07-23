@@ -93,6 +93,31 @@ local pos = ruster.api.nvim_win_get_cursor(0)
 ruster.api.nvim_win_set_cursor(0, { row = 5, col = 10 })
 ```
 
+#### Windows & buffers
+
+```lua
+-- List open buffer ids and window ids
+local bufs = ruster.api.nvim_list_bufs()   -- { 1, 2, ... }
+local wins = ruster.api.nvim_list_wins()   -- { 1, 2, ... }
+
+-- Active window, and the buffer a window shows
+local win = ruster.api.nvim_get_current_win()
+local buf = ruster.api.nvim_win_get_buf(win)
+
+-- Point a window at a buffer
+ruster.api.nvim_win_set_buf(win, buf)
+
+-- Split the active window (true = vertical); returns the new window id
+local new_win = ruster.api.nvim_open_win(true)
+
+-- Close a window
+ruster.api.nvim_win_close(new_win)
+```
+
+Buffer and window ids are stable integers. `nvim_open_win` splits the active
+window; `nvim_win_close` closes the active window (id-targeted close is a
+follow-up).
+
 ### `ruster.statusline.section(pos, fn)`
 
 Register a statusline component. `pos` is `"left"`, `"center"`, or `"right"`.

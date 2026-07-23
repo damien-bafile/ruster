@@ -147,6 +147,108 @@ pub fn create_table(runtime: &LuaRuntime) -> mlua::Result<Table> {
     })?;
     api.set("nvim_win_set_cursor", set_cursor)?;
 
+    // nvim_list_bufs() -> { buf_id, ... }
+    let rt = runtime as *const LuaRuntime;
+    let list_bufs = runtime.lua.create_function(move |lua, ()| {
+        let ids = unsafe {
+            let mut cb = (*rt).window_cb.borrow_mut();
+            cb.as_mut().map(|c| (c.list_bufs)()).unwrap_or_default()
+        };
+        let t = lua.create_table()?;
+        for (i, id) in ids.iter().enumerate() {
+            t.set(i as i32 + 1, *id)?;
+        }
+        Ok(t)
+    })?;
+    api.set("nvim_list_bufs", list_bufs)?;
+
+    // nvim_list_wins() -> { win_id, ... }
+    let rt = runtime as *const LuaRuntime;
+    let list_wins = runtime.lua.create_function(move |lua, ()| {
+        let ids = unsafe {
+            let mut cb = (*rt).window_cb.borrow_mut();
+            cb.as_mut().map(|c| (c.list_wins)()).unwrap_or_default()
+        };
+        let t = lua.create_table()?;
+        for (i, id) in ids.iter().enumerate() {
+            t.set(i as i32 + 1, *id)?;
+        }
+        Ok(t)
+    })?;
+    api.set("nvim_list_wins", list_wins)?;
+
+    // nvim_get_current_win() -> win_id (0 when unavailable)
+    let rt = runtime as *const LuaRuntime;
+    let get_current_win = runtime.lua.create_function(move |_, ()| {
+        let id = unsafe {
+            let mut cb = (*rt).window_cb.borrow_mut();
+            cb.as_mut().map(|c| (c.current_win)()).unwrap_or(0)
+        };
+        Ok(id)
+    })?;
+    api.set("nvim_get_current_win", get_current_win)?;
+
+    // nvim_set_current_win(win_id)
+    let rt = runtime as *const LuaRuntime;
+    let set_current_win = runtime.lua.create_function(move |_, win: i32| {
+        unsafe {
+            let mut cb = (*rt).window_cb.borrow_mut();
+            if let Some(c) = cb.as_mut() {
+                (c.set_current_win)(win);
+            }
+        }
+        Ok(())
+    })?;
+    api.set("nvim_set_current_win", set_current_win)?;
+
+    // nvim_win_get_buf(win_id) -> buf_id (0 when unavailable)
+    let rt = runtime as *const LuaRuntime;
+    let win_get_buf = runtime.lua.create_function(move |_, win: i32| {
+        let id = unsafe {
+            let mut cb = (*rt).window_cb.borrow_mut();
+            cb.as_mut().map(|c| (c.win_get_buf)(win)).unwrap_or(0)
+        };
+        Ok(id)
+    })?;
+    api.set("nvim_win_get_buf", win_get_buf)?;
+
+    // nvim_win_set_buf(win_id, buf_id)
+    let rt = runtime as *const LuaRuntime;
+    let win_set_buf = runtime.lua.create_function(move |_, (win, buf): (i32, i32)| {
+        unsafe {
+            let mut cb = (*rt).window_cb.borrow_mut();
+            if let Some(c) = cb.as_mut() {
+                (c.win_set_buf)(win, buf);
+            }
+        }
+        Ok(())
+    })?;
+    api.set("nvim_win_set_buf", win_set_buf)?;
+
+    // nvim_open_win(vertical) -> new win_id (0 when unavailable)
+    let rt = runtime as *const LuaRuntime;
+    let open_win = runtime.lua.create_function(move |_, vertical: Option<bool>| {
+        let id = unsafe {
+            let mut cb = (*rt).window_cb.borrow_mut();
+            cb.as_mut().map(|c| (c.open_win)(vertical.unwrap_or(false))).unwrap_or(0)
+        };
+        Ok(id)
+    })?;
+    api.set("nvim_open_win", open_win)?;
+
+    // nvim_win_close(win_id)
+    let rt = runtime as *const LuaRuntime;
+    let win_close = runtime.lua.create_function(move |_, win: i32| {
+        unsafe {
+            let mut cb = (*rt).window_cb.borrow_mut();
+            if let Some(c) = cb.as_mut() {
+                (c.close_win)(win);
+            }
+        }
+        Ok(())
+    })?;
+    api.set("nvim_win_close", win_close)?;
+
     // ruster.api.get_frame_delta()
     let rt = runtime as *const LuaRuntime;
     let get_frame_delta = runtime.lua.create_function(move |_, ()| {
@@ -200,6 +302,50 @@ mod tests {
         cmd_fn.call::<()>(":w").unwrap();
         let actions = rt.drain_actions();
         assert!(matches!(actions.as_slice(), [runtime::LuaAction::Cmd(m)] if m == ":w"));
+    }
+
+    #[test]
+    fn nvim_list_bufs_no_callback_returns_empty() {
+        let rt = make_runtime();
+        let t = create_table(&rt).unwrap();
+        let api: Table = t.get("api").unwrap();
+        let list_bufs: Function = api.get("nvim_list_bufs").unwrap();
+        let result: Table = list_bufs.call(()).unwrap();
+        assert_eq!(result.len().unwrap(), 0);
+    }
+
+    #[test]
+    fn nvim_open_win_no_callback_returns_zero() {
+        let rt = make_runtime();
+        let t = create_table(&rt).unwrap();
+        let api: Table = t.get("api").unwrap();
+        let open_win: Function = api.get("nvim_open_win").unwrap();
+        let id: i32 = open_win.call(true).unwrap();
+        assert_eq!(id, 0);
+    }
+
+    #[test]
+    fn window_callbacks_drive_list_bufs_and_open_win() {
+        use crate::runtime::WindowCallbacks;
+        let rt = make_runtime();
+        rt.set_window_callbacks(WindowCallbacks {
+            list_bufs: Box::new(|| vec![1, 2, 3]),
+            list_wins: Box::new(|| vec![1]),
+            current_win: Box::new(|| 1),
+            set_current_win: Box::new(|_| {}),
+            win_get_buf: Box::new(|_| 7),
+            win_set_buf: Box::new(|_, _| {}),
+            open_win: Box::new(|_vertical| 42),
+            close_win: Box::new(|_| {}),
+        });
+        let t = create_table(&rt).unwrap();
+        let api: Table = t.get("api").unwrap();
+        let list_bufs: Function = api.get("nvim_list_bufs").unwrap();
+        let bufs: Table = list_bufs.call(()).unwrap();
+        assert_eq!(bufs.len().unwrap(), 3);
+        let open_win: Function = api.get("nvim_open_win").unwrap();
+        let id: i32 = open_win.call(true).unwrap();
+        assert_eq!(id, 42);
     }
 
     #[test]
