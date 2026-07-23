@@ -92,6 +92,20 @@ impl PickerState {
         self.selected = next as usize;
     }
 
+    /// Append an item (used to stream results into an open picker).
+    pub fn push_item(&mut self, item: PickerItem) {
+        self.items.push(item);
+    }
+
+    /// Number of items currently loaded.
+    pub fn len(&self) -> usize {
+        self.items.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+
     pub fn push_char(&mut self, c: char) {
         self.filter.push(c);
         self.selected = 0;
@@ -185,6 +199,16 @@ mod tests {
             p.push_char(c);
         }
         assert_eq!(p.accept(), None);
+    }
+
+    #[test]
+    fn push_item_streams_into_picker() {
+        let mut p = PickerState::new("files", Vec::new());
+        assert!(p.is_empty());
+        p.push_item(PickerItem::new("a.rs", PickerAction::RunCmd("1".into())));
+        p.push_item(PickerItem::new("b.rs", PickerAction::RunCmd("2".into())));
+        assert_eq!(p.len(), 2);
+        assert_eq!(p.filtered(), vec![0, 1]);
     }
 
     #[test]

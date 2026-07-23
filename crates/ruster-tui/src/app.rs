@@ -269,8 +269,14 @@ pub struct App {
     whichkey_anim: f32,
     whichkey_cache: Option<(String, Vec<String>)>,
     anim_clock: std::time::Instant,
+    /// When the current leader sequence started, so the which-key panel only
+    /// pops after `Config.timeoutlen` (unless already visible).
+    leader_since: Option<std::time::Instant>,
     /// Active floating picker (buffer list, file finder, ...), if any.
     picker: Option<PickerState>,
+    /// Streaming results for the active picker (`:Files` walk, `:Rg` output),
+    /// drained into the picker each frame. Backend-agnostic (polled in render).
+    pending_results: Option<std::sync::mpsc::Receiver<PickerItem>>,
     /// Current directory for each open dired (file-explorer) buffer.
     dired_dirs: std::collections::HashMap<BufferId, PathBuf>,
 }
@@ -432,9 +438,11 @@ impl App {
             should_quit: false, message: None, syntax, syntax_buffer, lua, config, timer,
             has_smooth_cursor: false, cursor_anim, pending_ctrl_w: false, picker: None,
             leader_pending: None,
+            pending_results: None,
             whichkey_anim: 0.0,
             whichkey_cache: None,
             anim_clock: std::time::Instant::now(),
+            leader_since: None,
             dired_dirs: std::collections::HashMap::new(),
         }
     }
@@ -476,6 +484,7 @@ impl App {
             && !ck.modifiers.contains(KeyModifiers::CONTROL)
         {
             self.leader_pending = Some(Vec::new());
+            self.leader_since = Some(std::time::Instant::now());
             return;
         }
         // Direct Ctrl+h/j/k/l focus movement between splits (no Ctrl-w prefix).
@@ -685,7 +694,32 @@ impl App {
         }
     }
 
+    /// Drain any streamed picker results (`:Files`/`:Rg`) into the open picker.
+    fn drain_pending_results(&mut self) {
+        if let Some(rx) = self.pending_results.take() {
+            let mut still_active = true;
+            match self.picker.as_mut() {
+                Some(picker) => loop {
+                    match rx.try_recv() {
+                        Ok(item) => picker.push_item(item),
+                        Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            still_active = false;
+                            break;
+                        }
+                    }
+                },
+                // The picker was closed; stop draining.
+                None => still_active = false,
+            }
+            if still_active {
+                self.pending_results = Some(rx);
+            }
+        }
+    }
+
     fn render(&mut self) {
+        self.drain_pending_results();
         let (cols, rows) = self.renderer.viewport_cells();
         // Reserve a bottom row for the cmdline/message only while one is shown,
         // so the statusline sits flush at the very bottom otherwise.
@@ -815,7 +849,13 @@ impl App {
                 self.whichkey_cache = Some(content);
             }
         }
-        let target = if self.leader_pending.is_some() { 1.0 } else { 0.0 };
+        // Show the panel only after timeoutlen from the leader start — but once
+        // it has begun appearing, keep it up until the sequence ends.
+        let past_timeout = self
+            .leader_since
+            .map_or(false, |t| now.duration_since(t).as_millis() as u32 >= self.config.timeoutlen);
+        let show = self.leader_pending.is_some() && (self.whichkey_anim > 0.01 || past_timeout);
+        let target = if show { 1.0 } else { 0.0 };
         self.whichkey_anim += (target - self.whichkey_anim) * (1.0 - (-18.0 * dt).exp());
         if self.whichkey_anim < 0.002 {
             self.whichkey_anim = 0.0;
@@ -936,58 +976,77 @@ impl App {
         }
     }
 
-    /// Open a fuzzy file picker over the project (gitignore-aware walk).
+    /// Open a fuzzy file picker over the project (gitignore-aware walk). The walk
+    /// runs on a background thread, streaming paths into the picker each frame so
+    /// the render loop never blocks on a large repo.
     fn open_files_picker(&mut self) {
         let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let mut items: Vec<PickerItem> = Vec::new();
-        for result in ignore::WalkBuilder::new(&root).build() {
-            let entry = match result {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
-                let path = entry.path().to_path_buf();
-                let label = path
-                    .strip_prefix(&root)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .into_owned();
-                items.push(PickerItem::new(label, PickerAction::OpenPath(path)));
-            }
-        }
-        self.picker = Some(PickerState::new("Files", items));
-    }
-
-    /// Run `rg --vimgrep <pattern>` and show matches in a picker. Reports a
-    /// clear message when ripgrep is not installed.
-    fn run_rg(&mut self, pattern: &str) {
-        let output = std::process::Command::new("rg")
-            .arg("--vimgrep")
-            .arg(pattern)
-            .output();
-        match output {
-            Ok(out) => {
-                let text = String::from_utf8_lossy(&out.stdout);
-                let items: Vec<PickerItem> = text
-                    .lines()
-                    .filter_map(parse_rg_line)
-                    .map(|(path, line, col, body)| {
-                        PickerItem::new(
-                            format!("{}:{}:{}: {}", path.display(), line, col, body),
-                            PickerAction::OpenLocation(path, line, col),
-                        )
-                    })
-                    .collect();
-                if items.is_empty() {
-                    self.message = Some(format!("No matches for '{}'", pattern));
-                } else {
-                    self.picker = Some(PickerState::new(format!("Rg: {}", pattern), items));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let walk_root = root.clone();
+        std::thread::spawn(move || {
+            for result in ignore::WalkBuilder::new(&walk_root).build() {
+                let entry = match result {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+                if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                    let path = entry.path().to_path_buf();
+                    let label = path
+                        .strip_prefix(&walk_root)
+                        .unwrap_or(&path)
+                        .to_string_lossy()
+                        .into_owned();
+                    if tx.send(PickerItem::new(label, PickerAction::OpenPath(path))).is_err() {
+                        break; // picker closed
+                    }
                 }
             }
+        });
+        self.picker = Some(PickerState::new("Files", Vec::new()));
+        self.pending_results = Some(rx);
+    }
+
+    /// Run `rg --vimgrep <pattern>`, streaming matches into a picker from a
+    /// background thread. Reports a clear message when ripgrep is not installed.
+    fn run_rg(&mut self, pattern: &str) {
+        let mut child = match std::process::Command::new("rg")
+            .arg("--vimgrep")
+            .arg(pattern)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
             Err(_) => {
                 self.message = Some("ripgrep (rg) not found in PATH".to_string());
+                return;
             }
-        }
+        };
+        let stdout = match child.stdout.take() {
+            Some(s) => s,
+            None => {
+                self.message = Some("failed to capture rg output".to_string());
+                return;
+            }
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            use std::io::{BufRead, BufReader};
+            let reader = BufReader::new(stdout);
+            for line in reader.lines().map_while(Result::ok) {
+                if let Some((path, l, c, body)) = parse_rg_line(&line) {
+                    let item = PickerItem::new(
+                        format!("{}:{}:{}: {}", path.display(), l, c, body),
+                        PickerAction::OpenLocation(path, l, c),
+                    );
+                    if tx.send(item).is_err() {
+                        break;
+                    }
+                }
+            }
+            let _ = child.wait();
+        });
+        self.picker = Some(PickerState::new(format!("Rg: {}", pattern), Vec::new()));
+        self.pending_results = Some(rx);
     }
 
     /// Open (or switch to) a dired file-explorer buffer for `arg` (defaulting
@@ -1520,6 +1579,22 @@ mod tests {
     }
 
     #[test]
+    fn streamed_results_drain_into_picker() {
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        let (tx, rx) = std::sync::mpsc::channel();
+        a.picker = Some(PickerState::new("Files", Vec::new()));
+        a.pending_results = Some(rx);
+        tx.send(PickerItem::new("a.rs", PickerAction::OpenPath(PathBuf::from("a.rs")))).unwrap();
+        tx.send(PickerItem::new("b.rs", PickerAction::OpenPath(PathBuf::from("b.rs")))).unwrap();
+        a.drain_pending_results();
+        assert_eq!(a.picker.as_ref().unwrap().len(), 2);
+        assert!(a.pending_results.is_some(), "still streaming while sender is alive");
+        drop(tx);
+        a.drain_pending_results();
+        assert!(a.pending_results.is_none(), "cleared once the sender disconnects");
+    }
+
+    #[test]
     fn parse_rg_vimgrep_line() {
         let (path, line, col, body) =
             parse_rg_line("src/main.rs:12:5:let x = 1").expect("parses");
@@ -1582,6 +1657,18 @@ mod tests {
         assert_eq!(wtitle, "SPC w");
         assert!(wrows.iter().any(|r| r.starts_with("h ")));
         assert!(wrows.iter().any(|r| r.contains("focus left")));
+    }
+
+    #[test]
+    fn which_key_is_delayed_by_timeoutlen() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.handle_key(CtKey::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert!(a.leader_pending.is_some());
+        assert!(a.leader_since.is_some());
+        // First frame is within timeoutlen (default 300ms), so the panel stays hidden.
+        a.render();
+        assert_eq!(a.whichkey_anim, 0.0, "panel should not appear before timeoutlen");
     }
 
     #[test]
