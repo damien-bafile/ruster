@@ -275,10 +275,13 @@ pub struct App {
     pub renderer: Box<dyn Renderer>,
     pub should_quit: bool,
     message: Option<String>,
-    /// Syntax engine for `syntax_buffer` (the initially-opened file). Windows
-    /// showing other buffers render as plain text for now.
-    syntax: Option<SyntaxEngine>,
-    syntax_buffer: BufferId,
+    /// Per-buffer tree-sitter syntax engines, created lazily the first time a
+    /// buffer with a supported filetype is rendered. Buffers without a supported
+    /// language (or without a file path) simply have no entry and render plain.
+    syntax: std::collections::HashMap<BufferId, SyntaxEngine>,
+    /// Buffers we've already attempted to build a syntax engine for, so an
+    /// unsupported filetype isn't retried every frame.
+    syntax_tried: std::collections::HashSet<BufferId>,
     lua: LuaRuntime,
     config: Config,
     timer: FrameTimer,
@@ -312,13 +315,19 @@ impl App {
     pub fn new(content: String, file_path: PathBuf) -> Self {
         let ws = Rc::new(RefCell::new(Workspace::from_file(file_path.clone(), content.clone())));
         ws.borrow_mut().execute(Action::Move(Motion::To(0)));
-        let syntax_buffer = ws.borrow().active_buffer();
+        let initial_buffer = ws.borrow().active_buffer();
         let vim = VimState::new();
         let renderer = Box::new(TuiRenderer::dummy());
         let ext = file_path.extension()
             .and_then(|e| e.to_str())
             .unwrap_or("");
-        let syntax = SyntaxEngine::new(&content, ext).ok();
+        let mut syntax: std::collections::HashMap<BufferId, SyntaxEngine> =
+            std::collections::HashMap::new();
+        if let Ok(engine) = SyntaxEngine::new(&content, ext) {
+            syntax.insert(initial_buffer, engine);
+        }
+        let mut syntax_tried = std::collections::HashSet::new();
+        syntax_tried.insert(initial_buffer);
         let mut lua = LuaRuntime::new().unwrap_or_else(|e| {
             eprintln!("Lua init failed: {}", e);
             panic!("Lua init required");
@@ -462,7 +471,7 @@ impl App {
         let cursor_anim = CursorAnim::new();
         App {
             ws, vim, renderer,
-            should_quit: false, message: None, syntax, syntax_buffer, lua, config, timer,
+            should_quit: false, message: None, syntax, syntax_tried, lua, config, timer,
             has_smooth_cursor: false, cursor_anim, pending_ctrl_w: false, picker: None,
             leader_pending: None,
             pending_results: None,
@@ -576,8 +585,11 @@ impl App {
         for action in actions {
             match action {
                 Action::Textobject { op, kind, target, count: _ } => {
-                    let cursor = self.ws.borrow().primary_head();
-                    if let Some((start, end)) = self.syntax.as_ref()
+                    let (cursor, active) = {
+                        let w = self.ws.borrow();
+                        (w.primary_head(), w.active_buffer())
+                    };
+                    if let Some((start, end)) = self.syntax.get(&active)
                         .and_then(|s| s.ts_textobject(kind, target, cursor))
                     {
                         self.exec_operator(op, start, end);
@@ -752,6 +764,51 @@ impl App {
         }
     }
 
+    /// Ensure every visible buffer has a syntax engine (built lazily from its
+    /// file extension), then reparse the active buffer's engine.
+    fn update_syntax(&mut self) {
+        let (visible, active) = {
+            let w = self.ws.borrow();
+            let active = w.active_buffer();
+            let visible: Vec<BufferId> = w
+                .windows
+                .compute_rects(CoreRect::new(0, 0, 1000, 1000))
+                .into_iter()
+                .filter_map(|(id, _)| w.windows.window(id).map(|win| win.buffer))
+                .collect();
+            (visible, active)
+        };
+        for buf in visible {
+            if self.syntax.contains_key(&buf) || self.syntax_tried.contains(&buf) {
+                continue;
+            }
+            self.syntax_tried.insert(buf);
+            let (content, ext) = {
+                let w = self.ws.borrow();
+                match w.buffers.get(buf) {
+                    Some(d) => {
+                        let ext = d
+                            .file_path
+                            .as_ref()
+                            .and_then(|p| p.extension())
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("")
+                            .to_string();
+                        (d.buffer.to_string(), ext)
+                    }
+                    None => continue,
+                }
+            };
+            if let Ok(engine) = SyntaxEngine::new(&content, &ext) {
+                self.syntax.insert(buf, engine);
+            }
+        }
+        let active_content = self.ws.borrow().buffers.get(active).map(|d| d.buffer.to_string());
+        if let (Some(c), Some(engine)) = (active_content.as_ref(), self.syntax.get_mut(&active)) {
+            engine.reparse(c);
+        }
+    }
+
     fn render(&mut self) {
         self.drain_pending_results();
         let (cols, rows) = self.renderer.viewport_cells();
@@ -762,14 +819,9 @@ impl App {
         let reserved = if has_cmdline { 1 } else { 0 };
         let buf_area = CoreRect::new(0, 0, cols, rows.saturating_sub(reserved));
 
-        // Reparse syntax for the tracked buffer, then snapshot its styled lines.
-        let syntax_content = self.ws.borrow().buffers
-            .get(self.syntax_buffer)
-            .map(|d| d.buffer.to_string());
-        if let (Some(c), Some(syn)) = (syntax_content.as_ref(), self.syntax.as_mut()) {
-            syn.reparse(c);
-        }
-        let styled: Option<Vec<StyledLine>> = self.syntax.as_ref().map(|s| s.styled_lines().to_vec());
+        // Ensure a syntax engine exists for every visible buffer, then reparse the
+        // active buffer (the only one whose text can have changed this frame).
+        self.update_syntax();
 
         let mode = self.vim.mode;
         let mode_lbl = crate::widgets::mode_label(&mode).to_string();
@@ -815,10 +867,9 @@ impl App {
                     win.scroll_top = scroll;
                 }
 
-                let lines: Vec<StyledLine> = if buf_id == self.syntax_buffer {
-                    styled.clone().unwrap_or_else(|| plain_lines(&content))
-                } else {
-                    plain_lines(&content)
+                let lines: Vec<StyledLine> = match self.syntax.get(&buf_id) {
+                    Some(engine) => engine.styled_lines().to_vec(),
+                    None => plain_lines(&content),
                 };
                 let pct = if line_count > 0 {
                     (cline + 1) * 100 / line_count
@@ -1629,6 +1680,23 @@ mod tests {
         for (id, _) in rects {
             assert_eq!(w.windows.window(id).unwrap().buffer, buf);
         }
+    }
+
+    #[test]
+    fn per_buffer_syntax_engines_created_lazily() {
+        let mut a = App::new("fn main() {}".into(), PathBuf::from("main.rs"));
+        let rust_buf = a.ws.borrow().active_buffer();
+        assert!(a.syntax.contains_key(&rust_buf), "initial rust buffer has an engine");
+
+        // Open a Python file into a new active buffer.
+        let tmp = std::env::temp_dir().join("ruster_syn_test.py");
+        std::fs::write(&tmp, "def f():\n    return 1\n").unwrap();
+        a.open_path(&tmp, None);
+        let py_buf = a.ws.borrow().active_buffer();
+        assert_ne!(rust_buf, py_buf);
+        a.update_syntax();
+        assert!(a.syntax.contains_key(&py_buf), "python buffer gets its own engine");
+        let _ = std::fs::remove_file(&tmp);
     }
 
     #[test]

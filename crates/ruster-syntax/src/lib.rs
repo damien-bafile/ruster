@@ -28,7 +28,7 @@ impl SyntaxEngine {
         parser.set_language(&language).map_err(|_| SyntaxError::QueryError("set_language".into()))?;
         let tree = parser.parse(text, None).ok_or(SyntaxError::QueryError("parse".into()))?;
 
-        let (highlight_scm, textobject_scm) = query_files_for_lang();
+        let (highlight_scm, textobject_scm) = query_files_for_lang(lang_key(file_ext));
         let mut highlighter = Highlighter::new(language.clone(), highlight_scm)
             .map_err(SyntaxError::QueryError)?;
 
@@ -116,9 +116,34 @@ pub fn language_for_ext(ext: &str) -> Option<tree_sitter::Language> {
     }
 }
 
-fn query_files_for_lang() -> (&'static str, &'static str) {
-    (include_str!("../queries/rust/highlights.scm"),
-     include_str!("../queries/rust/textobjects.scm"))
+/// Canonical language key for a file extension, or "" if unsupported.
+fn lang_key(ext: &str) -> &'static str {
+    match ext {
+        "rs" => "rust",
+        "py" => "python",
+        "js" | "mjs" | "cjs" => "javascript",
+        "ts" | "tsx" => "typescript",
+        "c" | "h" => "c",
+        "json" => "json",
+        "toml" => "toml",
+        "yaml" | "yml" => "yaml",
+        _ => "",
+    }
+}
+
+/// Highlight and textobject query sources for a language key. Languages without
+/// bundled queries return empty strings — no (rather than wrong) highlighting;
+/// rainbow brackets still apply since they are computed separately.
+fn query_files_for_lang(key: &str) -> (&'static str, &'static str) {
+    match key {
+        "rust" => (
+            include_str!("../queries/rust/highlights.scm"),
+            include_str!("../queries/rust/textobjects.scm"),
+        ),
+        "python" => (include_str!("../queries/python/highlights.scm"), ""),
+        "json" => (include_str!("../queries/json/highlights.scm"), ""),
+        _ => ("", ""),
+    }
 }
 
 fn compute_bracket_depths(source: &str) -> Vec<Option<usize>> {
@@ -155,6 +180,29 @@ mod tests {
     fn unsupported_extension_returns_err() {
         let engine = SyntaxEngine::new("hello", "xyz");
         assert!(matches!(engine, Err(SyntaxError::UnsupportedLanguage)));
+    }
+
+    #[test]
+    fn python_uses_python_queries_and_highlights() {
+        // Previously this failed because Rust queries were applied to Python.
+        let engine = SyntaxEngine::new("def foo():\n    return 1\n", "py").unwrap();
+        let styled = engine.styled_lines();
+        let has_highlight = styled.iter().any(|l| !l.highlights.is_empty());
+        assert!(has_highlight, "python source should produce highlights");
+    }
+
+    #[test]
+    fn json_highlights_without_error() {
+        let engine = SyntaxEngine::new("{\"a\": 1, \"b\": true}", "json").unwrap();
+        assert!(engine.styled_lines().iter().any(|l| !l.highlights.is_empty()));
+    }
+
+    #[test]
+    fn language_without_queries_still_builds() {
+        // yaml has no bundled query yet — engine builds with an empty query
+        // (no syntax highlights, but no error either).
+        let engine = SyntaxEngine::new("a: 1\n", "yaml");
+        assert!(engine.is_ok());
     }
 
     #[test]
