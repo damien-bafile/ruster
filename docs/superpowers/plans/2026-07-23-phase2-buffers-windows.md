@@ -24,14 +24,14 @@ and which-key. New deps: `nucleo-matcher`, `ignore` (crates); `ripgrep` (externa
 warnings. Checkbox legend below: `[x]` done, `[~]` partially done (see note),
 `[ ]` not done.
 
-**Follow-up work (tasks at the end of this plan):**
-- **GUI (raylib) rendering** — ✅ **done in Task 13**: the raylib backend now renders
-  all split windows at their rects with per-window gutter, statusline, independent
-  scroll, and the picker overlay. Only the manual visual check remains (needs a display).
-- **`:Rg` / `:Files` run synchronously** rather than off the `AppEvent` channel. → **Task 14**.
-- **Dired is navigation-only** (open/descend/up); create/rename/delete deferred. → **Task 15**.
-- **which-key shows immediately** on the prefix rather than after `timeoutlen`. → **Task 16**.
-- **Manual TUI smoke test** in Final Verification not run (needs a real terminal).
+**Follow-up work — all resolved:**
+- **GUI (raylib) rendering** — ✅ **done in Task 13**: renders all split windows at
+  their rects with per-window gutter, statusline, independent scroll, and overlays.
+- **`:Rg` / `:Files`** — ✅ **done in Task 14**: streamed off a background thread.
+- **Dired mutations** — ✅ **done in Task 15**: create/rename/delete.
+- **which-key timing** — ✅ **done in Task 16**: gated by `timeoutlen`.
+- Only the two **manual visual checks** remain (TUI smoke + GUI layout), which need a
+  human at a display; the GUI has been spot-checked via screenshots.
 
 ## Global Constraints
 
@@ -406,46 +406,47 @@ required data was already in `FrameState` — no app or core changes were needed
 
 ---
 
-### Task 14: Async `:Rg` / `:Files`
+### Task 14: Async `:Rg` / `:Files` — DONE (commit `45843a4`)
 
-**Why:** `run_rg`/`open_files_picker` (`crates/ruster-tui/src/app.rs`) currently run
-synchronously on the UI thread; a large repo blocks the 60fps loop. The design
-called for streaming results via the existing `AppEvent` channel
-(`app.rs` `async_run`).
+**Why:** `run_rg`/`open_files_picker` (`crates/ruster-tui/src/app.rs`) ran
+synchronously on the UI thread; a large repo blocked the render loop.
 
-**Files:** Modify `crates/ruster-tui/src/app.rs`.
+**Files:** Modified `crates/ruster-tui/src/app.rs`, `crates/ruster-tui/src/picker.rs`.
 
-- [ ] **Step 1:** Add `AppEvent` variants carrying picker results (paths / grep lines).
-- [ ] **Step 2:** Spawn the `ignore` walk / `rg` process on a background thread that
-  sends results over the channel; populate/append to the picker as they arrive.
-- [ ] **Step 3:** Keep the synchronous path as a fallback for the non-async runner.
-- [ ] **Step 4:** Commit: `feat: stream :Files/:Rg results off the render thread`
-
----
-
-### Task 15: Dired file mutations
-
-**Why:** Dired supports open/descend/up only; the design listed create/rename/delete.
-
-**Files:** Modify `crates/ruster-tui/src/app.rs` (dired key handling), possibly
-`crates/ruster-core/src/dired.rs`.
-
-- [ ] **Step 1:** `+` create file, `%` create dir (prompt for a name via the cmdline).
-- [ ] **Step 2:** `R` rename, `D` delete the entry under the cursor, each with a
-  `y/n` cmdline confirmation; re-list afterward.
-- [ ] **Step 3:** Tests for the fs operations against a temp dir.
-- [ ] **Step 4:** Commit: `feat: dired create/rename/delete`
+- [x] **Step 1:** Stream results over a `std::sync::mpsc` channel held on `App`
+  (`pending_results`), drained into the open picker each frame by
+  `drain_pending_results` — backend-agnostic since `render` runs every frame in
+  both loops (chosen over `AppEvent`, which only the TUI async loop drains).
+- [x] **Step 2:** Spawn the `ignore` walk / `rg` process on a background thread
+  that sends `PickerItem`s; `PickerState::push_item` appends them live.
+- [x] **Step 3:** Closing the picker drops the receiver, ending the worker on its
+  next send.
+- [x] **Step 4:** Commit: `feat: stream :Files/:Rg off-thread; delay which-key by timeoutlen`
 
 ---
 
-### Task 16: `timeoutlen`-based which-key timing
+### Task 15: Dired file mutations — DONE (commit `102763c`)
 
-**Why:** The which-key panel currently appears immediately on a pending prefix;
-`Config.timeoutlen` (already added) should gate it so it only pops after the delay.
+**Why:** Dired supported open/descend/up only; the design listed create/rename/delete.
 
-**Files:** Modify `crates/ruster-tui/src/app.rs` (track prefix-pending timestamp;
-show the panel in `render` only once `timeoutlen` has elapsed).
+**Files:** Modified `crates/ruster-tui/src/app.rs` (dired key handling + prompt).
 
-- [ ] **Step 1:** Record when a prefix becomes pending; compare against `timeoutlen`
-  in `render` (both the frame loop and the async loop drive time).
+- [x] **Step 1:** `+` create file, `%` create dir (name entered in a mini-buffer prompt).
+- [x] **Step 2:** `R` rename, `D` delete the entry under the cursor, delete with a
+  `y/n` confirmation; the listing reloads afterward.
+- [x] **Step 3:** Test for create + delete against a temp dir.
+- [x] **Step 4:** Commit: `feat: dired create/rename/delete`
+
+---
+
+### Task 16: `timeoutlen`-based which-key timing — DONE (commit `45843a4`)
+
+**Why:** The which-key panel appeared immediately on a pending prefix;
+`Config.timeoutlen` should gate it so it only pops after the delay.
+
+**Files:** Modified `crates/ruster-tui/src/app.rs`.
+
+- [x] **Step 1:** Record `leader_since` when the leader starts; in `render`, only
+  target the panel visible once `timeoutlen` has elapsed (and keep it up once it
+  has begun appearing). Fast sequences never flash the panel.
 - [ ] **Step 2:** Commit: `feat: delay which-key by timeoutlen`

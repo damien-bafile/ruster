@@ -42,8 +42,11 @@ ruster is multi-buffer and multi-window. Relevant commands:
 | `:ls` / `:buffers` | Open the buffer-list picker |
 | `:bd` / `:bdelete` | Delete the active buffer |
 | `:Dired [path]` | Open the file explorer |
-| `:Files` | Fuzzy file finder (gitignore-aware) |
-| `:Rg <pattern>` | Live grep via ripgrep |
+| `:Files` | Fuzzy file finder (gitignore-aware, streamed) |
+| `:Rg <pattern>` | Live grep via ripgrep (streamed) |
+
+In a dired buffer: `Enter` open/descend, `-`/`^` up, `+` create file, `%` create
+directory, `R` rename, `D` delete (with `y`/`n` confirmation).
 
 Window keys: `Ctrl-w s/v` split, `Ctrl-w c` close, `Ctrl-w o` only, `Ctrl-w h/j/k/l` focus, `Ctrl-w z` fullscreen. `Ctrl-h/j/k/l` also move focus directly. Press `:` then `Tab` for the command palette.
 

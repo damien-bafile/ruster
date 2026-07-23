@@ -169,6 +169,31 @@ enum LeaderResolve {
     Unknown,
 }
 
+/// An in-progress dired file operation awaiting input in the mini-buffer.
+enum DiredPromptKind {
+    CreateFile,
+    CreateDir,
+    Rename(String),
+    Delete(PathBuf),
+}
+
+struct DiredPrompt {
+    kind: DiredPromptKind,
+    input: String,
+}
+
+fn dired_prompt_display(p: &DiredPrompt) -> String {
+    match &p.kind {
+        DiredPromptKind::CreateFile => format!("Create file: {}", p.input),
+        DiredPromptKind::CreateDir => format!("Create dir: {}", p.input),
+        DiredPromptKind::Rename(old) => format!("Rename '{}' to: {}", old, p.input),
+        DiredPromptKind::Delete(path) => format!(
+            "Delete '{}'? (y/n)",
+            path.file_name().and_then(|n| n.to_str()).unwrap_or("")
+        ),
+    }
+}
+
 /// Resolve a full leader sequence: is it a group prefix, a complete action, or
 /// an unknown/invalid path?
 fn leader_resolve(seq: &[char]) -> LeaderResolve {
@@ -269,10 +294,18 @@ pub struct App {
     whichkey_anim: f32,
     whichkey_cache: Option<(String, Vec<String>)>,
     anim_clock: std::time::Instant,
+    /// When the current leader sequence started, so the which-key panel only
+    /// pops after `Config.timeoutlen` (unless already visible).
+    leader_since: Option<std::time::Instant>,
     /// Active floating picker (buffer list, file finder, ...), if any.
     picker: Option<PickerState>,
+    /// Streaming results for the active picker (`:Files` walk, `:Rg` output),
+    /// drained into the picker each frame. Backend-agnostic (polled in render).
+    pending_results: Option<std::sync::mpsc::Receiver<PickerItem>>,
     /// Current directory for each open dired (file-explorer) buffer.
     dired_dirs: std::collections::HashMap<BufferId, PathBuf>,
+    /// An in-progress dired file operation awaiting mini-buffer input.
+    dired_prompt: Option<DiredPrompt>,
 }
 
 impl App {
@@ -432,10 +465,13 @@ impl App {
             should_quit: false, message: None, syntax, syntax_buffer, lua, config, timer,
             has_smooth_cursor: false, cursor_anim, pending_ctrl_w: false, picker: None,
             leader_pending: None,
+            pending_results: None,
             whichkey_anim: 0.0,
             whichkey_cache: None,
             anim_clock: std::time::Instant::now(),
+            leader_since: None,
             dired_dirs: std::collections::HashMap::new(),
+            dired_prompt: None,
         }
     }
 
@@ -443,6 +479,12 @@ impl App {
         // An open picker captures all input until it is accepted or cancelled.
         if self.picker.is_some() {
             self.handle_picker_key(ck);
+            return;
+        }
+
+        // A dired file-operation prompt captures input until confirmed/cancelled.
+        if self.dired_prompt.is_some() {
+            self.handle_dired_prompt_key(ck);
             return;
         }
 
@@ -476,6 +518,7 @@ impl App {
             && !ck.modifiers.contains(KeyModifiers::CONTROL)
         {
             self.leader_pending = Some(Vec::new());
+            self.leader_since = Some(std::time::Instant::now());
             return;
         }
         // Direct Ctrl+h/j/k/l focus movement between splits (no Ctrl-w prefix).
@@ -685,11 +728,37 @@ impl App {
         }
     }
 
+    /// Drain any streamed picker results (`:Files`/`:Rg`) into the open picker.
+    fn drain_pending_results(&mut self) {
+        if let Some(rx) = self.pending_results.take() {
+            let mut still_active = true;
+            match self.picker.as_mut() {
+                Some(picker) => loop {
+                    match rx.try_recv() {
+                        Ok(item) => picker.push_item(item),
+                        Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            still_active = false;
+                            break;
+                        }
+                    }
+                },
+                // The picker was closed; stop draining.
+                None => still_active = false,
+            }
+            if still_active {
+                self.pending_results = Some(rx);
+            }
+        }
+    }
+
     fn render(&mut self) {
+        self.drain_pending_results();
         let (cols, rows) = self.renderer.viewport_cells();
         // Reserve a bottom row for the cmdline/message only while one is shown,
         // so the statusline sits flush at the very bottom otherwise.
-        let has_cmdline = self.vim.mode == VimMode::Cmdline || self.message.is_some();
+        let has_cmdline =
+            self.vim.mode == VimMode::Cmdline || self.message.is_some() || self.dired_prompt.is_some();
         let reserved = if has_cmdline { 1 } else { 0 };
         let buf_area = CoreRect::new(0, 0, cols, rows.saturating_sub(reserved));
 
@@ -799,9 +868,13 @@ impl App {
             }
         }
 
-        let cmdline = match mode {
-            VimMode::Cmdline => Some(crate::widgets::cmdline_label(self.vim.cmdline_buffer())),
-            _ => self.message.clone(),
+        let cmdline = if let Some(p) = &self.dired_prompt {
+            Some(dired_prompt_display(p))
+        } else {
+            match mode {
+                VimMode::Cmdline => Some(crate::widgets::cmdline_label(self.vim.cmdline_buffer())),
+                _ => self.message.clone(),
+            }
         };
         let picker_view = self.picker.as_mut().map(|p| p.view());
 
@@ -815,7 +888,13 @@ impl App {
                 self.whichkey_cache = Some(content);
             }
         }
-        let target = if self.leader_pending.is_some() { 1.0 } else { 0.0 };
+        // Show the panel only after timeoutlen from the leader start — but once
+        // it has begun appearing, keep it up until the sequence ends.
+        let past_timeout = self
+            .leader_since
+            .map_or(false, |t| now.duration_since(t).as_millis() as u32 >= self.config.timeoutlen);
+        let show = self.leader_pending.is_some() && (self.whichkey_anim > 0.01 || past_timeout);
+        let target = if show { 1.0 } else { 0.0 };
         self.whichkey_anim += (target - self.whichkey_anim) * (1.0 - (-18.0 * dt).exp());
         if self.whichkey_anim < 0.002 {
             self.whichkey_anim = 0.0;
@@ -936,58 +1015,77 @@ impl App {
         }
     }
 
-    /// Open a fuzzy file picker over the project (gitignore-aware walk).
+    /// Open a fuzzy file picker over the project (gitignore-aware walk). The walk
+    /// runs on a background thread, streaming paths into the picker each frame so
+    /// the render loop never blocks on a large repo.
     fn open_files_picker(&mut self) {
         let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-        let mut items: Vec<PickerItem> = Vec::new();
-        for result in ignore::WalkBuilder::new(&root).build() {
-            let entry = match result {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
-                let path = entry.path().to_path_buf();
-                let label = path
-                    .strip_prefix(&root)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .into_owned();
-                items.push(PickerItem::new(label, PickerAction::OpenPath(path)));
-            }
-        }
-        self.picker = Some(PickerState::new("Files", items));
-    }
-
-    /// Run `rg --vimgrep <pattern>` and show matches in a picker. Reports a
-    /// clear message when ripgrep is not installed.
-    fn run_rg(&mut self, pattern: &str) {
-        let output = std::process::Command::new("rg")
-            .arg("--vimgrep")
-            .arg(pattern)
-            .output();
-        match output {
-            Ok(out) => {
-                let text = String::from_utf8_lossy(&out.stdout);
-                let items: Vec<PickerItem> = text
-                    .lines()
-                    .filter_map(parse_rg_line)
-                    .map(|(path, line, col, body)| {
-                        PickerItem::new(
-                            format!("{}:{}:{}: {}", path.display(), line, col, body),
-                            PickerAction::OpenLocation(path, line, col),
-                        )
-                    })
-                    .collect();
-                if items.is_empty() {
-                    self.message = Some(format!("No matches for '{}'", pattern));
-                } else {
-                    self.picker = Some(PickerState::new(format!("Rg: {}", pattern), items));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let walk_root = root.clone();
+        std::thread::spawn(move || {
+            for result in ignore::WalkBuilder::new(&walk_root).build() {
+                let entry = match result {
+                    Ok(e) => e,
+                    Err(_) => continue,
+                };
+                if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                    let path = entry.path().to_path_buf();
+                    let label = path
+                        .strip_prefix(&walk_root)
+                        .unwrap_or(&path)
+                        .to_string_lossy()
+                        .into_owned();
+                    if tx.send(PickerItem::new(label, PickerAction::OpenPath(path))).is_err() {
+                        break; // picker closed
+                    }
                 }
             }
+        });
+        self.picker = Some(PickerState::new("Files", Vec::new()));
+        self.pending_results = Some(rx);
+    }
+
+    /// Run `rg --vimgrep <pattern>`, streaming matches into a picker from a
+    /// background thread. Reports a clear message when ripgrep is not installed.
+    fn run_rg(&mut self, pattern: &str) {
+        let mut child = match std::process::Command::new("rg")
+            .arg("--vimgrep")
+            .arg(pattern)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
             Err(_) => {
                 self.message = Some("ripgrep (rg) not found in PATH".to_string());
+                return;
             }
-        }
+        };
+        let stdout = match child.stdout.take() {
+            Some(s) => s,
+            None => {
+                self.message = Some("failed to capture rg output".to_string());
+                return;
+            }
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            use std::io::{BufRead, BufReader};
+            let reader = BufReader::new(stdout);
+            for line in reader.lines().map_while(Result::ok) {
+                if let Some((path, l, c, body)) = parse_rg_line(&line) {
+                    let item = PickerItem::new(
+                        format!("{}:{}:{}: {}", path.display(), l, c, body),
+                        PickerAction::OpenLocation(path, l, c),
+                    );
+                    if tx.send(item).is_err() {
+                        break;
+                    }
+                }
+            }
+            let _ = child.wait();
+        });
+        self.picker = Some(PickerState::new(format!("Rg: {}", pattern), Vec::new()));
+        self.pending_results = Some(rx);
     }
 
     /// Open (or switch to) a dired file-explorer buffer for `arg` (defaulting
@@ -1042,11 +1140,126 @@ impl App {
                 self.dired_go_up();
                 true
             }
+            KeyCode::Char('+') => {
+                self.dired_prompt = Some(DiredPrompt { kind: DiredPromptKind::CreateFile, input: String::new() });
+                true
+            }
+            KeyCode::Char('%') => {
+                self.dired_prompt = Some(DiredPrompt { kind: DiredPromptKind::CreateDir, input: String::new() });
+                true
+            }
+            KeyCode::Char('R') => {
+                if let Some((_, name)) = self.dired_current_target() {
+                    self.dired_prompt = Some(DiredPrompt {
+                        kind: DiredPromptKind::Rename(name.clone()),
+                        input: name,
+                    });
+                }
+                true
+            }
+            KeyCode::Char('D') => {
+                if let Some((path, _)) = self.dired_current_target() {
+                    self.dired_prompt = Some(DiredPrompt { kind: DiredPromptKind::Delete(path), input: String::new() });
+                }
+                true
+            }
             // Movement keys pass through to vim for navigation.
             KeyCode::Char('j') | KeyCode::Char('k') | KeyCode::Char('g')
             | KeyCode::Char('G') | KeyCode::Up | KeyCode::Down => false,
             // Swallow everything else to keep the listing read-only.
             _ => true,
+        }
+    }
+
+    /// The (path, name) of the entry under the cursor in the active dired buffer,
+    /// or None for `..` / an empty listing.
+    fn dired_current_target(&self) -> Option<(PathBuf, String)> {
+        let id = self.ws.borrow().active_buffer();
+        let dir = self.dired_dirs.get(&id)?.clone();
+        let line = {
+            let w = self.ws.borrow();
+            w.buffer().char_to_line(w.primary_head())
+        };
+        let entries = ruster_core::dired::list(&dir);
+        let entry = entries.get(line)?;
+        if entry.name == ".." {
+            return None;
+        }
+        Some((dir.join(&entry.name), entry.name.clone()))
+    }
+
+    /// Handle a key while a dired file-operation prompt is active.
+    fn handle_dired_prompt_key(&mut self, ck: crossterm::event::KeyEvent) {
+        let is_delete = matches!(
+            self.dired_prompt.as_ref().map(|p| &p.kind),
+            Some(DiredPromptKind::Delete(_))
+        );
+        if is_delete {
+            match ck.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    if let Some(DiredPrompt { kind: DiredPromptKind::Delete(path), .. }) =
+                        self.dired_prompt.take()
+                    {
+                        let _ = if path.is_dir() {
+                            std::fs::remove_dir_all(&path)
+                        } else {
+                            std::fs::remove_file(&path)
+                        };
+                    }
+                    self.dired_refresh_current();
+                }
+                _ => self.dired_prompt = None,
+            }
+            return;
+        }
+        match ck.code {
+            KeyCode::Char(c) => {
+                if let Some(p) = self.dired_prompt.as_mut() {
+                    p.input.push(c);
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(p) = self.dired_prompt.as_mut() {
+                    p.input.pop();
+                }
+            }
+            KeyCode::Esc => self.dired_prompt = None,
+            KeyCode::Enter => {
+                if let Some(prompt) = self.dired_prompt.take() {
+                    self.dired_execute_prompt(prompt);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn dired_execute_prompt(&mut self, prompt: DiredPrompt) {
+        let id = self.ws.borrow().active_buffer();
+        let dir = match self.dired_dirs.get(&id) {
+            Some(d) => d.clone(),
+            None => return,
+        };
+        let input = prompt.input.trim().to_string();
+        match prompt.kind {
+            DiredPromptKind::CreateFile if !input.is_empty() => {
+                let _ = std::fs::File::create(dir.join(&input));
+            }
+            DiredPromptKind::CreateDir if !input.is_empty() => {
+                let _ = std::fs::create_dir_all(dir.join(&input));
+            }
+            DiredPromptKind::Rename(old) if !input.is_empty() => {
+                let _ = std::fs::rename(dir.join(&old), dir.join(&input));
+            }
+            _ => {}
+        }
+        self.dired_refresh_current();
+    }
+
+    /// Reload the active dired buffer's listing (after a mutation).
+    fn dired_refresh_current(&mut self) {
+        let id = self.ws.borrow().active_buffer();
+        if let Some(dir) = self.dired_dirs.get(&id).cloned() {
+            self.refresh_dired(id, dir);
         }
     }
 
@@ -1520,6 +1733,57 @@ mod tests {
     }
 
     #[test]
+    fn streamed_results_drain_into_picker() {
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        let (tx, rx) = std::sync::mpsc::channel();
+        a.picker = Some(PickerState::new("Files", Vec::new()));
+        a.pending_results = Some(rx);
+        tx.send(PickerItem::new("a.rs", PickerAction::OpenPath(PathBuf::from("a.rs")))).unwrap();
+        tx.send(PickerItem::new("b.rs", PickerAction::OpenPath(PathBuf::from("b.rs")))).unwrap();
+        a.drain_pending_results();
+        assert_eq!(a.picker.as_ref().unwrap().len(), 2);
+        assert!(a.pending_results.is_some(), "still streaming while sender is alive");
+        drop(tx);
+        a.drain_pending_results();
+        assert!(a.pending_results.is_none(), "cleared once the sender disconnects");
+    }
+
+    #[test]
+    fn dired_create_and_delete_file() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let tmp = std::env::temp_dir().join("ruster_dired_mut");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::Dired(Some(tmp.to_string_lossy().into_owned())));
+
+        // '+' then type a name then Enter creates the file.
+        a.handle_key(CtKey::new(KeyCode::Char('+'), none));
+        assert!(a.dired_prompt.is_some());
+        for c in "new.txt".chars() {
+            a.handle_key(CtKey::new(KeyCode::Char(c), none));
+        }
+        a.handle_key(CtKey::new(KeyCode::Enter, none));
+        assert!(a.dired_prompt.is_none());
+        assert!(tmp.join("new.txt").exists(), "file created");
+
+        // Move cursor onto new.txt (listing: "..", "new.txt") and delete it.
+        let line1 = a.ws.borrow().buffer().line_start_char(1);
+        a.ws.borrow_mut().execute(Action::Move(Motion::To(line1)));
+        a.handle_key(CtKey::new(KeyCode::Char('D'), none));
+        assert!(matches!(
+            a.dired_prompt.as_ref().map(|p| &p.kind),
+            Some(DiredPromptKind::Delete(_))
+        ));
+        a.handle_key(CtKey::new(KeyCode::Char('y'), none));
+        assert!(!tmp.join("new.txt").exists(), "file deleted");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn parse_rg_vimgrep_line() {
         let (path, line, col, body) =
             parse_rg_line("src/main.rs:12:5:let x = 1").expect("parses");
@@ -1582,6 +1846,18 @@ mod tests {
         assert_eq!(wtitle, "SPC w");
         assert!(wrows.iter().any(|r| r.starts_with("h ")));
         assert!(wrows.iter().any(|r| r.contains("focus left")));
+    }
+
+    #[test]
+    fn which_key_is_delayed_by_timeoutlen() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.handle_key(CtKey::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert!(a.leader_pending.is_some());
+        assert!(a.leader_since.is_some());
+        // First frame is within timeoutlen (default 300ms), so the panel stays hidden.
+        a.render();
+        assert_eq!(a.whichkey_anim, 0.0, "panel should not appear before timeoutlen");
     }
 
     #[test]
