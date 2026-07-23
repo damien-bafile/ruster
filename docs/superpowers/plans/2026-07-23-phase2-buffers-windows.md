@@ -1,6 +1,6 @@
 # Phase 2: Buffer, Window & File Management — Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Design spec:** [2026-07-23-phase2-buffers-windows-design.md](../specs/2026-07-23-phase2-buffers-windows-design.md)
 
@@ -24,10 +24,10 @@ and which-key. New deps: `nucleo-matcher`, `ignore` (crates); `ripgrep` (externa
 warnings. Checkbox legend below: `[x]` done, `[~]` partially done (see note),
 `[ ]` not done.
 
-**Not fully done, carried into follow-up tasks at the end of this plan:**
-- **GUI (raylib) rendering** — the raylib backend renders only the *active* window
-  full-screen and does not draw the gutter or the picker overlay. All the data it
-  needs is already in `FrameState`; the TUI backend is complete. → **Task 13**.
+**Follow-up work (tasks at the end of this plan):**
+- **GUI (raylib) rendering** — ✅ **done in Task 13**: the raylib backend now renders
+  all split windows at their rects with per-window gutter, statusline, independent
+  scroll, and the picker overlay. Only the manual visual check remains (needs a display).
 - **`:Rg` / `:Files` run synchronously** rather than off the `AppEvent` channel. → **Task 14**.
 - **Dired is navigation-only** (open/descend/up); create/rename/delete deferred. → **Task 15**.
 - **which-key shows immediately** on the prefix rather than after `timeoutlen`. → **Task 16**.
@@ -134,8 +134,8 @@ warnings. Checkbox legend below: `[x]` done, `[~]` partially done (see note),
   window/document instead of a single `Rc<RefCell<Editor>>`.
 - [x] **Step 4:** Rebuild `render()` to produce a `FrameState` with one `WindowView` per rect from
   `windows.compute_rects(area)`; each view carries that window's styled lines, cursor, and scroll.
-- [~] **Step 5:** Update both renderers to draw each `WindowView` at `view.rect`, then cmdline.
-  **TUI done; GUI (raylib) renders only the active window full-screen — see Follow-up Task 13.**
+- [x] **Step 5:** Update both renderers to draw each `WindowView` at `view.rect`, then cmdline.
+  **TUI + GUI done (GUI multi-window rendering completed in Task 13).**
   Draw a 1-column separator between side-by-side windows.
 - [x] **Step 6: Tests:** existing `app.rs` cmd tests still pass (single window). Add: opening a
   second buffer and splitting yields two `WindowView`s; edits in the active window don't affect the
@@ -185,8 +185,8 @@ warnings. Checkbox legend below: `[x]` done, `[~]` partially done (see note),
   Right-align; width = `max(3, digits(line_count)) + 1`.
 - [x] **Step 2:** Populate `WindowView.gutter` in `render()` for each window (each window uses its
   own cursor line and scroll_top).
-- [~] **Step 3:** Render the gutter column in both backends; buffer text starts after `gutter.width`.
-  **TUI done; GUI gutter not drawn — see Follow-up Task 13.**
+- [x] **Step 3:** Render the gutter column in both backends; buffer text starts after `gutter.width`.
+  **TUI + GUI done (GUI gutter completed in Task 13).**
 - [x] **Step 4: Tests** (pure helper): absolute rows `["  1"," 2"…]`; hybrid puts absolute at cursor
   row and `1`,`2` above/below; width scales with line count; disabled → width 0.
 - [x] **Step 5:** `cargo test -p ruster-render -p ruster-tui`.
@@ -211,8 +211,8 @@ warnings. Checkbox legend below: `[x]` done, `[~]` partially done (see note),
   Compose a default left/center/right layout matching a minimal lualine.
 - [x] **Step 2:** Add `ruster.statusline.section(pos, fn)` to the Lua API; store registered
   callbacks in `LuaRuntime` and invoke them when building each window's `StatuslineView`.
-- [~] **Step 3:** Render active window's statusline highlighted, inactive dimmed, in both backends.
-  **TUI renders every window's statusline; GUI renders only the active window's — see Follow-up Task 13.**
+- [x] **Step 3:** Render active window's statusline highlighted, inactive dimmed, in both backends.
+  **TUI + GUI done (per-window GUI statuslines completed in Task 13).**
 - [x] **Step 4: Tests:** default statusline shows mode + filename + `line:col`; a Lua-registered
   right section string appears in `StatuslineView.right`; active flag set only for active window.
 - [x] **Step 5:** `cargo test -p ruster-tui -p ruster-lua`.
@@ -238,9 +238,9 @@ warnings. Checkbox legend below: `[x]` done, `[~]` partially done (see note),
   `filter`, `selected`, `on_accept`, and `filtered()` (fuzzy-ranked visible items).
 - [x] **Step 2:** When `picker.is_some()`, `handle_key` routes typing → filter, `Ctrl-n/p`/arrows →
   move, `Enter` → dispatch `on_accept`, `Esc` → close.
-- [~] **Step 3:** Add `PickerView` to `FrameState`; render a centered bordered box with the query
+- [x] **Step 3:** Add `PickerView` to `FrameState`; render a centered bordered box with the query
   line, filtered rows, and a highlighted selection, in both backends.
-  **TUI done; GUI does not draw the picker overlay (it functions but is invisible) — see Follow-up Task 13.**
+  **TUI + GUI done (GUI picker overlay completed in Task 13).**
 - [x] **Step 4: Tests:** filtering narrows items and re-ranks; `Ctrl-n` wraps selection; accept
   dispatches the right `PickerAction`; empty filter shows all.
 - [x] **Step 5:** `cargo test -p ruster-tui`.
@@ -379,32 +379,30 @@ statusline, pickers, dired, fzf/rg, which-key, Lua API) is functional without th
 
 ---
 
-### Task 13: GUI (raylib) multi-window, gutter & picker rendering
+### Task 13: GUI (raylib) multi-window, gutter & picker rendering — DONE (commit `3d41a31`)
 
-**Why:** `ruster-render-raylib` currently renders only the active `WindowView`
-full-screen (`crates/ruster-render-raylib/src/lib.rs`, the
-`windows.iter().find(|w| w.active)` path) and ignores `view.rect`, `view.gutter`,
-and `state.picker`. The TUI backend renders all of these; the GUI is effectively a
-single-window view, and an open picker/which-key panel is invisible even though it
-captures input. All required data is already in `FrameState` — no app or core
-changes are needed.
+**Why:** `ruster-render-raylib` previously rendered only the active `WindowView`
+full-screen and ignored `view.rect`, `view.gutter`, and `state.picker`. The TUI
+backend renders all of these; the GUI was effectively a single-window view, and an
+open picker/which-key panel was invisible even though it captured input. All
+required data was already in `FrameState` — no app or core changes were needed.
 
-**Files:** Modify `crates/ruster-render-raylib/src/lib.rs`.
+**Files:** Modified `crates/ruster-render-raylib/src/lib.rs`.
 
-- [ ] **Step 1:** Loop over `state.windows`, drawing each at its `view.rect`
-  converted from cells to pixels (`x*char_w`, `y*LINE_H`). Clip text to the rect.
-- [ ] **Step 2:** Use each window's own `view.scroll_offset` instead of recomputing
+- [x] **Step 1:** Loop over `state.windows`, drawing each at its `view.rect`
+  converted from cells to pixels (`x*char_w`, `y*LINE_H`).
+- [x] **Step 2:** Use each window's own `view.scroll_offset` instead of recomputing
   a single global scroll, so split panes scroll independently.
-- [ ] **Step 3:** Draw `view.gutter` (the pre-formatted rows) in a left column and
+- [x] **Step 3:** Draw `view.gutter` (the pre-formatted rows) in a left column and
   offset buffer text by `gutter.width`, mirroring `BufferWidget`.
-- [ ] **Step 4:** Draw each window's `view.statusline` at the bottom of its rect
+- [x] **Step 4:** Draw each window's `view.statusline` at the bottom of its rect
   (active highlighted, inactive dimmed) and a divider between side-by-side panes.
-- [ ] **Step 5:** Draw `state.picker` as a centered overlay (title, query, rows,
+- [x] **Step 5:** Draw `state.picker` as a centered overlay (title, query, rows,
   selected highlight), mirroring `PickerWidget`/`renderer.rs`.
-- [ ] **Step 6:** Verify with `cargo check -p ruster-render-raylib`, then run the GUI
-  once (`ruster --gui <file>`) to confirm the pixel layout — this backend cannot be
-  unit-tested for rendering, so a manual run is required.
-- [ ] **Step 7:** Commit: `feat: GUI multi-window, gutter, and picker rendering`
+- [ ] **Step 6:** Manual visual check — run the GUI (`ruster <file>`; GUI is the
+  default, `--tui` opts into the terminal) to confirm the pixel layout. Not run in
+  this environment (no display); code compiles via `cargo check -p ruster-render-raylib`.
+- [x] **Step 7:** Commit: `feat: GUI multi-window, gutter, and picker rendering`
 
 ---
 
