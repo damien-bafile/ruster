@@ -169,6 +169,31 @@ enum LeaderResolve {
     Unknown,
 }
 
+/// An in-progress dired file operation awaiting input in the mini-buffer.
+enum DiredPromptKind {
+    CreateFile,
+    CreateDir,
+    Rename(String),
+    Delete(PathBuf),
+}
+
+struct DiredPrompt {
+    kind: DiredPromptKind,
+    input: String,
+}
+
+fn dired_prompt_display(p: &DiredPrompt) -> String {
+    match &p.kind {
+        DiredPromptKind::CreateFile => format!("Create file: {}", p.input),
+        DiredPromptKind::CreateDir => format!("Create dir: {}", p.input),
+        DiredPromptKind::Rename(old) => format!("Rename '{}' to: {}", old, p.input),
+        DiredPromptKind::Delete(path) => format!(
+            "Delete '{}'? (y/n)",
+            path.file_name().and_then(|n| n.to_str()).unwrap_or("")
+        ),
+    }
+}
+
 /// Resolve a full leader sequence: is it a group prefix, a complete action, or
 /// an unknown/invalid path?
 fn leader_resolve(seq: &[char]) -> LeaderResolve {
@@ -279,6 +304,8 @@ pub struct App {
     pending_results: Option<std::sync::mpsc::Receiver<PickerItem>>,
     /// Current directory for each open dired (file-explorer) buffer.
     dired_dirs: std::collections::HashMap<BufferId, PathBuf>,
+    /// An in-progress dired file operation awaiting mini-buffer input.
+    dired_prompt: Option<DiredPrompt>,
 }
 
 impl App {
@@ -444,6 +471,7 @@ impl App {
             anim_clock: std::time::Instant::now(),
             leader_since: None,
             dired_dirs: std::collections::HashMap::new(),
+            dired_prompt: None,
         }
     }
 
@@ -451,6 +479,12 @@ impl App {
         // An open picker captures all input until it is accepted or cancelled.
         if self.picker.is_some() {
             self.handle_picker_key(ck);
+            return;
+        }
+
+        // A dired file-operation prompt captures input until confirmed/cancelled.
+        if self.dired_prompt.is_some() {
+            self.handle_dired_prompt_key(ck);
             return;
         }
 
@@ -723,7 +757,8 @@ impl App {
         let (cols, rows) = self.renderer.viewport_cells();
         // Reserve a bottom row for the cmdline/message only while one is shown,
         // so the statusline sits flush at the very bottom otherwise.
-        let has_cmdline = self.vim.mode == VimMode::Cmdline || self.message.is_some();
+        let has_cmdline =
+            self.vim.mode == VimMode::Cmdline || self.message.is_some() || self.dired_prompt.is_some();
         let reserved = if has_cmdline { 1 } else { 0 };
         let buf_area = CoreRect::new(0, 0, cols, rows.saturating_sub(reserved));
 
@@ -833,9 +868,13 @@ impl App {
             }
         }
 
-        let cmdline = match mode {
-            VimMode::Cmdline => Some(crate::widgets::cmdline_label(self.vim.cmdline_buffer())),
-            _ => self.message.clone(),
+        let cmdline = if let Some(p) = &self.dired_prompt {
+            Some(dired_prompt_display(p))
+        } else {
+            match mode {
+                VimMode::Cmdline => Some(crate::widgets::cmdline_label(self.vim.cmdline_buffer())),
+                _ => self.message.clone(),
+            }
         };
         let picker_view = self.picker.as_mut().map(|p| p.view());
 
@@ -1101,11 +1140,126 @@ impl App {
                 self.dired_go_up();
                 true
             }
+            KeyCode::Char('+') => {
+                self.dired_prompt = Some(DiredPrompt { kind: DiredPromptKind::CreateFile, input: String::new() });
+                true
+            }
+            KeyCode::Char('%') => {
+                self.dired_prompt = Some(DiredPrompt { kind: DiredPromptKind::CreateDir, input: String::new() });
+                true
+            }
+            KeyCode::Char('R') => {
+                if let Some((_, name)) = self.dired_current_target() {
+                    self.dired_prompt = Some(DiredPrompt {
+                        kind: DiredPromptKind::Rename(name.clone()),
+                        input: name,
+                    });
+                }
+                true
+            }
+            KeyCode::Char('D') => {
+                if let Some((path, _)) = self.dired_current_target() {
+                    self.dired_prompt = Some(DiredPrompt { kind: DiredPromptKind::Delete(path), input: String::new() });
+                }
+                true
+            }
             // Movement keys pass through to vim for navigation.
             KeyCode::Char('j') | KeyCode::Char('k') | KeyCode::Char('g')
             | KeyCode::Char('G') | KeyCode::Up | KeyCode::Down => false,
             // Swallow everything else to keep the listing read-only.
             _ => true,
+        }
+    }
+
+    /// The (path, name) of the entry under the cursor in the active dired buffer,
+    /// or None for `..` / an empty listing.
+    fn dired_current_target(&self) -> Option<(PathBuf, String)> {
+        let id = self.ws.borrow().active_buffer();
+        let dir = self.dired_dirs.get(&id)?.clone();
+        let line = {
+            let w = self.ws.borrow();
+            w.buffer().char_to_line(w.primary_head())
+        };
+        let entries = ruster_core::dired::list(&dir);
+        let entry = entries.get(line)?;
+        if entry.name == ".." {
+            return None;
+        }
+        Some((dir.join(&entry.name), entry.name.clone()))
+    }
+
+    /// Handle a key while a dired file-operation prompt is active.
+    fn handle_dired_prompt_key(&mut self, ck: crossterm::event::KeyEvent) {
+        let is_delete = matches!(
+            self.dired_prompt.as_ref().map(|p| &p.kind),
+            Some(DiredPromptKind::Delete(_))
+        );
+        if is_delete {
+            match ck.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    if let Some(DiredPrompt { kind: DiredPromptKind::Delete(path), .. }) =
+                        self.dired_prompt.take()
+                    {
+                        let _ = if path.is_dir() {
+                            std::fs::remove_dir_all(&path)
+                        } else {
+                            std::fs::remove_file(&path)
+                        };
+                    }
+                    self.dired_refresh_current();
+                }
+                _ => self.dired_prompt = None,
+            }
+            return;
+        }
+        match ck.code {
+            KeyCode::Char(c) => {
+                if let Some(p) = self.dired_prompt.as_mut() {
+                    p.input.push(c);
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(p) = self.dired_prompt.as_mut() {
+                    p.input.pop();
+                }
+            }
+            KeyCode::Esc => self.dired_prompt = None,
+            KeyCode::Enter => {
+                if let Some(prompt) = self.dired_prompt.take() {
+                    self.dired_execute_prompt(prompt);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn dired_execute_prompt(&mut self, prompt: DiredPrompt) {
+        let id = self.ws.borrow().active_buffer();
+        let dir = match self.dired_dirs.get(&id) {
+            Some(d) => d.clone(),
+            None => return,
+        };
+        let input = prompt.input.trim().to_string();
+        match prompt.kind {
+            DiredPromptKind::CreateFile if !input.is_empty() => {
+                let _ = std::fs::File::create(dir.join(&input));
+            }
+            DiredPromptKind::CreateDir if !input.is_empty() => {
+                let _ = std::fs::create_dir_all(dir.join(&input));
+            }
+            DiredPromptKind::Rename(old) if !input.is_empty() => {
+                let _ = std::fs::rename(dir.join(&old), dir.join(&input));
+            }
+            _ => {}
+        }
+        self.dired_refresh_current();
+    }
+
+    /// Reload the active dired buffer's listing (after a mutation).
+    fn dired_refresh_current(&mut self) {
+        let id = self.ws.borrow().active_buffer();
+        if let Some(dir) = self.dired_dirs.get(&id).cloned() {
+            self.refresh_dired(id, dir);
         }
     }
 
@@ -1592,6 +1746,41 @@ mod tests {
         drop(tx);
         a.drain_pending_results();
         assert!(a.pending_results.is_none(), "cleared once the sender disconnects");
+    }
+
+    #[test]
+    fn dired_create_and_delete_file() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let tmp = std::env::temp_dir().join("ruster_dired_mut");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::Dired(Some(tmp.to_string_lossy().into_owned())));
+
+        // '+' then type a name then Enter creates the file.
+        a.handle_key(CtKey::new(KeyCode::Char('+'), none));
+        assert!(a.dired_prompt.is_some());
+        for c in "new.txt".chars() {
+            a.handle_key(CtKey::new(KeyCode::Char(c), none));
+        }
+        a.handle_key(CtKey::new(KeyCode::Enter, none));
+        assert!(a.dired_prompt.is_none());
+        assert!(tmp.join("new.txt").exists(), "file created");
+
+        // Move cursor onto new.txt (listing: "..", "new.txt") and delete it.
+        let line1 = a.ws.borrow().buffer().line_start_char(1);
+        a.ws.borrow_mut().execute(Action::Move(Motion::To(line1)));
+        a.handle_key(CtKey::new(KeyCode::Char('D'), none));
+        assert!(matches!(
+            a.dired_prompt.as_ref().map(|p| &p.kind),
+            Some(DiredPromptKind::Delete(_))
+        ));
+        a.handle_key(CtKey::new(KeyCode::Char('y'), none));
+        assert!(!tmp.join("new.txt").exists(), "file deleted");
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
