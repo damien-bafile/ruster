@@ -4,9 +4,12 @@ pub mod textobj;
 
 use crate::action::{Action, EditOp, Motion};
 use crate::cursor::Edge;
-use crate::editor::Editor;
+use crate::editor::EditorView;
 use crate::key::KeyEvent;
-use crate::vim::motions::{next_word_start, prev_word_start, word_end, last_printable_in_line};
+use crate::vim::motions::{next_word_start, prev_word_start, word_end, last_printable_in_line, char_to_line};
+use std::cell::RefCell;
+
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VimMode { Normal, Insert, VisualChar, VisualLine, Cmdline }
@@ -21,6 +24,32 @@ enum LastChange {
     DeleteChar,
 }
 
+fn next_word_occurrence(editor: &dyn EditorView) -> Option<usize> {
+    let head = editor.primary_head();
+    let buf = editor.buffer();
+    let text = buf.to_string();
+    let line = char_to_line(editor, head);
+    let line_start = buf.line_start_char(line);
+    let line_end = buf.line_end_char(line);
+    let content = buf.slice_string(line_start, line_end);
+    let col = head - line_start;
+    let chars: Vec<char> = content.chars().collect();
+    if col >= chars.len() || !chars[col].is_alphanumeric() && chars[col] != '_' {
+        return None;
+    }
+    let word_start = (0..=col).rev().take_while(|&i| i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_')).last().unwrap_or(col);
+    let word_end = (col..chars.len()).take_while(|&i| chars[i].is_alphanumeric() || chars[i] == '_').last().unwrap_or(col);
+    let word: String = chars[word_start..=word_end].iter().collect();
+    if word.is_empty() {
+        return None;
+    }
+    let search_from = head + 1;
+    if search_from >= text.len() {
+        return None;
+    }
+    text[search_from..].find(&word).map(|pos| search_from + pos)
+}
+
 pub struct VimState {
     pub mode: VimMode,
     count: Option<u32>,
@@ -31,6 +60,8 @@ pub struct VimState {
     last_change: Option<LastChange>,
     anchor: Option<usize>,
     cmdline_buffer: String,
+    clipboard: RefCell<Option<arboard::Clipboard>>,
+    clipboard_buf: RefCell<Option<String>>,
 }
 
 impl VimState {
@@ -45,6 +76,8 @@ impl VimState {
             last_change: None,
             anchor: None,
             cmdline_buffer: String::new(),
+            clipboard: RefCell::new(arboard::Clipboard::new().ok()),
+            clipboard_buf: RefCell::new(None),
         }
     }
 
@@ -52,7 +85,22 @@ impl VimState {
 
     pub fn set_register(&mut self, text: String) { self.register = Some(text); }
 
-    pub fn handle(&mut self, key: KeyEvent, editor: &Editor) -> Vec<Action> {
+    pub fn clipboard_get(&self) -> Option<String> {
+        self.clipboard_buf.borrow().clone()
+            .or_else(|| {
+                self.clipboard.borrow_mut().as_mut()
+                    .and_then(|c| c.get_text().ok())
+            })
+    }
+
+    pub fn clipboard_set(&self, text: &str) {
+        *self.clipboard_buf.borrow_mut() = Some(text.to_string());
+        if let Some(ref mut c) = *self.clipboard.borrow_mut() {
+            let _ = c.set_text(text);
+        }
+    }
+
+    pub fn handle(&mut self, key: KeyEvent, editor: &dyn EditorView) -> Vec<Action> {
         let n = self.count.unwrap_or(1);
         let mut out: Vec<Action> = Vec::new();
         match self.mode {
@@ -95,7 +143,7 @@ impl VimState {
         false
     }
 
-    fn handle_normal(&mut self, key: KeyEvent, editor: &Editor, n: u32, out: &mut Vec<Action>) {
+    fn handle_normal(&mut self, key: KeyEvent, editor: &dyn EditorView, n: u32, out: &mut Vec<Action>) {
         if self.stroke_count(key) { return; }
 
         let pending_now = self.pending;
@@ -141,6 +189,14 @@ impl VimState {
                     }
                     return;
                 }
+                KeyEvent::Char('>') if op == '>' => {
+                    self.pending = OpState::Idle;
+                    out.push(Action::IndentLine);
+                }
+                KeyEvent::Char('<') if op == '<' => {
+                    self.pending = OpState::Idle;
+                    out.push(Action::DeindentLine);
+                }
                 _ => {
                     self.pending = OpState::Idle;
                     return;
@@ -157,7 +213,12 @@ impl VimState {
         }
 
         match key {
-            KeyEvent::Esc => { self.count = None; }
+            KeyEvent::Esc => {
+                if editor.cursors().count() > 1 {
+                    out.push(Action::ClearExtraCursors);
+                }
+                self.count = None;
+            }
             KeyEvent::Char(':') => {
                 self.mode = VimMode::Cmdline;
                 self.cmdline_buffer = String::from(":");
@@ -198,6 +259,14 @@ impl VimState {
                 self.pending = OpState::Pending('c', n);
                 self.count = None;
             }
+            KeyEvent::Char('>') if self.pending == OpState::Idle => {
+                self.pending = OpState::Pending('>', n);
+                self.count = None;
+            }
+            KeyEvent::Char('<') if self.pending == OpState::Idle => {
+                self.pending = OpState::Pending('<', n);
+                self.count = None;
+            }
             KeyEvent::Char('x') => {
                 let at = editor.primary_head();
                 if at < editor.buffer().len_chars() {
@@ -209,7 +278,10 @@ impl VimState {
                 self.count = None;
             }
             KeyEvent::Char('p') => {
-                if let Some(text) = self.register.clone() {
+                let text = self.clipboard_get()
+                    .or_else(|| self.register.clone())
+                    .unwrap_or_default();
+                if !text.is_empty() {
                     out.push(Action::BeginBatch);
                     out.push(Action::Edit(EditOp::InsertString(text)));
                     out.push(Action::EndBatch);
@@ -242,11 +314,17 @@ impl VimState {
                 out.push(Action::BeginVisual(at));
                 self.count = None;
             }
+            KeyEvent::Ctrl('d') => {
+                if let Some(pos) = next_word_occurrence(editor) {
+                    out.push(Action::AddCursor(pos));
+                }
+                self.count = None;
+            }
             _ => { self.count = None; }
         }
     }
 
-    fn replay_last_change(&mut self, editor: &Editor, out: &mut Vec<Action>) {
+    fn replay_last_change(&mut self, editor: &dyn EditorView, out: &mut Vec<Action>) {
         let lc = match self.last_change { Some(lc) => lc, None => return };
         match lc {
             LastChange::OperatorMotion { op, motion, count } => {
@@ -270,7 +348,7 @@ impl VimState {
         }
     }
 
-    fn apply_operator(&mut self, op: char, start: usize, end: usize, editor: &Editor, out: &mut Vec<Action>) {
+    fn apply_operator(&mut self, op: char, start: usize, end: usize, editor: &dyn EditorView, out: &mut Vec<Action>) {
         let safe_end = end.min(editor.buffer().len_chars());
         let text = editor.buffer().slice_string(start, safe_end);
         match op {
@@ -280,7 +358,8 @@ impl VimState {
                 out.push(Action::EndBatch);
             }
             'y' => {
-                self.register = Some(text);
+                self.register = Some(text.clone());
+                self.clipboard_set(&text);
             }
             'c' => {
                 out.push(Action::BeginBatch);
@@ -295,7 +374,7 @@ impl VimState {
     }
 
     fn do_word_motion<F: Fn(&crate::buffer::Buffer, usize) -> usize>(
-        &self, editor: &Editor, n: u32, step: F, out: &mut Vec<Action>,
+        &self, editor: &dyn EditorView, n: u32, step: F, out: &mut Vec<Action>,
     ) {
         let mut target = editor.primary_head();
         let buf = editor.buffer();
@@ -303,7 +382,7 @@ impl VimState {
         out.push(Action::Move(Motion::To(target)));
     }
 
-    fn handle_insert(&mut self, key: KeyEvent, _editor: &Editor, out: &mut Vec<Action>) {
+    fn handle_insert(&mut self, key: KeyEvent, _editor: &dyn EditorView, out: &mut Vec<Action>) {
         match key {
             KeyEvent::Esc => {
                 out.push(Action::EndBatch);
@@ -323,7 +402,7 @@ impl VimState {
         }
     }
 
-    fn handle_visual(&mut self, key: KeyEvent, editor: &Editor, n: u32, out: &mut Vec<Action>) {
+    fn handle_visual(&mut self, key: KeyEvent, editor: &dyn EditorView, n: u32, out: &mut Vec<Action>) {
         if self.stroke_count(key) { return; }
         let anchor = match self.anchor { Some(a) => a, None => editor.primary_head() };
         match key {
@@ -376,7 +455,9 @@ impl VimState {
             KeyEvent::Char('y') => {
                 let (start, end) = self.visual_range(editor);
                 let safe_end = end.min(editor.buffer().len_chars());
-                self.register = Some(editor.buffer().slice_string(start, safe_end));
+                let text = editor.buffer().slice_string(start, safe_end);
+                self.register = Some(text.clone());
+                self.clipboard_set(&text);
                 // Vim: after visual yank, cursor jumps to start of selection.
                 out.push(Action::Move(Motion::To(start)));
                 self.mode = VimMode::Normal;
@@ -393,11 +474,23 @@ impl VimState {
                 // deletion; Esc fires EndBatch so the whole visual-c is one undo unit.
                 self.count = None;
             }
+            KeyEvent::Char('>') => {
+                out.push(Action::IndentLine);
+                self.mode = VimMode::Normal;
+                self.anchor = None;
+                self.count = None;
+            }
+            KeyEvent::Char('<') => {
+                out.push(Action::DeindentLine);
+                self.mode = VimMode::Normal;
+                self.anchor = None;
+                self.count = None;
+            }
             _ => {}
         }
     }
 
-    fn visual_range(&self, editor: &Editor) -> (usize, usize) {
+    fn visual_range(&self, editor: &dyn EditorView) -> (usize, usize) {
         let r = editor.cursors().primary();
         let s = r.start();
         let e = r.end();
@@ -495,6 +588,28 @@ mod tests {
         assert_eq!(e.buffer().to_string(), "ababc");
     }
 
+    #[test]
+    fn yank_sets_register() {
+        let e = Editor::from_str("hello world");
+        let mut v = VimState::new();
+        // yy yanks current line
+        let _actions: Vec<Action> = v.handle(KeyEvent::Char('y'), &e);
+        // 'y' is a pending operator; second 'y' triggers
+        let _actions: Vec<Action> = v.handle(KeyEvent::Char('y'), &e);
+        assert!(v.register.is_some());
+        // Note: clipboard write is best-effort, can't test in CI without display
+    }
+
+    #[test]
+    fn paste_uses_register_fallback() {
+        let mut e = Editor::from_str("ab");
+        let mut v = VimState::new();
+        v.set_register("X".to_string());
+        let actions: Vec<Action> = v.handle(KeyEvent::Char('p'), &e);
+        for a in actions { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "abX");
+    }
+
     // Dot-repeat regression tests (Task 10) — preserved when the test module was rebuilt for Task 11.
     #[test]
     fn dot_repeats_dw_at_cursor() {
@@ -584,5 +699,33 @@ mod tests {
         for a in v.handle(KeyEvent::Char('i'), &e) { e.execute(a); }
         let actions = v.handle(KeyEvent::Char('f'), &e);
         assert!(actions.iter().any(|a| matches!(a, Action::Textobject { op: 'd', kind: 'i', target: 'f', .. })));
+    }
+
+    #[test]
+    fn ctrl_d_adds_cursor_at_next_word() {
+        let mut e = Editor::from_str("foo foo foo");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        let actions: Vec<Action> = v.handle(KeyEvent::Ctrl('d'), &e);
+        assert!(actions.iter().any(|a| matches!(a, Action::AddCursor(_))));
+    }
+
+    #[test]
+    fn ctrl_d_no_word_does_nothing() {
+        let mut e = Editor::from_str("... ...");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        let actions: Vec<Action> = v.handle(KeyEvent::Ctrl('d'), &e);
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn esc_clears_extra_cursors() {
+        let mut e = Editor::from_str("hello");
+        let mut v = VimState::new();
+        e.execute(Action::AddCursor(3));
+        assert_eq!(e.cursors().count(), 2);
+        let actions: Vec<Action> = v.handle(KeyEvent::Esc, &e);
+        assert!(actions.iter().any(|a| matches!(a, Action::ClearExtraCursors)));
     }
 }

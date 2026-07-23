@@ -10,7 +10,10 @@ path = "src/lib.rs"
 ruster-core = { path = "../ruster-core" }
 ruster-render = { path = "../ruster-render" }
 ruster-syntax = { path = "../ruster-syntax" }
+ruster-lua = { path = "../ruster-lua" }
 ratatui = "0.28"
 crossterm = "0.28"
 tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
-tachyonfx = "0.25"
+dirs = "5"
+nucleo-matcher = "0.3"
+ignore = "0.4"

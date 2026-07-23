@@ -12,6 +12,8 @@ pub enum KeyEvent {
     Enter,
     Backspace,
     Delete,
+    Tab,
+    ShiftTab,
     Arrow(Arrow),
 }
 

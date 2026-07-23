@@ -1,11 +1,11 @@
 use crate::buffer::Buffer;
-use crate::editor::Editor;
+use crate::editor::EditorView;
 use crate::vim::motions::{next_word_start, prev_word_start, word_end, last_printable_in_line, char_to_line};
 
 /// Compute the (start, end) char range for an operator (`d`/`y`/`c`) applied `count` times
 /// to the named `motion`. Motions supported in the slice: `w`, `b`, `e`, `$`, `d` (line).
 /// Returns `None` for any other motion (text objects come in Task 9).
-pub fn range_for_motion(editor: &Editor, motion: char, count: u32) -> Option<(usize, usize)> {
+pub fn range_for_motion(editor: &dyn EditorView, motion: char, count: u32) -> Option<(usize, usize)> {
     let head = editor.primary_head();
     let buf: &Buffer = editor.buffer();
     let total = buf.len_chars();
@@ -173,6 +173,16 @@ mod tests {
         assert_eq!(v.mode, VimMode::Insert);
         for a in v.handle(KeyEvent::Char('H'), &e) { e.execute(a); }
         assert_eq!(e.buffer().to_string(), "Hlo world");
+    }
+
+    #[test]
+    fn double_angle_indent_line() {
+        let mut e = Editor::from_str("hello");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('>'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('>'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "    hello");
     }
 
     #[test]

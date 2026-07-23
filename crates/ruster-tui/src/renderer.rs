@@ -1,6 +1,7 @@
 use ratatui::backend::CrosstermBackend;
+use ratatui::layout::Rect;
 use ratatui::Terminal;
-use ruster_render::{Color, EditorState, Renderer, SyntaxStyle};
+use ruster_render::{Color, FrameState, Renderer, SyntaxStyle};
 use std::io::Stdout;
 
 fn ruster_color_to_ratatui(c: &Color) -> ratatui::style::Color {
@@ -36,56 +37,67 @@ impl TuiRenderer {
 }
 
 impl Renderer for TuiRenderer {
-    fn render_frame(&mut self, state: &EditorState) {
+    fn viewport_cells(&self) -> (u16, u16) {
+        crossterm::terminal::size().unwrap_or((80, 24))
+    }
+
+    fn render_frame(&mut self, state: &FrameState) {
         let term = match &mut self.terminal {
             Some(t) => t,
             None => return,
         };
         let _ = term.draw(|frame| {
             let area = frame.area();
-            let has_cmdline = state.cmdline.is_some() || state.message.is_some();
-            let constraints: Vec<ratatui::layout::Constraint> = if has_cmdline {
-                vec![
-                    ratatui::layout::Constraint::Fill(1),
-                    ratatui::layout::Constraint::Length(1),
-                    ratatui::layout::Constraint::Length(1),
-                ]
-            } else {
-                vec![
-                    ratatui::layout::Constraint::Fill(1),
-                    ratatui::layout::Constraint::Length(1),
-                ]
-            };
-            let chunks = ratatui::layout::Layout::default()
-                .direction(ratatui::layout::Direction::Vertical)
-                .constraints(constraints)
-                .split(area);
 
-            // Buffer area
-            let has_highlights = state.lines.iter().any(|l| !l.highlights.is_empty());
-            let buf_widget = crate::widgets::BufferWidget::new(
-                state.lines.clone(),
-                state.cursor,
-            )
-            .with_syntax(has_highlights)
-            .with_cursor_visible(state.cursor_visible);
-            frame.render_widget(buf_widget, chunks[0]);
+            for view in &state.windows {
+                if view.rect.width == 0 || view.rect.height == 0 {
+                    continue;
+                }
+                let buf_h = view.rect.height.saturating_sub(1);
+                let buf_area = Rect::new(view.rect.x, view.rect.y, view.rect.width, buf_h);
+                let sl_area = Rect::new(view.rect.x, view.rect.y + buf_h, view.rect.width, 1);
 
-            // Statusline
-            let sl = crate::widgets::StatuslineWidget::new(
-                state.mode_label,
-                state.file_path,
-                state.cursor,
-            );
-            frame.render_widget(sl, chunks[1]);
+                let has_highlights = view.lines.iter().any(|l| !l.highlights.is_empty());
+                let buf_widget = crate::widgets::BufferWidget::new(view.lines.clone(), view.cursor)
+                    .with_syntax(has_highlights)
+                    .with_cursor_visible(view.cursor_visible)
+                    .with_cursor_kind(view.cursor_kind)
+                    .with_scroll(view.scroll_offset)
+                    .with_gutter(view.gutter.clone());
+                frame.render_widget(buf_widget, buf_area);
 
-            // Cmdline / message area
-            if let Some(cmd) = state.cmdline {
-                let cl = crate::widgets::CmdlineWidget::new(cmd);
-                frame.render_widget(cl, chunks.last().copied().unwrap_or(chunks[1]));
-            } else if let Some(msg) = state.message {
-                let cl = crate::widgets::CmdlineWidget::new(msg);
-                frame.render_widget(cl, chunks.last().copied().unwrap_or(chunks[1]));
+                let sl = crate::widgets::StatuslineWidget::new(view.statusline.clone());
+                frame.render_widget(sl, sl_area);
+            }
+
+            // Shared cmdline / message on the bottom row.
+            let cmd_text = state.cmdline.or(state.message);
+            if let Some(text) = cmd_text {
+                let cl_area = Rect::new(0, area.height.saturating_sub(1), area.width, 1);
+                frame.render_widget(crate::widgets::CmdlineWidget::new(text), cl_area);
+            }
+
+            // Bottom which-key panel, sliding up (revealed row-by-row by anim).
+            if let Some(wk) = &state.whichkey {
+                let full = wk.rows.len() as u16 + 1; // title + rows
+                let visible = ((full as f32) * wk.anim).round() as u16;
+                if visible > 0 {
+                    let h = visible.min(area.height);
+                    let py = area.height.saturating_sub(h);
+                    let parea = Rect::new(0, py, area.width, h);
+                    frame.render_widget(crate::widgets::WhichKeyWidget::new(wk.clone()), parea);
+                }
+            }
+
+            // Floating picker overlay, centered.
+            if let Some(picker) = &state.picker {
+                let pw = (area.width * 6 / 10).clamp(20, area.width.saturating_sub(2));
+                let rows = picker.rows.len() as u16 + 2; // title + query + rows
+                let ph = rows.clamp(3, area.height.saturating_sub(2));
+                let px = area.x + (area.width.saturating_sub(pw)) / 2;
+                let py = area.y + (area.height.saturating_sub(ph)) / 3;
+                let parea = Rect::new(px, py, pw, ph);
+                frame.render_widget(crate::widgets::PickerWidget::new(picker.clone()), parea);
             }
         });
     }

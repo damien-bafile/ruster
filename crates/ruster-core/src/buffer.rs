@@ -34,6 +34,10 @@ impl Buffer {
         }
     }
 
+    pub fn char_to_line(&self, char_idx: usize) -> usize {
+        self.rope.char_to_line(char_idx)
+    }
+
     pub fn insert(&mut self, at: usize, text: &str) -> Change {
         self.rope.insert(at, text);
         Change { at, deleted: String::new(), inserted: text.to_string() }

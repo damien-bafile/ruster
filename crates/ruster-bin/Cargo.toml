@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-ruster-core = { path = "../ruster-core" }
 ruster-render = { path = "../ruster-render" }
 ruster-tui = { path = "../ruster-tui" }
+ruster-render-raylib = { path = "../ruster-render-raylib" }
 
 [[bin]]
 name = "ruster"

@@ -1,5 +1,5 @@
 use crate::buffer::Buffer;
-use crate::editor::Editor;
+use crate::editor::EditorView;
 
 pub fn next_word_start(buffer: &Buffer, head: usize) -> usize {
     let total = buffer.len_chars();
@@ -48,7 +48,7 @@ pub fn word_end(buffer: &Buffer, head: usize) -> usize {
     i.min(total.saturating_sub(1))
 }
 
-pub fn last_printable_in_line(editor: &Editor) -> usize {
+pub fn last_printable_in_line(editor: &dyn EditorView) -> usize {
     let head = editor.primary_head();
     let line = char_to_line(editor, head);
     let start = editor.buffer().line_start_char(line);
@@ -61,7 +61,7 @@ pub fn last_printable_in_line(editor: &Editor) -> usize {
     if content_len > 0 { start + content_len - 1 } else { start }
 }
 
-pub fn char_to_line(editor: &Editor, char_idx: usize) -> usize {
+pub fn char_to_line(editor: &dyn EditorView, char_idx: usize) -> usize {
     let mut acc = 0usize;
     for line in 0..editor.buffer().line_count() {
         if editor.buffer().line_start_char(line) <= char_idx { acc = line; } else { break; }

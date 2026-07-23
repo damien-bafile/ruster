@@ -19,6 +19,7 @@ pub enum Edge { Start, End }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Dir { Left, Right }
 
+#[derive(Clone)]
 pub struct CursorSet {
     pub(crate) cursors: Vec<Range>,
     pub(crate) primary: usize,
@@ -69,6 +70,22 @@ impl CursorSet {
         } else {
             end - start
         }
+    }
+
+    pub fn add_cursor(&mut self, at: usize) {
+        self.cursors.push(Range::caret(at));
+        self.primary = self.cursors.len() - 1;
+    }
+
+    pub fn clear_extra(&mut self) {
+        let original = self.cursors[0];
+        self.cursors.truncate(0);
+        self.cursors.push(original);
+        self.primary = 0;
+    }
+
+    pub fn count(&self) -> usize {
+        self.cursors.len()
     }
 
     fn grapheme_step(&self, buffer: &Buffer, from: usize, dir: Dir) -> usize {
@@ -181,5 +198,16 @@ mod tests {
         let mut c = CursorSet::single(0);
         c.move_line_edge(&b, Edge::End);
         assert_eq!(c.head(), 11);
+    }
+
+    #[test]
+    fn add_and_clear_extra_cursors() {
+        let mut c = CursorSet::single(5);
+        assert_eq!(c.count(), 1);
+        c.add_cursor(10);
+        assert_eq!(c.count(), 2);
+        c.clear_extra();
+        assert_eq!(c.count(), 1);
+        assert_eq!(c.head(), 5);
     }
 }
