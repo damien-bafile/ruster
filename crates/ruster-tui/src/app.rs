@@ -131,6 +131,112 @@ fn which_key_ctrl_w() -> PickerView {
     }
 }
 
+// --- Space-leader key tree (LazyVim style) ---
+
+#[derive(Clone, Copy)]
+enum LeaderAction {
+    Focus(FocusDir),
+    Split(SplitDir),
+    CloseWindow,
+    Only,
+    Fullscreen,
+    Files,
+    Buffers,
+    Explorer,
+}
+
+enum LeaderNode {
+    Group(&'static str, &'static [(char, LeaderNode)]),
+    Action(&'static str, LeaderAction),
+}
+
+static WINDOW_GROUP: &[(char, LeaderNode)] = &[
+    ('h', LeaderNode::Action("focus left", LeaderAction::Focus(FocusDir::Left))),
+    ('j', LeaderNode::Action("focus down", LeaderAction::Focus(FocusDir::Down))),
+    ('k', LeaderNode::Action("focus up", LeaderAction::Focus(FocusDir::Up))),
+    ('l', LeaderNode::Action("focus right", LeaderAction::Focus(FocusDir::Right))),
+    ('s', LeaderNode::Action("split below", LeaderAction::Split(SplitDir::Horizontal))),
+    ('v', LeaderNode::Action("split right", LeaderAction::Split(SplitDir::Vertical))),
+    ('c', LeaderNode::Action("close window", LeaderAction::CloseWindow)),
+    ('q', LeaderNode::Action("close window", LeaderAction::CloseWindow)),
+    ('o', LeaderNode::Action("only (close others)", LeaderAction::Only)),
+    ('z', LeaderNode::Action("fullscreen", LeaderAction::Fullscreen)),
+];
+
+static FIND_GROUP: &[(char, LeaderNode)] = &[
+    ('f', LeaderNode::Action("files", LeaderAction::Files)),
+    ('b', LeaderNode::Action("buffers", LeaderAction::Buffers)),
+    ('e', LeaderNode::Action("explorer (dired)", LeaderAction::Explorer)),
+];
+
+static LEADER_ROOT: &[(char, LeaderNode)] = &[
+    ('w', LeaderNode::Group("windows", WINDOW_GROUP)),
+    ('f', LeaderNode::Group("find", FIND_GROUP)),
+];
+
+enum LeaderResolve {
+    Group,
+    Action(LeaderAction),
+    Unknown,
+}
+
+/// Resolve a full leader sequence: is it a group prefix, a complete action, or
+/// an unknown/invalid path?
+fn leader_resolve(seq: &[char]) -> LeaderResolve {
+    let mut children = LEADER_ROOT;
+    for (i, &c) in seq.iter().enumerate() {
+        match children.iter().find(|(k, _)| *k == c).map(|(_, n)| n) {
+            None => return LeaderResolve::Unknown,
+            Some(LeaderNode::Group(_, ch)) => {
+                if i + 1 == seq.len() {
+                    return LeaderResolve::Group;
+                }
+                children = ch;
+            }
+            Some(LeaderNode::Action(_, a)) => {
+                if i + 1 == seq.len() {
+                    return LeaderResolve::Action(*a);
+                }
+                return LeaderResolve::Unknown;
+            }
+        }
+    }
+    LeaderResolve::Group // empty sequence = the root group
+}
+
+/// The children available at the node reached by `seq` (for which-key display).
+fn leader_children(seq: &[char]) -> Option<&'static [(char, LeaderNode)]> {
+    let mut children = LEADER_ROOT;
+    for &c in seq {
+        match children.iter().find(|(k, _)| *k == c).map(|(_, n)| n)? {
+            LeaderNode::Group(_, ch) => children = ch,
+            LeaderNode::Action(..) => return None,
+        }
+    }
+    Some(children)
+}
+
+/// Build the which-key panel for the current pending leader sequence.
+fn leader_which_key(seq: &[char]) -> Option<PickerView> {
+    let children = leader_children(seq)?;
+    let mut title = String::from("SPC");
+    for c in seq {
+        title.push(' ');
+        title.push(*c);
+    }
+    let rows = children
+        .iter()
+        .map(|(k, node)| {
+            let desc = match node {
+                LeaderNode::Group(d, _) => format!("+{}", d),
+                LeaderNode::Action(d, _) => d.to_string(),
+            };
+            PickerRow { label: format!("{}  {}", k, desc), selected: false }
+        })
+        .collect();
+    Some(PickerView { title, query: String::new(), rows })
+}
+
 /// Parse one `rg --vimgrep` line (`file:line:col:text`) into its parts.
 fn parse_rg_line(line: &str) -> Option<(PathBuf, usize, usize, String)> {
     let mut parts = line.splitn(4, ':');
@@ -165,6 +271,9 @@ pub struct App {
     cursor_anim: CursorAnim,
     /// True after a `Ctrl-w` prefix, awaiting a window command key.
     pending_ctrl_w: bool,
+    /// The keys typed after the `Space` leader so far (None = not in a leader
+    /// sequence). Drives the which-key panel and multi-level dispatch.
+    leader_pending: Option<Vec<char>>,
     /// Active floating picker (buffer list, file finder, ...), if any.
     picker: Option<PickerState>,
     /// Current directory for each open dired (file-explorer) buffer.
@@ -327,6 +436,7 @@ impl App {
             ws, vim, renderer,
             should_quit: false, message: None, syntax, syntax_buffer, lua, config, timer,
             has_smooth_cursor: false, cursor_anim, pending_ctrl_w: false, picker: None,
+            leader_pending: None,
             dired_dirs: std::collections::HashMap::new(),
         }
     }
@@ -335,6 +445,12 @@ impl App {
         // An open picker captures all input until it is accepted or cancelled.
         if self.picker.is_some() {
             self.handle_picker_key(ck);
+            return;
+        }
+
+        // A pending Space-leader sequence captures the next key.
+        if self.leader_pending.is_some() {
+            self.handle_leader_key(ck);
             return;
         }
 
@@ -354,6 +470,14 @@ impl App {
             && ck.modifiers.contains(KeyModifiers::CONTROL)
         {
             self.pending_ctrl_w = true;
+            return;
+        }
+        // Space starts the leader sequence (LazyVim-style), showing which-key.
+        if self.vim.mode == VimMode::Normal
+            && ck.code == KeyCode::Char(' ')
+            && !ck.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            self.leader_pending = Some(Vec::new());
             return;
         }
         // Direct Ctrl+h/j/k/l focus movement between splits (no Ctrl-w prefix).
@@ -681,9 +805,11 @@ impl App {
             VimMode::Cmdline => Some(crate::widgets::cmdline_label(self.vim.cmdline_buffer())),
             _ => self.message.clone(),
         };
-        // Which-key panel takes over the overlay while a Ctrl-w prefix is pending.
+        // Which-key panel takes over the overlay while a prefix is pending.
         let picker_view = if self.pending_ctrl_w {
             Some(which_key_ctrl_w())
+        } else if let Some(seq) = self.leader_pending.as_deref() {
+            leader_which_key(seq)
         } else {
             self.picker.as_mut().map(|p| p.view())
         };
@@ -1083,6 +1209,48 @@ impl App {
         }
     }
 
+    /// Advance the pending Space-leader sequence with the next key.
+    fn handle_leader_key(&mut self, ck: crossterm::event::KeyEvent) {
+        let c = match ck.code {
+            KeyCode::Char(c) => c,
+            // Esc or anything else cancels the leader sequence.
+            _ => {
+                self.leader_pending = None;
+                return;
+            }
+        };
+        let seq = self.leader_pending.get_or_insert_with(Vec::new);
+        seq.push(c);
+        let snapshot = seq.clone();
+        match leader_resolve(&snapshot) {
+            LeaderResolve::Group => { /* keep pending; which-key shows the group */ }
+            LeaderResolve::Action(action) => {
+                self.leader_pending = None;
+                self.apply_leader_action(action);
+            }
+            LeaderResolve::Unknown => {
+                self.leader_pending = None;
+            }
+        }
+    }
+
+    fn apply_leader_action(&mut self, action: LeaderAction) {
+        match action {
+            LeaderAction::Focus(dir) => self.ws.borrow_mut().windows.focus(dir),
+            LeaderAction::Split(dir) => {
+                self.ws.borrow_mut().windows.split(dir);
+            }
+            LeaderAction::CloseWindow => {
+                self.ws.borrow_mut().windows.close_active();
+            }
+            LeaderAction::Only => self.ws.borrow_mut().windows.only(),
+            LeaderAction::Fullscreen => self.ws.borrow_mut().windows.toggle_fullscreen(),
+            LeaderAction::Files => self.open_files_picker(),
+            LeaderAction::Buffers => self.open_ibuffer(),
+            LeaderAction::Explorer => self.open_dired(None),
+        }
+    }
+
     /// Interpret the key following a `Ctrl-w` prefix.
     fn handle_window_command(&mut self, ck: crossterm::event::KeyEvent) {
         let mut w = self.ws.borrow_mut();
@@ -1366,6 +1534,50 @@ mod tests {
         let p = a.picker.as_mut().expect("palette open");
         assert_eq!(p.filter, "wq");
         assert!(!p.filtered().is_empty(), "seed matches at least one command");
+    }
+
+    #[test]
+    fn leader_resolves_groups_and_actions() {
+        assert!(matches!(leader_resolve(&[]), LeaderResolve::Group));
+        assert!(matches!(leader_resolve(&['w']), LeaderResolve::Group));
+        assert!(matches!(
+            leader_resolve(&['w', 'h']),
+            LeaderResolve::Action(LeaderAction::Focus(FocusDir::Left))
+        ));
+        assert!(matches!(leader_resolve(&['z']), LeaderResolve::Unknown));
+        assert!(matches!(leader_resolve(&['w', 'x']), LeaderResolve::Unknown));
+    }
+
+    #[test]
+    fn leader_which_key_shows_window_group() {
+        let root = leader_which_key(&[]).expect("root panel");
+        assert_eq!(root.title, "SPC");
+        assert!(root.rows.iter().any(|r| r.label.contains("+windows")));
+
+        let win = leader_which_key(&['w']).expect("window panel");
+        assert_eq!(win.title, "SPC w");
+        assert!(win.rows.iter().any(|r| r.label.starts_with("h ")));
+        assert!(win.rows.iter().any(|r| r.label.contains("focus left")));
+    }
+
+    #[test]
+    fn space_w_l_focuses_right_split() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        let left = a.ws.borrow().windows.active();
+        a.apply_cmd(CmdAction::Split(SplitDir::Vertical)); // new right window active
+        let right = a.ws.borrow().windows.active();
+        assert_ne!(left, right);
+        // Move focus back to the left window, then via SPC w l to the right.
+        a.ws.borrow_mut().windows.focus(FocusDir::Left);
+        assert_eq!(a.ws.borrow().windows.active(), left);
+        a.handle_key(CtKey::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert!(a.leader_pending.is_some());
+        a.handle_key(CtKey::new(KeyCode::Char('w'), KeyModifiers::NONE));
+        assert_eq!(a.leader_pending.as_deref(), Some(&['w'][..]));
+        a.handle_key(CtKey::new(KeyCode::Char('l'), KeyModifiers::NONE));
+        assert!(a.leader_pending.is_none());
+        assert_eq!(a.ws.borrow().windows.active(), right);
     }
 
     #[test]

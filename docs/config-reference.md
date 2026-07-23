@@ -45,4 +45,21 @@ ruster is multi-buffer and multi-window. Relevant commands:
 | `:Files` | Fuzzy file finder (gitignore-aware) |
 | `:Rg <pattern>` | Live grep via ripgrep |
 
-Window keys: `Ctrl-w s/v` split, `Ctrl-w c` close, `Ctrl-w o` only, `Ctrl-w h/j/k/l` focus, `Ctrl-w z` fullscreen. Press `:` then `Tab` for the command palette.
+Window keys: `Ctrl-w s/v` split, `Ctrl-w c` close, `Ctrl-w o` only, `Ctrl-w h/j/k/l` focus, `Ctrl-w z` fullscreen. `Ctrl-h/j/k/l` also move focus directly. Press `:` then `Tab` for the command palette.
+
+### Space leader (which-key)
+
+Press `Space` in Normal mode to open the which-key panel, then a group and key:
+
+| Sequence | Action |
+|----------|--------|
+| `Space w h/j/k/l` | Focus the window left/down/up/right |
+| `Space w s` / `Space w v` | Split below / right |
+| `Space w c` (or `q`) | Close window |
+| `Space w o` | Close other windows |
+| `Space w z` | Toggle fullscreen |
+| `Space f f` | Find files |
+| `Space f b` | Buffer list |
+| `Space f e` | File explorer (dired) |
+
+Each level shows the available continuations in the which-key panel; `Esc` cancels.
