@@ -942,7 +942,11 @@ impl App {
         };
         if let Some((path, lang, text)) = info {
             if self.lsp.ensure(&lang, &root) {
-                let uri = ruster_lsp::protocol::uri_from_path(&path);
+                // The server needs an absolute file URI to match its index.
+                let abs = std::fs::canonicalize(&path).unwrap_or_else(|_| {
+                    if path.is_absolute() { path.clone() } else { root.join(&path) }
+                });
+                let uri = ruster_lsp::protocol::uri_from_path(&abs);
                 match self.lsp_docs.get_mut(&active) {
                     None => {
                         let language_id = ruster_lsp::registry::language_id(&lang).to_string();
