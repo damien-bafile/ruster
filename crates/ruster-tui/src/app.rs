@@ -377,6 +377,8 @@ pub struct App {
     snippets: ruster_core::snippets::SnippetSet,
     /// Remaining tabstop offsets to visit in the active snippet, via Tab.
     snippet_stops: Vec<usize>,
+    /// True while a `:w` is waiting on a format response before writing.
+    pending_format_save: bool,
 }
 
 impl App {
@@ -518,6 +520,11 @@ impl App {
         }
 
         lua.fire_event("VimEnter", &[]);
+        // Apply Lua LSP server overrides (ruster.lsp.servers).
+        let mut lsp = LspManager::new();
+        for (lang, cmd, args) in lua.lsp_servers() {
+            lsp.set_server(&lang, ruster_lsp::ServerConfig { cmd, args });
+        }
         let mut config = lua.config();
         // Apply EditorConfig overrides
         let ec_props = ruster_core::editorconfig::parse(&file_path);
@@ -549,7 +556,7 @@ impl App {
             leader_since: None,
             dired_dirs: std::collections::HashMap::new(),
             dired_prompt: None,
-            lsp: LspManager::new(),
+            lsp,
             lsp_docs: std::collections::HashMap::new(),
             diagnostics: std::collections::HashMap::new(),
             lsp_pending: std::collections::HashMap::new(),
@@ -562,6 +569,7 @@ impl App {
                 s
             },
             snippet_stops: Vec::new(),
+            pending_format_save: false,
         }
     }
 
@@ -1068,18 +1076,21 @@ impl App {
     }
 
     /// Send an LSP request built from the active position and record its action.
-    fn lsp_request(&mut self, method: &str, params: serde_json::Value, action: LspAction) {
+    /// Returns whether the request was actually sent.
+    fn lsp_request(&mut self, method: &str, params: serde_json::Value, action: LspAction) -> bool {
         let lang = match self.active_lsp_target() {
             Some((lang, _, _)) => lang,
             None => {
                 self.message = Some("No language server for this buffer".to_string());
-                return;
+                return false;
             }
         };
         if let Some(id) = self.lsp.request(&lang, method, params) {
             self.lsp_pending.insert((lang, id), action);
+            true
         } else {
             self.message = Some("Language server still starting…".to_string());
+            false
         }
     }
 
@@ -1104,14 +1115,16 @@ impl App {
         }
     }
 
-    fn lsp_format(&mut self) {
+    fn lsp_format(&mut self) -> bool {
         if let Some((_, uri, _)) = self.active_lsp_target() {
             let params = ruster_lsp::protocol::formatting_params(
                 &uri,
                 self.config.tabstop,
                 self.config.expandtab,
             );
-            self.lsp_request("textDocument/formatting", params, LspAction::Format);
+            self.lsp_request("textDocument/formatting", params, LspAction::Format)
+        } else {
+            false
         }
     }
 
@@ -1179,6 +1192,10 @@ impl App {
             LspAction::Format => {
                 let edits = ruster_lsp::parse_text_edits(&result);
                 self.apply_lsp_edits_to_active(&edits);
+                if self.pending_format_save {
+                    self.pending_format_save = false;
+                    self.write_active_file(false);
+                }
             }
             LspAction::Rename => {
                 let per_file = ruster_lsp::parse_workspace_edit(&result);
@@ -1550,7 +1567,9 @@ impl App {
             CmdAction::Files => self.open_files_picker(),
             CmdAction::Rg(pattern) => self.run_rg(&pattern),
             CmdAction::Rename(name) => self.lsp_rename(&name),
-            CmdAction::Format => self.lsp_format(),
+            CmdAction::Format => {
+                self.lsp_format();
+            }
             CmdAction::WorkspaceSymbol(q) => self.lsp_workspace_symbols(&q),
         }
     }
@@ -2027,7 +2046,9 @@ impl App {
             LeaderAction::Hover => self.lsp_hover(),
             LeaderAction::Definition => self.lsp_definition(),
             LeaderAction::References => self.lsp_references(),
-            LeaderAction::Format => self.lsp_format(),
+            LeaderAction::Format => {
+                self.lsp_format();
+            }
             LeaderAction::Rename => {
                 // Seed the cmdline with :rename for the new name.
                 self.message = Some("Use :rename <new-name>".to_string());
@@ -2088,6 +2109,21 @@ impl App {
     }
 
     fn save_file(&mut self, force: bool) {
+        // Format-on-save: format via LSP first, then write when the edits arrive.
+        if self.config.format_on_save && !self.pending_format_save {
+            let active = self.ws.borrow().active_buffer();
+            if self.lsp_docs.contains_key(&active) {
+                self.pending_format_save = true;
+                if self.lsp_format() {
+                    return; // write deferred until the format response
+                }
+                self.pending_format_save = false; // couldn't format; save now
+            }
+        }
+        self.write_active_file(force);
+    }
+
+    fn write_active_file(&mut self, force: bool) {
         let (path, content) = {
             let w = self.ws.borrow();
             let doc = w.active_doc();

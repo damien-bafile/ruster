@@ -147,7 +147,32 @@ impl LuaRuntime {
             cursor_anim_enabled: cfg.get("cursor_anim_enabled").unwrap_or(defaults.cursor_anim_enabled),
             cursor_anim_speed: cfg.get("cursor_anim_speed").unwrap_or(defaults.cursor_anim_speed),
             timeoutlen: cfg.get("timeoutlen").unwrap_or(defaults.timeoutlen),
+            format_on_save: cfg.get("format_on_save").unwrap_or(defaults.format_on_save),
         }
+    }
+
+    /// LSP server overrides from `ruster.lsp.servers[filetype] = { cmd, args }`.
+    pub fn lsp_servers(&self) -> Vec<(String, String, Vec<String>)> {
+        let mut out = Vec::new();
+        let servers: mlua::Table = match self
+            .lua
+            .globals()
+            .get::<mlua::Table>("ruster")
+            .and_then(|r| r.get::<mlua::Table>("lsp"))
+            .and_then(|l| l.get::<mlua::Table>("servers"))
+        {
+            Ok(t) => t,
+            Err(_) => return out,
+        };
+        for pair in servers.pairs::<String, mlua::Table>().flatten() {
+            let (lang, cfg) = pair;
+            let cmd: String = cfg.get("cmd").unwrap_or_default();
+            let args: Vec<String> = cfg.get("args").unwrap_or_default();
+            if !cmd.is_empty() {
+                out.push((lang, cmd, args));
+            }
+        }
+        out
     }
 
     pub fn load_init(&mut self, path: &Path) -> Result<(), String> {

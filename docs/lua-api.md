@@ -132,6 +132,20 @@ ruster.statusline.section("right", function()
 end)
 ```
 
+### `ruster.lsp`
+
+Language-server configuration. `ruster.lsp.servers[filetype]` overrides or adds
+the server command for a filetype (keys match ruster's language names: `rust`,
+`python`, `javascript`, `typescript`, `c`, `lua`, `scheme`).
+
+```lua
+ruster.lsp = {
+  servers = {
+    scheme = { cmd = "scheme-lsp-server", args = { "--stdio" } },
+  },
+}
+```
+
 ### `ruster.config`
 
 Configuration table. See [Config Reference](config-reference.md).
@@ -139,4 +153,5 @@ Configuration table. See [Config Reference](config-reference.md).
 ```lua
 ruster.config.tabstop = 2
 ruster.config.number = true
+ruster.config.format_on_save = true
 ```

@@ -27,6 +27,7 @@ ruster.config = {
 | `cursor_anim_enabled` | boolean | true | Enable smooth cursor animation |
 | `cursor_anim_speed` | float | 12.0 | Smooth-cursor easing speed |
 | `timeoutlen` | integer | 300 | Milliseconds before the which-key panel appears for a pending key prefix |
+| `format_on_save` | boolean | false | Format the buffer via LSP before writing on `:w` |
 
 ## Windows & buffers
 
@@ -70,3 +71,47 @@ Press `Space` in Normal mode to open the which-key panel, then a group and key:
 Each level shows its continuations in the which-key panel, which slides up from
 the bottom mini-buffer and back down when the sequence resolves or is cancelled
 with `Esc`.
+
+## Language servers (LSP)
+
+Supported filetypes spawn a language server automatically (if installed) and
+send document changes. Diagnostics appear on the cursor line; code actions are
+under the `Space c` leader:
+
+| Key / command | Action |
+|---------------|--------|
+| `K` / `Space c k` | Hover documentation |
+| `Space c g` | Go to definition |
+| `Space c r` | Find references |
+| `Space c n` (or `:rename <name>`) | Rename symbol |
+| `Space c f` (or `:fmt`) | Format buffer |
+| `Space c o` | Document symbols (outline) |
+| `Space c d` | Diagnostics list |
+| `:sym <query>` | Workspace symbol search |
+
+Default servers: `rust-analyzer`, `pyright-langserver`, `typescript-language-server`,
+`clangd`, `lua-language-server`, `scheme-lsp-server`. Override or add servers in
+`init.lua`:
+
+```lua
+ruster.lsp = {
+  servers = {
+    scheme = { cmd = "my-scheme-lsp", args = { "--stdio" } },
+    rust   = { cmd = "rust-analyzer", args = {} },
+  },
+}
+ruster.config.format_on_save = true
+```
+
+## Snippets
+
+Tab in insert mode expands a snippet whose trigger word precedes the cursor, then
+jumps to `$1`; further Tabs cycle through the remaining tabstops. A small built-in
+set ships for Rust/Python/Lua. Add your own in
+`~/.config/ruster/snippets/<filetype>.snippets`, one per line as
+`trigger<TAB>body`, where `\n` in the body is a newline and `$1`/`$2`/`$0`/`${1:default}`
+are tabstops:
+
+```
+fn	fn ${1:name}(${2:args}) {\n    $0\n}
+```
