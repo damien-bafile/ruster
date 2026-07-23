@@ -5,7 +5,11 @@
 //! which the application drains each frame via [`client::LspClient::poll`].
 
 pub mod client;
+pub mod position;
+pub mod registry;
 pub mod transport;
 
 pub use client::LspClient;
-pub use transport::{ServerMessage, classify, read_message, write_message};
+pub use position::{offset_to_position, position_to_offset, LspPosition};
+pub use registry::{default_server, language_id, ServerConfig};
+pub use transport::{classify, read_message, write_message, ServerMessage};
