@@ -3,6 +3,26 @@ use crate::buffer::Buffer;
 use crate::cursor::CursorSet;
 use crate::undo::UndoStack;
 
+/// Read-only view of editable state that key handling (vim/emacs) reads.
+///
+/// Decouples the input layer from *where* the buffer and cursor live: the
+/// owned [`Editor`] provides it directly, while multi-window code provides it
+/// over the active window's document + cursor set.
+pub trait EditorView {
+    fn buffer(&self) -> &Buffer;
+    fn primary_head(&self) -> usize;
+    fn cursors(&self) -> &CursorSet;
+    fn char_to_line(&self, char_idx: usize) -> usize {
+        self.buffer().char_to_line(char_idx)
+    }
+}
+
+impl EditorView for Editor {
+    fn buffer(&self) -> &Buffer { &self.buffer }
+    fn primary_head(&self) -> usize { self.cursors.head() }
+    fn cursors(&self) -> &CursorSet { &self.cursors }
+}
+
 /// A transient editing session over borrowed state.
 ///
 /// This is the single place editing [`Action`]s are interpreted. It borrows the

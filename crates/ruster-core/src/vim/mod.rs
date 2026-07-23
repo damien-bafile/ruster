@@ -4,7 +4,7 @@ pub mod textobj;
 
 use crate::action::{Action, EditOp, Motion};
 use crate::cursor::Edge;
-use crate::editor::Editor;
+use crate::editor::EditorView;
 use crate::key::KeyEvent;
 use crate::vim::motions::{next_word_start, prev_word_start, word_end, last_printable_in_line, char_to_line};
 use std::cell::RefCell;
@@ -24,7 +24,7 @@ enum LastChange {
     DeleteChar,
 }
 
-fn next_word_occurrence(editor: &Editor) -> Option<usize> {
+fn next_word_occurrence(editor: &dyn EditorView) -> Option<usize> {
     let head = editor.primary_head();
     let buf = editor.buffer();
     let text = buf.to_string();
@@ -100,7 +100,7 @@ impl VimState {
         }
     }
 
-    pub fn handle(&mut self, key: KeyEvent, editor: &Editor) -> Vec<Action> {
+    pub fn handle(&mut self, key: KeyEvent, editor: &dyn EditorView) -> Vec<Action> {
         let n = self.count.unwrap_or(1);
         let mut out: Vec<Action> = Vec::new();
         match self.mode {
@@ -143,7 +143,7 @@ impl VimState {
         false
     }
 
-    fn handle_normal(&mut self, key: KeyEvent, editor: &Editor, n: u32, out: &mut Vec<Action>) {
+    fn handle_normal(&mut self, key: KeyEvent, editor: &dyn EditorView, n: u32, out: &mut Vec<Action>) {
         if self.stroke_count(key) { return; }
 
         let pending_now = self.pending;
@@ -324,7 +324,7 @@ impl VimState {
         }
     }
 
-    fn replay_last_change(&mut self, editor: &Editor, out: &mut Vec<Action>) {
+    fn replay_last_change(&mut self, editor: &dyn EditorView, out: &mut Vec<Action>) {
         let lc = match self.last_change { Some(lc) => lc, None => return };
         match lc {
             LastChange::OperatorMotion { op, motion, count } => {
@@ -348,7 +348,7 @@ impl VimState {
         }
     }
 
-    fn apply_operator(&mut self, op: char, start: usize, end: usize, editor: &Editor, out: &mut Vec<Action>) {
+    fn apply_operator(&mut self, op: char, start: usize, end: usize, editor: &dyn EditorView, out: &mut Vec<Action>) {
         let safe_end = end.min(editor.buffer().len_chars());
         let text = editor.buffer().slice_string(start, safe_end);
         match op {
@@ -374,7 +374,7 @@ impl VimState {
     }
 
     fn do_word_motion<F: Fn(&crate::buffer::Buffer, usize) -> usize>(
-        &self, editor: &Editor, n: u32, step: F, out: &mut Vec<Action>,
+        &self, editor: &dyn EditorView, n: u32, step: F, out: &mut Vec<Action>,
     ) {
         let mut target = editor.primary_head();
         let buf = editor.buffer();
@@ -382,7 +382,7 @@ impl VimState {
         out.push(Action::Move(Motion::To(target)));
     }
 
-    fn handle_insert(&mut self, key: KeyEvent, _editor: &Editor, out: &mut Vec<Action>) {
+    fn handle_insert(&mut self, key: KeyEvent, _editor: &dyn EditorView, out: &mut Vec<Action>) {
         match key {
             KeyEvent::Esc => {
                 out.push(Action::EndBatch);
@@ -402,7 +402,7 @@ impl VimState {
         }
     }
 
-    fn handle_visual(&mut self, key: KeyEvent, editor: &Editor, n: u32, out: &mut Vec<Action>) {
+    fn handle_visual(&mut self, key: KeyEvent, editor: &dyn EditorView, n: u32, out: &mut Vec<Action>) {
         if self.stroke_count(key) { return; }
         let anchor = match self.anchor { Some(a) => a, None => editor.primary_head() };
         match key {
@@ -490,7 +490,7 @@ impl VimState {
         }
     }
 
-    fn visual_range(&self, editor: &Editor) -> (usize, usize) {
+    fn visual_range(&self, editor: &dyn EditorView) -> (usize, usize) {
         let r = editor.cursors().primary();
         let s = r.start();
         let e = r.end();

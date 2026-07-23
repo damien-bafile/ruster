@@ -5,24 +5,32 @@ pub mod widgets;
 
 #[cfg(test)]
 mod tests {
-    use ruster_render::{CursorKind, EditorState, Renderer, StyledLine};
+    use ruster_render::{
+        CursorKind, FrameState, GutterView, Rect, Renderer, StatuslineView, StyledLine, WindowView,
+    };
 
     #[test]
-    fn tui_renderer_accepts_editor_state() {
+    fn tui_renderer_accepts_frame_state() {
         let mut r = crate::renderer::TuiRenderer::dummy();
-        let state = EditorState {
+        let view = WindowView {
+            rect: Rect::new(0, 0, 80, 24),
             lines: vec![StyledLine { text: "hi".to_string(), highlights: vec![] }],
             cursor: (0, 1),
             cursor_kind: CursorKind::Bar,
             cursor_visible: true,
             cursor_smooth: None,
-            mode_label: "INSERT",
-            file_path: "f",
-            modified: false,
-            cmdline: None,
-            message: None,
             scroll_offset: 0,
+            gutter: GutterView::default(),
+            statusline: StatuslineView {
+                left: "INSERT".into(),
+                center: "f".into(),
+                right: "1,2".into(),
+                active: true,
+            },
+            active: true,
         };
+        let state = FrameState { windows: vec![view], cmdline: None, message: None };
+        // Dummy renderer has no terminal; this exercises the type wiring.
         r.render_frame(&state);
     }
 }

@@ -1,17 +1,30 @@
 use crate::key::crossterm_to_ruster_key;
 use crate::renderer::TuiRenderer;
 use ruster_core::action::{Action, EditOp, Motion};
-use ruster_core::editor::Editor;
+use ruster_core::document::BufferId;
+use ruster_core::editor::EditorView;
 use ruster_core::key::KeyEvent;
 use ruster_core::vim::VimMode;
 use ruster_core::vim::VimState;
+use ruster_core::windows::Rect as CoreRect;
+use ruster_core::workspace::Workspace;
 use ruster_lua::{config::Config, LuaAction, LuaRuntime};
-use ruster_render::{CursorKind, EditorState, Renderer, StyledLine};
+use ruster_render::{
+    CursorKind, FrameState, GutterView, Rect as RRect, Renderer, StatuslineView, StyledLine,
+    WindowView,
+};
 use ruster_syntax::SyntaxEngine;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
+
+fn plain_lines(content: &str) -> Vec<StyledLine> {
+    content
+        .split('\n')
+        .map(|s| StyledLine { text: s.to_string(), highlights: vec![] })
+        .collect()
+}
 
 struct FrameTimer {
     last: std::time::Instant,
@@ -74,13 +87,15 @@ enum AppEvent {
 }
 
 pub struct App {
-    pub editor: Rc<RefCell<Editor>>,
+    pub ws: Rc<RefCell<Workspace>>,
     pub vim: VimState,
     pub renderer: Box<dyn Renderer>,
-    file_path: PathBuf,
     pub should_quit: bool,
     message: Option<String>,
+    /// Syntax engine for `syntax_buffer` (the initially-opened file). Windows
+    /// showing other buffers render as plain text for now.
     syntax: Option<SyntaxEngine>,
+    syntax_buffer: BufferId,
     lua: LuaRuntime,
     config: Config,
     timer: FrameTimer,
@@ -90,8 +105,9 @@ pub struct App {
 
 impl App {
     pub fn new(content: String, file_path: PathBuf) -> Self {
-        let editor = Rc::new(RefCell::new(Editor::from_str(&content)));
-        editor.borrow_mut().execute(Action::Move(Motion::To(0)));
+        let ws = Rc::new(RefCell::new(Workspace::from_file(file_path.clone(), content.clone())));
+        ws.borrow_mut().execute(Action::Move(Motion::To(0)));
+        let syntax_buffer = ws.borrow().active_buffer();
         let vim = VimState::new();
         let renderer = Box::new(TuiRenderer::dummy());
         let ext = file_path.extension()
@@ -112,15 +128,15 @@ impl App {
             }
         }
 
-        // Wire buffer callbacks
-        let ed_get = editor.clone();
-        let ed_set = editor.clone();
-        let ed_get_cursor = editor.clone();
-        let ed_set_cursor = editor.clone();
+        // Wire buffer callbacks to the active window/document.
+        let ws_get = ws.clone();
+        let ws_set = ws.clone();
+        let ws_get_cursor = ws.clone();
+        let ws_set_cursor = ws.clone();
         lua.set_buffer_callbacks(
             Box::new(move |start, end_opt| {
-                let b = ed_get.borrow();
-                let buf = b.buffer();
+                let w = ws_get.borrow();
+                let buf = w.buffer();
                 let count = buf.line_count() as i32;
                 let end = end_opt.unwrap_or_else(|| start + 1);
                 let end = if end == -1 { count } else { end.min(count) };
@@ -128,38 +144,41 @@ impl App {
             }),
             Box::new(move |start, end, lines_vec| {
                 let line_count = {
-                    let b = ed_set.borrow();
-                    b.buffer().line_count()
+                    let w = ws_set.borrow();
+                    w.buffer().line_count()
                 };
                 let end = (end as usize).min(line_count.saturating_sub(1));
                 let (char_start, char_end) = {
-                    let b = ed_set.borrow();
-                    let buf = b.buffer();
+                    let w = ws_set.borrow();
+                    let buf = w.buffer();
                     let cs = buf.line_start_char(start as usize);
                     let ce = if end + 1 >= line_count { buf.len_chars() }
                              else { buf.line_start_char(end + 1) };
                     (cs, ce)
                 };
-                let mut b = ed_set.borrow_mut();
-                b.execute(Action::BeginBatch);
-                b.execute(Action::Edit(EditOp::DeleteRange(char_start, char_end)));
+                let mut w = ws_set.borrow_mut();
+                w.execute(Action::BeginBatch);
+                w.execute(Action::Edit(EditOp::DeleteRange(char_start, char_end)));
                 let text = lines_vec.join("\n");
                 if !text.is_empty() {
-                    b.execute(Action::Edit(EditOp::InsertString(text)));
+                    w.execute(Action::Edit(EditOp::InsertString(text)));
                 }
-                b.execute(Action::EndBatch);
+                w.execute(Action::EndBatch);
             }),
             Box::new(move || {
-                let b = ed_get_cursor.borrow();
-                let head = b.primary_head();
-                let row = b.char_to_line(head);
-                let col = head - b.buffer().line_start_char(row);
+                let w = ws_get_cursor.borrow();
+                let head = w.primary_head();
+                let buf = w.buffer();
+                let row = buf.char_to_line(head);
+                let col = head - buf.line_start_char(row);
                 (row as i32, col as i32)
             }),
             Box::new(move |row, col| {
-                let mut b = ed_set_cursor.borrow_mut();
-                let pos = b.buffer().line_start_char(row as usize) + col as usize;
-                b.execute(Action::Move(Motion::To(pos)));
+                let pos = {
+                    let w = ws_set_cursor.borrow();
+                    w.buffer().line_start_char(row as usize) + col as usize
+                };
+                ws_set_cursor.borrow_mut().execute(Action::Move(Motion::To(pos)));
             }),
         );
 
@@ -180,12 +199,12 @@ impl App {
                 config.tabstop = n;
             }
         }
-        editor.borrow_mut().set_config_indent(config.tabstop);
+        ws.borrow_mut().set_active_indent_width(config.tabstop);
         let timer = FrameTimer::new();
         let cursor_anim = CursorAnim::new();
         App {
-            editor, vim, renderer, file_path,
-            should_quit: false, message: None, syntax, lua, config, timer,
+            ws, vim, renderer,
+            should_quit: false, message: None, syntax, syntax_buffer, lua, config, timer,
             has_smooth_cursor: false, cursor_anim
         }
     }
@@ -206,18 +225,19 @@ impl App {
         if self.vim.mode == VimMode::Insert && key == KeyEvent::Tab {
             if self.config.expandtab {
                 let spaces = " ".repeat(self.config.tabstop as usize);
-                self.editor.borrow_mut().execute(Action::BeginBatch);
-                self.editor.borrow_mut().execute(Action::Edit(EditOp::InsertString(spaces)));
-                self.editor.borrow_mut().execute(Action::EndBatch);
+                let mut w = self.ws.borrow_mut();
+                w.execute(Action::BeginBatch);
+                w.execute(Action::Edit(EditOp::InsertString(spaces)));
+                w.execute(Action::EndBatch);
             }
             return;
         }
 
-        let actions = self.vim.handle(key, &*self.editor.borrow());
+        let actions = self.vim.handle(key, &*self.ws.borrow());
         for action in actions {
             match action {
                 Action::Textobject { op, kind, target, count: _ } => {
-                    let cursor = self.editor.borrow().primary_head();
+                    let cursor = self.ws.borrow().primary_head();
                     if let Some((start, end)) = self.syntax.as_ref()
                         .and_then(|s| s.ts_textobject(kind, target, cursor))
                     {
@@ -239,7 +259,7 @@ impl App {
                         Err(e) => self.message = Some(e),
                     }
                 }
-                other => self.editor.borrow_mut().execute(other),
+                other => self.ws.borrow_mut().execute(other),
             }
         }
         if self.vim.mode != prev_mode {
@@ -386,54 +406,105 @@ impl App {
     }
 
     fn render(&mut self) {
-        let content = self.editor.borrow().buffer().to_string();
-        if let Some(syn) = &mut self.syntax {
-            syn.reparse(&content);
+        let (cols, rows) = self.renderer.viewport_cells();
+        // Reserve the bottom row for the shared cmdline/message line.
+        let buf_area = CoreRect::new(0, 0, cols, rows.saturating_sub(1));
+
+        // Reparse syntax for the tracked buffer, then snapshot its styled lines.
+        let syntax_content = self.ws.borrow().buffers
+            .get(self.syntax_buffer)
+            .map(|d| d.buffer.to_string());
+        if let (Some(c), Some(syn)) = (syntax_content.as_ref(), self.syntax.as_mut()) {
+            syn.reparse(c);
         }
-        let styled_lines: Vec<StyledLine> = match &self.syntax {
-            Some(syn) => syn.styled_lines().to_vec(),
-            None => content.split('\n').map(|s| StyledLine { text: s.to_string(), highlights: vec![] }).collect(),
-        };
+        let styled: Option<Vec<StyledLine>> = self.syntax.as_ref().map(|s| s.styled_lines().to_vec());
 
-        let (line, col) = self.cursor_line_col();
-
-        let cursor_smooth = if self.has_smooth_cursor {
-            Some((self.cursor_anim.cell_x - col as f32, self.cursor_anim.cell_y - line as f32))
-        } else {
-            None
-        };
-
-        let cursor_kind = match self.vim.mode {
+        let mode = self.vim.mode;
+        let mode_lbl = crate::widgets::mode_label(&mode).to_string();
+        let cursor_kind = match mode {
             VimMode::Insert | VimMode::Cmdline => CursorKind::Bar,
             _ => CursorKind::Block,
         };
-        let mode_label = crate::widgets::mode_label(&self.vim.mode);
-        let file_path = self.file_path.to_string_lossy().to_string();
-        let cmdline = match self.vim.mode {
-            VimMode::Cmdline => Some(crate::widgets::cmdline_label(self.vim.cmdline_buffer())),
-            _ => self.message.as_ref().map(|m| m.clone()),
-        };
+        let smooth = self.has_smooth_cursor;
+        let (anim_x, anim_y) = (self.cursor_anim.cell_x, self.cursor_anim.cell_y);
 
-        let state = EditorState {
-            lines: styled_lines,
-            cursor: (line, col),
-            cursor_kind,
-            cursor_visible: true,
-            cursor_smooth,
-            mode_label,
-            file_path: &file_path,
-            modified: false,
+        let mut views: Vec<WindowView> = Vec::new();
+        {
+            let mut w = self.ws.borrow_mut();
+            let active_id = w.windows.active();
+            let rects = w.windows.compute_rects(buf_area);
+            for (wid, rect) in rects {
+                let is_active = wid == active_id;
+                let (buf_id, head, mut scroll) = {
+                    let win = w.windows.window(wid).expect("window exists");
+                    (win.buffer, win.cursors.head(), win.scroll_top)
+                };
+                let (content, cline, ccol, name) = {
+                    let doc = w.buffers.get(buf_id).expect("buffer exists");
+                    let cline = doc.buffer.char_to_line(head);
+                    let ccol = head - doc.buffer.line_start_char(cline);
+                    (doc.buffer.to_string(), cline, ccol, doc.name.clone())
+                };
+                // Keep the cursor visible within this window's text area.
+                let buf_h = rect.height.saturating_sub(1) as usize;
+                if buf_h > 0 {
+                    if cline < scroll {
+                        scroll = cline;
+                    } else if cline >= scroll + buf_h {
+                        scroll = cline - buf_h + 1;
+                    }
+                }
+                if let Some(win) = w.windows.window_mut(wid) {
+                    win.scroll_top = scroll;
+                }
+
+                let lines: Vec<StyledLine> = if buf_id == self.syntax_buffer {
+                    styled.clone().unwrap_or_else(|| plain_lines(&content))
+                } else {
+                    plain_lines(&content)
+                };
+                let statusline = StatuslineView {
+                    left: if is_active { mode_lbl.clone() } else { String::new() },
+                    center: name,
+                    right: format!("{},{}", cline + 1, ccol + 1),
+                    active: is_active,
+                };
+                let cursor_smooth = if is_active && smooth {
+                    Some((anim_x - ccol as f32, anim_y - cline as f32))
+                } else {
+                    None
+                };
+                views.push(WindowView {
+                    rect: RRect::new(rect.x, rect.y, rect.width, rect.height),
+                    lines,
+                    cursor: (cline as u16, ccol as u16),
+                    cursor_kind,
+                    cursor_visible: is_active,
+                    cursor_smooth,
+                    scroll_offset: scroll as u16,
+                    gutter: GutterView::default(),
+                    statusline,
+                    active: is_active,
+                });
+            }
+        }
+
+        let cmdline = match mode {
+            VimMode::Cmdline => Some(crate::widgets::cmdline_label(self.vim.cmdline_buffer())),
+            _ => self.message.clone(),
+        };
+        let state = FrameState {
+            windows: views,
             cmdline: cmdline.as_deref(),
             message: None,
-            scroll_offset: 0,
         };
         self.renderer.render_frame(&state);
     }
 
     fn cursor_line_col(&self) -> (u16, u16) {
-        let editor = self.editor.borrow();
-        let head = editor.primary_head();
-        let buf = editor.buffer();
+        let w = self.ws.borrow();
+        let head = w.primary_head();
+        let buf = w.buffer();
         let line = buf.char_to_line(head);
         let col = head - buf.line_start_char(line);
         (line as u16, col as u16)
@@ -463,41 +534,53 @@ impl App {
     }
 
     fn save_file(&mut self, force: bool) {
-        self.lua.fire_event_str("BufWritePre", &[self.file_path.to_str().unwrap_or("")]);
-        let content = self.editor.borrow().buffer().to_string();
-        match std::fs::write(&self.file_path, &content) {
-            Ok(()) => self.message = Some(format!("Saved: {}", self.file_path.display())),
+        let (path, content) = {
+            let w = self.ws.borrow();
+            let doc = w.active_doc();
+            (doc.file_path.clone(), doc.buffer.to_string())
+        };
+        let path = match path {
+            Some(p) => p,
+            None => {
+                self.message = Some("E32: No file name".to_string());
+                return;
+            }
+        };
+        self.lua.fire_event_str("BufWritePre", &[path.to_str().unwrap_or("")]);
+        match std::fs::write(&path, &content) {
+            Ok(()) => {
+                self.ws.borrow_mut().active_doc_mut().modified = false;
+                self.message = Some(format!("Saved: {}", path.display()));
+            }
             Err(_e) if force => {
-                let _ = std::fs::write(&self.file_path, &content);
-                self.message = Some(format!("Saved (forced): {}", self.file_path.display()));
+                let _ = std::fs::write(&path, &content);
+                self.ws.borrow_mut().active_doc_mut().modified = false;
+                self.message = Some(format!("Saved (forced): {}", path.display()));
             }
             Err(e) => self.message = Some(format!("Error: {}", e)),
         }
-        self.lua.fire_event_str("BufWritePost", &[self.file_path.to_str().unwrap_or("")]);
+        self.lua.fire_event_str("BufWritePost", &[path.to_str().unwrap_or("")]);
     }
 
     fn exec_operator(&mut self, op: char, start: usize, end: usize) {
-        let safe_end = end.min({
-            let b = self.editor.borrow();
-            b.buffer().len_chars()
-        });
+        let safe_end = end.min(self.ws.borrow().buffer().len_chars());
         match op {
             'd' => {
-                let mut b = self.editor.borrow_mut();
-                b.execute(Action::BeginBatch);
-                b.execute(Action::Edit(EditOp::DeleteRange(start, safe_end)));
-                b.execute(Action::EndBatch);
+                let mut w = self.ws.borrow_mut();
+                w.execute(Action::BeginBatch);
+                w.execute(Action::Edit(EditOp::DeleteRange(start, safe_end)));
+                w.execute(Action::EndBatch);
             }
             'c' => {
                 {
-                    let mut b = self.editor.borrow_mut();
-                    b.execute(Action::BeginBatch);
-                    b.execute(Action::Edit(EditOp::DeleteRange(start, safe_end)));
+                    let mut w = self.ws.borrow_mut();
+                    w.execute(Action::BeginBatch);
+                    w.execute(Action::Edit(EditOp::DeleteRange(start, safe_end)));
                 }
                 self.vim.mode = VimMode::Insert;
             }
             'y' => {
-                let text = self.editor.borrow().buffer().slice_string(start, safe_end);
+                let text = self.ws.borrow().buffer().slice_string(start, safe_end);
                 self.vim.set_register(text);
             }
             _ => {}
@@ -505,10 +588,15 @@ impl App {
     }
 
     fn save_as(&mut self, path: &str) {
-        let content = self.editor.borrow().buffer().to_string();
+        let content = self.ws.borrow().active_doc().buffer.to_string();
         match std::fs::write(path, &content) {
             Ok(()) => {
-                self.file_path = PathBuf::from(path);
+                {
+                    let mut w = self.ws.borrow_mut();
+                    let doc = w.active_doc_mut();
+                    doc.file_path = Some(PathBuf::from(path));
+                    doc.modified = false;
+                }
                 self.message = Some(format!("Saved: {}", path));
             }
             Err(e) => self.message = Some(format!("Error: {}", e)),
@@ -554,6 +642,29 @@ mod tests {
     fn cmd_unknown_errors() {
         let a = App::new("content".into(), PathBuf::from("f.txt"));
         assert!(a.parse_cmdline(":xyz").is_err());
+    }
+
+    #[test]
+    fn split_yields_two_windows_sharing_buffer() {
+        use ruster_core::windows::{Rect, SplitDir};
+        let a = App::new("hello".into(), PathBuf::from("f.txt"));
+        let buf = a.ws.borrow().active_buffer();
+        a.ws.borrow_mut().split(SplitDir::Vertical);
+        let w = a.ws.borrow();
+        assert_eq!(w.windows.len(), 2);
+        let rects = w.windows.compute_rects(Rect::new(0, 0, 80, 24));
+        assert_eq!(rects.len(), 2, "two windows produce two rects");
+        // Both windows view the same buffer right after the split.
+        for (id, _) in rects {
+            assert_eq!(w.windows.window(id).unwrap().buffer, buf);
+        }
+    }
+
+    #[test]
+    fn render_with_dummy_renderer_is_noop_and_safe() {
+        // Ensures the multi-window render path builds a FrameState without panicking.
+        let mut a = App::new("line1\nline2\nline3".into(), PathBuf::from("f.txt"));
+        a.render();
     }
 
     #[test]

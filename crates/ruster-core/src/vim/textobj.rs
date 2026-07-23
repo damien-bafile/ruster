@@ -1,9 +1,9 @@
 use crate::buffer::Buffer;
-use crate::editor::Editor;
+use crate::editor::EditorView;
 
 /// Compute the (start, end) char range for a text object of `kind` ('i' inner / 'a' around)
 /// for the named `target` ('w', '"', '\'', '(', ')', '{', '}').
-pub fn range_for_textobj(kind: char, target: char, editor: &Editor) -> Option<(usize, usize)> {
+pub fn range_for_textobj(kind: char, target: char, editor: &dyn EditorView) -> Option<(usize, usize)> {
     let head = editor.primary_head();
     let buf = editor.buffer();
     match target {

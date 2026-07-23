@@ -1,7 +1,12 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use crate::action::Action;
+use crate::buffer::Buffer;
+use crate::cursor::CursorSet;
 use crate::document::{BufferId, DocKind, Document, SpecialKind};
+use crate::editor::{EditSession, EditorView};
+use crate::windows::{SplitDir, Window, WindowTree};
 
 /// Registry of all open [`Document`]s (vim "buffers").
 ///
@@ -108,6 +113,135 @@ impl BufferStore {
 impl Default for BufferStore {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// The whole editing workspace: every open [`Document`] plus the tree of
+/// windows viewing them. This is the single shared object the app and the Lua
+/// runtime both operate on. Editing always targets the *active window's*
+/// buffer, using the active window's per-window cursor set.
+pub struct Workspace {
+    pub buffers: BufferStore,
+    pub windows: WindowTree,
+}
+
+impl Workspace {
+    /// Create a workspace with `path`/`content` opened in a single window.
+    pub fn from_file(path: PathBuf, content: String) -> Self {
+        let mut buffers = BufferStore::new();
+        let id = buffers.open_file(path, content);
+        let windows = WindowTree::single(id);
+        Workspace { buffers, windows }
+    }
+
+    /// The buffer id of the active window.
+    pub fn active_buffer(&self) -> BufferId {
+        self.windows.active_window().buffer
+    }
+
+    pub fn active_window(&self) -> &Window {
+        self.windows.active_window()
+    }
+
+    pub fn active_doc(&self) -> &Document {
+        let id = self.active_buffer();
+        self.buffers.get(id).expect("active buffer exists")
+    }
+
+    pub fn active_doc_mut(&mut self) -> &mut Document {
+        let id = self.active_buffer();
+        self.buffers.get_mut(id).expect("active buffer exists")
+    }
+
+    /// Head char offset of the active window's primary cursor.
+    pub fn primary_head(&self) -> usize {
+        self.active_window().cursors.head()
+    }
+
+    /// Run an editing action against the active window/document.
+    pub fn execute(&mut self, action: Action) {
+        let marks_modified = matches!(
+            action,
+            Action::Edit(_) | Action::IndentLine | Action::DeindentLine | Action::Undo | Action::Redo
+        );
+        // Disjoint field borrows: windows for the cursor set, buffers for the doc.
+        let win = self.windows.active_window_mut();
+        let doc = self.buffers.get_mut(win.buffer).expect("active buffer exists");
+        EditSession::new(&mut doc.buffer, &mut win.cursors, &mut doc.undo, &doc.indent)
+            .execute(action);
+        if marks_modified {
+            doc.modified = true;
+        }
+    }
+
+    /// Set the active document's indent to `n` spaces.
+    pub fn set_active_indent_width(&mut self, n: u32) {
+        self.active_doc_mut().set_indent_width(n);
+    }
+
+    /// Split the active window in `dir` (new window views the same buffer).
+    pub fn split(&mut self, dir: SplitDir) {
+        self.windows.split(dir);
+    }
+
+    /// Point the active window at `id`.
+    pub fn set_active_buffer(&mut self, id: BufferId) {
+        if self.buffers.get(id).is_some() {
+            self.windows.active_window_mut().buffer = id;
+        }
+    }
+}
+
+impl EditorView for Workspace {
+    fn buffer(&self) -> &Buffer {
+        &self.active_doc().buffer
+    }
+    fn primary_head(&self) -> usize {
+        self.active_window().cursors.head()
+    }
+    fn cursors(&self) -> &CursorSet {
+        &self.active_window().cursors
+    }
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+    use crate::action::{Action, EditOp};
+    use crate::windows::SplitDir;
+
+    fn ws() -> Workspace {
+        Workspace::from_file(PathBuf::from("/tmp/ruster_ws_ws.txt"), "hello".into())
+    }
+
+    #[test]
+    fn edit_marks_active_doc_modified() {
+        let mut w = ws();
+        assert!(!w.active_doc().modified);
+        w.execute(Action::Edit(EditOp::InsertChar('!')));
+        assert!(w.active_doc().modified);
+    }
+
+    #[test]
+    fn split_shares_buffer_independent_cursor() {
+        let mut w = ws();
+        // Move cursor in the first window.
+        w.execute(Action::Move(crate::action::Motion::To(0)));
+        let buf_before = w.active_buffer();
+        w.split(SplitDir::Vertical);
+        // New window views the same buffer.
+        assert_eq!(w.active_buffer(), buf_before);
+        // Editing in one window changes the shared text.
+        w.execute(Action::Edit(EditOp::InsertChar('X')));
+        assert_eq!(w.active_doc().buffer.to_string(), "Xhello");
+    }
+
+    #[test]
+    fn set_active_buffer_switches_view() {
+        let mut w = ws();
+        let scratch = w.buffers.create_scratch("scratch");
+        w.set_active_buffer(scratch);
+        assert_eq!(w.active_buffer(), scratch);
     }
 }
 

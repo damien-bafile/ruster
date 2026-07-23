@@ -3,7 +3,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::widgets::Widget;
 use ruster_core::vim::VimMode;
-use ruster_render::{CursorKind, StyledLine, Color as RColor};
+use ruster_render::{CursorKind, GutterView, StatuslineView, StyledLine, Color as RColor};
 
 /// Convert a VimMode to a display string.
 pub fn mode_label(mode: &VimMode) -> &'static str {
@@ -42,17 +42,31 @@ fn ruster_render_color_to_tui(c: &RColor) -> Color {
 }
 
 /// Renders buffer text with cursor highlight and optional syntax highlighting.
+///
+/// Text is drawn starting from `scroll_offset` (the first visible buffer line)
+/// and offset horizontally by the gutter width; the gutter's line-number column
+/// is drawn on the left.
 pub struct BufferWidget {
     lines: Vec<StyledLine>,
     cursor: (u16, u16),
     syntax: bool,
     cursor_visible: bool,
     cursor_kind: CursorKind,
+    scroll_offset: u16,
+    gutter: GutterView,
 }
 
 impl BufferWidget {
     pub fn new(lines: Vec<StyledLine>, cursor: (u16, u16)) -> Self {
-        BufferWidget { lines, cursor, syntax: false, cursor_visible: true, cursor_kind: CursorKind::Block }
+        BufferWidget {
+            lines,
+            cursor,
+            syntax: false,
+            cursor_visible: true,
+            cursor_kind: CursorKind::Block,
+            scroll_offset: 0,
+            gutter: GutterView::default(),
+        }
     }
 
     pub fn with_syntax(mut self, yes: bool) -> Self {
@@ -69,15 +83,45 @@ impl BufferWidget {
         self.cursor_kind = kind;
         self
     }
+
+    pub fn with_scroll(mut self, offset: u16) -> Self {
+        self.scroll_offset = offset;
+        self
+    }
+
+    pub fn with_gutter(mut self, gutter: GutterView) -> Self {
+        self.gutter = gutter;
+        self
+    }
 }
 
 impl Widget for BufferWidget {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let gutter_w = self.gutter.width.min(area.width);
+        let text_x = area.x + gutter_w;
+        let scroll = self.scroll_offset as usize;
+
+        // Gutter column.
+        for (row, label) in self.gutter.rows.iter().enumerate() {
+            if row as u16 >= area.height { break; }
+            let y = area.y + row as u16;
+            // Right-align within the gutter width (labels already padded to fit).
+            let start = gutter_w.saturating_sub(label.chars().count() as u16);
+            for (i, ch) in label.chars().enumerate() {
+                let x = area.x + start + i as u16;
+                if x >= text_x { break; }
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_char(ch);
+                    cell.set_fg(Color::DarkGray);
+                }
+            }
+        }
+
         let mut style_map: std::collections::HashMap<(u16, u16), (RColor, RColor)> =
             std::collections::HashMap::new();
         if self.syntax {
-            for (i, line) in self.lines.iter().enumerate() {
-                let y = i as u16;
+            for (row, line) in self.lines.iter().skip(scroll).enumerate() {
+                let y = row as u16;
                 if y >= area.height { break; }
                 for (offset, length, style) in &line.highlights {
                     for c in 0..*length {
@@ -88,19 +132,20 @@ impl Widget for BufferWidget {
             }
         }
 
-        for (i, line) in self.lines.iter().enumerate() {
-            if i as u16 >= area.height { break; }
-            let y = area.y + i as u16;
-            let is_cursor_line = i as u16 == self.cursor.0;
+        for (row, line) in self.lines.iter().skip(scroll).enumerate() {
+            if row as u16 >= area.height { break; }
+            let y = area.y + row as u16;
+            let buffer_line = row + scroll;
+            let is_cursor_line = buffer_line as u16 == self.cursor.0;
             let line_len = line.text.chars().count() as u16;
             for (j, ch) in line.text.chars().enumerate() {
-                let x = area.x + j as u16;
+                let x = text_x + j as u16;
                 if x >= area.right() { break; }
                 if let Some(cell) = buf.cell_mut((x, y)) {
                     cell.set_char(ch);
                     if is_cursor_line && j as u16 == self.cursor.1 && self.cursor_visible {
                         apply_cursor(cell, self.cursor_kind);
-                    } else if let Some((fg, bg)) = style_map.get(&(i as u16, j as u16)) {
+                    } else if let Some((fg, bg)) = style_map.get(&(row as u16, j as u16)) {
                         cell.set_fg(ruster_render_color_to_tui(fg));
                         if !matches!(bg, RColor::Default) {
                             cell.set_bg(ruster_render_color_to_tui(bg));
@@ -109,7 +154,7 @@ impl Widget for BufferWidget {
                 }
             }
             if is_cursor_line && self.cursor_visible && self.cursor.1 >= line_len {
-                let x = area.x + self.cursor.1;
+                let x = text_x + self.cursor.1;
                 if x < area.right() {
                     if let Some(cell) = buf.cell_mut((x, y)) {
                         cell.set_char(' ');
@@ -121,57 +166,57 @@ impl Widget for BufferWidget {
     }
 }
 
-/// Renders the status line (mode, file path, cursor position).
-pub struct StatuslineWidget<'a> {
-    mode: &'a str,
-    file_path: &'a str,
-    position: (u16, u16),
+/// Renders one window's statusline from a [`StatuslineView`] (left / center /
+/// right groups). The active window's statusline is brighter than inactive ones.
+pub struct StatuslineWidget {
+    view: StatuslineView,
 }
 
-impl<'a> StatuslineWidget<'a> {
-    pub fn new(mode: &'a str, file_path: &'a str, position: (u16, u16)) -> Self {
-        StatuslineWidget { mode, file_path, position }
+impl StatuslineWidget {
+    pub fn new(view: StatuslineView) -> Self {
+        StatuslineWidget { view }
     }
 }
 
-impl Widget for StatuslineWidget<'_> {
+impl Widget for StatuslineWidget {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let right = format!(" {},{} ", self.position.0 + 1, self.position.1 + 1);
-        let left = format!(" {} ", self.mode);
+        let bg = if self.view.active { Color::DarkGray } else { Color::Rgb(35, 35, 35) };
+        let fg = if self.view.active { Color::White } else { Color::Gray };
+
+        let put = |buf: &mut Buffer, x: u16, ch: char| {
+            if x >= area.left() && x < area.right() {
+                if let Some(cell) = buf.cell_mut((x, area.y)) {
+                    cell.set_char(ch);
+                    cell.set_fg(fg);
+                    cell.set_bg(bg);
+                }
+            }
+        };
+
         for x in area.left()..area.right() {
             if let Some(cell) = buf.cell_mut((x, area.y)) {
-                cell.set_bg(Color::DarkGray);
+                cell.set_bg(bg);
             }
         }
+
+        let left = format!(" {} ", self.view.left);
         for (i, ch) in left.chars().enumerate() {
-            let x = area.x + i as u16;
-            if x >= area.right() { break; }
-            if let Some(cell) = buf.cell_mut((x, area.y)) {
-                cell.set_char(ch);
-                cell.set_fg(Color::White);
-                cell.set_bg(Color::DarkGray);
-            }
+            put(buf, area.x + i as u16, ch);
         }
-        let rstart = area.right().saturating_sub(right.len() as u16);
+
+        let right = format!(" {} ", self.view.right);
+        let rstart = area.right().saturating_sub(right.chars().count() as u16);
         for (i, ch) in right.chars().enumerate() {
-            let x = rstart + i as u16;
-            if x >= area.right() { break; }
-            if let Some(cell) = buf.cell_mut((x, area.y)) {
-                cell.set_char(ch);
-                cell.set_fg(Color::White);
-                cell.set_bg(Color::DarkGray);
-            }
+            put(buf, rstart + i as u16, ch);
         }
-        let max_path = rstart.saturating_sub(left.len() as u16 + 1);
-        let path = &self.file_path[..self.file_path.len().min(max_path as usize)];
-        for (i, ch) in path.chars().enumerate() {
-            let x = area.x + left.len() as u16 + 1 + i as u16;
-            if x >= area.right() { break; }
-            if let Some(cell) = buf.cell_mut((x, area.y)) {
-                cell.set_char(ch);
-                cell.set_fg(Color::White);
-                cell.set_bg(Color::DarkGray);
-            }
+
+        // Center group: placed after the left group, clipped before the right.
+        let center_start = area.x + left.chars().count() as u16 + 1;
+        let center_limit = rstart.saturating_sub(1);
+        for (i, ch) in self.view.center.chars().enumerate() {
+            let x = center_start + i as u16;
+            if x >= center_limit { break; }
+            put(buf, x, ch);
         }
     }
 }

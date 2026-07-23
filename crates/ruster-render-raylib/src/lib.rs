@@ -3,7 +3,7 @@ mod key;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use raylib::consts::KeyboardKey;
 use raylib::prelude::*;
-use ruster_render::{CursorKind, EditorState, Renderer};
+use ruster_render::{CursorKind, FrameState, Renderer, WindowView};
 use std::path::PathBuf;
 
 const FONT_SIZE: i32 = 20;
@@ -90,7 +90,30 @@ impl RaylibRenderer {
 }
 
 impl Renderer for RaylibRenderer {
-    fn render_frame(&mut self, state: &EditorState) {
+    fn viewport_cells(&self) -> (u16, u16) {
+        let cols = ((self.rl.get_screen_width() as f32 - PAD_X as f32) / self.char_w).max(1.0);
+        let rows = ((self.rl.get_screen_height() - PAD_Y) / LINE_H).max(1);
+        (cols as u16, rows as u16)
+    }
+
+    // NOTE: the GUI backend renders only the active window full-screen for now
+    // (single-window view). True multi-window rect rendering in the GUI is a
+    // follow-up; the TUI backend already renders all split windows.
+    fn render_frame(&mut self, state: &FrameState) {
+        let view: &WindowView = match state
+            .windows
+            .iter()
+            .find(|w| w.active)
+            .or_else(|| state.windows.first())
+        {
+            Some(w) => w,
+            None => {
+                let mut d = self.rl.begin_drawing(&self.thread);
+                d.clear_background(Color::new(30, 30, 30, 255));
+                return;
+            }
+        };
+
         let screen_w = self.rl.get_screen_width();
         let screen_h = self.rl.get_screen_height();
         let mut d = self.rl.begin_drawing(&self.thread);
@@ -101,14 +124,14 @@ impl Renderer for RaylibRenderer {
         let max_lines = (screen_h - PAD_Y - status_h) / LINE_H;
 
         let default_color = Color::new(205, 214, 244, 255);
-        let cursor_line = state.cursor.0 as i32;
+        let cursor_line = view.cursor.0 as i32;
         let scroll_offset = if cursor_line >= max_lines {
             (cursor_line - max_lines + 1) as usize
         } else {
             0
         };
 
-        for (vi, line) in state.lines.iter().skip(scroll_offset).enumerate().take(max_lines as usize) {
+        for (vi, line) in view.lines.iter().skip(scroll_offset).enumerate().take(max_lines as usize) {
             let y = PAD_Y + vi as i32 * LINE_H;
             let n = line.text.len();
             if n == 0 {
@@ -171,7 +194,7 @@ impl Renderer for RaylibRenderer {
         // Left: mode label
         d.draw_text_ex(
             &self.font,
-            state.mode_label,
+            &view.statusline.left,
             Vector2::new(PAD_X as f32, status_y as f32),
             FONT_SIZE as f32,
             1.0,
@@ -179,7 +202,7 @@ impl Renderer for RaylibRenderer {
         );
 
         // Right: cursor position (1-indexed)
-        let right_str = format!(" ({},{}) ", state.cursor.0 + 1, state.cursor.1 + 1);
+        let right_str = format!(" ({},{}) ", view.cursor.0 + 1, view.cursor.1 + 1);
         let right_w = self.char_w * right_str.len() as f32;
         let right_x = screen_w as f32 - right_w - PAD_X as f32;
         d.draw_text_ex(
@@ -192,19 +215,19 @@ impl Renderer for RaylibRenderer {
         );
 
         // Center: file path (truncated to fit between left and right text)
-        let left_w = self.char_w * state.mode_label.len() as f32;
+        let left_w = self.char_w * view.statusline.left.len() as f32;
         let gap = screen_w as f32 - left_w - right_w - 3.0 * PAD_X as f32;
-        let center_str = if gap > 0.0 && state.file_path.len() as f32 * self.char_w > gap {
+        let center_str = if gap > 0.0 && view.statusline.center.len() as f32 * self.char_w > gap {
             let max_chars = (gap / self.char_w) as usize;
             if max_chars > 3 {
                 let mut s = String::from("...");
-                s.push_str(&state.file_path[state.file_path.len().saturating_sub(max_chars - 3)..]);
+                s.push_str(&view.statusline.center[view.statusline.center.len().saturating_sub(max_chars - 3)..]);
                 s
             } else {
                 String::new()
             }
         } else {
-            state.file_path.to_string()
+            view.statusline.center.to_string()
         };
         if !center_str.is_empty() {
             let center_x = PAD_X as f32 + left_w + PAD_X as f32
@@ -235,21 +258,21 @@ impl Renderer for RaylibRenderer {
         }
 
         // Cursor
-        if state.cursor_visible {
-            let col = state.cursor.1 as usize;
-            let line = state.cursor.0 as i32 - scroll_offset as i32;
-            let line_idx = state.cursor.0 as usize;
-            let text_before: &str = state.lines.get(line_idx)
+        if view.cursor_visible {
+            let col = view.cursor.1 as usize;
+            let line = view.cursor.0 as i32 - scroll_offset as i32;
+            let line_idx = view.cursor.0 as usize;
+            let text_before: &str = view.lines.get(line_idx)
                 .map(|l| if col < l.text.len() { &l.text[..col] } else { &l.text[..] })
                 .unwrap_or("");
             let mut cx = PAD_X as f32 + self.font.measure_text(text_before, FONT_SIZE as f32, 1.0).x;
             let mut cy = PAD_Y + line * LINE_H;
-            if let Some((dcx, dcy)) = state.cursor_smooth {
+            if let Some((dcx, dcy)) = view.cursor_smooth {
                 cx += dcx * self.char_w;
                 cy = (cy as f32 + dcy * LINE_H as f32) as i32;
             }
             let cx = cx as i32;
-            match state.cursor_kind {
+            match view.cursor_kind {
                 CursorKind::Block => {
                     d.draw_rectangle(cx, cy, self.char_w as i32, LINE_H, Color::new(245, 224, 220, 200));
                 }

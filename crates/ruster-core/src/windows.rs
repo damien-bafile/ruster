@@ -112,6 +112,10 @@ impl WindowTree {
         self.windows.get(&id)
     }
 
+    pub fn window_mut(&mut self, id: WindowId) -> Option<&mut Window> {
+        self.windows.get_mut(&id)
+    }
+
     pub fn is_fullscreen(&self) -> bool {
         self.fullscreen.is_some()
     }
