@@ -1,5 +1,5 @@
 use crate::key::crossterm_to_ruster_key;
-use crate::picker::{PickerAction, PickerState};
+use crate::picker::{PickerAction, PickerItem, PickerState};
 use crate::renderer::TuiRenderer;
 use ruster_core::action::{Action, EditOp, Motion};
 use ruster_core::document::BufferId;
@@ -85,6 +85,8 @@ enum CmdAction {
     CloseWindow,
     Only,
     Fullscreen,
+    Ibuffer,
+    BufferDelete,
 }
 
 enum AppEvent {
@@ -568,6 +570,8 @@ impl App {
             "clo" | "close" => Ok(CmdAction::CloseWindow),
             "on" | "only" => Ok(CmdAction::Only),
             "fs" | "fullscreen" => Ok(CmdAction::Fullscreen),
+            "ls" | "buffers" | "ibuffer" => Ok(CmdAction::Ibuffer),
+            "bd" | "bdelete" => Ok(CmdAction::BufferDelete),
             _ if trimmed.starts_with("w ") || trimmed.starts_with("write ") => {
                 let path = trimmed.splitn(2, ' ').nth(1).unwrap_or("").trim().to_string();
                 if path.is_empty() {
@@ -615,6 +619,51 @@ impl App {
             }
             CmdAction::Only => self.ws.borrow_mut().windows.only(),
             CmdAction::Fullscreen => self.ws.borrow_mut().windows.toggle_fullscreen(),
+            CmdAction::Ibuffer => self.open_ibuffer(),
+            CmdAction::BufferDelete => self.delete_active_buffer(),
+        }
+    }
+
+    /// Open the buffer-list picker over every open buffer.
+    fn open_ibuffer(&mut self) {
+        let items: Vec<PickerItem> = {
+            let w = self.ws.borrow();
+            w.buffers
+                .ids()
+                .iter()
+                .map(|&id| {
+                    let d = w.buffers.get(id).expect("buffer exists");
+                    let flag = if d.modified { "[+]" } else { "   " };
+                    PickerItem::new(
+                        format!("{:>3} {} {}", id.0, flag, d.name),
+                        PickerAction::OpenBuffer(id),
+                    )
+                })
+                .collect()
+        };
+        self.picker = Some(PickerState::new("Buffers", items));
+    }
+
+    /// Delete the active buffer, switching the active window to another open
+    /// buffer first. Refuses when it is the only buffer, or when it is modified.
+    fn delete_active_buffer(&mut self) {
+        let mut w = self.ws.borrow_mut();
+        let cur = w.active_buffer();
+        let other = w.buffers.ids().iter().copied().find(|&id| id != cur);
+        match other {
+            Some(o) => {
+                if w.buffers.get(cur).map(|d| d.modified).unwrap_or(false) {
+                    drop(w);
+                    self.message = Some("E89: buffer modified (add ! to override)".to_string());
+                    return;
+                }
+                w.set_active_buffer(o);
+                w.buffers.close(cur);
+            }
+            None => {
+                drop(w);
+                self.message = Some("E514: cannot close last buffer".to_string());
+            }
         }
     }
 
@@ -886,6 +935,36 @@ mod tests {
         // Second :q on the last window quits.
         a.apply_cmd(CmdAction::Quit);
         assert!(a.should_quit);
+    }
+
+    #[test]
+    fn ibuffer_lists_all_buffers_and_switches() {
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        let scratch = a.ws.borrow_mut().buffers.create_scratch("scratch");
+        a.apply_cmd(CmdAction::Ibuffer);
+        {
+            let p = a.picker.as_mut().expect("picker open");
+            assert_eq!(p.view().rows.len(), 2);
+        }
+        a.dispatch_picker_action(PickerAction::OpenBuffer(scratch));
+        assert_eq!(a.ws.borrow().active_buffer(), scratch);
+    }
+
+    #[test]
+    fn bdelete_removes_buffer_when_another_exists() {
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        let orig = a.ws.borrow().active_buffer();
+        a.ws.borrow_mut().buffers.create_scratch("scratch");
+        a.apply_cmd(CmdAction::BufferDelete);
+        assert_eq!(a.ws.borrow().buffers.len(), 1);
+        assert!(a.ws.borrow().buffers.get(orig).is_none());
+    }
+
+    #[test]
+    fn bdelete_refuses_last_buffer() {
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::BufferDelete);
+        assert_eq!(a.ws.borrow().buffers.len(), 1);
     }
 
     #[test]
