@@ -139,13 +139,24 @@ pub struct PickerView {
     pub rows: Vec<PickerRow>,
 }
 
-/// A full frame: every visible window, the shared cmdline/message line, and an
-/// optional floating picker overlay.
+/// A which-key hint panel that slides up from the bottom mini-buffer. `anim` is
+/// the slide progress in `0.0..=1.0` (0 = fully hidden below the screen edge,
+/// 1 = fully visible).
+#[derive(Debug, Clone, PartialEq)]
+pub struct WhichKeyView {
+    pub title: String,
+    pub rows: Vec<String>,
+    pub anim: f32,
+}
+
+/// A full frame: every visible window, the shared cmdline/message line, an
+/// optional centered picker overlay, and an optional bottom which-key panel.
 pub struct FrameState<'a> {
     pub windows: Vec<WindowView>,
     pub cmdline: Option<&'a str>,
     pub message: Option<&'a str>,
     pub picker: Option<PickerView>,
+    pub whichkey: Option<WhichKeyView>,
 }
 
 pub trait Renderer {
@@ -201,6 +212,7 @@ mod tests {
             cmdline: None,
             message: None,
             picker: None,
+            whichkey: None,
         };
         let mut r = TestRenderer;
         r.render_frame(&state);

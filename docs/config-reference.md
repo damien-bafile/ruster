@@ -61,5 +61,9 @@ Press `Space` in Normal mode to open the which-key panel, then a group and key:
 | `Space f f` | Find files |
 | `Space f b` | Buffer list |
 | `Space f e` | File explorer (dired) |
+| `Space q q` | Quit |
+| `Space q w` | Save and quit |
 
-Each level shows the available continuations in the which-key panel; `Esc` cancels.
+Each level shows its continuations in the which-key panel, which slides up from
+the bottom mini-buffer and back down when the sequence resolves or is cancelled
+with `Esc`.

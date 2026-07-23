@@ -77,6 +77,18 @@ impl Renderer for TuiRenderer {
                 frame.render_widget(crate::widgets::CmdlineWidget::new(text), cl_area);
             }
 
+            // Bottom which-key panel, sliding up (revealed row-by-row by anim).
+            if let Some(wk) = &state.whichkey {
+                let full = wk.rows.len() as u16 + 1; // title + rows
+                let visible = ((full as f32) * wk.anim).round() as u16;
+                if visible > 0 {
+                    let h = visible.min(area.height);
+                    let py = area.height.saturating_sub(h);
+                    let parea = Rect::new(0, py, area.width, h);
+                    frame.render_widget(crate::widgets::WhichKeyWidget::new(wk.clone()), parea);
+                }
+            }
+
             // Floating picker overlay, centered.
             if let Some(picker) = &state.picker {
                 let pw = (area.width * 6 / 10).clamp(20, area.width.saturating_sub(2));

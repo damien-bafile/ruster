@@ -14,8 +14,8 @@ use ruster_core::workspace::Workspace;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ruster_lua::{config::Config, LuaAction, LuaRuntime};
 use ruster_render::{
-    CursorKind, FrameState, PickerRow, PickerView, Rect as RRect, Renderer, StatuslineView,
-    StyledLine, WindowView,
+    CursorKind, FrameState, Rect as RRect, Renderer, StatuslineView, StyledLine, WhichKeyView,
+    WindowView,
 };
 use ruster_syntax::SyntaxEngine;
 use std::cell::RefCell;
@@ -112,25 +112,6 @@ const PALETTE_COMMANDS: &[(&str, &str)] = &[
 ];
 
 /// The which-key continuations shown after a `Ctrl-w` prefix.
-fn which_key_ctrl_w() -> PickerView {
-    let entries = [
-        ("s", "split horizontal"),
-        ("v", "split vertical"),
-        ("c", "close window"),
-        ("o", "only (close others)"),
-        ("h/j/k/l", "focus left/down/up/right"),
-        ("z", "toggle fullscreen"),
-    ];
-    PickerView {
-        title: "Ctrl-w".to_string(),
-        query: String::new(),
-        rows: entries
-            .iter()
-            .map(|(k, d)| PickerRow { label: format!("{:<8} {}", k, d), selected: false })
-            .collect(),
-    }
-}
-
 // --- Space-leader key tree (LazyVim style) ---
 
 #[derive(Clone, Copy)]
@@ -143,6 +124,8 @@ enum LeaderAction {
     Files,
     Buffers,
     Explorer,
+    Quit,
+    SaveAndQuit,
 }
 
 enum LeaderNode {
@@ -169,9 +152,15 @@ static FIND_GROUP: &[(char, LeaderNode)] = &[
     ('e', LeaderNode::Action("explorer (dired)", LeaderAction::Explorer)),
 ];
 
+static QUIT_GROUP: &[(char, LeaderNode)] = &[
+    ('q', LeaderNode::Action("quit", LeaderAction::Quit)),
+    ('w', LeaderNode::Action("save and quit", LeaderAction::SaveAndQuit)),
+];
+
 static LEADER_ROOT: &[(char, LeaderNode)] = &[
     ('w', LeaderNode::Group("windows", WINDOW_GROUP)),
     ('f', LeaderNode::Group("find", FIND_GROUP)),
+    ('q', LeaderNode::Group("quit", QUIT_GROUP)),
 ];
 
 enum LeaderResolve {
@@ -216,8 +205,9 @@ fn leader_children(seq: &[char]) -> Option<&'static [(char, LeaderNode)]> {
     Some(children)
 }
 
-/// Build the which-key panel for the current pending leader sequence.
-fn leader_which_key(seq: &[char]) -> Option<PickerView> {
+/// Build the which-key content (title, formatted rows) for the current pending
+/// leader sequence, for the bottom sliding panel.
+fn leader_whichkey(seq: &[char]) -> Option<(String, Vec<String>)> {
     let children = leader_children(seq)?;
     let mut title = String::from("SPC");
     for c in seq {
@@ -231,10 +221,10 @@ fn leader_which_key(seq: &[char]) -> Option<PickerView> {
                 LeaderNode::Group(d, _) => format!("+{}", d),
                 LeaderNode::Action(d, _) => d.to_string(),
             };
-            PickerRow { label: format!("{}  {}", k, desc), selected: false }
+            format!("{}  {}", k, desc)
         })
         .collect();
-    Some(PickerView { title, query: String::new(), rows })
+    Some((title, rows))
 }
 
 /// Parse one `rg --vimgrep` line (`file:line:col:text`) into its parts.
@@ -274,6 +264,11 @@ pub struct App {
     /// The keys typed after the `Space` leader so far (None = not in a leader
     /// sequence). Drives the which-key panel and multi-level dispatch.
     leader_pending: Option<Vec<char>>,
+    /// Slide progress (0..1) of the bottom which-key panel, and the last content
+    /// shown (kept while it slides back down). `anim_clock` measures frame dt.
+    whichkey_anim: f32,
+    whichkey_cache: Option<(String, Vec<String>)>,
+    anim_clock: std::time::Instant,
     /// Active floating picker (buffer list, file finder, ...), if any.
     picker: Option<PickerState>,
     /// Current directory for each open dired (file-explorer) buffer.
@@ -437,6 +432,9 @@ impl App {
             should_quit: false, message: None, syntax, syntax_buffer, lua, config, timer,
             has_smooth_cursor: false, cursor_anim, pending_ctrl_w: false, picker: None,
             leader_pending: None,
+            whichkey_anim: 0.0,
+            whichkey_cache: None,
+            anim_clock: std::time::Instant::now(),
             dired_dirs: std::collections::HashMap::new(),
         }
     }
@@ -805,19 +803,39 @@ impl App {
             VimMode::Cmdline => Some(crate::widgets::cmdline_label(self.vim.cmdline_buffer())),
             _ => self.message.clone(),
         };
-        // Which-key panel takes over the overlay while a prefix is pending.
-        let picker_view = if self.pending_ctrl_w {
-            Some(which_key_ctrl_w())
-        } else if let Some(seq) = self.leader_pending.as_deref() {
-            leader_which_key(seq)
+        let picker_view = self.picker.as_mut().map(|p| p.view());
+
+        // Animate the bottom which-key panel sliding up while a leader sequence
+        // is pending, and back down after it resolves/cancels.
+        let now = std::time::Instant::now();
+        let dt = (now - self.anim_clock).as_secs_f32().min(0.1);
+        self.anim_clock = now;
+        if let Some(seq) = self.leader_pending.as_deref() {
+            if let Some(content) = leader_whichkey(seq) {
+                self.whichkey_cache = Some(content);
+            }
+        }
+        let target = if self.leader_pending.is_some() { 1.0 } else { 0.0 };
+        self.whichkey_anim += (target - self.whichkey_anim) * (1.0 - (-18.0 * dt).exp());
+        if self.whichkey_anim < 0.002 {
+            self.whichkey_anim = 0.0;
+        }
+        let whichkey = if self.whichkey_anim > 0.0 {
+            self.whichkey_cache.as_ref().map(|(title, rows)| WhichKeyView {
+                title: title.clone(),
+                rows: rows.clone(),
+                anim: self.whichkey_anim,
+            })
         } else {
-            self.picker.as_mut().map(|p| p.view())
+            None
         };
+
         let state = FrameState {
             windows: views,
             cmdline: cmdline.as_deref(),
             message: None,
             picker: picker_view,
+            whichkey,
         };
         self.renderer.render_frame(&state);
     }
@@ -1248,6 +1266,11 @@ impl App {
             LeaderAction::Files => self.open_files_picker(),
             LeaderAction::Buffers => self.open_ibuffer(),
             LeaderAction::Explorer => self.open_dired(None),
+            LeaderAction::Quit => self.should_quit = true,
+            LeaderAction::SaveAndQuit => {
+                self.save_file(false);
+                self.should_quit = true;
+            }
         }
     }
 
@@ -1549,15 +1572,39 @@ mod tests {
     }
 
     #[test]
-    fn leader_which_key_shows_window_group() {
-        let root = leader_which_key(&[]).expect("root panel");
-        assert_eq!(root.title, "SPC");
-        assert!(root.rows.iter().any(|r| r.label.contains("+windows")));
+    fn leader_whichkey_shows_groups() {
+        let (title, rows) = leader_whichkey(&[]).expect("root panel");
+        assert_eq!(title, "SPC");
+        assert!(rows.iter().any(|r| r.contains("+windows")));
+        assert!(rows.iter().any(|r| r.contains("+quit")));
 
-        let win = leader_which_key(&['w']).expect("window panel");
-        assert_eq!(win.title, "SPC w");
-        assert!(win.rows.iter().any(|r| r.label.starts_with("h ")));
-        assert!(win.rows.iter().any(|r| r.label.contains("focus left")));
+        let (wtitle, wrows) = leader_whichkey(&['w']).expect("window panel");
+        assert_eq!(wtitle, "SPC w");
+        assert!(wrows.iter().any(|r| r.starts_with("h ")));
+        assert!(wrows.iter().any(|r| r.contains("focus left")));
+    }
+
+    #[test]
+    fn leader_quit_group_resolves() {
+        assert!(matches!(
+            leader_resolve(&['q', 'q']),
+            LeaderResolve::Action(LeaderAction::Quit)
+        ));
+        assert!(matches!(
+            leader_resolve(&['q', 'w']),
+            LeaderResolve::Action(LeaderAction::SaveAndQuit)
+        ));
+    }
+
+    #[test]
+    fn space_q_q_quits() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.handle_key(CtKey::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        a.handle_key(CtKey::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert!(!a.should_quit, "q group is a prefix, not yet quit");
+        a.handle_key(CtKey::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert!(a.should_quit);
     }
 
     #[test]
@@ -1578,14 +1625,6 @@ mod tests {
         a.handle_key(CtKey::new(KeyCode::Char('l'), KeyModifiers::NONE));
         assert!(a.leader_pending.is_none());
         assert_eq!(a.ws.borrow().windows.active(), right);
-    }
-
-    #[test]
-    fn which_key_lists_ctrl_w_continuations() {
-        let v = which_key_ctrl_w();
-        assert_eq!(v.title, "Ctrl-w");
-        assert!(v.rows.iter().any(|r| r.label.contains("split")));
-        assert!(v.rows.iter().any(|r| r.label.contains("fullscreen")));
     }
 
     #[test]

@@ -269,6 +269,23 @@ impl Renderer for RaylibRenderer {
                 }
             }
         }
+
+        // Bottom which-key panel, sliding up from the screen edge by `anim`.
+        if let Some(wk) = &state.whichkey {
+            let accent = Color::new(137, 180, 250, 255);
+            let box_bg = Color::new(30, 30, 46, 255);
+            let panel_h = (wk.rows.len() as i32 + 1) * LINE_H + 8;
+            let panel_top = screen_h - (panel_h as f32 * wk.anim.clamp(0.0, 1.0)) as i32;
+            // Clip to the visible (slid-in) region so nothing draws above it.
+            let mut s = d.begin_scissor_mode(0, panel_top, screen_w, screen_h - panel_top);
+            s.draw_rectangle(0, panel_top, screen_w, screen_h - panel_top, box_bg);
+            s.draw_rectangle(0, panel_top, screen_w, 2, accent);
+            s.draw_text_ex(font, &format!(" {} ", wk.title), Vector2::new(PAD_X as f32, (panel_top + 4) as f32), FONT_SIZE as f32, 1.0, accent);
+            for (i, entry) in wk.rows.iter().enumerate() {
+                let ry = panel_top + 4 + (i as i32 + 1) * LINE_H;
+                s.draw_text_ex(font, &format!("   {}", entry), Vector2::new(PAD_X as f32, ry as f32), FONT_SIZE as f32, 1.0, Color::new(205, 214, 244, 255));
+            }
+        }
     }
 
     fn poll_input(&mut self) -> Option<KeyEvent> {

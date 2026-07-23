@@ -306,6 +306,56 @@ impl Widget for PickerWidget {
     }
 }
 
+/// Renders the bottom which-key panel (title on top, one binding per line).
+/// The caller sizes `area` to the currently-visible height for the slide-up.
+pub struct WhichKeyWidget {
+    view: ruster_render::WhichKeyView,
+}
+
+impl WhichKeyWidget {
+    pub fn new(view: ruster_render::WhichKeyView) -> Self {
+        WhichKeyWidget { view }
+    }
+}
+
+impl Widget for WhichKeyWidget {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let bg = Color::Rgb(30, 30, 46);
+        let accent = Color::Rgb(137, 180, 250);
+        let fg = Color::Rgb(205, 214, 244);
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_char(' ');
+                    cell.set_bg(bg);
+                }
+            }
+        }
+        let put = |buf: &mut Buffer, x: u16, y: u16, ch: char, color: Color| {
+            if x < area.right() && y < area.bottom() {
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_char(ch);
+                    cell.set_fg(color);
+                    cell.set_bg(bg);
+                }
+            }
+        };
+        // Title row.
+        let title = format!(" {} ", self.view.title);
+        for (i, ch) in title.chars().enumerate() {
+            put(buf, area.x + i as u16, area.y, ch, accent);
+        }
+        // One binding per line below the title.
+        for (row, entry) in self.view.rows.iter().enumerate() {
+            let y = area.y + 1 + row as u16;
+            if y >= area.bottom() { break; }
+            for (i, ch) in format!("  {}", entry).chars().enumerate() {
+                put(buf, area.x + i as u16, y, ch, fg);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::widgets::{cmdline_label, mode_label};
