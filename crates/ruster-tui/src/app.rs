@@ -6,8 +6,9 @@ use ruster_core::editor::EditorView;
 use ruster_core::key::KeyEvent;
 use ruster_core::vim::VimMode;
 use ruster_core::vim::VimState;
-use ruster_core::windows::Rect as CoreRect;
+use ruster_core::windows::{FocusDir, Rect as CoreRect, SplitDir};
 use ruster_core::workspace::Workspace;
+use crossterm::event::{KeyCode, KeyModifiers};
 use ruster_lua::{config::Config, LuaAction, LuaRuntime};
 use ruster_render::{
     CursorKind, FrameState, GutterView, Rect as RRect, Renderer, StatuslineView, StyledLine,
@@ -80,6 +81,10 @@ enum CmdAction {
     Quit,
     ForceQuit,
     SaveAndQuit,
+    Split(SplitDir),
+    CloseWindow,
+    Only,
+    Fullscreen,
 }
 
 enum AppEvent {
@@ -101,6 +106,8 @@ pub struct App {
     timer: FrameTimer,
     pub has_smooth_cursor: bool,
     cursor_anim: CursorAnim,
+    /// True after a `Ctrl-w` prefix, awaiting a window command key.
+    pending_ctrl_w: bool,
 }
 
 impl App {
@@ -205,11 +212,25 @@ impl App {
         App {
             ws, vim, renderer,
             should_quit: false, message: None, syntax, syntax_buffer, lua, config, timer,
-            has_smooth_cursor: false, cursor_anim
+            has_smooth_cursor: false, cursor_anim, pending_ctrl_w: false,
         }
     }
 
     pub fn handle_key(&mut self, ck: crossterm::event::KeyEvent) {
+        // Window-command prefix (Ctrl-w) state machine takes priority.
+        if self.pending_ctrl_w {
+            self.pending_ctrl_w = false;
+            self.handle_window_command(ck);
+            return;
+        }
+        if self.vim.mode == VimMode::Normal
+            && ck.code == KeyCode::Char('w')
+            && ck.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            self.pending_ctrl_w = true;
+            return;
+        }
+
         let prev_mode = self.vim.mode;
         let mode = match prev_mode {
             VimMode::Normal => "n",
@@ -247,15 +268,7 @@ impl App {
                 Action::CmdlineResult(cmd) => {
                     self.message = None;
                     match self.parse_cmdline(&cmd) {
-                        Ok(CmdAction::Save(force)) => self.save_file(force),
-                        Ok(CmdAction::SaveAs(p)) => self.save_as(&p),
-                        Ok(CmdAction::Quit) | Ok(CmdAction::ForceQuit) => {
-                            self.should_quit = true;
-                        }
-                        Ok(CmdAction::SaveAndQuit) => {
-                            self.save_file(false);
-                            self.should_quit = true;
-                        }
+                        Ok(a) => self.apply_cmd(a),
                         Err(e) => self.message = Some(e),
                     }
                 }
@@ -356,15 +369,7 @@ impl App {
                 match action {
                     LuaAction::Cmd(cmd) => {
                         match self.parse_cmdline(&cmd) {
-                            Ok(CmdAction::Save(force)) => self.save_file(force),
-                            Ok(CmdAction::SaveAs(p)) => self.save_as(&p),
-                            Ok(CmdAction::Quit) | Ok(CmdAction::ForceQuit) => {
-                                self.should_quit = true;
-                            }
-                            Ok(CmdAction::SaveAndQuit) => {
-                                self.save_file(false);
-                                self.should_quit = true;
-                            }
+                            Ok(a) => self.apply_cmd(a),
                             Err(e) => self.message = Some(e),
                         }
                     }
@@ -521,6 +526,11 @@ impl App {
             "w" | "write" => Ok(CmdAction::Save(false)),
             "w!" => Ok(CmdAction::Save(true)),
             "wq" | "x" => Ok(CmdAction::SaveAndQuit),
+            "sp" | "split" => Ok(CmdAction::Split(SplitDir::Horizontal)),
+            "vs" | "vsp" | "vsplit" => Ok(CmdAction::Split(SplitDir::Vertical)),
+            "clo" | "close" => Ok(CmdAction::CloseWindow),
+            "on" | "only" => Ok(CmdAction::Only),
+            "fs" | "fullscreen" => Ok(CmdAction::Fullscreen),
             _ if trimmed.starts_with("w ") || trimmed.starts_with("write ") => {
                 let path = trimmed.splitn(2, ' ').nth(1).unwrap_or("").trim().to_string();
                 if path.is_empty() {
@@ -530,6 +540,61 @@ impl App {
                 }
             }
             _ => Err(format!("Unknown command: {}", cmdline)),
+        }
+    }
+
+    /// Apply a parsed cmdline action. `:q` closes the active window and only
+    /// quits the app when it is the last window.
+    fn apply_cmd(&mut self, action: CmdAction) {
+        match action {
+            CmdAction::Save(force) => self.save_file(force),
+            CmdAction::SaveAs(p) => self.save_as(&p),
+            CmdAction::Quit => {
+                let closed = {
+                    let mut w = self.ws.borrow_mut();
+                    if w.windows.len() > 1 {
+                        w.windows.close_active()
+                    } else {
+                        false
+                    }
+                };
+                if !closed {
+                    self.should_quit = true;
+                }
+            }
+            CmdAction::ForceQuit => self.should_quit = true,
+            CmdAction::SaveAndQuit => {
+                self.save_file(false);
+                self.should_quit = true;
+            }
+            CmdAction::Split(dir) => {
+                self.ws.borrow_mut().windows.split(dir);
+            }
+            CmdAction::CloseWindow => {
+                let closed = self.ws.borrow_mut().windows.close_active();
+                if !closed {
+                    self.message = Some("E444: Cannot close last window".to_string());
+                }
+            }
+            CmdAction::Only => self.ws.borrow_mut().windows.only(),
+            CmdAction::Fullscreen => self.ws.borrow_mut().windows.toggle_fullscreen(),
+        }
+    }
+
+    /// Interpret the key following a `Ctrl-w` prefix.
+    fn handle_window_command(&mut self, ck: crossterm::event::KeyEvent) {
+        let mut w = self.ws.borrow_mut();
+        match ck.code {
+            KeyCode::Char('s') => { w.windows.split(SplitDir::Horizontal); }
+            KeyCode::Char('v') => { w.windows.split(SplitDir::Vertical); }
+            KeyCode::Char('c') => { w.windows.close_active(); }
+            KeyCode::Char('o') => w.windows.only(),
+            KeyCode::Char('h') => w.windows.focus(FocusDir::Left),
+            KeyCode::Char('j') => w.windows.focus(FocusDir::Down),
+            KeyCode::Char('k') => w.windows.focus(FocusDir::Up),
+            KeyCode::Char('l') => w.windows.focus(FocusDir::Right),
+            KeyCode::Char('z') => w.windows.toggle_fullscreen(),
+            _ => {}
         }
     }
 
@@ -665,6 +730,55 @@ mod tests {
         // Ensures the multi-window render path builds a FrameState without panicking.
         let mut a = App::new("line1\nline2\nline3".into(), PathBuf::from("f.txt"));
         a.render();
+    }
+
+    #[test]
+    fn parse_split_commands() {
+        let a = App::new("x".into(), PathBuf::from("f.txt"));
+        assert_eq!(a.parse_cmdline(":vsplit"), Ok(CmdAction::Split(SplitDir::Vertical)));
+        assert_eq!(a.parse_cmdline(":sp"), Ok(CmdAction::Split(SplitDir::Horizontal)));
+        assert_eq!(a.parse_cmdline(":only"), Ok(CmdAction::Only));
+        assert_eq!(a.parse_cmdline(":close"), Ok(CmdAction::CloseWindow));
+        assert_eq!(a.parse_cmdline(":fullscreen"), Ok(CmdAction::Fullscreen));
+    }
+
+    #[test]
+    fn vsplit_produces_two_side_by_side_windows() {
+        use ruster_core::windows::Rect;
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::Split(SplitDir::Vertical));
+        let w = a.ws.borrow();
+        let rects = w.windows.compute_rects(Rect::new(0, 0, 80, 24));
+        assert_eq!(rects.len(), 2);
+        // side by side: same y/height, different x
+        assert_eq!(rects[0].1.y, rects[1].1.y);
+        assert_ne!(rects[0].1.x, rects[1].1.x);
+    }
+
+    #[test]
+    fn q_closes_window_when_multiple_else_quits() {
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::Split(SplitDir::Horizontal));
+        assert_eq!(a.ws.borrow().windows.len(), 2);
+        // First :q closes a window, does not quit.
+        a.apply_cmd(CmdAction::Quit);
+        assert_eq!(a.ws.borrow().windows.len(), 1);
+        assert!(!a.should_quit);
+        // Second :q on the last window quits.
+        a.apply_cmd(CmdAction::Quit);
+        assert!(a.should_quit);
+    }
+
+    #[test]
+    fn ctrl_w_z_toggles_fullscreen() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::Split(SplitDir::Vertical));
+        // Ctrl-w then z
+        a.handle_key(CtKey::new(KeyCode::Char('w'), KeyModifiers::CONTROL));
+        assert!(a.pending_ctrl_w);
+        a.handle_key(CtKey::new(KeyCode::Char('z'), KeyModifiers::NONE));
+        assert!(a.ws.borrow().windows.is_fullscreen());
     }
 
     #[test]
