@@ -24,6 +24,17 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
+/// The identifier word immediately before char offset `head`.
+fn word_before(content: &str, head: usize) -> String {
+    let chars: Vec<char> = content.chars().collect();
+    let head = head.min(chars.len());
+    let mut i = head;
+    while i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_') {
+        i -= 1;
+    }
+    chars[i..head].iter().collect()
+}
+
 fn plain_lines(content: &str) -> Vec<StyledLine> {
     content
         .split('\n')
@@ -362,6 +373,10 @@ pub struct App {
     lsp_pending: std::collections::HashMap<(String, i64), LspAction>,
     /// Hover popup contents (lines), shown until the next key.
     hover: Option<Vec<String>>,
+    /// Loaded snippet definitions (built-in + `~/.config/ruster/snippets/`).
+    snippets: ruster_core::snippets::SnippetSet,
+    /// Remaining tabstop offsets to visit in the active snippet, via Tab.
+    snippet_stops: Vec<usize>,
 }
 
 impl App {
@@ -539,6 +554,14 @@ impl App {
             diagnostics: std::collections::HashMap::new(),
             lsp_pending: std::collections::HashMap::new(),
             hover: None,
+            snippets: {
+                let mut s = ruster_core::snippets::SnippetSet::builtin();
+                if let Some(dir) = dirs::config_dir() {
+                    s.load_dir(&dir.join("ruster").join("snippets"));
+                }
+                s
+            },
+            snippet_stops: Vec::new(),
         }
     }
 
@@ -640,6 +663,17 @@ impl App {
         }
 
         if self.vim.mode == VimMode::Insert && key == KeyEvent::Tab {
+            // 1) Cycle to the next tabstop of an active snippet.
+            if !self.snippet_stops.is_empty() {
+                let next = self.snippet_stops.remove(0);
+                self.ws.borrow_mut().execute(Action::Move(Motion::To(next)));
+                return;
+            }
+            // 2) Expand a snippet trigger before the cursor.
+            if self.try_snippet_expand() {
+                return;
+            }
+            // 3) Otherwise insert indentation.
             if self.config.expandtab {
                 let spaces = " ".repeat(self.config.tabstop as usize);
                 let mut w = self.ws.borrow_mut();
@@ -649,6 +683,8 @@ impl App {
             }
             return;
         }
+        // Any other key ends snippet-stop cycling (offsets would go stale).
+        self.snippet_stops.clear();
 
         let actions = self.vim.handle(key, &*self.ws.borrow());
         for action in actions {
@@ -936,6 +972,54 @@ impl App {
                 _ => {}
             }
         }
+    }
+
+    /// Expand a snippet whose trigger word precedes the cursor (insert mode).
+    /// Returns whether an expansion happened.
+    fn try_snippet_expand(&mut self) -> bool {
+        let active = self.ws.borrow().active_buffer();
+        let filetype = {
+            let w = self.ws.borrow();
+            w.buffers
+                .get(active)
+                .and_then(|d| d.file_path.as_ref())
+                .and_then(|p| p.extension())
+                .and_then(|e| e.to_str())
+                .map(|e| ruster_syntax::lang_key(e).to_string())
+                .unwrap_or_default()
+        };
+        if filetype.is_empty() {
+            return false;
+        }
+        let (content, head) = {
+            let w = self.ws.borrow();
+            (w.buffer().to_string(), w.primary_head())
+        };
+        let trigger = word_before(&content, head);
+        if trigger.is_empty() {
+            return false;
+        }
+        let body = match self.snippets.get(&filetype, &trigger) {
+            Some(b) => b.to_string(),
+            None => return false,
+        };
+        let exp = ruster_core::snippets::expand(&body);
+        let start = head - trigger.chars().count();
+        {
+            let mut w = self.ws.borrow_mut();
+            w.execute(Action::BeginBatch);
+            w.execute(Action::Edit(EditOp::DeleteRange(start, head)));
+            w.execute(Action::Edit(EditOp::InsertString(exp.text.clone())));
+            w.execute(Action::EndBatch);
+        }
+        // Absolute tabstop offsets; visit the first now, keep the rest for Tab.
+        let mut stops: Vec<usize> = exp.stops.iter().map(|s| start + s.start).collect();
+        if !stops.is_empty() {
+            let first = stops.remove(0);
+            self.ws.borrow_mut().execute(Action::Move(Motion::To(first)));
+            self.snippet_stops = stops;
+        }
+        true
     }
 
     /// A one-line summary of a diagnostic on the cursor's line, if any.
@@ -2328,6 +2412,29 @@ mod tests {
         assert_eq!(a.parse_cmdline(":Files"), Ok(CmdAction::Files));
         assert_eq!(a.parse_cmdline(":Rg todo"), Ok(CmdAction::Rg("todo".into())));
         assert!(a.parse_cmdline(":Rg").is_err());
+    }
+
+    #[test]
+    fn snippet_expands_on_tab_in_insert() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        // Type the trigger "fn" in a .rs buffer, then Tab in insert mode.
+        let mut a = App::new(String::new(), PathBuf::from("f.rs"));
+        a.vim.mode = VimMode::Insert;
+        for c in "fn".chars() {
+            a.handle_key(CtKey::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        a.handle_key(CtKey::new(KeyCode::Tab, KeyModifiers::NONE));
+        let text = a.ws.borrow().active_doc().buffer.to_string();
+        assert!(text.contains("fn name("), "snippet expanded: {text:?}");
+        // Two more tabstops ($2 args, $0 body) remain after the first jump.
+        assert_eq!(a.snippet_stops.len(), 2);
+    }
+
+    #[test]
+    fn word_before_extracts_identifier() {
+        assert_eq!(word_before("  foo", 5), "foo");
+        assert_eq!(word_before("a.bar", 5), "bar");
+        assert_eq!(word_before("x = ", 4), "");
     }
 
     #[test]
