@@ -1,4 +1,4 @@
-; Minimal Python highlights (tree-sitter-python)
+; Python highlights (tree-sitter-python)
 
 (comment) @comment
 (string) @string
@@ -12,7 +12,7 @@
   "for" "while" "with" "as"
   "try" "except" "finally" "raise"
   "import" "from"
-  "global" "nonlocal" "assert" "del"
+  "global" "nonlocal" "assert" "del" "await" "async"
   "and" "or" "not" "in" "is"
 ] @keyword
 
@@ -20,15 +20,23 @@
   "+" "-" "*" "/" "//" "%" "**"
   "=" "==" "!=" "<" ">" "<=" ">="
   "+=" "-=" "*=" "/="
+  "->"
 ] @operator
 
+; definitions and calls
 (function_definition name: (identifier) @function)
+(class_definition name: (identifier) @type)
 (call function: (identifier) @function)
 (call function: (attribute attribute: (identifier) @function))
+(decorator (identifier) @function)
+(decorator (attribute attribute: (identifier) @function))
 
-(class_definition name: (identifier) @type)
+; type annotations
+(typed_parameter type: (type (identifier) @type))
+(type (identifier) @type)
 
-(decorator) @function
+; keyword / default argument names
+(keyword_argument name: (identifier) @variable)
 
 [
   (true)

@@ -112,6 +112,7 @@ pub fn language_for_ext(ext: &str) -> Option<tree_sitter::Language> {
         "json"            => Some(tree_sitter_json::LANGUAGE.into()),
         "toml"            => Some(tree_sitter_toml_ng::LANGUAGE.into()),
         "yaml" | "yml"    => Some(tree_sitter_yaml::LANGUAGE.into()),
+        "lua"             => Some(tree_sitter_lua::LANGUAGE.into()),
         _ => None,
     }
 }
@@ -127,6 +128,7 @@ fn lang_key(ext: &str) -> &'static str {
         "json" => "json",
         "toml" => "toml",
         "yaml" | "yml" => "yaml",
+        "lua" => "lua",
         _ => "",
     }
 }
@@ -142,6 +144,10 @@ fn query_files_for_lang(key: &str) -> (&'static str, &'static str) {
         ),
         "python" => (include_str!("../queries/python/highlights.scm"), ""),
         "json" => (include_str!("../queries/json/highlights.scm"), ""),
+        "lua" => (include_str!("../queries/lua/highlights.scm"), ""),
+        "toml" => (include_str!("../queries/toml/highlights.scm"), ""),
+        "yaml" => (include_str!("../queries/yaml/highlights.scm"), ""),
+        "c" => (include_str!("../queries/c/highlights.scm"), ""),
         _ => ("", ""),
     }
 }
@@ -195,6 +201,27 @@ mod tests {
     fn json_highlights_without_error() {
         let engine = SyntaxEngine::new("{\"a\": 1, \"b\": true}", "json").unwrap();
         assert!(engine.styled_lines().iter().any(|l| !l.highlights.is_empty()));
+    }
+
+    #[test]
+    fn all_bundled_queries_compile_and_highlight() {
+        // (extension, sample source) — each must build (query compiles) and
+        // produce at least one highlight, proving the query matches the grammar.
+        let cases = [
+            ("rs", "fn main() { let x = 1; }"),
+            ("py", "def f(x):\n    return x + 1\n"),
+            ("json", "{\"a\": 1, \"b\": true, \"c\": null}"),
+            ("lua", "local function f(x)\n  return x + 1\nend\n"),
+            ("c", "int main(void) {\n  int x = 1;\n  return x;\n}\n"),
+            ("toml", "# c\n[table]\nkey = \"value\"\nn = 42\nb = true\n"),
+            ("yaml", "# c\nname: value\ncount: 3\nflag: true\n"),
+        ];
+        for (ext, src) in cases {
+            let engine = SyntaxEngine::new(src, ext)
+                .unwrap_or_else(|e| panic!("{ext} query failed to build: {e:?}"));
+            let has = engine.styled_lines().iter().any(|l| !l.highlights.is_empty());
+            assert!(has, "{ext} produced no highlights");
+        }
     }
 
     #[test]
