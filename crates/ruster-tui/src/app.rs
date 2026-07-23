@@ -11,8 +11,7 @@ use ruster_core::workspace::Workspace;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ruster_lua::{config::Config, LuaAction, LuaRuntime};
 use ruster_render::{
-    CursorKind, FrameState, GutterView, Rect as RRect, Renderer, StatuslineView, StyledLine,
-    WindowView,
+    CursorKind, FrameState, Rect as RRect, Renderer, StatuslineView, StyledLine, WindowView,
 };
 use ruster_syntax::SyntaxEngine;
 use std::cell::RefCell;
@@ -444,11 +443,11 @@ impl App {
                     let win = w.windows.window(wid).expect("window exists");
                     (win.buffer, win.cursors.head(), win.scroll_top)
                 };
-                let (content, cline, ccol, name) = {
+                let (content, cline, ccol, name, line_count) = {
                     let doc = w.buffers.get(buf_id).expect("buffer exists");
                     let cline = doc.buffer.char_to_line(head);
                     let ccol = head - doc.buffer.line_start_char(cline);
-                    (doc.buffer.to_string(), cline, ccol, doc.name.clone())
+                    (doc.buffer.to_string(), cline, ccol, doc.name.clone(), doc.buffer.line_count())
                 };
                 // Keep the cursor visible within this window's text area.
                 let buf_h = rect.height.saturating_sub(1) as usize;
@@ -479,6 +478,14 @@ impl App {
                 } else {
                     None
                 };
+                let gutter = ruster_render::gutter_view(
+                    scroll,
+                    line_count,
+                    cline,
+                    self.config.number,
+                    self.config.relativenumber,
+                    buf_h,
+                );
                 views.push(WindowView {
                     rect: RRect::new(rect.x, rect.y, rect.width, rect.height),
                     lines,
@@ -487,7 +494,7 @@ impl App {
                     cursor_visible: is_active,
                     cursor_smooth,
                     scroll_offset: scroll as u16,
-                    gutter: GutterView::default(),
+                    gutter,
                     statusline,
                     active: is_active,
                 });

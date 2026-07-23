@@ -52,6 +52,51 @@ pub struct GutterView {
     pub rows: Vec<String>,
 }
 
+/// Build the line-number gutter for a window.
+///
+/// - `number` only → absolute line numbers
+/// - `relativenumber` only → distance from `cursor_line` (0 on the cursor line)
+/// - both → hybrid: absolute on the cursor line, relative elsewhere
+/// - neither → empty gutter (width 0)
+///
+/// `first_line` is the first visible buffer line (scroll top); `height` is the
+/// number of visible text rows. Rows are right-aligned and padded to `width`,
+/// which is `max(3, digits(line_count)) + 1` (one trailing space).
+pub fn gutter_view(
+    first_line: usize,
+    line_count: usize,
+    cursor_line: usize,
+    number: bool,
+    relativenumber: bool,
+    height: usize,
+) -> GutterView {
+    if !number && !relativenumber {
+        return GutterView::default();
+    }
+    let digits = line_count.max(1).to_string().len();
+    let num_w = digits.max(3);
+    let width = (num_w + 1) as u16;
+
+    let mut rows = Vec::new();
+    for row in 0..height {
+        let line = first_line + row;
+        if line >= line_count.max(1) {
+            break;
+        }
+        let value = if number && !relativenumber {
+            line + 1
+        } else if !number && relativenumber {
+            line.abs_diff(cursor_line)
+        } else if line == cursor_line {
+            line + 1
+        } else {
+            line.abs_diff(cursor_line)
+        };
+        rows.push(format!("{:>width$} ", value, width = num_w));
+    }
+    GutterView { width, rows }
+}
+
 /// One window's statusline, split into left/center/right groups. `active`
 /// selects the highlighted vs dimmed style.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -141,5 +186,52 @@ mod tests {
         let mut r = TestRenderer;
         r.render_frame(&state);
         assert_eq!(r.viewport_cells(), (80, 24));
+    }
+
+    use crate::gutter_view;
+
+    #[test]
+    fn gutter_disabled_has_zero_width() {
+        let g = gutter_view(0, 10, 0, false, false, 5);
+        assert_eq!(g.width, 0);
+        assert!(g.rows.is_empty());
+    }
+
+    #[test]
+    fn gutter_absolute_numbers() {
+        let g = gutter_view(0, 3, 0, true, false, 3);
+        assert_eq!(g.width, 4); // max(3,1)+1
+        assert_eq!(g.rows, vec!["  1 ".to_string(), "  2 ".to_string(), "  3 ".to_string()]);
+    }
+
+    #[test]
+    fn gutter_relative_distance_from_cursor() {
+        // cursor on line index 2, lines 0..5 visible
+        let g = gutter_view(0, 5, 2, false, true, 5);
+        let vals: Vec<&str> = g.rows.iter().map(|s| s.trim()).collect();
+        assert_eq!(vals, vec!["2", "1", "0", "1", "2"]);
+    }
+
+    #[test]
+    fn gutter_hybrid_absolute_on_cursor_line() {
+        // cursor on line index 1
+        let g = gutter_view(0, 4, 1, true, true, 4);
+        let vals: Vec<&str> = g.rows.iter().map(|s| s.trim()).collect();
+        // line0 -> rel 1, line1 -> abs 2, line2 -> rel 1, line3 -> rel 2
+        assert_eq!(vals, vec!["1", "2", "1", "2"]);
+    }
+
+    #[test]
+    fn gutter_width_scales_with_line_count() {
+        let g = gutter_view(0, 1000, 0, true, false, 1);
+        assert_eq!(g.width, 5); // digits(1000)=4, +1
+    }
+
+    #[test]
+    fn gutter_respects_scroll_and_stops_at_eof() {
+        // 3 lines total, scrolled so first visible is line 2, height 5
+        let g = gutter_view(2, 3, 2, true, false, 5);
+        assert_eq!(g.rows.len(), 1); // only line index 2 exists
+        assert_eq!(g.rows[0].trim(), "3");
     }
 }
