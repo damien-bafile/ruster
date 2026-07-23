@@ -5,6 +5,7 @@ pub mod key;
 pub mod action;
 pub mod command;
 pub mod document;
+pub mod dired;
 pub mod workspace;
 pub mod windows;
 pub mod editor;

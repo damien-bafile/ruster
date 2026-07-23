@@ -2,7 +2,9 @@ use crate::key::crossterm_to_ruster_key;
 use crate::picker::{PickerAction, PickerItem, PickerState};
 use crate::renderer::TuiRenderer;
 use ruster_core::action::{Action, EditOp, Motion};
-use ruster_core::document::BufferId;
+use ruster_core::buffer::Buffer;
+use ruster_core::cursor::CursorSet;
+use ruster_core::document::{BufferId, DocKind, SpecialKind};
 use ruster_core::editor::EditorView;
 use ruster_core::key::KeyEvent;
 use ruster_core::vim::VimMode;
@@ -87,6 +89,7 @@ enum CmdAction {
     Fullscreen,
     Ibuffer,
     BufferDelete,
+    Dired(Option<String>),
 }
 
 enum AppEvent {
@@ -112,6 +115,8 @@ pub struct App {
     pending_ctrl_w: bool,
     /// Active floating picker (buffer list, file finder, ...), if any.
     picker: Option<PickerState>,
+    /// Current directory for each open dired (file-explorer) buffer.
+    dired_dirs: std::collections::HashMap<BufferId, PathBuf>,
 }
 
 impl App {
@@ -217,6 +222,7 @@ impl App {
             ws, vim, renderer,
             should_quit: false, message: None, syntax, syntax_buffer, lua, config, timer,
             has_smooth_cursor: false, cursor_anim, pending_ctrl_w: false, picker: None,
+            dired_dirs: std::collections::HashMap::new(),
         }
     }
 
@@ -224,6 +230,11 @@ impl App {
         // An open picker captures all input until it is accepted or cancelled.
         if self.picker.is_some() {
             self.handle_picker_key(ck);
+            return;
+        }
+
+        // Dired buffers intercept navigation keys (movement falls through).
+        if self.active_is_dired() && self.handle_dired_key(ck) {
             return;
         }
 
@@ -572,6 +583,7 @@ impl App {
             "fs" | "fullscreen" => Ok(CmdAction::Fullscreen),
             "ls" | "buffers" | "ibuffer" => Ok(CmdAction::Ibuffer),
             "bd" | "bdelete" => Ok(CmdAction::BufferDelete),
+            "Dired" | "dired" | "Explore" | "Ex" => Ok(CmdAction::Dired(None)),
             _ if trimmed.starts_with("w ") || trimmed.starts_with("write ") => {
                 let path = trimmed.splitn(2, ' ').nth(1).unwrap_or("").trim().to_string();
                 if path.is_empty() {
@@ -579,6 +591,10 @@ impl App {
                 } else {
                     Ok(CmdAction::SaveAs(path))
                 }
+            }
+            _ if trimmed.starts_with("Dired ") || trimmed.starts_with("dired ") => {
+                let path = trimmed.splitn(2, ' ').nth(1).unwrap_or("").trim().to_string();
+                Ok(CmdAction::Dired(Some(path)))
             }
             _ => Err(format!("Unknown command: {}", cmdline)),
         }
@@ -621,6 +637,101 @@ impl App {
             CmdAction::Fullscreen => self.ws.borrow_mut().windows.toggle_fullscreen(),
             CmdAction::Ibuffer => self.open_ibuffer(),
             CmdAction::BufferDelete => self.delete_active_buffer(),
+            CmdAction::Dired(arg) => self.open_dired(arg),
+        }
+    }
+
+    /// Open (or switch to) a dired file-explorer buffer for `arg` (defaulting
+    /// to the current working directory).
+    fn open_dired(&mut self, arg: Option<String>) {
+        let path = arg
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+        let path = path.canonicalize().unwrap_or(path);
+        let id = self
+            .ws
+            .borrow_mut()
+            .buffers
+            .create_special(SpecialKind::Dired, &path.to_string_lossy());
+        self.ws.borrow_mut().set_active_buffer(id);
+        self.refresh_dired(id, path);
+    }
+
+    /// Reload a dired buffer's listing for `path` and reset its window cursor.
+    fn refresh_dired(&mut self, id: BufferId, path: PathBuf) {
+        let text = ruster_core::dired::render(&path);
+        {
+            let mut w = self.ws.borrow_mut();
+            if let Some(doc) = w.buffers.get_mut(id) {
+                doc.buffer = Buffer::from_str(&text);
+                doc.name = path.to_string_lossy().into_owned();
+                doc.modified = false;
+            }
+            if w.active_buffer() == id {
+                w.windows.active_window_mut().cursors = CursorSet::single(0);
+                w.windows.active_window_mut().scroll_top = 0;
+            }
+        }
+        self.dired_dirs.insert(id, path);
+    }
+
+    fn active_is_dired(&self) -> bool {
+        let w = self.ws.borrow();
+        matches!(w.active_doc().kind, DocKind::Special(SpecialKind::Dired))
+    }
+
+    /// Handle a key in a dired buffer. Returns true if the key was consumed
+    /// (movement keys fall through to vim so j/k/gg/G still work).
+    fn handle_dired_key(&mut self, ck: crossterm::event::KeyEvent) -> bool {
+        match ck.code {
+            KeyCode::Enter => {
+                self.dired_open_at_cursor();
+                true
+            }
+            KeyCode::Char('-') | KeyCode::Char('^') => {
+                self.dired_go_up();
+                true
+            }
+            // Movement keys pass through to vim for navigation.
+            KeyCode::Char('j') | KeyCode::Char('k') | KeyCode::Char('g')
+            | KeyCode::Char('G') | KeyCode::Up | KeyCode::Down => false,
+            // Swallow everything else to keep the listing read-only.
+            _ => true,
+        }
+    }
+
+    fn dired_open_at_cursor(&mut self) {
+        let id = self.ws.borrow().active_buffer();
+        let dir = match self.dired_dirs.get(&id) {
+            Some(p) => p.clone(),
+            None => return,
+        };
+        let line = {
+            let w = self.ws.borrow();
+            w.buffer().char_to_line(w.primary_head())
+        };
+        let entries = ruster_core::dired::list(&dir);
+        let entry = match entries.get(line) {
+            Some(e) => e.clone(),
+            None => return,
+        };
+        let target = dir.join(&entry.name);
+        let target = target.canonicalize().unwrap_or(target);
+        if entry.is_dir {
+            self.refresh_dired(id, target);
+        } else {
+            self.open_path(&target, None);
+        }
+    }
+
+    fn dired_go_up(&mut self) {
+        let id = self.ws.borrow().active_buffer();
+        if let Some(dir) = self.dired_dirs.get(&id) {
+            if let Some(parent) = dir.parent() {
+                let parent = parent.to_path_buf();
+                self.refresh_dired(id, parent);
+            }
         }
     }
 
@@ -965,6 +1076,33 @@ mod tests {
         let mut a = App::new("x".into(), PathBuf::from("f.txt"));
         a.apply_cmd(CmdAction::BufferDelete);
         assert_eq!(a.ws.borrow().buffers.len(), 1);
+    }
+
+    #[test]
+    fn dired_opens_and_descends_into_subdir() {
+        use ruster_core::document::{DocKind, SpecialKind};
+        let tmp = std::env::temp_dir().join("ruster_app_dired");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("sub")).unwrap();
+        std::fs::write(tmp.join("sub").join("inner.txt"), "hi").unwrap();
+
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::Dired(Some(tmp.to_string_lossy().into_owned())));
+        assert!(matches!(
+            a.ws.borrow().active_doc().kind,
+            DocKind::Special(SpecialKind::Dired)
+        ));
+        // Listing: "../", "sub/". Move cursor to line 1 (sub) and Enter.
+        let sub_line_start = {
+            let w = a.ws.borrow();
+            w.buffer().line_start_char(1)
+        };
+        a.ws.borrow_mut().execute(Action::Move(Motion::To(sub_line_start)));
+        a.dired_open_at_cursor();
+        let name = a.ws.borrow().active_doc().name.clone();
+        assert!(name.ends_with("sub"), "descended into sub, got {name}");
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
