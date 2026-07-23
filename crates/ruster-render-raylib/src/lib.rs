@@ -270,12 +270,12 @@ impl Renderer for RaylibRenderer {
             }
         }
 
-        // Hover popup, near the top-center.
+        // Hover popup, near the top-center (syntax-highlighted).
         if let Some(lines) = &state.hover {
             if !lines.is_empty() {
                 let accent = Color::new(137, 180, 250, 255);
                 let box_bg = Color::new(24, 24, 37, 255);
-                let longest = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+                let longest = lines.iter().map(|l| l.text.chars().count()).max().unwrap_or(0);
                 let box_w = ((longest as f32 * char_w) as i32 + 16).min(screen_w - 20);
                 let box_h = (lines.len() as i32 * LINE_H + 8).min(screen_h - 20);
                 let box_x = (screen_w - box_w) / 2;
@@ -285,7 +285,37 @@ impl Renderer for RaylibRenderer {
                 let mut s = d.begin_scissor_mode(box_x + 1, box_y + 1, box_w - 2, box_h - 2);
                 for (i, line) in lines.iter().enumerate() {
                     let ly = box_y + 4 + i as i32 * LINE_H;
-                    s.draw_text_ex(font, line, Vector2::new(box_x as f32 + 6.0, ly as f32), FONT_SIZE as f32, 1.0, Color::new(205, 214, 244, 255));
+                    let n = line.text.len();
+                    if n == 0 {
+                        continue;
+                    }
+                    if line.highlights.is_empty() {
+                        s.draw_text_ex(font, &line.text, Vector2::new(box_x as f32 + 6.0, ly as f32), FONT_SIZE as f32, 1.0, default_color);
+                        continue;
+                    }
+                    let mut char_colors: Vec<Color> = vec![default_color; n];
+                    for &(offset, len, ref style) in &line.highlights {
+                        let fg = match style.fg {
+                            ruster_render::Color::Rgb(r, g, b) => Color::new(r, g, b, 255),
+                            ruster_render::Color::Default => default_color,
+                        };
+                        let end = (offset + len).min(n);
+                        for pos in offset..end {
+                            char_colors[pos] = fg;
+                        }
+                    }
+                    let mut x_off = box_x as f32 + 6.0;
+                    let mut pos = 0;
+                    while pos < n {
+                        let c = char_colors[pos];
+                        let start = pos;
+                        while pos < n && char_colors[pos] == c {
+                            pos += 1;
+                        }
+                        let seg = &line.text[start..pos];
+                        s.draw_text_ex(font, seg, Vector2::new(x_off, ly as f32), FONT_SIZE as f32, 1.0, c);
+                        x_off += measure(seg);
+                    }
                 }
             }
         }

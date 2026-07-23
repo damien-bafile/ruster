@@ -356,13 +356,13 @@ impl Widget for WhichKeyWidget {
     }
 }
 
-/// Renders an LSP hover popup: a bordered box of text lines.
+/// Renders an LSP hover popup: a bordered box of syntax-highlighted lines.
 pub struct HoverWidget {
-    lines: Vec<String>,
+    lines: Vec<StyledLine>,
 }
 
 impl HoverWidget {
-    pub fn new(lines: Vec<String>) -> Self {
+    pub fn new(lines: Vec<StyledLine>) -> Self {
         HoverWidget { lines }
     }
 }
@@ -370,7 +370,7 @@ impl HoverWidget {
 impl Widget for HoverWidget {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let bg = Color::Rgb(24, 24, 37);
-        let fg = Color::Rgb(205, 214, 244);
+        let default_fg = Color::Rgb(205, 214, 244);
         for y in area.top()..area.bottom() {
             for x in area.left()..area.right() {
                 if let Some(cell) = buf.cell_mut((x, y)) {
@@ -382,11 +382,22 @@ impl Widget for HoverWidget {
         for (row, line) in self.lines.iter().enumerate() {
             let y = area.y + row as u16;
             if y >= area.bottom() { break; }
-            for (i, ch) in format!(" {}", line).chars().enumerate() {
-                let x = area.x + i as u16;
+            // Map char index -> highlight fg for this line.
+            let mut colors: std::collections::HashMap<usize, RColor> = std::collections::HashMap::new();
+            for (offset, len, style) in &line.highlights {
+                for c in 0..*len {
+                    colors.insert(offset + c, style.fg);
+                }
+            }
+            for (i, ch) in line.text.chars().enumerate() {
+                let x = area.x + 1 + i as u16;
                 if x >= area.right() { break; }
                 if let Some(cell) = buf.cell_mut((x, y)) {
                     cell.set_char(ch);
+                    let fg = colors
+                        .get(&i)
+                        .map(ruster_render_color_to_tui)
+                        .unwrap_or(default_fg);
                     cell.set_fg(fg);
                     cell.set_bg(bg);
                 }

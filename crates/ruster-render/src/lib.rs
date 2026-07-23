@@ -157,8 +157,8 @@ pub struct FrameState<'a> {
     pub message: Option<&'a str>,
     pub picker: Option<PickerView>,
     pub whichkey: Option<WhichKeyView>,
-    /// LSP hover popup lines, shown in a floating box near the top.
-    pub hover: Option<Vec<String>>,
+    /// LSP hover popup lines (syntax-highlighted), in a floating box near the top.
+    pub hover: Option<Vec<StyledLine>>,
 }
 
 pub trait Renderer {

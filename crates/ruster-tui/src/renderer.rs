@@ -92,7 +92,7 @@ impl Renderer for TuiRenderer {
             // Hover popup, near the top-center.
             if let Some(lines) = &state.hover {
                 if !lines.is_empty() {
-                    let w = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) as u16 + 2;
+                    let w = lines.iter().map(|l| l.text.chars().count()).max().unwrap_or(0) as u16 + 2;
                     let w = w.clamp(8, area.width.saturating_sub(2));
                     let h = (lines.len() as u16 + 1).min(area.height.saturating_sub(2));
                     let x = area.x + (area.width.saturating_sub(w)) / 2;

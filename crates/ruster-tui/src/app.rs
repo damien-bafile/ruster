@@ -24,6 +24,70 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
+/// Map a markdown code-fence language name to a file extension for the syntax
+/// highlighter (rust-analyzer uses "rust", etc.).
+fn fence_ext(lang: &str) -> &str {
+    match lang {
+        "rust" => "rs",
+        "python" => "py",
+        "javascript" => "js",
+        "typescript" => "ts",
+        "c" => "c",
+        "lua" => "lua",
+        "json" => "json",
+        "toml" => "toml",
+        "yaml" => "yaml",
+        "scheme" => "scm",
+        other => other,
+    }
+}
+
+/// Highlight a code block; falls back to plain lines for unknown languages.
+fn highlight_code_block(code: &str, lang: &str) -> Vec<StyledLine> {
+    match SyntaxEngine::new(code, fence_ext(lang)) {
+        Ok(engine) => engine.styled_lines().to_vec(),
+        Err(_) => plain_lines(code),
+    }
+}
+
+/// Render LSP hover markdown into styled lines: fenced code blocks are
+/// tree-sitter highlighted, prose is shown plain (with fences/separators removed).
+fn build_hover_lines(markdown: &str) -> Vec<StyledLine> {
+    let mut out: Vec<StyledLine> = Vec::new();
+    let mut in_code = false;
+    let mut code_lang = String::new();
+    let mut code_buf: Vec<String> = Vec::new();
+    for line in markdown.lines() {
+        if line.trim_start().starts_with("```") {
+            if in_code {
+                out.extend(highlight_code_block(&code_buf.join("\n"), &code_lang));
+                code_buf.clear();
+                in_code = false;
+            } else {
+                in_code = true;
+                code_lang = line.trim_start().trim_start_matches("```").trim().to_string();
+            }
+            continue;
+        }
+        if in_code {
+            code_buf.push(line.to_string());
+        } else if line.trim() == "---" {
+            continue; // drop markdown separators
+        } else {
+            out.push(StyledLine { text: line.to_string(), highlights: vec![] });
+        }
+    }
+    if in_code && !code_buf.is_empty() {
+        out.extend(highlight_code_block(&code_buf.join("\n"), &code_lang));
+    }
+    // Trim trailing blank lines and cap the height.
+    while out.last().map(|l| l.text.trim().is_empty()).unwrap_or(false) {
+        out.pop();
+    }
+    out.truncate(24);
+    out
+}
+
 /// The identifier word immediately before char offset `head`.
 fn word_before(content: &str, head: usize) -> String {
     let chars: Vec<char> = content.chars().collect();
@@ -371,8 +435,8 @@ pub struct App {
     diagnostics: std::collections::HashMap<BufferId, Vec<ruster_lsp::Diagnostic>>,
     /// Outstanding LSP requests: (lang, request id) -> what to do with the reply.
     lsp_pending: std::collections::HashMap<(String, i64), LspAction>,
-    /// Hover popup contents (lines), shown until the next key.
-    hover: Option<Vec<String>>,
+    /// Hover popup contents (syntax-highlighted lines), shown until the next key.
+    hover: Option<Vec<StyledLine>>,
     /// Loaded snippet definitions (built-in + `~/.config/ruster/snippets/`).
     snippets: ruster_core::snippets::SnippetSet,
     /// Remaining tabstop offsets to visit in the active snippet, via Tab.
@@ -1157,8 +1221,7 @@ impl App {
         match action {
             LspAction::Hover => {
                 if let Some(text) = ruster_lsp::parse_hover(&result) {
-                    let lines: Vec<String> = text.lines().map(|s| s.to_string()).take(20).collect();
-                    self.hover = Some(lines);
+                    self.hover = Some(build_hover_lines(&text));
                 } else {
                     self.message = Some("No hover info".to_string());
                 }
@@ -2468,6 +2531,21 @@ mod tests {
         assert!(text.contains("fn name("), "snippet expanded: {text:?}");
         // Two more tabstops ($2 args, $0 body) remain after the first jump.
         assert_eq!(a.snippet_stops.len(), 2);
+    }
+
+    #[test]
+    fn hover_markdown_highlights_code_and_strips_fences() {
+        let md = "```rust\npub struct Range {}\n```\n\n---\n\nsize = 16 (0x10)";
+        let lines = build_hover_lines(md);
+        // Fence markers and separators are removed.
+        assert!(lines.iter().all(|l| !l.text.contains("```")));
+        assert!(lines.iter().all(|l| l.text.trim() != "---"));
+        // The code line is syntax-highlighted.
+        assert!(lines
+            .iter()
+            .any(|l| l.text.contains("struct") && !l.highlights.is_empty()));
+        // Prose survives as plain text.
+        assert!(lines.iter().any(|l| l.text.contains("size = 16")));
     }
 
     #[test]
