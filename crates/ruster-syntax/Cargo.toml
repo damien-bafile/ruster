@@ -18,4 +18,5 @@ tree-sitter-json = "0.24"
 tree-sitter-toml-ng = "0.7"
 tree-sitter-yaml = "0.7"
 tree-sitter-lua = "0.5"
+tree-sitter-scheme = "0.24"
 ruster-render = { path = "../ruster-render" }

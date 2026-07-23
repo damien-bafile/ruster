@@ -113,6 +113,7 @@ pub fn language_for_ext(ext: &str) -> Option<tree_sitter::Language> {
         "toml"            => Some(tree_sitter_toml_ng::LANGUAGE.into()),
         "yaml" | "yml"    => Some(tree_sitter_yaml::LANGUAGE.into()),
         "lua"             => Some(tree_sitter_lua::LANGUAGE.into()),
+        "scm" | "ss" | "sld" | "sls" | "sch" | "scheme" => Some(tree_sitter_scheme::LANGUAGE.into()),
         _ => None,
     }
 }
@@ -129,6 +130,7 @@ fn lang_key(ext: &str) -> &'static str {
         "toml" => "toml",
         "yaml" | "yml" => "yaml",
         "lua" => "lua",
+        "scm" | "ss" | "sld" | "sls" | "sch" | "scheme" => "scheme",
         _ => "",
     }
 }
@@ -148,6 +150,7 @@ fn query_files_for_lang(key: &str) -> (&'static str, &'static str) {
         "toml" => (include_str!("../queries/toml/highlights.scm"), ""),
         "yaml" => (include_str!("../queries/yaml/highlights.scm"), ""),
         "c" => (include_str!("../queries/c/highlights.scm"), ""),
+        "scheme" => (include_str!("../queries/scheme/highlights.scm"), ""),
         _ => ("", ""),
     }
 }
@@ -215,6 +218,7 @@ mod tests {
             ("c", "int main(void) {\n  int x = 1;\n  return x;\n}\n"),
             ("toml", "# c\n[table]\nkey = \"value\"\nn = 42\nb = true\n"),
             ("yaml", "# c\nname: value\ncount: 3\nflag: true\n"),
+            ("scm", "; comment\n(define (square x)\n  (* x x))\n"),
         ];
         for (ext, src) in cases {
             let engine = SyntaxEngine::new(src, ext)

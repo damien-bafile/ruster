@@ -27,6 +27,7 @@ pub fn default_server(lang: &str) -> Option<ServerConfig> {
         }
         "c" => ServerConfig::new("clangd", &[]),
         "lua" => ServerConfig::new("lua-language-server", &[]),
+        "scheme" => ServerConfig::new("scheme-lsp-server", &["--stdio"]),
         _ => return None,
     })
 }
@@ -43,6 +44,7 @@ pub fn language_id(lang: &str) -> &str {
         "json" => "json",
         "toml" => "toml",
         "yaml" => "yaml",
+        "scheme" => "scheme",
         other => other,
     }
 }
