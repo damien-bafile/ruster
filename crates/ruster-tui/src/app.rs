@@ -813,6 +813,7 @@ impl App {
             self.handle_key(ck);
         }
 
+        self.lsp.shutdown_all();
         crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen)?;
         crossterm::terminal::disable_raw_mode()?;
         Ok(())
@@ -828,6 +829,12 @@ impl App {
             .build()?;
 
         let result = rt.block_on(self.async_run());
+
+        // Kill language servers, and detach the runtime without waiting for the
+        // blocking stdin reader (which is parked in event::read()) — otherwise
+        // dropping the runtime hangs on exit.
+        self.lsp.shutdown_all();
+        rt.shutdown_background();
 
         crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen)?;
         crossterm::terminal::disable_raw_mode()?;
@@ -915,6 +922,7 @@ impl App {
             if self.renderer.should_close() || self.should_quit { break; }
             std::thread::sleep(Duration::from_millis(16));
         }
+        self.lsp.shutdown_all();
     }
 
     /// Drain any streamed picker results (`:Files`/`:Rg`) into the open picker.
