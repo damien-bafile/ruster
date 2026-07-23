@@ -1,5 +1,6 @@
 pub mod app;
 pub mod key;
+pub mod picker;
 pub mod renderer;
 pub mod widgets;
 
@@ -29,7 +30,7 @@ mod tests {
             },
             active: true,
         };
-        let state = FrameState { windows: vec![view], cmdline: None, message: None };
+        let state = FrameState { windows: vec![view], cmdline: None, message: None, picker: None };
         // Dummy renderer has no terminal; this exercises the type wiring.
         r.render_frame(&state);
     }

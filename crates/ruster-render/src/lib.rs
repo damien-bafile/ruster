@@ -123,11 +123,29 @@ pub struct WindowView {
     pub active: bool,
 }
 
-/// A full frame: every visible window, plus the shared cmdline/message line.
+/// One row of a floating picker overlay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PickerRow {
+    pub label: String,
+    pub selected: bool,
+}
+
+/// A floating fuzzy-list overlay (buffer list, file finder, which-key, ...),
+/// drawn centered over the window frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PickerView {
+    pub title: String,
+    pub query: String,
+    pub rows: Vec<PickerRow>,
+}
+
+/// A full frame: every visible window, the shared cmdline/message line, and an
+/// optional floating picker overlay.
 pub struct FrameState<'a> {
     pub windows: Vec<WindowView>,
     pub cmdline: Option<&'a str>,
     pub message: Option<&'a str>,
+    pub picker: Option<PickerView>,
 }
 
 pub trait Renderer {
@@ -182,6 +200,7 @@ mod tests {
             windows: vec![sample_window()],
             cmdline: None,
             message: None,
+            picker: None,
         };
         let mut r = TestRenderer;
         r.render_frame(&state);

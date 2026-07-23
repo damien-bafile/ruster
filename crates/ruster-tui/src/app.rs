@@ -1,4 +1,5 @@
 use crate::key::crossterm_to_ruster_key;
+use crate::picker::{PickerAction, PickerState};
 use crate::renderer::TuiRenderer;
 use ruster_core::action::{Action, EditOp, Motion};
 use ruster_core::document::BufferId;
@@ -107,6 +108,8 @@ pub struct App {
     cursor_anim: CursorAnim,
     /// True after a `Ctrl-w` prefix, awaiting a window command key.
     pending_ctrl_w: bool,
+    /// Active floating picker (buffer list, file finder, ...), if any.
+    picker: Option<PickerState>,
 }
 
 impl App {
@@ -211,11 +214,17 @@ impl App {
         App {
             ws, vim, renderer,
             should_quit: false, message: None, syntax, syntax_buffer, lua, config, timer,
-            has_smooth_cursor: false, cursor_anim, pending_ctrl_w: false,
+            has_smooth_cursor: false, cursor_anim, pending_ctrl_w: false, picker: None,
         }
     }
 
     pub fn handle_key(&mut self, ck: crossterm::event::KeyEvent) {
+        // An open picker captures all input until it is accepted or cancelled.
+        if self.picker.is_some() {
+            self.handle_picker_key(ck);
+            return;
+        }
+
         // Window-command prefix (Ctrl-w) state machine takes priority.
         if self.pending_ctrl_w {
             self.pending_ctrl_w = false;
@@ -524,10 +533,12 @@ impl App {
             VimMode::Cmdline => Some(crate::widgets::cmdline_label(self.vim.cmdline_buffer())),
             _ => self.message.clone(),
         };
+        let picker_view = self.picker.as_mut().map(|p| p.view());
         let state = FrameState {
             windows: views,
             cmdline: cmdline.as_deref(),
             message: None,
+            picker: picker_view,
         };
         self.renderer.render_frame(&state);
     }
@@ -604,6 +615,88 @@ impl App {
             }
             CmdAction::Only => self.ws.borrow_mut().windows.only(),
             CmdAction::Fullscreen => self.ws.borrow_mut().windows.toggle_fullscreen(),
+        }
+    }
+
+    /// Route a key to the open picker: type to filter, arrows/Ctrl-n/p to move,
+    /// Enter to accept, Esc to cancel.
+    fn handle_picker_key(&mut self, ck: crossterm::event::KeyEvent) {
+        let ctrl = ck.modifiers.contains(KeyModifiers::CONTROL);
+        let action = {
+            let picker = match self.picker.as_mut() {
+                Some(p) => p,
+                None => return,
+            };
+            match ck.code {
+                KeyCode::Esc => {
+                    self.picker = None;
+                    return;
+                }
+                KeyCode::Enter => picker.accept(),
+                KeyCode::Up => {
+                    picker.move_selection(-1);
+                    return;
+                }
+                KeyCode::Down => {
+                    picker.move_selection(1);
+                    return;
+                }
+                KeyCode::Char('p') if ctrl => {
+                    picker.move_selection(-1);
+                    return;
+                }
+                KeyCode::Char('n') if ctrl => {
+                    picker.move_selection(1);
+                    return;
+                }
+                KeyCode::Backspace => {
+                    picker.pop_char();
+                    return;
+                }
+                KeyCode::Char(c) if !ctrl => {
+                    picker.push_char(c);
+                    return;
+                }
+                _ => return,
+            }
+        };
+        // Enter was pressed: close the picker and dispatch the chosen action.
+        self.picker = None;
+        if let Some(action) = action {
+            self.dispatch_picker_action(action);
+        }
+    }
+
+    fn dispatch_picker_action(&mut self, action: PickerAction) {
+        match action {
+            PickerAction::OpenBuffer(id) => {
+                self.ws.borrow_mut().set_active_buffer(id);
+            }
+            PickerAction::OpenPath(path) => self.open_path(&path, None),
+            PickerAction::OpenLocation(path, line, col) => {
+                self.open_path(&path, Some((line, col)));
+            }
+            PickerAction::RunCmd(cmd) => match self.parse_cmdline(&cmd) {
+                Ok(a) => self.apply_cmd(a),
+                Err(e) => self.message = Some(e),
+            },
+        }
+    }
+
+    /// Open `path` into a buffer shown in the active window. When `at` is given,
+    /// move the cursor to that 1-indexed (line, col).
+    fn open_path(&mut self, path: &std::path::Path, at: Option<(usize, usize)>) {
+        let content = std::fs::read_to_string(path).unwrap_or_default();
+        let id = self.ws.borrow_mut().buffers.open_file(path.to_path_buf(), content);
+        self.ws.borrow_mut().set_active_buffer(id);
+        if let Some((line, col)) = at {
+            let pos = {
+                let w = self.ws.borrow();
+                let buf = w.buffer();
+                let l = line.saturating_sub(1).min(buf.line_count().saturating_sub(1));
+                buf.line_start_char(l) + col.saturating_sub(1)
+            };
+            self.ws.borrow_mut().execute(Action::Move(Motion::To(pos)));
         }
     }
 

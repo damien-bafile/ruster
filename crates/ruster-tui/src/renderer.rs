@@ -76,6 +76,17 @@ impl Renderer for TuiRenderer {
                 let cl_area = Rect::new(0, area.height.saturating_sub(1), area.width, 1);
                 frame.render_widget(crate::widgets::CmdlineWidget::new(text), cl_area);
             }
+
+            // Floating picker overlay, centered.
+            if let Some(picker) = &state.picker {
+                let pw = (area.width * 6 / 10).clamp(20, area.width.saturating_sub(2));
+                let rows = picker.rows.len() as u16 + 2; // title + query + rows
+                let ph = rows.clamp(3, area.height.saturating_sub(2));
+                let px = area.x + (area.width.saturating_sub(pw)) / 2;
+                let py = area.y + (area.height.saturating_sub(ph)) / 3;
+                let parea = Rect::new(px, py, pw, ph);
+                frame.render_widget(crate::widgets::PickerWidget::new(picker.clone()), parea);
+            }
         });
     }
 }
