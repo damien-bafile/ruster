@@ -8,6 +8,8 @@ pub struct Config {
     pub theme: String,
     pub cursor_anim_enabled: bool,
     pub cursor_anim_speed: f32,
+    /// Milliseconds to wait for a mapped key sequence before showing which-key.
+    pub timeoutlen: u32,
 }
 
 impl Default for Config {
@@ -22,6 +24,7 @@ impl Default for Config {
             theme: "default".into(),
             cursor_anim_enabled: true,
             cursor_anim_speed: 12.0,
+            timeoutlen: 300,
         }
     }
 }

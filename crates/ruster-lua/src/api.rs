@@ -203,6 +203,12 @@ mod tests {
     }
 
     #[test]
+    fn config_has_default_timeoutlen() {
+        let rt = make_runtime();
+        assert_eq!(rt.config().timeoutlen, 300);
+    }
+
+    #[test]
     fn statusline_section_registers_and_evaluates() {
         let rt = make_runtime();
         let t = create_table(&rt).unwrap();

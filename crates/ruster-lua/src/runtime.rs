@@ -124,6 +124,7 @@ impl LuaRuntime {
             theme: cfg.get("theme").unwrap_or(defaults.theme),
             cursor_anim_enabled: cfg.get("cursor_anim_enabled").unwrap_or(defaults.cursor_anim_enabled),
             cursor_anim_speed: cfg.get("cursor_anim_speed").unwrap_or(defaults.cursor_anim_speed),
+            timeoutlen: cfg.get("timeoutlen").unwrap_or(defaults.timeoutlen),
         }
     }
 

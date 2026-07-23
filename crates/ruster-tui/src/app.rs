@@ -14,7 +14,8 @@ use ruster_core::workspace::Workspace;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ruster_lua::{config::Config, LuaAction, LuaRuntime};
 use ruster_render::{
-    CursorKind, FrameState, Rect as RRect, Renderer, StatuslineView, StyledLine, WindowView,
+    CursorKind, FrameState, PickerRow, PickerView, Rect as RRect, Renderer, StatuslineView,
+    StyledLine, WindowView,
 };
 use ruster_syntax::SyntaxEngine;
 use std::cell::RefCell;
@@ -92,6 +93,42 @@ enum CmdAction {
     Dired(Option<String>),
     Files,
     Rg(String),
+}
+
+/// The commands offered by the `:`-Tab command palette: (name, description).
+const PALETTE_COMMANDS: &[(&str, &str)] = &[
+    ("w", "write file"),
+    ("q", "quit / close window"),
+    ("wq", "write & quit"),
+    ("sp", "split horizontal"),
+    ("vsplit", "split vertical"),
+    ("only", "close other windows"),
+    ("close", "close window"),
+    ("fullscreen", "toggle fullscreen"),
+    ("ls", "buffer list"),
+    ("bd", "delete buffer"),
+    ("Dired", "file explorer"),
+    ("Files", "find files"),
+];
+
+/// The which-key continuations shown after a `Ctrl-w` prefix.
+fn which_key_ctrl_w() -> PickerView {
+    let entries = [
+        ("s", "split horizontal"),
+        ("v", "split vertical"),
+        ("c", "close window"),
+        ("o", "only (close others)"),
+        ("h/j/k/l", "focus left/down/up/right"),
+        ("z", "toggle fullscreen"),
+    ];
+    PickerView {
+        title: "Ctrl-w".to_string(),
+        query: String::new(),
+        rows: entries
+            .iter()
+            .map(|(k, d)| PickerRow { label: format!("{:<8} {}", k, d), selected: false })
+            .collect(),
+    }
 }
 
 /// Parse one `rg --vimgrep` line (`file:line:col:text`) into its parts.
@@ -278,6 +315,19 @@ impl App {
             return;
         }
         let key = crossterm_to_ruster_key(ck);
+
+        // Tab in the cmdline opens the command palette, seeded with the partial.
+        if self.vim.mode == VimMode::Cmdline && key == KeyEvent::Tab {
+            let seed = self
+                .vim
+                .cmdline_buffer()
+                .trim_start_matches(':')
+                .trim()
+                .to_string();
+            self.vim.mode = VimMode::Normal;
+            self.open_command_picker(&seed);
+            return;
+        }
 
         if self.vim.mode == VimMode::Insert && key == KeyEvent::Tab {
             if self.config.expandtab {
@@ -561,7 +611,12 @@ impl App {
             VimMode::Cmdline => Some(crate::widgets::cmdline_label(self.vim.cmdline_buffer())),
             _ => self.message.clone(),
         };
-        let picker_view = self.picker.as_mut().map(|p| p.view());
+        // Which-key panel takes over the overlay while a Ctrl-w prefix is pending.
+        let picker_view = if self.pending_ctrl_w {
+            Some(which_key_ctrl_w())
+        } else {
+            self.picker.as_mut().map(|p| p.view())
+        };
         let state = FrameState {
             windows: views,
             cmdline: cmdline.as_deref(),
@@ -813,6 +868,24 @@ impl App {
                 self.refresh_dired(id, parent);
             }
         }
+    }
+
+    /// Open the `:`-Tab command palette, pre-filtered by `seed`.
+    fn open_command_picker(&mut self, seed: &str) {
+        let items: Vec<PickerItem> = PALETTE_COMMANDS
+            .iter()
+            .map(|(name, desc)| {
+                PickerItem::new(
+                    format!("{:<12} {}", name, desc),
+                    PickerAction::RunCmd(name.to_string()),
+                )
+            })
+            .collect();
+        let mut p = PickerState::new("Commands", items);
+        for c in seed.chars() {
+            p.push_char(c);
+        }
+        self.picker = Some(p);
     }
 
     /// Open the buffer-list picker over every open buffer.
@@ -1214,6 +1287,23 @@ mod tests {
         assert_eq!(a.parse_cmdline(":Files"), Ok(CmdAction::Files));
         assert_eq!(a.parse_cmdline(":Rg todo"), Ok(CmdAction::Rg("todo".into())));
         assert!(a.parse_cmdline(":Rg").is_err());
+    }
+
+    #[test]
+    fn command_palette_opens_with_seed_and_filters() {
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.open_command_picker("wq");
+        let p = a.picker.as_mut().expect("palette open");
+        assert_eq!(p.filter, "wq");
+        assert!(!p.filtered().is_empty(), "seed matches at least one command");
+    }
+
+    #[test]
+    fn which_key_lists_ctrl_w_continuations() {
+        let v = which_key_ctrl_w();
+        assert_eq!(v.title, "Ctrl-w");
+        assert!(v.rows.iter().any(|r| r.label.contains("split")));
+        assert!(v.rows.iter().any(|r| r.label.contains("fullscreen")));
     }
 
     #[test]
