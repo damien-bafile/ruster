@@ -432,6 +432,11 @@ impl App {
         let smooth = self.has_smooth_cursor;
         let (anim_x, anim_y) = (self.cursor_anim.cell_x, self.cursor_anim.cell_y);
 
+        // Lua-registered statusline sections (global; shown on the active window).
+        let lua_left = self.lua.statusline_sections("left").join("  ");
+        let lua_center = self.lua.statusline_sections("center").join("  ");
+        let lua_right = self.lua.statusline_sections("right").join("  ");
+
         let mut views: Vec<WindowView> = Vec::new();
         {
             let mut w = self.ws.borrow_mut();
@@ -467,12 +472,26 @@ impl App {
                 } else {
                     plain_lines(&content)
                 };
-                let statusline = StatuslineView {
-                    left: if is_active { mode_lbl.clone() } else { String::new() },
-                    center: name,
-                    right: format!("{},{}", cline + 1, ccol + 1),
-                    active: is_active,
+                let pct = if line_count > 0 {
+                    (cline + 1) * 100 / line_count
+                } else {
+                    100
                 };
+                let mut left = if is_active { mode_lbl.clone() } else { String::new() };
+                let mut center = name;
+                let mut right = format!("{}%  {},{}", pct, cline + 1, ccol + 1);
+                if is_active {
+                    if !lua_left.is_empty() {
+                        left = if left.is_empty() { lua_left.clone() } else { format!("{}  {}", left, lua_left) };
+                    }
+                    if !lua_center.is_empty() {
+                        center = format!("{}  {}", center, lua_center);
+                    }
+                    if !lua_right.is_empty() {
+                        right = format!("{}  {}", lua_right, right);
+                    }
+                }
+                let statusline = StatuslineView { left, center, right, active: is_active };
                 let cursor_smooth = if is_active && smooth {
                     Some((anim_x - ccol as f32, anim_y - cline as f32))
                 } else {

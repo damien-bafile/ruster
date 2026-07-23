@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 use std::path::Path;
-use mlua::{Function, Lua};
+use mlua::{Function, Lua, RegistryKey};
 use crate::config::Config;
 use crate::event::EventBus;
 use crate::keymap::LuaKeymap;
@@ -21,6 +21,8 @@ pub struct LuaRuntime {
     pub(crate) set_lines: RefCell<Option<Box<dyn FnMut(i32, i32, Vec<String>)>>>,
     pub(crate) get_cursor: RefCell<Option<Box<dyn FnMut() -> (i32, i32)>>>,
     pub(crate) set_cursor: RefCell<Option<Box<dyn FnMut(i32, i32)>>>,
+    /// Lua-registered statusline sections: (position, callback registry key).
+    pub(crate) statusline: RefCell<Vec<(String, RegistryKey)>>,
 }
 
 impl LuaRuntime {
@@ -38,6 +40,7 @@ impl LuaRuntime {
             set_lines: RefCell::new(None),
             get_cursor: RefCell::new(None),
             set_cursor: RefCell::new(None),
+            statusline: RefCell::new(Vec::new()),
         };
 
         let ruster = crate::api::create_table(&runtime)?;
@@ -56,6 +59,26 @@ impl LuaRuntime {
         self.set_lines.replace(Some(set_lines));
         self.get_cursor.replace(Some(get_cursor));
         self.set_cursor.replace(Some(set_cursor));
+    }
+
+    /// Evaluate all Lua statusline sections registered for `pos`
+    /// ("left" | "center" | "right"), returning each one's string result.
+    pub fn statusline_sections(&self, pos: &str) -> Vec<String> {
+        let sections = self.statusline.borrow();
+        let mut out = Vec::new();
+        for (p, key) in sections.iter() {
+            if p != pos {
+                continue;
+            }
+            if let Ok(func) = self.lua.registry_value::<Function>(key) {
+                if let Ok(s) = func.call::<String>(()) {
+                    if !s.is_empty() {
+                        out.push(s);
+                    }
+                }
+            }
+        }
+        out
     }
 
     pub fn fire_event(&self, name: &str, args: &[mlua::Value]) {

@@ -93,6 +93,20 @@ local pos = ruster.api.nvim_win_get_cursor(0)
 ruster.api.nvim_win_set_cursor(0, { row = 5, col = 10 })
 ```
 
+### `ruster.statusline.section(pos, fn)`
+
+Register a statusline component. `pos` is `"left"`, `"center"`, or `"right"`.
+`fn` is called each frame and must return a string; empty strings are skipped.
+Sections are shown on the active window's statusline, appended to the built-in
+components (mode, file name, percentage, and `line,col`).
+
+```lua
+-- Show the current git branch on the right side of the statusline.
+ruster.statusline.section("right", function()
+  return "⎇ main"
+end)
+```
+
 ### `ruster.config`
 
 Configuration table. See [Config Reference](config-reference.md).

@@ -62,6 +62,20 @@ pub fn create_table(runtime: &LuaRuntime) -> mlua::Result<Table> {
     })?;
     t.set("on", on_fn)?;
 
+    // ruster.statusline.section(pos, fn) — register a statusline component.
+    // `pos` is "left" | "center" | "right"; `fn` returns a string each frame.
+    let statusline = runtime.lua.create_table()?;
+    let rt_sl = runtime as *const LuaRuntime;
+    let section_fn = runtime.lua.create_function(move |_, (pos, func): (String, Function)| {
+        unsafe {
+            let key = (*rt_sl).lua.create_registry_value(func)?;
+            (*rt_sl).statusline.borrow_mut().push((pos, key));
+        }
+        Ok(())
+    })?;
+    statusline.set("section", section_fn)?;
+    t.set("statusline", statusline)?;
+
     // ruster.api table
     let api = runtime.lua.create_table()?;
 
@@ -186,6 +200,18 @@ mod tests {
         cmd_fn.call::<()>(":w").unwrap();
         let actions = rt.drain_actions();
         assert!(matches!(actions.as_slice(), [runtime::LuaAction::Cmd(m)] if m == ":w"));
+    }
+
+    #[test]
+    fn statusline_section_registers_and_evaluates() {
+        let rt = make_runtime();
+        let t = create_table(&rt).unwrap();
+        let statusline: Table = t.get("statusline").unwrap();
+        let section: Function = statusline.get("section").unwrap();
+        let f = rt.lua.create_function(|_, ()| Ok("git:main".to_string())).unwrap();
+        section.call::<()>(("right", f)).unwrap();
+        assert_eq!(rt.statusline_sections("right"), vec!["git:main".to_string()]);
+        assert!(rt.statusline_sections("left").is_empty());
     }
 
     #[test]
