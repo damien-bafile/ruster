@@ -232,11 +232,14 @@ impl Renderer for RaylibRenderer {
             }
         }
 
-        // Shared cmdline / message on the bottom screen row.
-        let cmd_text = state.cmdline.or(state.message);
-        if let Some(cmd) = cmd_text {
-            let cmd_y = screen_h - LINE_H;
-            d.draw_rectangle(0, cmd_y, screen_w, LINE_H, Color::new(30, 30, 30, 255));
+        // Shared cmdline / message. The app only reserves a bottom row (shrinking
+        // the windows) while one is shown, so draw it flush at that reserved row
+        // and only when present — otherwise it would overpaint the last window's
+        // statusline, which now fills the bottom row itself.
+        if let Some(cmd) = state.cmdline.or(state.message) {
+            let rows = ((screen_h - PAD_Y) / LINE_H).max(1);
+            let cmd_y = PAD_Y + (rows - 1) * LINE_H;
+            d.draw_rectangle(0, cmd_y, screen_w, screen_h - cmd_y, Color::new(30, 30, 30, 255));
             d.draw_text_ex(font, cmd, Vector2::new(PAD_X as f32, cmd_y as f32), FONT_SIZE as f32, 1.0, default_color);
         }
 

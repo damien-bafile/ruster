@@ -356,6 +356,20 @@ impl App {
             self.pending_ctrl_w = true;
             return;
         }
+        // Direct Ctrl+h/j/k/l focus movement between splits (no Ctrl-w prefix).
+        if self.vim.mode == VimMode::Normal && ck.modifiers.contains(KeyModifiers::CONTROL) {
+            let dir = match ck.code {
+                KeyCode::Char('h') => Some(FocusDir::Left),
+                KeyCode::Char('j') => Some(FocusDir::Down),
+                KeyCode::Char('k') => Some(FocusDir::Up),
+                KeyCode::Char('l') => Some(FocusDir::Right),
+                _ => None,
+            };
+            if let Some(dir) = dir {
+                self.ws.borrow_mut().windows.focus(dir);
+                return;
+            }
+        }
 
         let prev_mode = self.vim.mode;
         let mode = match prev_mode {
@@ -551,8 +565,11 @@ impl App {
 
     fn render(&mut self) {
         let (cols, rows) = self.renderer.viewport_cells();
-        // Reserve the bottom row for the shared cmdline/message line.
-        let buf_area = CoreRect::new(0, 0, cols, rows.saturating_sub(1));
+        // Reserve a bottom row for the cmdline/message only while one is shown,
+        // so the statusline sits flush at the very bottom otherwise.
+        let has_cmdline = self.vim.mode == VimMode::Cmdline || self.message.is_some();
+        let reserved = if has_cmdline { 1 } else { 0 };
+        let buf_area = CoreRect::new(0, 0, cols, rows.saturating_sub(reserved));
 
         // Reparse syntax for the tracked buffer, then snapshot its styled lines.
         let syntax_content = self.ws.borrow().buffers
