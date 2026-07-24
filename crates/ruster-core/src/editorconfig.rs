@@ -40,22 +40,18 @@ fn match_glob<'a>(content: &'a str, file_path: &Path) -> Option<HashMap<&'a str,
                 let pattern = &line[1..end];
                 if matches_glob_pattern(pattern, file_name) || matches_glob_pattern(pattern, file_path.to_str().unwrap_or("")) {
                     let mut props = HashMap::new();
-                    loop {
-                        if let Some(val_line) = lines.next() {
-                            if val_line.starts_with('[') {
-                                break; // next section; peeked
-                            }
-                            if let Some(eq) = val_line.find('=') {
-                                let key = val_line[..eq].trim();
-                                let val = val_line[eq+1..].trim();
-                                props.insert(key, val);
-                            }
-                        } else {
-                            break;
+                    for val_line in lines.by_ref() {
+                        if val_line.starts_with('[') {
+                            break; // next section; peeked
+                        }
+                        if let Some(eq) = val_line.find('=') {
+                            let key = val_line[..eq].trim();
+                            let val = val_line[eq+1..].trim();
+                            props.insert(key, val);
                         }
                     }
                     let specificity = pattern.len();
-                    if best.as_ref().map_or(true, |(s, _)| specificity > *s) {
+                    if best.as_ref().is_none_or(|(s, _)| specificity > *s) {
                         best = Some((specificity, props));
                     }
                 }
@@ -79,12 +75,10 @@ fn matches_glob_pattern(pattern: &str, name: &str) -> bool {
         let inner = &pattern[1..pattern.len()-1];
         return name.contains(inner);
     }
-    if pattern.starts_with("*") {
-        let suffix = &pattern[1..];
+    if let Some(suffix) = pattern.strip_prefix("*") {
         return name.ends_with(suffix);
     }
-    if pattern.ends_with("*") {
-        let prefix = &pattern[..pattern.len()-1];
+    if let Some(prefix) = pattern.strip_suffix("*") {
         return name.starts_with(prefix);
     }
     pattern == name

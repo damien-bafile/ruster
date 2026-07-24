@@ -112,6 +112,12 @@ pub struct VimState {
     clipboard_buf: RefCell<Option<String>>,
 }
 
+impl Default for VimState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VimState {
     pub fn new() -> Self {
         VimState {

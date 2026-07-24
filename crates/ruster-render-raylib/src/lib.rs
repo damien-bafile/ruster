@@ -202,9 +202,7 @@ impl Renderer for RaylibRenderer {
                             ruster_render::Color::Default => default_color,
                         };
                         let end = (offset + len).min(n);
-                        for pos in offset..end {
-                            char_colors[pos] = fg;
-                        }
+                        char_colors[offset..end].fill(fg);
                     }
                     let mut x_offset = text_x as f32;
                     let mut pos = 0;
@@ -382,9 +380,7 @@ impl Renderer for RaylibRenderer {
                             ruster_render::Color::Default => default_color,
                         };
                         let end = (offset + len).min(n);
-                        for pos in offset..end {
-                            char_colors[pos] = fg;
-                        }
+                        char_colors[offset..end].fill(fg);
                     }
                     let mut x_off = px as f32;
                     let mut pos = 0;
@@ -432,9 +428,7 @@ impl Renderer for RaylibRenderer {
                             ruster_render::Color::Default => default_color,
                         };
                         let end = (offset + len).min(n);
-                        for pos in offset..end {
-                            char_colors[pos] = fg;
-                        }
+                        char_colors[offset..end].fill(fg);
                     }
                     let mut x_off = box_x as f32 + 6.0;
                     let mut pos = 0;

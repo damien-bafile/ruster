@@ -215,7 +215,7 @@ impl WindowTree {
                 FocusDir::Left | FocusDir::Right => (r.cx() - active_rect.cx()).abs(),
                 FocusDir::Up | FocusDir::Down => (r.cy() - active_rect.cy()).abs(),
             };
-            if best.map_or(true, |(_, d)| dist < d) {
+            if best.is_none_or(|(_, d)| dist < d) {
                 best = Some((*id, dist));
             }
         }

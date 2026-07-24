@@ -1178,9 +1178,9 @@ impl App {
                 .rev()
                 .find(|&i| chars[i..].starts_with(&pat))
         };
-        match found {
-            Some(i) => self.ws.borrow_mut().execute(Action::Move(Motion::To(i))),
-            None => {} // keep point; message still shows the query
+        // On a miss, keep point; the message still shows the query.
+        if let Some(i) = found {
+            self.ws.borrow_mut().execute(Action::Move(Motion::To(i)));
         }
     }
 
@@ -1242,14 +1242,9 @@ impl App {
         // Spawn blocking reader
         let tx_reader = tx.clone();
         tokio::task::spawn_blocking(move || {
-            loop {
-                match crossterm::event::read() {
-                    Ok(ev) => {
-                        if tx_reader.send(AppEvent::Input(ev)).is_err() {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
+            while let Ok(ev) = crossterm::event::read() {
+                if tx_reader.send(AppEvent::Input(ev)).is_err() {
+                    break;
                 }
             }
         });
@@ -1262,10 +1257,7 @@ impl App {
                 event = rx.recv() => {
                     match event {
                         Some(AppEvent::Input(ev)) => {
-                            match ev {
-                                crossterm::event::Event::Key(k) => self.handle_key(k),
-                                _ => {}
-                            }
+                            if let crossterm::event::Event::Key(k) = ev { self.handle_key(k) }
                         }
                         None => break,
                     }
@@ -2077,11 +2069,7 @@ impl App {
                         None => plain_lines(&content),
                     },
                 };
-                let pct = if line_count > 0 {
-                    (cline + 1) * 100 / line_count
-                } else {
-                    100
-                };
+                let pct = ((cline + 1) * 100).checked_div(line_count).unwrap_or(100);
                 let mut left = if is_active { mode_lbl.clone() } else { String::new() };
                 let mut center = name;
                 let mut right = format!("{}%  {},{}", pct, cline + 1, ccol + 1);
@@ -2156,7 +2144,7 @@ impl App {
         // it has begun appearing, keep it up until the sequence ends.
         let past_timeout = self
             .leader_since
-            .map_or(false, |t| now.duration_since(t).as_millis() as u32 >= self.config.timeoutlen);
+            .is_some_and(|t| now.duration_since(t).as_millis() as u32 >= self.config.timeoutlen);
         let show = self.leader_pending.is_some() && (self.whichkey_anim > 0.01 || past_timeout);
         let target = if show { 1.0 } else { 0.0 };
         self.whichkey_anim += (target - self.whichkey_anim) * (1.0 - (-18.0 * dt).exp());
@@ -2217,7 +2205,7 @@ impl App {
             "callers" | "incomingcalls" => Ok(CmdAction::CallHierarchy(true)),
             "callees" | "outgoingcalls" => Ok(CmdAction::CallHierarchy(false)),
             _ if trimmed.starts_with("w ") || trimmed.starts_with("write ") => {
-                let path = trimmed.splitn(2, ' ').nth(1).unwrap_or("").trim().to_string();
+                let path = trimmed.split_once(' ').map(|x| x.1).unwrap_or("").trim().to_string();
                 if path.is_empty() {
                     Err("No path given".to_string())
                 } else {
@@ -2225,11 +2213,11 @@ impl App {
                 }
             }
             _ if trimmed.starts_with("Dired ") || trimmed.starts_with("dired ") => {
-                let path = trimmed.splitn(2, ' ').nth(1).unwrap_or("").trim().to_string();
+                let path = trimmed.split_once(' ').map(|x| x.1).unwrap_or("").trim().to_string();
                 Ok(CmdAction::Dired(Some(path)))
             }
             _ if trimmed.starts_with("Rg ") || trimmed.starts_with("rg ") => {
-                let pat = trimmed.splitn(2, ' ').nth(1).unwrap_or("").trim().to_string();
+                let pat = trimmed.split_once(' ').map(|x| x.1).unwrap_or("").trim().to_string();
                 if pat.is_empty() {
                     Err("No pattern given".to_string())
                 } else {
@@ -2237,7 +2225,7 @@ impl App {
                 }
             }
             _ if trimmed.starts_with("rename ") => {
-                let name = trimmed.splitn(2, ' ').nth(1).unwrap_or("").trim().to_string();
+                let name = trimmed.split_once(' ').map(|x| x.1).unwrap_or("").trim().to_string();
                 if name.is_empty() {
                     Err("No name given".to_string())
                 } else {
@@ -2245,7 +2233,7 @@ impl App {
                 }
             }
             _ if trimmed.starts_with("sym ") => {
-                let q = trimmed.splitn(2, ' ').nth(1).unwrap_or("").trim().to_string();
+                let q = trimmed.split_once(' ').map(|x| x.1).unwrap_or("").trim().to_string();
                 Ok(CmdAction::WorkspaceSymbol(q))
             }
             _ if trimmed.starts_with("set editmode") || trimmed == "set editmode" => {

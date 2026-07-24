@@ -208,6 +208,8 @@ pub struct Editor {
 }
 
 impl Editor {
+    // An infallible constructor, not the fallible `FromStr` trait.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         let len = s.chars().count();
         Editor {

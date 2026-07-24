@@ -9,12 +9,8 @@ use crate::position::LspPosition;
 
 /// `file://` URI for a filesystem path (absolute paths only; best-effort).
 pub fn uri_from_path(path: &Path) -> String {
-    let s = path.to_string_lossy();
-    if s.starts_with('/') {
-        format!("file://{}", s)
-    } else {
-        format!("file://{}", s) // relative — servers generally still accept it
-    }
+    // Relative paths are uncommon here, but servers generally still accept them.
+    format!("file://{}", path.to_string_lossy())
 }
 
 /// `initialize` params advertising the capabilities ruster actually uses.
