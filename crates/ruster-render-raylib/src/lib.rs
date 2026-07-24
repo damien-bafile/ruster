@@ -137,6 +137,23 @@ impl Renderer for RaylibRenderer {
                     s.draw_text_ex(font, label, Vector2::new(px as f32, gy as f32), FONT_SIZE as f32, 1.0, gutter_color);
                 }
 
+                // Visual-mode selection background, behind the text.
+                if let Some(sel) = view.selection {
+                    let selection_bg = Color::new(88, 91, 112, 255);
+                    for (row, line) in view.lines.iter().skip(scroll).take(buf_rows).enumerate() {
+                        let buffer_line = (row + scroll) as u16;
+                        let line_len = line.text.chars().count() as u16;
+                        if let Some((sel_start, sel_end)) = sel.span_on(buffer_line, line_len) {
+                            let gy = py + row as i32 * LINE_H;
+                            let sx = text_x as f32 + sel_start as f32 * char_w;
+                            // End is inclusive; empty lines still get a sliver.
+                            let cols = sel_end.saturating_sub(sel_start) + 1;
+                            let width = (cols as f32 * char_w).max(char_w / 2.0);
+                            s.draw_rectangle(sx as i32, gy, width as i32, LINE_H, selection_bg);
+                        }
+                    }
+                }
+
                 // Buffer text (this window's own scroll).
                 for (row, line) in view.lines.iter().skip(scroll).take(buf_rows).enumerate() {
                     let gy = py + row as i32 * LINE_H;

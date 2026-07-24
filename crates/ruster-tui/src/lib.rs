@@ -29,6 +29,7 @@ mod tests {
                 active: true,
             },
             active: true,
+            selection: None,
         };
         let state = FrameState { windows: vec![view], cmdline: None, message: None, picker: None, whichkey: None, hover: None };
         // Dummy renderer has no terminal; this exercises the type wiring.

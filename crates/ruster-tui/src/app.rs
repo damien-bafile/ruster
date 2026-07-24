@@ -14,8 +14,8 @@ use ruster_core::workspace::Workspace;
 use crossterm::event::{KeyCode, KeyModifiers};
 use ruster_lua::{config::Config, LuaAction, LuaRuntime};
 use ruster_render::{
-    CursorKind, FrameState, Rect as RRect, Renderer, StatuslineView, StyledLine, WhichKeyView,
-    WindowView,
+    CursorKind, FrameState, Rect as RRect, Renderer, SelectionView, StatuslineView, StyledLine,
+    WhichKeyView, WindowView,
 };
 use ruster_syntax::SyntaxEngine;
 use ruster_lsp::{LspManager, LspPosition, ServerMessage};
@@ -1547,15 +1547,38 @@ impl App {
             let rects = w.windows.compute_rects(buf_area);
             for (wid, rect) in rects {
                 let is_active = wid == active_id;
-                let (buf_id, head, mut scroll) = {
+                let (buf_id, head, anchor, mut scroll) = {
                     let win = w.windows.window(wid).expect("window exists");
-                    (win.buffer, win.cursors.head(), win.scroll_top)
+                    let primary = win.cursors.primary();
+                    (win.buffer, primary.head, primary.anchor, win.scroll_top)
                 };
-                let (content, cline, ccol, name, line_count) = {
+                let (content, cline, ccol, name, line_count, selection) = {
                     let doc = w.buffers.get(buf_id).expect("buffer exists");
                     let cline = doc.buffer.char_to_line(head);
                     let ccol = head - doc.buffer.line_start_char(cline);
-                    (doc.buffer.to_string(), cline, ccol, doc.name.clone(), doc.buffer.line_count())
+                    // Visual-mode selection spans anchor..head (inclusive).
+                    let selection = if is_active
+                        && matches!(mode, VimMode::VisualChar | VimMode::VisualLine)
+                    {
+                        let (lo, hi) = (anchor.min(head), anchor.max(head));
+                        let sl = doc.buffer.char_to_line(lo);
+                        let el = doc.buffer.char_to_line(hi);
+                        Some(SelectionView {
+                            start: (sl as u16, (lo - doc.buffer.line_start_char(sl)) as u16),
+                            end: (el as u16, (hi - doc.buffer.line_start_char(el)) as u16),
+                            line_wise: mode == VimMode::VisualLine,
+                        })
+                    } else {
+                        None
+                    };
+                    (
+                        doc.buffer.to_string(),
+                        cline,
+                        ccol,
+                        doc.name.clone(),
+                        doc.buffer.line_count(),
+                        selection,
+                    )
                 };
                 // Keep the cursor visible within this window's text area.
                 let buf_h = rect.height.saturating_sub(1) as usize;
@@ -1622,6 +1645,7 @@ impl App {
                     gutter,
                     statusline,
                     active: is_active,
+                    selection,
                 });
             }
         }
@@ -2654,6 +2678,30 @@ mod tests {
         a.update_syntax();
         assert!(a.syntax.contains_key(&py_buf), "python buffer gets its own engine");
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn visual_mode_produces_a_selection_for_the_active_window() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("hello world\nsecond line\n".into(), PathBuf::from("f.txt"));
+        // Enter visual mode and extend right a few characters.
+        a.handle_key(CtKey::new(KeyCode::Char('v'), none));
+        assert_eq!(a.vim.mode, VimMode::VisualChar);
+        for _ in 0..4 {
+            a.handle_key(CtKey::new(KeyCode::Char('l'), none));
+        }
+        // The active window's view carries the selection.
+        let w = a.ws.borrow();
+        let win = w.windows.active_window();
+        let primary = win.cursors.primary();
+        assert_ne!(primary.anchor, primary.head, "selection spans a range");
+        drop(w);
+
+        // Line-wise visual selects whole lines.
+        a.handle_key(CtKey::new(KeyCode::Esc, none));
+        a.handle_key(CtKey::new(KeyCode::Char('V'), none));
+        assert_eq!(a.vim.mode, VimMode::VisualLine);
     }
 
     #[test]

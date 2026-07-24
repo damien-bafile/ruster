@@ -54,6 +54,7 @@ pub struct BufferWidget {
     cursor_kind: CursorKind,
     scroll_offset: u16,
     gutter: GutterView,
+    selection: Option<ruster_render::SelectionView>,
 }
 
 impl BufferWidget {
@@ -66,7 +67,13 @@ impl BufferWidget {
             cursor_kind: CursorKind::Block,
             scroll_offset: 0,
             gutter: GutterView::default(),
+            selection: None,
         }
+    }
+
+    pub fn with_selection(mut self, selection: Option<ruster_render::SelectionView>) -> Self {
+        self.selection = selection;
+        self
     }
 
     pub fn with_syntax(mut self, yes: bool) -> Self {
@@ -132,23 +139,46 @@ impl Widget for BufferWidget {
             }
         }
 
+        let selection_bg = Color::Rgb(88, 91, 112);
         for (row, line) in self.lines.iter().skip(scroll).enumerate() {
             if row as u16 >= area.height { break; }
             let y = area.y + row as u16;
             let buffer_line = row + scroll;
             let is_cursor_line = buffer_line as u16 == self.cursor.0;
             let line_len = line.text.chars().count() as u16;
+            // Columns selected on this line, if any.
+            let sel_span = self
+                .selection
+                .and_then(|s| s.span_on(buffer_line as u16, line_len));
+            // Paint the selection background first (covers empty lines too).
+            if let Some((sel_start, sel_end)) = sel_span {
+                for col in sel_start..=sel_end.min(line_len.max(sel_start)) {
+                    let x = text_x + col;
+                    if x >= area.right() { break; }
+                    if let Some(cell) = buf.cell_mut((x, y)) {
+                        cell.set_bg(selection_bg);
+                    }
+                }
+            }
             for (j, ch) in line.text.chars().enumerate() {
                 let x = text_x + j as u16;
                 if x >= area.right() { break; }
+                let selected = sel_span
+                    .map(|(s, e)| j as u16 >= s && j as u16 <= e)
+                    .unwrap_or(false);
                 if let Some(cell) = buf.cell_mut((x, y)) {
                     cell.set_char(ch);
                     if is_cursor_line && j as u16 == self.cursor.1 && self.cursor_visible {
                         apply_cursor(cell, self.cursor_kind);
-                    } else if let Some((fg, bg)) = style_map.get(&(row as u16, j as u16)) {
-                        cell.set_fg(ruster_render_color_to_tui(fg));
-                        if !matches!(bg, RColor::Default) {
-                            cell.set_bg(ruster_render_color_to_tui(bg));
+                    } else {
+                        if let Some((fg, bg)) = style_map.get(&(row as u16, j as u16)) {
+                            cell.set_fg(ruster_render_color_to_tui(fg));
+                            if !matches!(bg, RColor::Default) {
+                                cell.set_bg(ruster_render_color_to_tui(bg));
+                            }
+                        }
+                        if selected {
+                            cell.set_bg(selection_bg);
                         }
                     }
                 }

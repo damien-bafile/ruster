@@ -63,7 +63,8 @@ impl Renderer for TuiRenderer {
                     .with_cursor_visible(view.cursor_visible)
                     .with_cursor_kind(view.cursor_kind)
                     .with_scroll(view.scroll_offset)
-                    .with_gutter(view.gutter.clone());
+                    .with_gutter(view.gutter.clone())
+                    .with_selection(view.selection);
                 frame.render_widget(buf_widget, buf_area);
 
                 let sl = crate::widgets::StatuslineWidget::new(view.statusline.clone());

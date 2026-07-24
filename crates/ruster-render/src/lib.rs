@@ -107,6 +107,32 @@ pub struct StatuslineView {
     pub active: bool,
 }
 
+/// A visual-mode selection in buffer coordinates. `start`/`end` are
+/// `(line, col)` and both ends are **inclusive**; `line_wise` selects whole
+/// lines regardless of the columns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectionView {
+    pub start: (u16, u16),
+    pub end: (u16, u16),
+    pub line_wise: bool,
+}
+
+impl SelectionView {
+    /// The inclusive column span selected on `line`, if any. `line_len` is the
+    /// line's character count.
+    pub fn span_on(&self, line: u16, line_len: u16) -> Option<(u16, u16)> {
+        if line < self.start.0 || line > self.end.0 {
+            return None;
+        }
+        if self.line_wise {
+            return Some((0, line_len));
+        }
+        let start = if line == self.start.0 { self.start.1 } else { 0 };
+        let end = if line == self.end.0 { self.end.1 } else { line_len };
+        Some((start, end))
+    }
+}
+
 /// Everything needed to draw a single window into its rectangle.
 pub struct WindowView {
     pub rect: Rect,
@@ -121,6 +147,8 @@ pub struct WindowView {
     pub gutter: GutterView,
     pub statusline: StatuslineView,
     pub active: bool,
+    /// Visual-mode selection to highlight (active window only).
+    pub selection: Option<SelectionView>,
 }
 
 /// One row of a floating picker overlay.
@@ -181,7 +209,8 @@ pub trait Renderer {
 #[cfg(test)]
 mod tests {
     use crate::{
-        CursorKind, FrameState, GutterView, Rect, Renderer, StatuslineView, StyledLine, WindowView,
+        CursorKind, FrameState, GutterView, Rect, Renderer, SelectionView, StatuslineView,
+        StyledLine, WindowView,
     };
 
     struct TestRenderer;
@@ -206,7 +235,28 @@ mod tests {
                 active: true,
             },
             active: true,
+            selection: None,
         }
+    }
+
+    #[test]
+    fn selection_spans_per_line() {
+        // charwise from (1,4) to (3,2)
+        let sel = SelectionView { start: (1, 4), end: (3, 2), line_wise: false };
+        assert_eq!(sel.span_on(0, 10), None, "before the selection");
+        assert_eq!(sel.span_on(1, 10), Some((4, 10)), "first line: from start col");
+        assert_eq!(sel.span_on(2, 10), Some((0, 10)), "middle line: whole line");
+        assert_eq!(sel.span_on(3, 10), Some((0, 2)), "last line: up to end col");
+        assert_eq!(sel.span_on(4, 10), None, "after the selection");
+
+        // single-line charwise
+        let one = SelectionView { start: (2, 3), end: (2, 7), line_wise: false };
+        assert_eq!(one.span_on(2, 20), Some((3, 7)));
+
+        // line-wise ignores columns
+        let lw = SelectionView { start: (1, 5), end: (2, 1), line_wise: true };
+        assert_eq!(lw.span_on(1, 8), Some((0, 8)));
+        assert_eq!(lw.span_on(2, 4), Some((0, 4)));
     }
 
     #[test]
