@@ -153,6 +153,8 @@ Press `SPC` in Normal mode; the which-key panel lists continuations.
 | `SPC c f` | Format (`:fmt`) |
 | `SPC c o` | Document symbols (outline) |
 | `SPC c d` | Diagnostics list |
+| `SPC c i` | Incoming calls (`:callers`) |
+| `SPC c y` | Outgoing calls (`:callees`) |
 | `SPC q q` | Quit |
 | `SPC q w` | Save and quit |
 
@@ -190,6 +192,8 @@ Press `SPC` in Normal mode; the which-key panel lists continuations.
 | `:fmt` / `:format` | Format the buffer |
 | `:rename <name>` | Rename the symbol under the cursor |
 | `:sym <query>` | Workspace symbol search |
+| `:callers` / `:incomingcalls` | Call hierarchy: who calls the symbol under the cursor |
+| `:callees` / `:outgoingcalls` | Call hierarchy: what the symbol under the cursor calls |
 
 ### Editing
 | Command | Action |

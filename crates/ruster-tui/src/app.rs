@@ -242,6 +242,8 @@ enum CmdAction {
     Rename(String),
     Format,
     WorkspaceSymbol(String),
+    /// Call hierarchy: `true` = incoming/callers, `false` = outgoing/callees.
+    CallHierarchy(bool),
     /// `:s/pat/rep/[g]` — replace on the current line, or the whole buffer
     /// when `whole_buffer` (`:%s/...`). `all` is the `g` flag.
     Substitute {
@@ -292,6 +294,9 @@ const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("bd", "delete buffer"),
     ("Dired", "file explorer"),
     ("Files", "find files"),
+    ("fmt", "format buffer"),
+    ("callers", "incoming calls (call hierarchy)"),
+    ("callees", "outgoing calls (call hierarchy)"),
 ];
 
 /// The which-key continuations shown after a `Ctrl-w` prefix.
@@ -316,6 +321,8 @@ enum LeaderAction {
     Rename,
     DocumentSymbol,
     Diagnostics,
+    IncomingCalls,
+    OutgoingCalls,
 }
 
 enum LeaderNode {
@@ -355,6 +362,8 @@ static CODE_GROUP: &[(char, LeaderNode)] = &[
     ('n', LeaderNode::Action("rename", LeaderAction::Rename)),
     ('o', LeaderNode::Action("document symbols", LeaderAction::DocumentSymbol)),
     ('d', LeaderNode::Action("diagnostics", LeaderAction::Diagnostics)),
+    ('i', LeaderNode::Action("incoming calls", LeaderAction::IncomingCalls)),
+    ('y', LeaderNode::Action("outgoing calls", LeaderAction::OutgoingCalls)),
 ];
 
 static LEADER_ROOT: &[(char, LeaderNode)] = &[
@@ -380,6 +389,11 @@ enum LspAction {
     Rename,
     DocumentSymbol,
     WorkspaceSymbol,
+    /// Step 1 of call hierarchy resolved an item; fire the calls request in the
+    /// given direction (`true` = incoming/callers, `false` = outgoing/callees).
+    PrepareCallHierarchy(bool),
+    /// Step 2 returned the calls; `true` = incoming.
+    CallHierarchy(bool),
 }
 
 /// Per-buffer LSP document state (registered with `didOpen`).
@@ -1438,6 +1452,19 @@ impl App {
         }
     }
 
+    /// Kick off call hierarchy: resolve the symbol under the cursor, then (in
+    /// the response handler) request its callers or callees.
+    fn lsp_call_hierarchy(&mut self, incoming: bool) {
+        if let Some((_, uri, pos)) = self.active_lsp_target() {
+            let params = ruster_lsp::protocol::prepare_call_hierarchy_params(&uri, pos);
+            self.lsp_request(
+                "textDocument/prepareCallHierarchy",
+                params,
+                LspAction::PrepareCallHierarchy(incoming),
+            );
+        }
+    }
+
     fn lsp_rename(&mut self, new_name: &str) {
         if let Some((_, uri, pos)) = self.active_lsp_target() {
             let params = ruster_lsp::protocol::rename_params(&uri, pos, new_name);
@@ -1541,6 +1568,48 @@ impl App {
                     })
                     .collect();
                 self.picker = Some(PickerState::new("Workspace symbols", items));
+            }
+            LspAction::PrepareCallHierarchy(incoming) => {
+                let items = ruster_lsp::parse_call_hierarchy_prepare(&result);
+                match items.into_iter().next() {
+                    Some(item) => {
+                        // Step 2: request the calls for the resolved item.
+                        let method = if incoming {
+                            "callHierarchy/incomingCalls"
+                        } else {
+                            "callHierarchy/outgoingCalls"
+                        };
+                        let params = ruster_lsp::protocol::call_hierarchy_calls_params(&item);
+                        self.lsp_request(method, params, LspAction::CallHierarchy(incoming));
+                    }
+                    None => self.message = Some("No call hierarchy for symbol".to_string()),
+                }
+            }
+            LspAction::CallHierarchy(incoming) => {
+                let calls = ruster_lsp::parse_call_hierarchy_calls(&result, incoming);
+                if calls.is_empty() {
+                    self.message = Some(
+                        if incoming { "No callers" } else { "No callees" }.to_string(),
+                    );
+                    return;
+                }
+                let title = if incoming { "Callers" } else { "Callees" };
+                let items = calls
+                    .into_iter()
+                    .map(|c| {
+                        let line = c.start.line as usize + 1;
+                        let col = c.start.character as usize + 1;
+                        let label = match &c.detail {
+                            Some(d) => format!("{}  {}", c.name, d),
+                            None => c.name.clone(),
+                        };
+                        PickerItem::new(
+                            format!("{}  {}:{}", label, c.uri, line),
+                            PickerAction::OpenLocation(PathBuf::from(c.uri), line, col),
+                        )
+                    })
+                    .collect();
+                self.picker = Some(PickerState::new(title, items));
             }
         }
     }
@@ -1904,6 +1973,8 @@ impl App {
             "Dired" | "dired" | "Explore" | "Ex" => Ok(CmdAction::Dired(None)),
             "Files" | "files" => Ok(CmdAction::Files),
             "fmt" | "format" => Ok(CmdAction::Format),
+            "callers" | "incomingcalls" => Ok(CmdAction::CallHierarchy(true)),
+            "callees" | "outgoingcalls" => Ok(CmdAction::CallHierarchy(false)),
             _ if trimmed.starts_with("w ") || trimmed.starts_with("write ") => {
                 let path = trimmed.splitn(2, ' ').nth(1).unwrap_or("").trim().to_string();
                 if path.is_empty() {
@@ -1988,6 +2059,7 @@ impl App {
                 self.lsp_format();
             }
             CmdAction::WorkspaceSymbol(q) => self.lsp_workspace_symbols(&q),
+            CmdAction::CallHierarchy(incoming) => self.lsp_call_hierarchy(incoming),
             CmdAction::Substitute { pattern, replacement, all, whole_buffer } => {
                 self.substitute(&pattern, &replacement, all, whole_buffer)
             }
@@ -2661,6 +2733,8 @@ impl App {
             }
             LeaderAction::DocumentSymbol => self.lsp_document_symbols(),
             LeaderAction::Diagnostics => self.open_diagnostics_picker(),
+            LeaderAction::IncomingCalls => self.lsp_call_hierarchy(true),
+            LeaderAction::OutgoingCalls => self.lsp_call_hierarchy(false),
         }
     }
 
@@ -2905,6 +2979,13 @@ mod tests {
         // ":sp" is a split, not a substitution.
         assert_eq!(a.parse_cmdline(":sp"), Ok(CmdAction::Split(SplitDir::Horizontal)));
         assert_eq!(a.parse_cmdline(":sym foo"), Ok(CmdAction::WorkspaceSymbol("foo".into())));
+    }
+
+    #[test]
+    fn call_hierarchy_commands_parse() {
+        let a = App::new("x".into(), PathBuf::from("f.txt"));
+        assert_eq!(a.parse_cmdline(":callers"), Ok(CmdAction::CallHierarchy(true)));
+        assert_eq!(a.parse_cmdline(":callees"), Ok(CmdAction::CallHierarchy(false)));
     }
 
     #[test]

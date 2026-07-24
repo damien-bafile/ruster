@@ -108,6 +108,49 @@ pub fn parse_locations(v: &Value) -> Vec<Location> {
     }
 }
 
+/// One node in a call hierarchy — the caller (incoming) or callee (outgoing).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallEntry {
+    pub name: String,
+    pub detail: Option<String>,
+    pub uri: String,
+    pub start: LspPositionEq,
+}
+
+/// Parse a `textDocument/prepareCallHierarchy` result into the raw
+/// `CallHierarchyItem` values, to be handed back verbatim in step 2.
+pub fn parse_call_hierarchy_prepare(v: &Value) -> Vec<Value> {
+    match v {
+        Value::Array(arr) => arr.clone(),
+        Value::Null => Vec::new(),
+        other => vec![other.clone()],
+    }
+}
+
+/// Parse an `incomingCalls`/`outgoingCalls` result. `incoming` selects whether
+/// each element's endpoint is under `from` (callers) or `to` (callees).
+pub fn parse_call_hierarchy_calls(v: &Value, incoming: bool) -> Vec<CallEntry> {
+    let key = if incoming { "from" } else { "to" };
+    let arr = match v.as_array() {
+        Some(a) => a,
+        None => return Vec::new(),
+    };
+    arr.iter()
+        .filter_map(|call| {
+            let item = call.get(key)?;
+            let uri = item.get("uri").and_then(|x| x.as_str())?;
+            // Prefer the selection range (the name) over the full range.
+            let range = item.get("selectionRange").or_else(|| item.get("range"))?;
+            Some(CallEntry {
+                name: item.get("name").and_then(|x| x.as_str()).unwrap_or("?").to_string(),
+                detail: item.get("detail").and_then(|x| x.as_str()).map(str::to_string),
+                uri: strip_file_uri(uri),
+                start: pos_from(&range["start"]),
+            })
+        })
+        .collect()
+}
+
 /// Parse a `publishDiagnostics` notification's params into (path, diagnostics).
 pub fn parse_diagnostics(params: &Value) -> (String, Vec<Diagnostic>) {
     let uri = params
@@ -306,6 +349,45 @@ mod tests {
         assert_eq!(locs[0].start, LspPositionEq { line: 1, character: 0 });
 
         assert!(parse_locations(&Value::Null).is_empty());
+    }
+
+    #[test]
+    fn call_hierarchy_prepare_and_calls() {
+        // prepare returns items to hand back verbatim.
+        let prep = json!([{"name": "foo", "uri": "file:///a.rs",
+            "range": {"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 3}}}]);
+        let items = parse_call_hierarchy_prepare(&prep);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["name"], "foo");
+        assert!(parse_call_hierarchy_prepare(&Value::Null).is_empty());
+
+        // Incoming calls read the caller under `from`; prefer selectionRange.
+        let incoming = json!([{
+            "from": {"name": "caller", "detail": "mod::caller", "uri": "file:///b.rs",
+                "range": {"start": {"line": 9, "character": 0}, "end": {"line": 20, "character": 0}},
+                "selectionRange": {"start": {"line": 9, "character": 4}, "end": {"line": 9, "character": 10}}},
+            "fromRanges": []
+        }]);
+        let calls = parse_call_hierarchy_calls(&incoming, true);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "caller");
+        assert_eq!(calls[0].detail.as_deref(), Some("mod::caller"));
+        assert_eq!(calls[0].uri, "/b.rs");
+        assert_eq!(calls[0].start, LspPositionEq { line: 9, character: 4 });
+
+        // Outgoing calls read the callee under `to`.
+        let outgoing = json!([{
+            "to": {"name": "callee", "uri": "file:///c.rs",
+                "range": {"start": {"line": 3, "character": 0}, "end": {"line": 3, "character": 6}}},
+            "fromRanges": []
+        }]);
+        let calls = parse_call_hierarchy_calls(&outgoing, false);
+        assert_eq!(calls[0].name, "callee");
+        assert_eq!(calls[0].uri, "/c.rs");
+        // Falls back to `range` when selectionRange is absent.
+        assert_eq!(calls[0].start, LspPositionEq { line: 3, character: 0 });
+
+        assert!(parse_call_hierarchy_calls(&Value::Null, true).is_empty());
     }
 
     #[test]
