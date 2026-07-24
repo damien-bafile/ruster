@@ -55,6 +55,8 @@ Most motions accept a count prefix (e.g. `5j`, `3w`).
 | `C-r` | Redo |
 | `.` | Repeat last change |
 | `C-d` | Add a cursor at the next occurrence of the word under the cursor (multi-cursor) |
+| `q{reg}` … `q` | Record a macro into `{reg}` / stop recording |
+| `@{reg}` | Replay the macro in `{reg}` |
 | `Esc` | Clear extra cursors |
 
 ### Operators
@@ -185,6 +187,13 @@ Press `SPC` in Normal mode; the which-key panel lists continuations.
 | `:fmt` / `:format` | Format the buffer |
 | `:rename <name>` | Rename the symbol under the cursor |
 | `:sym <query>` | Workspace symbol search |
+
+### Editing
+| Command | Action |
+|---------|--------|
+| `:s/pat/rep/` | Replace the first match on the current line |
+| `:s/pat/rep/g` | Replace every match on the current line |
+| `:%s/pat/rep/g` | Replace throughout the buffer |
 
 Then `:` + `Tab` opens a fuzzy **command palette** of these commands.
 

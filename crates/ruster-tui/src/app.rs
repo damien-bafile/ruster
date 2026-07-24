@@ -242,6 +242,40 @@ enum CmdAction {
     Rename(String),
     Format,
     WorkspaceSymbol(String),
+    /// `:s/pat/rep/[g]` — replace on the current line, or the whole buffer
+    /// when `whole_buffer` (`:%s/...`). `all` is the `g` flag.
+    Substitute {
+        pattern: String,
+        replacement: String,
+        all: bool,
+        whole_buffer: bool,
+    },
+}
+
+/// Parse `s/pat/rep/flags` or `%s/pat/rep/flags` into a substitute action.
+fn parse_substitute(trimmed: &str) -> Option<CmdAction> {
+    let (whole_buffer, rest) = match trimmed.strip_prefix('%') {
+        Some(r) => (true, r),
+        None => (false, trimmed),
+    };
+    let rest = rest.strip_prefix('s').or_else(|| rest.strip_prefix("substitute"))?;
+    let delim = rest.chars().next()?;
+    if delim.is_alphanumeric() {
+        return None; // e.g. ":set" must not parse as a substitution
+    }
+    let parts: Vec<&str> = rest[delim.len_utf8()..].split(delim).collect();
+    let pattern = (*parts.first()?).to_string();
+    if pattern.is_empty() {
+        return None;
+    }
+    let replacement = parts.get(1).copied().unwrap_or("").to_string();
+    let flags = parts.get(2).copied().unwrap_or("");
+    Some(CmdAction::Substitute {
+        pattern,
+        replacement,
+        all: flags.contains('g'),
+        whole_buffer,
+    })
 }
 
 /// The commands offered by the `:`-Tab command palette: (name, description).
@@ -527,6 +561,13 @@ pub struct App {
     snippet_stops: Vec<usize>,
     /// True while a `:w` is waiting on a format response before writing.
     pending_format_save: bool,
+    /// Recorded macros by register, the in-progress recording, and the pending
+    /// `q`/`@` awaiting its register letter.
+    macros: std::collections::HashMap<char, Vec<crossterm::event::KeyEvent>>,
+    macro_recording: Option<(char, Vec<crossterm::event::KeyEvent>)>,
+    pending_macro: Option<char>,
+    /// Guard so a macro can't recursively replay itself.
+    replaying: bool,
 }
 
 impl App {
@@ -724,6 +765,10 @@ impl App {
             },
             snippet_stops: Vec::new(),
             pending_format_save: false,
+            macros: std::collections::HashMap::new(),
+            macro_recording: None,
+            pending_macro: None,
+            replaying: false,
         }
     }
 
@@ -797,6 +842,42 @@ impl App {
         {
             self.lsp_hover();
             return;
+        }
+
+        // Macro recording (`q{reg}` … `q`) and playback (`@{reg}`).
+        if self.vim.mode == VimMode::Normal && !ck.modifiers.contains(KeyModifiers::CONTROL) {
+            if let Some(kind) = self.pending_macro.take() {
+                if let KeyCode::Char(reg) = ck.code {
+                    if kind == 'q' {
+                        self.macro_recording = Some((reg, Vec::new()));
+                        self.message = Some(format!("Recording @{}", reg));
+                    } else {
+                        self.replay_macro(reg);
+                    }
+                }
+                return;
+            }
+            match ck.code {
+                KeyCode::Char('q') => {
+                    if let Some((reg, keys)) = self.macro_recording.take() {
+                        let n = keys.len();
+                        self.macros.insert(reg, keys);
+                        self.message = Some(format!("Recorded @{} ({} keys)", reg, n));
+                    } else {
+                        self.pending_macro = Some('q');
+                    }
+                    return;
+                }
+                KeyCode::Char('@') => {
+                    self.pending_macro = Some('@');
+                    return;
+                }
+                _ => {}
+            }
+        }
+        // Everything past this point is part of a recording.
+        if let Some((_, keys)) = self.macro_recording.as_mut() {
+            keys.push(ck);
         }
 
         let prev_mode = self.vim.mode;
@@ -1496,6 +1577,62 @@ impl App {
         }
     }
 
+    /// `:s/pat/rep/[g]` — substitute on the cursor's line, or the whole buffer
+    /// for `:%s`. Reports how many replacements were made.
+    fn substitute(&mut self, pattern: &str, replacement: &str, all: bool, whole_buffer: bool) {
+        if pattern.is_empty() {
+            return;
+        }
+        let (content, cursor_line) = {
+            let w = self.ws.borrow();
+            let head = w.primary_head();
+            (w.buffer().to_string(), w.buffer().char_to_line(head))
+        };
+        let replace_in = |line: &str, count: &mut usize| -> String {
+            if all {
+                *count += line.matches(pattern).count();
+                line.replace(pattern, replacement)
+            } else if let Some(idx) = line.find(pattern) {
+                *count += 1;
+                let mut s = String::with_capacity(line.len());
+                s.push_str(&line[..idx]);
+                s.push_str(replacement);
+                s.push_str(&line[idx + pattern.len()..]);
+                s
+            } else {
+                line.to_string()
+            }
+        };
+
+        let mut count = 0usize;
+        let had_trailing_newline = content.ends_with('\n');
+        let new: Vec<String> = content
+            .split('\n')
+            .enumerate()
+            .map(|(i, line)| {
+                if whole_buffer || i == cursor_line {
+                    replace_in(line, &mut count)
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect();
+        if count == 0 {
+            self.message = Some(format!("Pattern not found: {}", pattern));
+            return;
+        }
+        let mut text = new.join("\n");
+        if had_trailing_newline && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        self.replace_active_content(&text);
+        self.message = Some(format!(
+            "{} substitution{}",
+            count,
+            if count == 1 { "" } else { "s" }
+        ));
+    }
+
     /// Replace the active buffer's entire content via a single undo batch.
     fn replace_active_content(&mut self, new: &str) {
         let len = self.ws.borrow().active_doc().buffer.len_chars();
@@ -1776,6 +1913,9 @@ impl App {
                 let q = trimmed.splitn(2, ' ').nth(1).unwrap_or("").trim().to_string();
                 Ok(CmdAction::WorkspaceSymbol(q))
             }
+            _ if parse_substitute(trimmed).is_some() => {
+                Ok(parse_substitute(trimmed).expect("checked above"))
+            }
             _ => Err(format!("Unknown command: {}", cmdline)),
         }
     }
@@ -1825,6 +1965,9 @@ impl App {
                 self.lsp_format();
             }
             CmdAction::WorkspaceSymbol(q) => self.lsp_workspace_symbols(&q),
+            CmdAction::Substitute { pattern, replacement, all, whole_buffer } => {
+                self.substitute(&pattern, &replacement, all, whole_buffer)
+            }
         }
     }
 
@@ -2337,6 +2480,26 @@ impl App {
         }
     }
 
+    /// Replay a recorded macro by feeding its keys back through `handle_key`,
+    /// so each one sees the state left by the previous.
+    fn replay_macro(&mut self, reg: char) {
+        if self.replaying {
+            return; // don't let a macro invoke itself
+        }
+        let keys = match self.macros.get(&reg) {
+            Some(k) => k.clone(),
+            None => {
+                self.message = Some(format!("No macro in @{}", reg));
+                return;
+            }
+        };
+        self.replaying = true;
+        for k in keys {
+            self.handle_key(k);
+        }
+        self.replaying = false;
+    }
+
     /// Route a key to the open picker: type to filter, arrows/Ctrl-n/p to move,
     /// Enter to accept, Esc to cancel.
     fn handle_picker_key(&mut self, ck: crossterm::event::KeyEvent) {
@@ -2685,6 +2848,62 @@ mod tests {
         a.update_syntax();
         assert!(a.syntax.contains_key(&py_buf), "python buffer gets its own engine");
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn substitute_current_line_and_whole_buffer() {
+        // `:s/a/X/` replaces the first match on the cursor's line only.
+        let mut a = App::new("aaa\naaa\n".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(a.parse_cmdline(":s/a/X/").unwrap());
+        assert_eq!(a.ws.borrow().buffer().to_string(), "Xaa\naaa\n");
+
+        // `:s/a/X/g` replaces every match on that line.
+        let mut a = App::new("aaa\naaa\n".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(a.parse_cmdline(":s/a/X/g").unwrap());
+        assert_eq!(a.ws.borrow().buffer().to_string(), "XXX\naaa\n");
+
+        // `:%s/a/X/g` replaces throughout the buffer.
+        let mut a = App::new("aaa\naaa\n".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(a.parse_cmdline(":%s/a/X/g").unwrap());
+        assert_eq!(a.ws.borrow().buffer().to_string(), "XXX\nXXX\n");
+    }
+
+    #[test]
+    fn substitute_reports_when_pattern_is_missing() {
+        let mut a = App::new("hello\n".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(a.parse_cmdline(":s/zzz/x/").unwrap());
+        assert!(a.message.as_deref().unwrap_or("").contains("not found"));
+        assert_eq!(a.ws.borrow().buffer().to_string(), "hello\n");
+    }
+
+    #[test]
+    fn substitute_parsing_does_not_swallow_other_commands() {
+        let a = App::new("x".into(), PathBuf::from("f.txt"));
+        // ":sp" is a split, not a substitution.
+        assert_eq!(a.parse_cmdline(":sp"), Ok(CmdAction::Split(SplitDir::Horizontal)));
+        assert_eq!(a.parse_cmdline(":sym foo"), Ok(CmdAction::WorkspaceSymbol("foo".into())));
+    }
+
+    #[test]
+    fn macro_record_and_replay() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("aaa\nbbb\nccc\n".into(), PathBuf::from("f.txt"));
+
+        // qq  x  q   — record "delete a char" into register q.
+        a.handle_key(CtKey::new(KeyCode::Char('q'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('q'), none));
+        assert!(a.macro_recording.is_some(), "recording started");
+        a.handle_key(CtKey::new(KeyCode::Char('x'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('q'), none));
+        assert!(a.macro_recording.is_none(), "recording stopped");
+        assert_eq!(a.macros.get(&'q').map(|k| k.len()), Some(1));
+        assert_eq!(a.ws.borrow().buffer().to_string(), "aa\nbbb\nccc\n");
+
+        // @q replays it.
+        a.handle_key(CtKey::new(KeyCode::Char('@'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('q'), none));
+        assert_eq!(a.ws.borrow().buffer().to_string(), "a\nbbb\nccc\n");
     }
 
     #[test]
