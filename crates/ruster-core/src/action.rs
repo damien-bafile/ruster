@@ -26,6 +26,10 @@ pub enum Action {
     EndBatch,
     Undo,
     Redo,
+    /// Scroll the active window by `n` lines without moving the cursor within
+    /// the text. Paired with a matching cursor motion by `C-d`/`C-u` so the
+    /// cursor keeps its row on screen, the way vim behaves.
+    Scroll(i32),
     /// Move through the undo tree in creation order rather than along the
     /// current branch — `g-` (`false`) and `g+` (`true`). Reaches states that
     /// were abandoned by branching, which plain redo cannot.

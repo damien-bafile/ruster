@@ -160,6 +160,18 @@ impl Workspace {
 
     /// Run an editing action against the active window/document.
     pub fn execute(&mut self, action: Action) {
+        if let Action::Scroll(delta) = action {
+            let win = self.windows.active_window_mut();
+            win.scroll_top = win.scroll_top.saturating_add_signed(delta as isize);
+            let last = self
+                .buffers
+                .get(self.windows.active_window().buffer)
+                .map(|d| d.buffer.line_count().saturating_sub(1))
+                .unwrap_or(0);
+            let win = self.windows.active_window_mut();
+            win.scroll_top = win.scroll_top.min(last);
+            return;
+        }
         let marks_modified = matches!(
             action,
             Action::Edit(_) | Action::IndentLine | Action::DeindentLine | Action::Undo | Action::Redo
@@ -201,6 +213,12 @@ impl EditorView for Workspace {
     }
     fn cursors(&self) -> &CursorSet {
         &self.active_window().cursors
+    }
+    fn viewport_height(&self) -> usize {
+        match self.active_window().height {
+            0 => 24, // not rendered yet
+            h => h,
+        }
     }
 }
 

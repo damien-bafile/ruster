@@ -10,6 +10,11 @@ use crate::undo::UndoStack;
 /// over the active window's document + cursor set.
 pub trait EditorView {
     fn buffer(&self) -> &Buffer;
+    /// Visible text rows, for half-page motions. Defaults to a conventional
+    /// terminal height for headless callers that have no viewport.
+    fn viewport_height(&self) -> usize {
+        24
+    }
     fn primary_head(&self) -> usize;
     fn cursors(&self) -> &CursorSet;
     fn char_to_line(&self, char_idx: usize) -> usize {
@@ -77,6 +82,9 @@ impl<'a> EditSession<'a> {
             Action::Edit(e) => self.apply_edit(e),
             Action::AddCursor(pos) => self.cursors.add_cursor(pos),
             Action::ClearExtraCursors => self.cursors.clear_extra(),
+            // Scrolling is window state, which an EditSession does not borrow;
+            // Workspace handles it before delegating here.
+            Action::Scroll(_) => {}
             Action::CmdlineResult(_) => {}
             Action::Textobject { .. } => {}
             Action::IndentLine => {

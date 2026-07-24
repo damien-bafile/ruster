@@ -56,6 +56,11 @@ fn word_under_cursor(editor: &dyn EditorView) -> Option<String> {
     }
 }
 
+/// Lines in a half-page jump — at least one, so a tiny window still moves.
+fn half_page(editor: &dyn EditorView) -> i32 {
+    (editor.viewport_height() / 2).max(1) as i32
+}
+
 fn next_word_occurrence(editor: &dyn EditorView) -> Option<usize> {
     let head = editor.primary_head();
     let buf = editor.buffer();
@@ -591,10 +596,27 @@ impl VimState {
                 out.push(Action::BeginVisual(at));
                 self.count = None;
             }
-            KeyEvent::Ctrl('d') => {
+            // `C-n` adds a cursor at the next occurrence of the word under the
+            // cursor. This lives on `C-n` rather than the editor-conventional
+            // `C-d` because vim needs that key for half-page scrolling.
+            KeyEvent::Ctrl('n') => {
                 if let Some(pos) = next_word_occurrence(editor) {
                     out.push(Action::AddCursor(pos));
                 }
+                self.count = None;
+            }
+            // Half-page scroll. Moving the cursor and the viewport by the same
+            // amount keeps the cursor on the same screen row, as vim does.
+            KeyEvent::Ctrl('d') => {
+                let half = half_page(editor);
+                out.push(Action::Move(Motion::Line(half)));
+                out.push(Action::Scroll(half));
+                self.count = None;
+            }
+            KeyEvent::Ctrl('u') => {
+                let half = half_page(editor);
+                out.push(Action::Move(Motion::Line(-half)));
+                out.push(Action::Scroll(-half));
                 self.count = None;
             }
             // `C-v` enters block-wise (rectangular) visual mode.
@@ -1125,21 +1147,55 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_d_adds_cursor_at_next_word() {
+    fn ctrl_n_adds_cursor_at_next_word() {
         let mut e = Editor::from_str("foo foo foo");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        let actions: Vec<Action> = v.handle(KeyEvent::Ctrl('d'), &e);
+        let actions: Vec<Action> = v.handle(KeyEvent::Ctrl('n'), &e);
         assert!(actions.iter().any(|a| matches!(a, Action::AddCursor(_))));
     }
 
     #[test]
-    fn ctrl_d_no_word_does_nothing() {
+    fn ctrl_n_no_word_does_nothing() {
         let mut e = Editor::from_str("... ...");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        let actions: Vec<Action> = v.handle(KeyEvent::Ctrl('d'), &e);
+        let actions: Vec<Action> = v.handle(KeyEvent::Ctrl('n'), &e);
         assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn ctrl_d_and_ctrl_u_move_cursor_and_view_together() {
+        // Cursor and viewport shift by the same amount, so the cursor keeps
+        // its screen row instead of being pinned to an edge.
+        let e = Editor::from_str("a\nb\nc\nd\ne\nf\ng\nh\n");
+        let mut v = VimState::new();
+        let half = (e.viewport_height() / 2).max(1) as i32;
+
+        let actions: Vec<Action> = v.handle(KeyEvent::Ctrl('d'), &e);
+        assert!(actions.contains(&Action::Move(Motion::Line(half))));
+        assert!(actions.contains(&Action::Scroll(half)));
+
+        let actions: Vec<Action> = v.handle(KeyEvent::Ctrl('u'), &e);
+        assert!(actions.contains(&Action::Move(Motion::Line(-half))));
+        assert!(actions.contains(&Action::Scroll(-half)));
+    }
+
+    #[test]
+    fn half_page_uses_the_windows_real_height() {
+        // A 40-row window scrolls 20 lines, not the headless default of 12.
+        let mut w = crate::workspace::Workspace::from_file(
+            std::path::PathBuf::from("/tmp/ruster_halfpage.txt"),
+            "x\n".repeat(200),
+        );
+        w.windows.active_window_mut().height = 40;
+        let mut v = VimState::new();
+        let actions: Vec<Action> = v.handle(KeyEvent::Ctrl('d'), &w);
+        assert!(actions.contains(&Action::Scroll(20)));
+        for a in actions {
+            w.execute(a);
+        }
+        assert_eq!(w.windows.active_window().scroll_top, 20);
     }
 
     #[test]

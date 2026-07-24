@@ -1735,6 +1735,8 @@ impl App {
                 }
                 if let Some(win) = w.windows.window_mut(wid) {
                     win.scroll_top = scroll;
+                    // Record the geometry so half-page scrolling can use it.
+                    win.height = buf_h;
                 }
 
                 let lines: Vec<StyledLine> = match self.dired_styled.get(&buf_id) {

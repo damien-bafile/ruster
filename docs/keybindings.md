@@ -54,7 +54,8 @@ Most motions accept a count prefix (e.g. `5j`, `3w`).
 | `u` | Undo |
 | `C-r` | Redo |
 | `.` | Repeat last change |
-| `C-d` | Add a cursor at the next occurrence of the word under the cursor (multi-cursor) |
+| `C-d` / `C-u` | Scroll a half page down / up (cursor keeps its screen row) |
+| `C-n` | Add a cursor at the next occurrence of the word under the cursor (multi-cursor) |
 | `q{reg}` … `q` | Record a macro into `{reg}` / stop recording |
 | `@{reg}` | Replay the macro in `{reg}` |
 | `u` / `C-r` | Undo / redo along the current branch |
