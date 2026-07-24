@@ -63,7 +63,9 @@ impl Renderer for TuiRenderer {
                     .with_cursor_visible(view.cursor_visible)
                     .with_cursor_kind(view.cursor_kind)
                     .with_scroll(view.scroll_offset)
-                    .with_gutter(view.gutter.clone());
+                    .with_gutter(view.gutter.clone())
+                    .with_extra_cursors(view.extra_cursors.clone())
+                    .with_selection(view.selection);
                 frame.render_widget(buf_widget, buf_area);
 
                 let sl = crate::widgets::StatuslineWidget::new(view.statusline.clone());
@@ -89,13 +91,30 @@ impl Renderer for TuiRenderer {
                 }
             }
 
-            // Floating picker overlay, centered.
+            // Hover popup, near the top-center.
+            if let Some(lines) = &state.hover {
+                if !lines.is_empty() {
+                    let w = lines.iter().map(|l| l.text.chars().count()).max().unwrap_or(0) as u16 + 2;
+                    let w = w.clamp(8, area.width.saturating_sub(2));
+                    let h = (lines.len() as u16 + 1).min(area.height.saturating_sub(2));
+                    let x = area.x + (area.width.saturating_sub(w)) / 2;
+                    let y = area.y + 1;
+                    frame.render_widget(
+                        crate::widgets::HoverWidget::new(lines.clone()),
+                        Rect::new(x, y, w, h),
+                    );
+                }
+            }
+
+            // Floating picker overlay, centered. Wider when it has a preview pane.
             if let Some(picker) = &state.picker {
-                let pw = (area.width * 6 / 10).clamp(20, area.width.saturating_sub(2));
+                let frac = if picker.preview.is_empty() { 6 } else { 9 };
+                let pw = (area.width * frac / 10).clamp(20, area.width.saturating_sub(2));
                 let rows = picker.rows.len() as u16 + 2; // title + query + rows
+                let rows = rows.max(picker.preview.len() as u16);
                 let ph = rows.clamp(3, area.height.saturating_sub(2));
                 let px = area.x + (area.width.saturating_sub(pw)) / 2;
-                let py = area.y + (area.height.saturating_sub(ph)) / 3;
+                let py = area.y + (area.height.saturating_sub(ph)) / 2;
                 let parea = Rect::new(px, py, pw, ph);
                 frame.render_widget(crate::widgets::PickerWidget::new(picker.clone()), parea);
             }

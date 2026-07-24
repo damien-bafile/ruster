@@ -1,0 +1,12 @@
+[package]
+name = "ruster-lsp"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+lsp-types = "0.97"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

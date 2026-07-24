@@ -8,7 +8,7 @@ pub fn create_table(runtime: &LuaRuntime) -> mlua::Result<Table> {
     // ruster.print(...)
     let rt = runtime as *const LuaRuntime;
     let print_fn = runtime.lua.create_function(move |_, args: mlua::MultiValue| {
-        let parts: Vec<String> = args.iter().map(|v| format_value(v)).collect();
+        let parts: Vec<String> = args.iter().map(format_value).collect();
         let msg = parts.join("\t");
         unsafe { (*rt).pending.borrow_mut().push(runtime::LuaAction::Print(msg)); }
         Ok(())
@@ -26,7 +26,7 @@ pub fn create_table(runtime: &LuaRuntime) -> mlua::Result<Table> {
     // ruster.keymap.set(mode, lhs, callback)
     let rt = runtime as *const LuaRuntime;
     let keymap_set = runtime.lua.create_function(move |_, (mode, lhs, func): (String, String, Function)| {
-        let keys: Vec<_> = lhs.split_inclusive(|c: char| c == '>')
+        let keys: Vec<_> = lhs.split_inclusive('>')
             .filter(|s| !s.is_empty())
             .filter_map(|s| {
                 if s.ends_with('>') { parse_lua_key(s.trim()) }

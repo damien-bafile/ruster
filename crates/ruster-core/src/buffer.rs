@@ -11,15 +11,22 @@ pub struct Buffer {
     rope: Rope,
 }
 
+impl std::fmt::Display for Buffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.rope)
+    }
+}
+
 impl Buffer {
     pub fn new() -> Self { Self { rope: Rope::new() } }
+    // An infallible constructor, not the fallible `FromStr` trait.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self { Self { rope: Rope::from_str(s) } }
 
     pub fn len_chars(&self) -> usize { self.rope.len_chars() }
     pub fn line_count(&self) -> usize { self.rope.len_lines() }
     pub fn char_at(&self, idx: usize) -> char { self.rope.char(idx) }
     pub fn slice_string(&self, start: usize, end: usize) -> String { self.rope.slice(start..end).to_string() }
-    pub fn to_string(&self) -> String { self.rope.to_string() }
     pub fn line_to_string(&self, line_idx: usize) -> String {
         self.rope.line(line_idx).to_string()
     }

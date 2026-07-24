@@ -50,9 +50,26 @@ fn mono_font_candidates() -> Vec<String> {
 }
 
 impl RaylibRenderer {
+    /// Glyphs to bake into the font atlas. Raylib's default is only the 95
+    /// printable ASCII codepoints, so anything else (en/em dashes, curly
+    /// quotes, ellipsis, bullets, arrows, box-drawing) renders as `?`. We add
+    /// Latin-1 and the common Unicode punctuation the docs and UI actually use.
+    /// `load_font_ex` takes the character set as a string.
+    fn font_chars() -> String {
+        let mut s = String::new();
+        for c in (0x20u32..=0x7E).chain(0xA0..=0xFF) {
+            if let Some(ch) = char::from_u32(c) {
+                s.push(ch);
+            }
+        }
+        s.push_str("–—‘’“”•…←↑→↓─│✓✗");
+        s
+    }
+
     fn try_load_mono_font(rl: &mut RaylibHandle, thread: &RaylibThread) -> WeakFont {
+        let chars = Self::font_chars();
         for path in mono_font_candidates() {
-            if let Ok(font) = rl.load_font_ex(thread, &path, FONT_SIZE, None) {
+            if let Ok(font) = rl.load_font_ex(thread, &path, FONT_SIZE, Some(&chars)) {
                 return font.make_weak();
             }
         }
@@ -95,18 +112,31 @@ impl RaylibRenderer {
             mods |= KeyModifiers::SUPER;
         }
 
-        while let Some(c) = self.rl.get_char_pressed() {
-            if mods.contains(KeyModifiers::CONTROL) && (1..=26).contains(&(c as u32)) {
-                let letter = char::from_u32((c as u32) + 96).unwrap_or('?');
-                self.event_buffer.push(KeyEvent::new(KeyCode::Char(letter), mods));
-            } else if let Some(ch) = char::from_u32(c as u32) {
-                self.event_buffer.push(KeyEvent::new(KeyCode::Char(ch), mods));
+        // With Ctrl or Alt held, the OS text layer can't be trusted to produce
+        // the base letter (it drops or composes modified keys), so Emacs/vim
+        // chords are reconstructed from the physical key. Otherwise, plain
+        // typing goes through the char queue for correct layout and casing.
+        if mods.contains(KeyModifiers::CONTROL) || mods.contains(KeyModifiers::ALT) {
+            // Discard the (absent or mangled) char events for this frame.
+            while self.rl.get_char_pressed().is_some() {}
+            let shift = mods.contains(KeyModifiers::SHIFT);
+            while let Some(k) = self.rl.get_key_pressed() {
+                if let Some(ch) = key::modified_char_for_key(k, shift) {
+                    self.event_buffer.push(KeyEvent::new(KeyCode::Char(ch), mods));
+                } else if let Some(event) = key::map_raylib_key(k) {
+                    self.event_buffer.push(KeyEvent::new(event.code, mods));
+                }
             }
-        }
-
-        while let Some(k) = self.rl.get_key_pressed() {
-            if let Some(event) = key::map_raylib_key(k) {
-                self.event_buffer.push(KeyEvent::new(event.code, mods));
+        } else {
+            while let Some(c) = self.rl.get_char_pressed() {
+                if let Some(ch) = char::from_u32(c as u32) {
+                    self.event_buffer.push(KeyEvent::new(KeyCode::Char(ch), mods));
+                }
+            }
+            while let Some(k) = self.rl.get_key_pressed() {
+                if let Some(event) = key::map_raylib_key(k) {
+                    self.event_buffer.push(KeyEvent::new(event.code, mods));
+                }
             }
         }
 
@@ -161,6 +191,23 @@ impl Renderer for RaylibRenderer {
                     s.draw_text_ex(font, label, Vector2::new(px as f32, gy as f32), FONT_SIZE as f32, 1.0, gutter_color);
                 }
 
+                // Visual-mode selection background, behind the text.
+                if let Some(sel) = view.selection {
+                    let selection_bg = Color::new(88, 91, 112, 255);
+                    for (row, line) in view.lines.iter().skip(scroll).take(buf_rows).enumerate() {
+                        let buffer_line = (row + scroll) as u16;
+                        let line_len = line.text.chars().count() as u16;
+                        if let Some((sel_start, sel_end)) = sel.span_on(buffer_line, line_len) {
+                            let gy = py + row as i32 * LINE_H;
+                            let sx = text_x as f32 + sel_start as f32 * char_w;
+                            // End is inclusive; empty lines still get a sliver.
+                            let cols = sel_end.saturating_sub(sel_start) + 1;
+                            let width = (cols as f32 * char_w).max(char_w / 2.0);
+                            s.draw_rectangle(sx as i32, gy, width as i32, LINE_H, selection_bg);
+                        }
+                    }
+                }
+
                 // Buffer text (this window's own scroll).
                 for (row, line) in view.lines.iter().skip(scroll).take(buf_rows).enumerate() {
                     let gy = py + row as i32 * LINE_H;
@@ -179,9 +226,7 @@ impl Renderer for RaylibRenderer {
                             ruster_render::Color::Default => default_color,
                         };
                         let end = (offset + len).min(n);
-                        for pos in offset..end {
-                            char_colors[pos] = fg;
-                        }
+                        char_colors[offset..end].fill(fg);
                     }
                     let mut x_offset = text_x as f32;
                     let mut pos = 0;
@@ -222,6 +267,27 @@ impl Renderer for RaylibRenderer {
                             CursorKind::Block => s.draw_rectangle(cx, cy, char_w as i32, LINE_H, Color::new(245, 224, 220, 200)),
                             CursorKind::Bar => s.draw_rectangle(cx, cy, 2, LINE_H, Color::new(245, 224, 220, 255)),
                         }
+                    }
+
+                    // Extra multi-cursor carets, always drawn as blocks.
+                    for &(cl, cc) in &view.extra_cursors {
+                        let cl = cl as usize;
+                        if cl < scroll || cl >= scroll + buf_rows {
+                            continue;
+                        }
+                        let vis_row = (cl - scroll) as i32;
+                        let col = cc as usize;
+                        let text_before = view
+                            .lines
+                            .get(cl)
+                            .map(|l| {
+                                let end = col.min(l.text.len());
+                                &l.text[..end]
+                            })
+                            .unwrap_or("");
+                        let cx = text_x as f32 + measure(text_before);
+                        let cy = py + vis_row * LINE_H;
+                        s.draw_rectangle(cx as i32, cy, char_w as i32, LINE_H, Color::new(245, 224, 220, 140));
                     }
                 }
 
@@ -271,25 +337,135 @@ impl Renderer for RaylibRenderer {
         if let Some(picker) = &state.picker {
             let accent = Color::new(137, 180, 250, 255);
             let box_bg = Color::new(30, 30, 46, 255);
-            let box_w = (screen_w * 6 / 10).clamp(240.min(screen_w), screen_w - 20);
-            let n_rows = picker.rows.len() as i32;
-            let box_h = ((n_rows + 2) * LINE_H).clamp(3 * LINE_H, (screen_h - 40).max(3 * LINE_H));
+            let preview_bg = Color::new(24, 24, 37, 255);
+            let has_preview = !picker.preview.is_empty();
+            let frac = if has_preview { 9 } else { 6 };
+            let box_w = (screen_w * frac / 10).clamp(240.min(screen_w), screen_w - 20);
+            let n_rows = (picker.rows.len() as i32 + 2).max(picker.preview.len() as i32);
+            let box_h = (n_rows * LINE_H).clamp(3 * LINE_H, (screen_h - 40).max(3 * LINE_H));
             let box_x = (screen_w - box_w) / 2;
-            let box_y = screen_h / 4;
+            let box_y = ((screen_h - box_h) / 2).max(0);
+            let list_w = if has_preview { box_w * 2 / 5 } else { box_w };
             d.draw_rectangle(box_x, box_y, box_w, box_h, box_bg);
+            if has_preview {
+                d.draw_rectangle(box_x + list_w, box_y, box_w - list_w, box_h, preview_bg);
+                d.draw_rectangle(box_x + list_w, box_y, 1, box_h, accent);
+            }
             d.draw_rectangle_lines(box_x, box_y, box_w, box_h, accent);
-            // Clip contents to the box so long labels don't overflow.
-            let mut s = d.begin_scissor_mode(box_x + 1, box_y + 1, box_w - 2, box_h - 2);
-            s.draw_text_ex(font, &format!(" {} ", picker.title), Vector2::new(box_x as f32 + 4.0, box_y as f32), FONT_SIZE as f32, 1.0, accent);
-            s.draw_text_ex(font, &format!(" > {}", picker.query), Vector2::new(box_x as f32 + 4.0, (box_y + LINE_H) as f32), FONT_SIZE as f32, 1.0, default_color);
-            let max_visible = ((box_h - 2 * LINE_H) / LINE_H).max(0) as usize;
-            for (i, row) in picker.rows.iter().take(max_visible).enumerate() {
-                let ry = box_y + (2 + i as i32) * LINE_H;
-                if row.selected {
-                    s.draw_rectangle(box_x, ry, box_w, LINE_H, accent);
-                    s.draw_text_ex(font, &format!(" {}", row.label), Vector2::new(box_x as f32 + 4.0, ry as f32), FONT_SIZE as f32, 1.0, box_bg);
-                } else {
-                    s.draw_text_ex(font, &format!(" {}", row.label), Vector2::new(box_x as f32 + 4.0, ry as f32), FONT_SIZE as f32, 1.0, default_color);
+            // List column — title, query, and rows, clipped to the list width
+            // so long labels don't bleed across the divider into the preview.
+            let list_clip_w = if has_preview { list_w } else { box_w };
+            {
+                let mut s = d.begin_scissor_mode(
+                    box_x + 1,
+                    box_y + 1,
+                    (list_clip_w - 2).max(1),
+                    box_h - 2,
+                );
+                s.draw_text_ex(font, &format!(" {} ", picker.title), Vector2::new(box_x as f32 + 4.0, box_y as f32), FONT_SIZE as f32, 1.0, accent);
+                s.draw_text_ex(font, &format!(" > {}", picker.query), Vector2::new(box_x as f32 + 4.0, (box_y + LINE_H) as f32), FONT_SIZE as f32, 1.0, default_color);
+                let max_visible = ((box_h - 2 * LINE_H) / LINE_H).max(0) as usize;
+                for (i, row) in picker.rows.iter().take(max_visible).enumerate() {
+                    let ry = box_y + (2 + i as i32) * LINE_H;
+                    if row.selected {
+                        s.draw_rectangle(box_x, ry, list_clip_w, LINE_H, accent);
+                        s.draw_text_ex(font, &format!(" {}", row.label), Vector2::new(box_x as f32 + 4.0, ry as f32), FONT_SIZE as f32, 1.0, box_bg);
+                    } else {
+                        s.draw_text_ex(font, &format!(" {}", row.label), Vector2::new(box_x as f32 + 4.0, ry as f32), FONT_SIZE as f32, 1.0, default_color);
+                    }
+                }
+            }
+            // Preview column (syntax-highlighted), clipped to its own pane.
+            if has_preview {
+                let mut s = d.begin_scissor_mode(
+                    box_x + list_w + 1,
+                    box_y + 1,
+                    (box_w - list_w - 2).max(1),
+                    box_h - 2,
+                );
+                let px = box_x + list_w + 6;
+                for (i, line) in picker.preview.iter().enumerate() {
+                    let ly = box_y + i as i32 * LINE_H;
+                    if ly > box_y + box_h {
+                        break;
+                    }
+                    let n = line.text.len();
+                    if n == 0 {
+                        continue;
+                    }
+                    if line.highlights.is_empty() {
+                        s.draw_text_ex(font, &line.text, Vector2::new(px as f32, ly as f32), FONT_SIZE as f32, 1.0, default_color);
+                        continue;
+                    }
+                    let mut char_colors: Vec<Color> = vec![default_color; n];
+                    for &(offset, len, ref style) in &line.highlights {
+                        let fg = match style.fg {
+                            ruster_render::Color::Rgb(r, g, b) => Color::new(r, g, b, 255),
+                            ruster_render::Color::Default => default_color,
+                        };
+                        let end = (offset + len).min(n);
+                        char_colors[offset..end].fill(fg);
+                    }
+                    let mut x_off = px as f32;
+                    let mut pos = 0;
+                    while pos < n {
+                        let c = char_colors[pos];
+                        let start = pos;
+                        while pos < n && char_colors[pos] == c {
+                            pos += 1;
+                        }
+                        let seg = &line.text[start..pos];
+                        s.draw_text_ex(font, seg, Vector2::new(x_off, ly as f32), FONT_SIZE as f32, 1.0, c);
+                        x_off += measure(seg);
+                    }
+                }
+            }
+        }
+
+        // Hover popup, near the top-center (syntax-highlighted).
+        if let Some(lines) = &state.hover {
+            if !lines.is_empty() {
+                let accent = Color::new(137, 180, 250, 255);
+                let box_bg = Color::new(24, 24, 37, 255);
+                let longest = lines.iter().map(|l| l.text.chars().count()).max().unwrap_or(0);
+                let box_w = ((longest as f32 * char_w) as i32 + 16).min(screen_w - 20);
+                let box_h = (lines.len() as i32 * LINE_H + 8).min(screen_h - 20);
+                let box_x = (screen_w - box_w) / 2;
+                let box_y = LINE_H;
+                d.draw_rectangle(box_x, box_y, box_w, box_h, box_bg);
+                d.draw_rectangle_lines(box_x, box_y, box_w, box_h, accent);
+                let mut s = d.begin_scissor_mode(box_x + 1, box_y + 1, box_w - 2, box_h - 2);
+                for (i, line) in lines.iter().enumerate() {
+                    let ly = box_y + 4 + i as i32 * LINE_H;
+                    let n = line.text.len();
+                    if n == 0 {
+                        continue;
+                    }
+                    if line.highlights.is_empty() {
+                        s.draw_text_ex(font, &line.text, Vector2::new(box_x as f32 + 6.0, ly as f32), FONT_SIZE as f32, 1.0, default_color);
+                        continue;
+                    }
+                    let mut char_colors: Vec<Color> = vec![default_color; n];
+                    for &(offset, len, ref style) in &line.highlights {
+                        let fg = match style.fg {
+                            ruster_render::Color::Rgb(r, g, b) => Color::new(r, g, b, 255),
+                            ruster_render::Color::Default => default_color,
+                        };
+                        let end = (offset + len).min(n);
+                        char_colors[offset..end].fill(fg);
+                    }
+                    let mut x_off = box_x as f32 + 6.0;
+                    let mut pos = 0;
+                    while pos < n {
+                        let c = char_colors[pos];
+                        let start = pos;
+                        while pos < n && char_colors[pos] == c {
+                            pos += 1;
+                        }
+                        let seg = &line.text[start..pos];
+                        s.draw_text_ex(font, seg, Vector2::new(x_off, ly as f32), FONT_SIZE as f32, 1.0, c);
+                        x_off += measure(seg);
+                    }
                 }
             }
         }

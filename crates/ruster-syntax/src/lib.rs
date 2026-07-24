@@ -1,8 +1,10 @@
 pub mod highlighter;
+pub mod markup;
 pub mod theme;
 
 use streaming_iterator::StreamingIterator;
 use highlighter::Highlighter;
+use markup::MarkupLang;
 use ruster_render::{StyledLine, SyntaxStyle};
 
 #[derive(Debug)]
@@ -11,41 +13,78 @@ pub enum SyntaxError {
     QueryError(String),
 }
 
-pub struct SyntaxEngine {
+/// Tree-sitter-backed highlighting state.
+struct TreeBackend {
     language: tree_sitter::Language,
     tree: tree_sitter::Tree,
     highlighter: Highlighter,
     source: String,
     bracket_depths: Vec<Option<usize>>,
-    cached: Vec<StyledLine>,
     textobject_scm: &'static str,
+}
+
+/// The highlighting strategy for a buffer: a tree-sitter grammar, or the
+/// line-based markup rules for formats without a compatible grammar.
+enum Backend {
+    Tree(TreeBackend),
+    Markup(MarkupLang),
+}
+
+pub struct SyntaxEngine {
+    backend: Backend,
+    cached: Vec<StyledLine>,
 }
 
 impl SyntaxEngine {
     pub fn new(text: &str, file_ext: &str) -> Result<Self, SyntaxError> {
-        let language = language_for_ext(file_ext).ok_or(SyntaxError::UnsupportedLanguage)?;
-        let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&language).map_err(|_| SyntaxError::QueryError("set_language".into()))?;
-        let tree = parser.parse(text, None).ok_or(SyntaxError::QueryError("parse".into()))?;
+        let key = lang_key(file_ext);
+        // Prefer a tree-sitter grammar; fall back to line-based markup.
+        if let Some(language) = language_for_ext(file_ext) {
+            let mut parser = tree_sitter::Parser::new();
+            parser.set_language(&language).map_err(|_| SyntaxError::QueryError("set_language".into()))?;
+            let tree = parser.parse(text, None).ok_or(SyntaxError::QueryError("parse".into()))?;
 
-        let (highlight_scm, textobject_scm) = query_files_for_lang();
-        let mut highlighter = Highlighter::new(language.clone(), highlight_scm)
-            .map_err(SyntaxError::QueryError)?;
+            let (highlight_scm, textobject_scm) = query_files_for_lang(key);
+            let mut highlighter = Highlighter::new(language.clone(), highlight_scm)
+                .map_err(SyntaxError::QueryError)?;
 
-        let bracket_depths = compute_bracket_depths(text);
-        let cached = highlighter.highlight_lines(&tree, text, &bracket_depths);
-
-        Ok(SyntaxEngine { language, tree, highlighter, source: text.to_string(), bracket_depths, cached, textobject_scm })
+            let bracket_depths = compute_bracket_depths(text);
+            let cached = highlighter.highlight_lines(&tree, text, &bracket_depths);
+            Ok(SyntaxEngine {
+                backend: Backend::Tree(TreeBackend {
+                    language,
+                    tree,
+                    highlighter,
+                    source: text.to_string(),
+                    bracket_depths,
+                    textobject_scm,
+                }),
+                cached,
+            })
+        } else if let Some(mlang) = markup::markup_lang(key) {
+            let cached = markup::highlight_markup(mlang, text);
+            Ok(SyntaxEngine { backend: Backend::Markup(mlang), cached })
+        } else {
+            Err(SyntaxError::UnsupportedLanguage)
+        }
     }
 
     pub fn reparse(&mut self, text: &str) {
-        let mut parser = tree_sitter::Parser::new();
-        let _ = parser.set_language(&self.language);
-        if let Some(tree) = parser.parse(text, None) {
-            self.tree = tree;
-            self.source = text.to_string();
-            self.bracket_depths = compute_bracket_depths(text);
-            self.cached = self.highlighter.highlight_lines(&self.tree, text, &self.bracket_depths);
+        match &mut self.backend {
+            Backend::Tree(tb) => {
+                let mut parser = tree_sitter::Parser::new();
+                let _ = parser.set_language(&tb.language);
+                if let Some(tree) = parser.parse(text, None) {
+                    tb.tree = tree;
+                    tb.source = text.to_string();
+                    tb.bracket_depths = compute_bracket_depths(text);
+                    self.cached =
+                        tb.highlighter.highlight_lines(&tb.tree, text, &tb.bracket_depths);
+                }
+            }
+            Backend::Markup(mlang) => {
+                self.cached = markup::highlight_markup(*mlang, text);
+            }
         }
     }
 
@@ -65,7 +104,12 @@ impl SyntaxEngine {
     }
 
     pub fn ts_textobject(&self, kind: char, target: char, cursor: usize) -> Option<(usize, usize)> {
-        if self.textobject_scm.is_empty() { return None; }
+        // Only tree-sitter buffers have structural text objects.
+        let tb = match &self.backend {
+            Backend::Tree(tb) => tb,
+            Backend::Markup(_) => return None,
+        };
+        if tb.textobject_scm.is_empty() { return None; }
         let query_name = match (kind, target) {
             ('i', 'f') => "function.inner",
             ('a', 'f') => "function.outer",
@@ -78,16 +122,16 @@ impl SyntaxEngine {
             _ => return None,
         };
 
-        let query = tree_sitter::Query::new(&self.language, self.textobject_scm).ok()?;
+        let query = tree_sitter::Query::new(&tb.language, tb.textobject_scm).ok()?;
         let mut cursor_q = tree_sitter::QueryCursor::new();
-        let mut matches = cursor_q.matches(&query, self.tree.root_node(), self.source.as_bytes());
+        let mut matches = cursor_q.matches(&query, tb.tree.root_node(), tb.source.as_bytes());
 
         while let Some(m) = matches.next() {
             for cap in m.captures {
                 let name = query.capture_names()[cap.index as usize];
                 if name == query_name {
-                    let start = byte_to_char_pos(&self.source, cap.node.byte_range().start);
-                    let end = byte_to_char_pos(&self.source, cap.node.byte_range().end);
+                    let start = byte_to_char_pos(&tb.source, cap.node.byte_range().start);
+                    let end = byte_to_char_pos(&tb.source, cap.node.byte_range().end);
                     if start <= cursor && cursor <= end {
                         return Some((start, end));
                     }
@@ -112,13 +156,68 @@ pub fn language_for_ext(ext: &str) -> Option<tree_sitter::Language> {
         "json"            => Some(tree_sitter_json::LANGUAGE.into()),
         "toml"            => Some(tree_sitter_toml_ng::LANGUAGE.into()),
         "yaml" | "yml"    => Some(tree_sitter_yaml::LANGUAGE.into()),
+        "lua"             => Some(tree_sitter_lua::LANGUAGE.into()),
+        "scm" | "ss" | "sld" | "sls" | "sch" | "scheme" => Some(tree_sitter_scheme::LANGUAGE.into()),
+        "just" | "justfile" => Some(tree_sitter_just::LANGUAGE.into()),
         _ => None,
     }
 }
 
-fn query_files_for_lang() -> (&'static str, &'static str) {
-    (include_str!("../queries/rust/highlights.scm"),
-     include_str!("../queries/rust/textobjects.scm"))
+/// Canonical language key for a file extension, or "" if unsupported.
+pub fn lang_key(ext: &str) -> &'static str {
+    match ext {
+        "rs" => "rust",
+        "py" => "python",
+        "js" | "mjs" | "cjs" => "javascript",
+        "ts" | "tsx" => "typescript",
+        "c" | "h" => "c",
+        "json" => "json",
+        "toml" => "toml",
+        "yaml" | "yml" => "yaml",
+        "lua" => "lua",
+        "scm" | "ss" | "sld" | "sls" | "sch" | "scheme" => "scheme",
+        "just" | "justfile" => "just",
+        "md" | "markdown" | "mdown" | "mkd" => "markdown",
+        "org" => "org",
+        _ => "",
+    }
+}
+
+/// The lookup key to use for a path: its extension when that maps to a known
+/// language, otherwise the (lowercased, dot-stripped) file name — so
+/// extensionless files like `justfile` / `.justfile` / `Justfile` are recognised.
+pub fn lang_ext_for_path(path: &std::path::Path) -> String {
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        let lower = ext.to_lowercase();
+        if !lang_key(&lower).is_empty() {
+            return lower;
+        }
+    }
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.to_lowercase().trim_start_matches('.').to_string())
+        .unwrap_or_default()
+}
+
+/// Highlight and textobject query sources for a language key. Languages without
+/// bundled queries return empty strings — no (rather than wrong) highlighting;
+/// rainbow brackets still apply since they are computed separately.
+fn query_files_for_lang(key: &str) -> (&'static str, &'static str) {
+    match key {
+        "rust" => (
+            include_str!("../queries/rust/highlights.scm"),
+            include_str!("../queries/rust/textobjects.scm"),
+        ),
+        "python" => (include_str!("../queries/python/highlights.scm"), ""),
+        "json" => (include_str!("../queries/json/highlights.scm"), ""),
+        "lua" => (include_str!("../queries/lua/highlights.scm"), ""),
+        "toml" => (include_str!("../queries/toml/highlights.scm"), ""),
+        "yaml" => (include_str!("../queries/yaml/highlights.scm"), ""),
+        "c" => (include_str!("../queries/c/highlights.scm"), ""),
+        "scheme" => (include_str!("../queries/scheme/highlights.scm"), ""),
+        "just" => (include_str!("../queries/just/highlights.scm"), ""),
+        _ => ("", ""),
+    }
 }
 
 fn compute_bracket_depths(source: &str) -> Vec<Option<usize>> {
@@ -155,6 +254,95 @@ mod tests {
     fn unsupported_extension_returns_err() {
         let engine = SyntaxEngine::new("hello", "xyz");
         assert!(matches!(engine, Err(SyntaxError::UnsupportedLanguage)));
+    }
+
+    #[test]
+    fn python_uses_python_queries_and_highlights() {
+        // Previously this failed because Rust queries were applied to Python.
+        let engine = SyntaxEngine::new("def foo():\n    return 1\n", "py").unwrap();
+        let styled = engine.styled_lines();
+        let has_highlight = styled.iter().any(|l| !l.highlights.is_empty());
+        assert!(has_highlight, "python source should produce highlights");
+    }
+
+    #[test]
+    fn json_highlights_without_error() {
+        let engine = SyntaxEngine::new("{\"a\": 1, \"b\": true}", "json").unwrap();
+        assert!(engine.styled_lines().iter().any(|l| !l.highlights.is_empty()));
+    }
+
+    #[test]
+    fn all_bundled_queries_compile_and_highlight() {
+        // (extension, sample source) — each must build (query compiles) and
+        // produce at least one highlight, proving the query matches the grammar.
+        let cases = [
+            ("rs", "fn main() { let x = 1; }"),
+            ("py", "def f(x):\n    return x + 1\n"),
+            ("json", "{\"a\": 1, \"b\": true, \"c\": null}"),
+            ("lua", "local function f(x)\n  return x + 1\nend\n"),
+            ("c", "int main(void) {\n  int x = 1;\n  return x;\n}\n"),
+            ("toml", "# c\n[table]\nkey = \"value\"\nn = 42\nb = true\n"),
+            ("yaml", "# c\nname: value\ncount: 3\nflag: true\n"),
+            ("scm", "; comment\n(define (square x)\n  (* x x))\n"),
+            ("justfile", "# comment\nbuild:\n    cargo build\n"),
+        ];
+        for (ext, src) in cases {
+            let engine = SyntaxEngine::new(src, ext)
+                .unwrap_or_else(|e| panic!("{ext} query failed to build: {e:?}"));
+            let has = engine.styled_lines().iter().any(|l| !l.highlights.is_empty());
+            assert!(has, "{ext} produced no highlights");
+        }
+    }
+
+    #[test]
+    fn extensionless_justfiles_are_detected_by_name() {
+        use std::path::Path;
+        for name in ["justfile", "Justfile", ".justfile", "/proj/justfile"] {
+            assert_eq!(
+                lang_key(&lang_ext_for_path(Path::new(name))),
+                "just",
+                "{name} should resolve to just"
+            );
+        }
+        // A normal extension still wins.
+        assert_eq!(lang_key(&lang_ext_for_path(Path::new("src/main.rs"))), "rust");
+        // *.just files work via the extension.
+        assert_eq!(lang_key(&lang_ext_for_path(Path::new("tasks.just"))), "just");
+        // Markdown and Org resolve to their markup keys.
+        assert_eq!(lang_key(&lang_ext_for_path(Path::new("README.md"))), "markdown");
+        assert_eq!(lang_key(&lang_ext_for_path(Path::new("notes.org"))), "org");
+        // Truly unknown files resolve to nothing.
+        assert_eq!(lang_key(&lang_ext_for_path(Path::new("photo.xyz"))), "");
+    }
+
+    #[test]
+    fn markdown_and_org_highlight_via_the_markup_backend() {
+        for (ext, src) in [("md", "# Title\n**bold**\n"), ("org", "* Head\n/em/\n")] {
+            let engine = SyntaxEngine::new(src, ext).unwrap();
+            let styled = engine.styled_lines();
+            assert!(
+                styled.iter().any(|l| !l.highlights.is_empty()),
+                "{ext} should produce highlights"
+            );
+            // Markup buffers expose no structural text objects.
+            assert!(engine.ts_textobject('i', 'f', 0).is_none());
+        }
+    }
+
+    #[test]
+    fn markup_reparse_updates_highlights() {
+        let mut engine = SyntaxEngine::new("plain\n", "md").unwrap();
+        assert!(engine.styled_lines()[0].highlights.is_empty());
+        engine.reparse("# now a heading\n");
+        assert!(!engine.styled_lines()[0].highlights.is_empty());
+    }
+
+    #[test]
+    fn language_without_queries_still_builds() {
+        // yaml has no bundled query yet — engine builds with an empty query
+        // (no syntax highlights, but no error either).
+        let engine = SyntaxEngine::new("a: 1\n", "yaml");
+        assert!(engine.is_ok());
     }
 
     #[test]

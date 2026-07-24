@@ -10,6 +10,8 @@ pub struct Config {
     pub cursor_anim_speed: f32,
     /// Milliseconds to wait for a mapped key sequence before showing which-key.
     pub timeoutlen: u32,
+    /// Format the buffer via LSP before writing it on `:w`.
+    pub format_on_save: bool,
 }
 
 impl Default for Config {
@@ -25,6 +27,7 @@ impl Default for Config {
             cursor_anim_enabled: true,
             cursor_anim_speed: 12.0,
             timeoutlen: 300,
+            format_on_save: false,
         }
     }
 }

@@ -19,6 +19,26 @@ pub fn style_for_capture(name: &str) -> SyntaxStyle {
     }
 }
 
+/// Styles for the line-based markup highlighter (Markdown / Org). Kept beside
+/// the tree-sitter theme so both share the same Catppuccin palette.
+pub fn markup_style(kind: &str) -> SyntaxStyle {
+    match kind {
+        "heading"  => SyntaxStyle { fg: rgb(137, 180, 250), bg: Color::Default, bold: true,  italic: false },
+        "strong"   => SyntaxStyle { fg: rgb(250, 179, 135), bg: Color::Default, bold: true,  italic: false },
+        "emphasis" => SyntaxStyle { fg: rgb(203, 166, 247), bg: Color::Default, bold: false, italic: true  },
+        "code"     => SyntaxStyle { fg: rgb(166, 227, 161), bg: Color::Default, bold: false, italic: false },
+        "link"     => SyntaxStyle { fg: rgb(137, 220, 235), bg: Color::Default, bold: false, italic: false },
+        "url"      => SyntaxStyle { fg: rgb(108, 112, 134), bg: Color::Default, bold: false, italic: true  },
+        "marker"   => SyntaxStyle { fg: rgb(243, 139, 168), bg: Color::Default, bold: false, italic: false },
+        "quote"    => SyntaxStyle { fg: rgb(108, 112, 134), bg: Color::Default, bold: false, italic: true  },
+        "keyword"  => SyntaxStyle { fg: rgb(203, 166, 247), bg: Color::Default, bold: true,  italic: false },
+        "block"    => SyntaxStyle { fg: rgb(166, 227, 161), bg: Color::Default, bold: false, italic: false },
+        "todo"     => SyntaxStyle { fg: rgb(243, 139, 168), bg: Color::Default, bold: true,  italic: false },
+        "done"     => SyntaxStyle { fg: rgb(166, 227, 161), bg: Color::Default, bold: true,  italic: false },
+        _          => SyntaxStyle::default(),
+    }
+}
+
 pub const RAINBOW_PALETTE: [Color; 6] = [
     Color::Rgb(243, 139, 168),  // red
     Color::Rgb(250, 179, 135),  // peach

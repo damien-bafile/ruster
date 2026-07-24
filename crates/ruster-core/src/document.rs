@@ -140,6 +140,12 @@ impl Document {
             LineEnding::Crlf => self.buffer.to_string().replace('\n', "\r\n"),
         }
     }
+
+    /// Ruster-managed special buffers (dired, ibuffer, picker) are non-editable
+    /// — they are UI listings the app owns, so edits are gated out.
+    pub fn read_only(&self) -> bool {
+        matches!(self.kind, DocKind::Special(_))
+    }
 }
 
 #[cfg(test)]
@@ -169,6 +175,14 @@ mod tests {
         let d = Document::special(SpecialKind::Dired, "*dired*");
         assert_eq!(d.kind, DocKind::Special(SpecialKind::Dired));
         assert!(d.file_path.is_none());
+    }
+
+    #[test]
+    fn special_document_is_read_only() {
+        assert!(Document::special(SpecialKind::Dired, "*dired*").read_only());
+        assert!(Document::special(SpecialKind::Ibuffer, "*ibuffer*").read_only());
+        assert!(!Document::from_file(PathBuf::from("a.rs"), "x").read_only());
+        assert!(!Document::scratch("[No Name]").read_only());
     }
 
     #[test]

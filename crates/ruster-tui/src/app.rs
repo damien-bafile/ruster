@@ -14,10 +14,11 @@ use ruster_core::workspace::Workspace;
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 use ruster_lua::{config::Config, LuaAction, LuaRuntime};
 use ruster_render::{
-    CursorKind, FrameState, Rect as RRect, Renderer, StatuslineView, StyledLine, WhichKeyView,
-    WindowView,
+    CursorKind, FrameState, Rect as RRect, Renderer, SelectionView, StatuslineView, StyledLine,
+    WhichKeyView, WindowView,
 };
 use ruster_syntax::SyntaxEngine;
+use ruster_lsp::{LspManager, LspPosition, ServerMessage};
 use std::cell::RefCell;
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -34,6 +35,153 @@ fn require_terminal() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         Err("ruster --tui requires an interactive terminal".into())
     }
+}
+
+/// Map a markdown code-fence language name to a file extension for the syntax
+/// highlighter (rust-analyzer uses "rust", etc.).
+fn fence_ext(lang: &str) -> &str {
+    match lang {
+        "rust" => "rs",
+        "python" => "py",
+        "javascript" => "js",
+        "typescript" => "ts",
+        "c" => "c",
+        "lua" => "lua",
+        "json" => "json",
+        "toml" => "toml",
+        "yaml" => "yaml",
+        "scheme" => "scm",
+        other => other,
+    }
+}
+
+/// Highlight a code block; falls back to plain lines for unknown languages.
+fn highlight_code_block(code: &str, lang: &str) -> Vec<StyledLine> {
+    match SyntaxEngine::new(code, fence_ext(lang)) {
+        Ok(engine) => engine.styled_lines().to_vec(),
+        Err(_) => plain_lines(code),
+    }
+}
+
+/// Render LSP hover markdown into styled lines: fenced code blocks are
+/// tree-sitter highlighted, prose is shown plain (with fences/separators removed).
+fn build_hover_lines(markdown: &str) -> Vec<StyledLine> {
+    let mut out: Vec<StyledLine> = Vec::new();
+    let mut in_code = false;
+    let mut code_lang = String::new();
+    let mut code_buf: Vec<String> = Vec::new();
+    for line in markdown.lines() {
+        if line.trim_start().starts_with("```") {
+            if in_code {
+                out.extend(highlight_code_block(&code_buf.join("\n"), &code_lang));
+                code_buf.clear();
+                in_code = false;
+            } else {
+                in_code = true;
+                code_lang = line.trim_start().trim_start_matches("```").trim().to_string();
+            }
+            continue;
+        }
+        if in_code {
+            code_buf.push(line.to_string());
+        } else if line.trim() == "---" {
+            continue; // drop markdown separators
+        } else {
+            out.push(StyledLine { text: line.to_string(), highlights: vec![] });
+        }
+    }
+    if in_code && !code_buf.is_empty() {
+        out.extend(highlight_code_block(&code_buf.join("\n"), &code_lang));
+    }
+    // Trim trailing blank lines and cap the height.
+    while out.last().map(|l| l.text.trim().is_empty()).unwrap_or(false) {
+        out.pop();
+    }
+    out.truncate(24);
+    out
+}
+
+/// Recursively copy a directory tree.
+fn copy_dir_recursive(src: &std::path::Path, dest: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dest)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dest.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// Color a directory listing by entry type: directories blue, executables
+/// green, symlinks teal, regular files default.
+fn dired_styled_lines(entries: &[ruster_core::dired::DirEntry]) -> Vec<StyledLine> {
+    use ruster_render::{Color, SyntaxStyle};
+    let style = |fg: Color, bold: bool| SyntaxStyle { fg, bg: Color::Default, bold, italic: false };
+    entries
+        .iter()
+        .map(|e| {
+            let text = if e.is_dir {
+                format!("{}/", e.name)
+            } else {
+                e.name.clone()
+            };
+            let s = if e.is_symlink {
+                style(Color::Rgb(137, 220, 235), false) // teal
+            } else if e.is_dir {
+                style(Color::Rgb(137, 180, 250), true) // blue, bold
+            } else if e.is_exec {
+                style(Color::Rgb(166, 227, 161), false) // green
+            } else {
+                style(Color::Default, false)
+            };
+            let len = text.chars().count();
+            let highlights = if matches!(s.fg, Color::Default) {
+                Vec::new()
+            } else {
+                vec![(0, len, s)]
+            };
+            StyledLine { text, highlights }
+        })
+        .collect()
+}
+
+/// The dired keymap, shown as a popup by `?`.
+fn dired_help_lines() -> Vec<StyledLine> {
+    let entries = [
+        "Enter / l    open file or enter directory",
+        "h / -        parent directory",
+        "j / k        move cursor",
+        "C-n / C-p    move cursor down / up",
+        "yy           copy entry",
+        "dd           cut entry",
+        "p            paste into this directory",
+        "R            rename entry",
+        "D            delete entry (confirm)",
+        "+            new file, or dir if name ends with /",
+        ".            toggle hidden files",
+        "/ ? n N      search the listing (as in a normal buffer)",
+        ": commands   run any :command",
+        "g?           this help",
+    ];
+    std::iter::once(StyledLine { text: " dired keys".to_string(), highlights: vec![] })
+        .chain(entries.iter().map(|e| StyledLine { text: format!("  {}", e), highlights: vec![] }))
+        .collect()
+}
+
+/// The identifier word immediately before char offset `head`.
+fn word_before(content: &str, head: usize) -> String {
+    let chars: Vec<char> = content.chars().collect();
+    let head = head.min(chars.len());
+    let mut i = head;
+    while i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_') {
+        i -= 1;
+    }
+    chars[i..head].iter().collect()
 }
 
 fn plain_lines(content: &str) -> Vec<StyledLine> {
@@ -106,6 +254,47 @@ enum CmdAction {
     Dired(Option<String>),
     Files,
     Rg(String),
+    Rename(String),
+    Format,
+    WorkspaceSymbol(String),
+    /// Call hierarchy: `true` = incoming/callers, `false` = outgoing/callees.
+    CallHierarchy(bool),
+    /// Switch editing paradigm (`:set editmode neovim|emacs`).
+    SetEditMode(EditMode),
+    /// `:s/pat/rep/[g]` — replace on the current line, or the whole buffer
+    /// when `whole_buffer` (`:%s/...`). `all` is the `g` flag.
+    Substitute {
+        pattern: String,
+        replacement: String,
+        all: bool,
+        whole_buffer: bool,
+    },
+}
+
+/// Parse `s/pat/rep/flags` or `%s/pat/rep/flags` into a substitute action.
+fn parse_substitute(trimmed: &str) -> Option<CmdAction> {
+    let (whole_buffer, rest) = match trimmed.strip_prefix('%') {
+        Some(r) => (true, r),
+        None => (false, trimmed),
+    };
+    let rest = rest.strip_prefix('s').or_else(|| rest.strip_prefix("substitute"))?;
+    let delim = rest.chars().next()?;
+    if delim.is_alphanumeric() {
+        return None; // e.g. ":set" must not parse as a substitution
+    }
+    let parts: Vec<&str> = rest[delim.len_utf8()..].split(delim).collect();
+    let pattern = (*parts.first()?).to_string();
+    if pattern.is_empty() {
+        return None;
+    }
+    let replacement = parts.get(1).copied().unwrap_or("").to_string();
+    let flags = parts.get(2).copied().unwrap_or("");
+    Some(CmdAction::Substitute {
+        pattern,
+        replacement,
+        all: flags.contains('g'),
+        whole_buffer,
+    })
 }
 
 /// The commands offered by the `:`-Tab command palette: (name, description).
@@ -122,6 +311,11 @@ const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("bd", "delete buffer"),
     ("Dired", "file explorer"),
     ("Files", "find files"),
+    ("fmt", "format buffer"),
+    ("callers", "incoming calls (call hierarchy)"),
+    ("callees", "outgoing calls (call hierarchy)"),
+    ("set editmode emacs", "switch to Emacs (modeless) editing"),
+    ("set editmode neovim", "switch to Neovim (modal) editing"),
 ];
 
 /// The which-key continuations shown after a `Ctrl-w` prefix.
@@ -139,6 +333,15 @@ enum LeaderAction {
     Explorer,
     Quit,
     SaveAndQuit,
+    Hover,
+    Definition,
+    References,
+    Format,
+    Rename,
+    DocumentSymbol,
+    Diagnostics,
+    IncomingCalls,
+    OutgoingCalls,
 }
 
 enum LeaderNode {
@@ -170,9 +373,22 @@ static QUIT_GROUP: &[(char, LeaderNode)] = &[
     ('w', LeaderNode::Action("save and quit", LeaderAction::SaveAndQuit)),
 ];
 
+static CODE_GROUP: &[(char, LeaderNode)] = &[
+    ('k', LeaderNode::Action("hover", LeaderAction::Hover)),
+    ('g', LeaderNode::Action("go to definition", LeaderAction::Definition)),
+    ('r', LeaderNode::Action("references", LeaderAction::References)),
+    ('f', LeaderNode::Action("format", LeaderAction::Format)),
+    ('n', LeaderNode::Action("rename", LeaderAction::Rename)),
+    ('o', LeaderNode::Action("document symbols", LeaderAction::DocumentSymbol)),
+    ('d', LeaderNode::Action("diagnostics", LeaderAction::Diagnostics)),
+    ('i', LeaderNode::Action("incoming calls", LeaderAction::IncomingCalls)),
+    ('y', LeaderNode::Action("outgoing calls", LeaderAction::OutgoingCalls)),
+];
+
 static LEADER_ROOT: &[(char, LeaderNode)] = &[
     ('w', LeaderNode::Group("windows", WINDOW_GROUP)),
     ('f', LeaderNode::Group("find", FIND_GROUP)),
+    ('c', LeaderNode::Group("code", CODE_GROUP)),
     ('q', LeaderNode::Group("quit", QUIT_GROUP)),
 ];
 
@@ -182,10 +398,36 @@ enum LeaderResolve {
     Unknown,
 }
 
+/// What to do with the response to an LSP request we sent.
+#[derive(Clone, Copy)]
+enum LspAction {
+    Hover,
+    Definition,
+    References,
+    Format,
+    Rename,
+    DocumentSymbol,
+    WorkspaceSymbol,
+    /// Step 1 of call hierarchy resolved an item; fire the calls request in the
+    /// given direction (`true` = incoming/callers, `false` = outgoing/callees).
+    PrepareCallHierarchy(bool),
+    /// Step 2 returned the calls; `true` = incoming.
+    CallHierarchy(bool),
+}
+
+/// Per-buffer LSP document state (registered with `didOpen`).
+struct LspDoc {
+    uri: String,
+    lang: String,
+    version: i64,
+    /// Last text synced to the server, to detect changes for `didChange`.
+    synced: String,
+}
+
 /// An in-progress dired file operation awaiting input in the mini-buffer.
 enum DiredPromptKind {
-    CreateFile,
-    CreateDir,
+    /// Unified create: a trailing `/` makes a directory, otherwise a file.
+    Create,
     Rename(String),
     Delete(PathBuf),
 }
@@ -197,8 +439,7 @@ struct DiredPrompt {
 
 fn dired_prompt_display(p: &DiredPrompt) -> String {
     match &p.kind {
-        DiredPromptKind::CreateFile => format!("Create file: {}", p.input),
-        DiredPromptKind::CreateDir => format!("Create dir: {}", p.input),
+        DiredPromptKind::Create => format!("Create (end with / for dir): {}", p.input),
         DiredPromptKind::Rename(old) => format!("Rename '{}' to: {}", old, p.input),
         DiredPromptKind::Delete(path) => format!(
             "Delete '{}'? (y/n)",
@@ -309,10 +550,13 @@ pub struct App {
     pub renderer: Box<dyn Renderer>,
     pub should_quit: bool,
     message: Option<String>,
-    /// Syntax engine for `syntax_buffer` (the initially-opened file). Windows
-    /// showing other buffers render as plain text for now.
-    syntax: Option<SyntaxEngine>,
-    syntax_buffer: BufferId,
+    /// Per-buffer tree-sitter syntax engines, created lazily the first time a
+    /// buffer with a supported filetype is rendered. Buffers without a supported
+    /// language (or without a file path) simply have no entry and render plain.
+    syntax: std::collections::HashMap<BufferId, SyntaxEngine>,
+    /// Buffers we've already attempted to build a syntax engine for, so an
+    /// unsupported filetype isn't retried every frame.
+    syntax_tried: std::collections::HashSet<BufferId>,
     lua: LuaRuntime,
     config: Config,
     timer: FrameTimer,
@@ -336,26 +580,86 @@ pub struct App {
     /// Streaming results for the active picker (`:Files` walk, `:Rg` output),
     /// drained into the picker each frame. Backend-agnostic (polled in render).
     pending_results: Option<std::sync::mpsc::Receiver<PickerItem>>,
+    /// Cached highlighted contents of the file currently shown in the picker
+    /// preview, so it isn't re-read and re-parsed every frame.
+    preview_cache: Option<(PathBuf, Vec<StyledLine>)>,
     /// Current directory for each open dired (file-explorer) buffer.
     dired_dirs: std::collections::HashMap<BufferId, PathBuf>,
+    /// Colored listing lines for each dired buffer, rebuilt on refresh.
+    dired_styled: std::collections::HashMap<BufferId, Vec<StyledLine>>,
+    /// The entries backing each dired buffer, so the listing text, colors and
+    /// cursor→entry lookup always agree.
+    dired_entries: std::collections::HashMap<BufferId, Vec<ruster_core::dired::DirEntry>>,
+    /// Whether dired shows dot-files (toggled with `.`).
+    dired_show_hidden: bool,
     /// An in-progress dired file operation awaiting mini-buffer input.
     dired_prompt: Option<DiredPrompt>,
+    /// Path awaiting paste in dired, and whether it's a cut (`true` = move).
+    dired_clipboard: Option<(PathBuf, bool)>,
+    /// True after the first `y` (`yy` copy) or `d` (`dd` cut).
+    dired_pending_y: bool,
+    dired_pending_d: bool,
+    /// True after `g` in dired, awaiting `g` (top) or `?` (help).
+    dired_pending_g: bool,
+    /// Language server manager (one server per language).
+    lsp: LspManager,
+    /// Per-buffer LSP document registration state.
+    lsp_docs: std::collections::HashMap<BufferId, LspDoc>,
+    /// Diagnostics per buffer, from `publishDiagnostics`.
+    diagnostics: std::collections::HashMap<BufferId, Vec<ruster_lsp::Diagnostic>>,
+    /// Outstanding LSP requests: (lang, request id) -> what to do with the reply.
+    lsp_pending: std::collections::HashMap<(String, i64), LspAction>,
+    /// Hover popup contents (syntax-highlighted lines), shown until the next key.
+    hover: Option<Vec<StyledLine>>,
+    /// Loaded snippet definitions (built-in + `~/.config/ruster/snippets/`).
+    snippets: ruster_core::snippets::SnippetSet,
+    /// Remaining tabstop offsets to visit in the active snippet, via Tab.
+    snippet_stops: Vec<usize>,
+    /// True while a `:w` is waiting on a format response before writing.
+    pending_format_save: bool,
+    /// Recorded macros by register, the in-progress recording, and the pending
+    /// `q`/`@` awaiting its register letter.
+    macros: std::collections::HashMap<char, Vec<crossterm::event::KeyEvent>>,
+    macro_recording: Option<(char, Vec<crossterm::event::KeyEvent>)>,
+    pending_macro: Option<char>,
+    /// Guard so a macro can't recursively replay itself.
+    replaying: bool,
+    /// Which editing paradigm is active (`:set editmode neovim|emacs`).
+    editmode: EditMode,
+    /// Emacs-mode editing state (mark, kill-ring, prefix arg).
+    emacs: ruster_core::emacs::EmacsState,
+    /// True after `C-x`, awaiting the second key of the prefix.
+    emacs_ctrl_x: bool,
+    /// Active incremental search: (query, forward). Emacs `C-s`/`C-r`.
+    emacs_isearch: Option<(String, bool)>,
+}
+
+/// The active editing paradigm. Neovim is modal; Emacs is modeless.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditMode {
+    Neovim,
+    Emacs,
 }
 
 impl App {
     pub fn new(content: String, file_path: PathBuf) -> Self {
         let ws = Rc::new(RefCell::new(Workspace::from_file(file_path.clone(), content.clone())));
         ws.borrow_mut().execute(Action::Move(Motion::To(0)));
-        let syntax_buffer = ws.borrow().active_buffer();
+        let initial_buffer = ws.borrow().active_buffer();
         let vim = VimState::new();
         let renderer = Box::new(TuiRenderer::dummy());
-        let ext = file_path.extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
+        let ext = ruster_syntax::lang_ext_for_path(&file_path);
+        let ext = ext.as_str();
+        let mut syntax: std::collections::HashMap<BufferId, SyntaxEngine> =
+            std::collections::HashMap::new();
         // Highlight the LF-normalized buffer text, not the raw file bytes, so
         // CRLF files don't desync syntax spans from what's rendered.
         let normalized = ws.borrow().buffer().to_string();
-        let syntax = SyntaxEngine::new(&normalized, ext).ok();
+        if let Ok(engine) = SyntaxEngine::new(&normalized, ext) {
+            syntax.insert(initial_buffer, engine);
+        }
+        let mut syntax_tried = std::collections::HashSet::new();
+        syntax_tried.insert(initial_buffer);
         let mut lua = LuaRuntime::new().unwrap_or_else(|e| {
             eprintln!("Lua init failed: {}", e);
             panic!("Lua init required");
@@ -479,6 +783,11 @@ impl App {
         }
 
         lua.fire_event("VimEnter", &[]);
+        // Apply Lua LSP server overrides (ruster.lsp.servers).
+        let mut lsp = LspManager::new();
+        for (lang, cmd, args) in lua.lsp_servers() {
+            lsp.set_server(&lang, ruster_lsp::ServerConfig { cmd, args });
+        }
         let mut config = lua.config();
         // Apply EditorConfig overrides
         let ec_props = ruster_core::editorconfig::parse(&file_path);
@@ -500,16 +809,46 @@ impl App {
         let cursor_anim = CursorAnim::new();
         App {
             ws, vim, renderer,
-            should_quit: false, message: None, syntax, syntax_buffer, lua, config, timer,
+            should_quit: false, message: None, syntax, syntax_tried, lua, config, timer,
             has_smooth_cursor: false, cursor_anim, pending_ctrl_w: false, picker: None,
             leader_pending: None,
             pending_results: None,
+            preview_cache: None,
             whichkey_anim: 0.0,
             whichkey_cache: None,
             anim_clock: std::time::Instant::now(),
             leader_since: None,
             dired_dirs: std::collections::HashMap::new(),
+            dired_styled: std::collections::HashMap::new(),
+            dired_entries: std::collections::HashMap::new(),
+            dired_show_hidden: false,
             dired_prompt: None,
+            dired_clipboard: None,
+            dired_pending_y: false,
+            dired_pending_d: false,
+            dired_pending_g: false,
+            lsp,
+            lsp_docs: std::collections::HashMap::new(),
+            diagnostics: std::collections::HashMap::new(),
+            lsp_pending: std::collections::HashMap::new(),
+            hover: None,
+            snippets: {
+                let mut s = ruster_core::snippets::SnippetSet::builtin();
+                if let Some(dir) = dirs::config_dir() {
+                    s.load_dir(&dir.join("ruster").join("snippets"));
+                }
+                s
+            },
+            snippet_stops: Vec::new(),
+            pending_format_save: false,
+            macros: std::collections::HashMap::new(),
+            macro_recording: None,
+            pending_macro: None,
+            replaying: false,
+            editmode: EditMode::Neovim,
+            emacs: ruster_core::emacs::EmacsState::new(),
+            emacs_ctrl_x: false,
+            emacs_isearch: None,
         }
     }
 
@@ -526,6 +865,9 @@ impl App {
             return;
         }
 
+        // Any key dismisses an open hover popup (and still acts).
+        self.hover = None;
+
         // A dired file-operation prompt captures input until confirmed/cancelled.
         if self.dired_prompt.is_some() {
             self.handle_dired_prompt_key(ck);
@@ -538,8 +880,21 @@ impl App {
             return;
         }
 
-        // Dired buffers intercept navigation keys (movement falls through).
-        if self.active_is_dired() && self.handle_dired_key(ck) {
+        // Dired claims its action keys, but only while at rest — never while a
+        // command-line/search prompt (vim Cmdline or an Emacs isearch) is open,
+        // or a search term containing a dired key (e.g. `d` in "docs") would be
+        // hijacked. Unclaimed keys fall through to normal handling.
+        if self.active_is_dired()
+            && self.vim.mode == VimMode::Normal
+            && self.emacs_isearch.is_none()
+            && self.handle_dired_key(ck)
+        {
+            return;
+        }
+
+        // Emacs is modeless: everything else routes to its own handler.
+        if self.editmode == EditMode::Emacs {
+            self.handle_key_emacs(ck);
             return;
         }
 
@@ -579,12 +934,56 @@ impl App {
                 return;
             }
         }
+        // K → LSP hover (like vim's keyword lookup).
+        if self.vim.mode == VimMode::Normal
+            && ck.code == KeyCode::Char('K')
+            && !ck.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            self.lsp_hover();
+            return;
+        }
+
+        // Macro recording (`q{reg}` … `q`) and playback (`@{reg}`).
+        if self.vim.mode == VimMode::Normal && !ck.modifiers.contains(KeyModifiers::CONTROL) {
+            if let Some(kind) = self.pending_macro.take() {
+                if let KeyCode::Char(reg) = ck.code {
+                    if kind == 'q' {
+                        self.macro_recording = Some((reg, Vec::new()));
+                        self.message = Some(format!("Recording @{}", reg));
+                    } else {
+                        self.replay_macro(reg);
+                    }
+                }
+                return;
+            }
+            match ck.code {
+                KeyCode::Char('q') => {
+                    if let Some((reg, keys)) = self.macro_recording.take() {
+                        let n = keys.len();
+                        self.macros.insert(reg, keys);
+                        self.message = Some(format!("Recorded @{} ({} keys)", reg, n));
+                    } else {
+                        self.pending_macro = Some('q');
+                    }
+                    return;
+                }
+                KeyCode::Char('@') => {
+                    self.pending_macro = Some('@');
+                    return;
+                }
+                _ => {}
+            }
+        }
+        // Everything past this point is part of a recording.
+        if let Some((_, keys)) = self.macro_recording.as_mut() {
+            keys.push(ck);
+        }
 
         let prev_mode = self.vim.mode;
         let mode = match prev_mode {
             VimMode::Normal => "n",
             VimMode::Insert => "i",
-            VimMode::VisualChar | VimMode::VisualLine => "v",
+            VimMode::VisualChar | VimMode::VisualLine | VimMode::VisualBlock => "v",
             VimMode::Cmdline => "x",
         };
         if self.lua.handle_key(mode, &ck) {
@@ -606,6 +1005,17 @@ impl App {
         }
 
         if self.vim.mode == VimMode::Insert && key == KeyEvent::Tab {
+            // 1) Cycle to the next tabstop of an active snippet.
+            if !self.snippet_stops.is_empty() {
+                let next = self.snippet_stops.remove(0);
+                self.ws.borrow_mut().execute(Action::Move(Motion::To(next)));
+                return;
+            }
+            // 2) Expand a snippet trigger before the cursor.
+            if self.try_snippet_expand() {
+                return;
+            }
+            // 3) Otherwise insert indentation.
             if self.config.expandtab {
                 let spaces = " ".repeat(self.config.tabstop as usize);
                 let mut w = self.ws.borrow_mut();
@@ -615,13 +1025,18 @@ impl App {
             }
             return;
         }
+        // Any other key ends snippet-stop cycling (offsets would go stale).
+        self.snippet_stops.clear();
 
         let actions = self.vim.handle(key, &*self.ws.borrow());
         for action in actions {
             match action {
                 Action::Textobject { op, kind, target, count: _ } => {
-                    let cursor = self.ws.borrow().primary_head();
-                    if let Some((start, end)) = self.syntax.as_ref()
+                    let (cursor, active) = {
+                        let w = self.ws.borrow();
+                        (w.primary_head(), w.active_buffer())
+                    };
+                    if let Some((start, end)) = self.syntax.get(&active)
                         .and_then(|s| s.ts_textobject(kind, target, cursor))
                     {
                         self.exec_operator(op, start, end);
@@ -641,6 +1056,175 @@ impl App {
             let mode_str = format!("{:?}", self.vim.mode);
             self.lua.set_mode(&mode_str);
             self.lua.fire_event_str("ModeChanged", &[&mode_str]);
+        }
+    }
+
+    /// Switch editing paradigm, resetting per-mode state and notifying Lua.
+    fn set_editmode(&mut self, mode: EditMode) {
+        self.editmode = mode;
+        self.emacs_ctrl_x = false;
+        self.emacs_isearch = None;
+        self.emacs.cancel();
+        // Leave the vim layer in a clean Normal state so a later switch back
+        // doesn't resume a half-finished operator or visual selection.
+        self.vim = VimState::new();
+        let name = match mode {
+            EditMode::Neovim => "neovim",
+            EditMode::Emacs => "emacs",
+        };
+        self.lua.set_editmode(name);
+        self.message = Some(format!("editmode: {}", name));
+    }
+
+    /// Handle a key in Emacs (modeless) mode. App-level chords — the `C-x`
+    /// prefix, `M-x`, isearch, `C-g` — are dealt with here; pure editing is
+    /// delegated to [`ruster_core::emacs::EmacsState`], mirroring how the vim
+    /// path intercepts the leader/`Ctrl-w` prefixes before delegating.
+    fn handle_key_emacs(&mut self, ck: crossterm::event::KeyEvent) {
+        use crossterm::event::KeyModifiers as KM;
+
+        // An active incremental search captures keys until it ends.
+        if self.emacs_isearch.is_some() {
+            self.handle_isearch_key(ck);
+            return;
+        }
+
+        let ctrl = ck.modifiers.contains(KM::CONTROL);
+
+        // Second key of a `C-x` prefix.
+        if self.emacs_ctrl_x {
+            self.emacs_ctrl_x = false;
+            match ck.code {
+                KeyCode::Char('s') if ctrl => {
+                    self.write_active_file(false);
+                }
+                KeyCode::Char('c') if ctrl => self.should_quit = true,
+                KeyCode::Char('f') if ctrl => self.open_files_picker(),
+                KeyCode::Char('b') if ctrl => self.open_ibuffer(),
+                KeyCode::Char('u') => self.ws.borrow_mut().execute(Action::Undo),
+                KeyCode::Char('0') => {
+                    self.ws.borrow_mut().windows.close_active();
+                }
+                KeyCode::Char('1') => self.ws.borrow_mut().windows.only(),
+                KeyCode::Char('2') => self.ws.borrow_mut().split(SplitDir::Horizontal),
+                KeyCode::Char('3') => self.ws.borrow_mut().split(SplitDir::Vertical),
+                _ => self.message = Some("C-x undefined".to_string()),
+            }
+            return;
+        }
+
+        let key = crossterm_to_ruster_key(ck);
+        match key {
+            KeyEvent::Ctrl('x') => {
+                self.emacs_ctrl_x = true;
+                return;
+            }
+            KeyEvent::Ctrl('g') => {
+                self.emacs.cancel();
+                self.message = Some("Quit".to_string());
+                return;
+            }
+            KeyEvent::Alt('x') => {
+                // M-x: run a command via the palette.
+                self.open_command_picker("");
+                return;
+            }
+            KeyEvent::Ctrl('s') => {
+                self.start_isearch(true);
+                return;
+            }
+            KeyEvent::Ctrl('r') => {
+                self.start_isearch(false);
+                return;
+            }
+            _ => {}
+        }
+
+        let actions = self.emacs.handle(key, &*self.ws.borrow());
+        for action in actions {
+            self.ws.borrow_mut().execute(action);
+        }
+        self.message = None;
+    }
+
+    /// Begin an Emacs incremental search in the given direction.
+    fn start_isearch(&mut self, forward: bool) {
+        self.emacs_isearch = Some((String::new(), forward));
+        self.message = Some(if forward { "I-search: ".into() } else { "I-search backward: ".into() });
+    }
+
+    /// Drive an active incremental search: printable keys extend the query and
+    /// jump to the next match; `C-s`/`C-r` repeat; `Enter`/`C-g`/`Esc` end it.
+    fn handle_isearch_key(&mut self, ck: crossterm::event::KeyEvent) {
+        let (mut query, mut forward) = self.emacs_isearch.take().unwrap();
+        match ck.code {
+            KeyCode::Enter | KeyCode::Esc => {
+                self.message = None;
+                return;
+            }
+            KeyCode::Backspace => {
+                query.pop();
+            }
+            KeyCode::Char('s') if ck.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                forward = true;
+                self.isearch_step(&query, true, true);
+                self.emacs_isearch = Some((query.clone(), forward));
+                self.set_isearch_message(&query, forward);
+                return;
+            }
+            KeyCode::Char('r') if ck.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                forward = false;
+                self.isearch_step(&query, false, true);
+                self.emacs_isearch = Some((query.clone(), forward));
+                self.set_isearch_message(&query, forward);
+                return;
+            }
+            KeyCode::Char('g') if ck.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                self.message = None;
+                return;
+            }
+            KeyCode::Char(c) => {
+                query.push(c);
+            }
+            _ => {}
+        }
+        // Search from the current point for the (possibly extended) query.
+        self.isearch_step(&query, forward, false);
+        self.set_isearch_message(&query, forward);
+        self.emacs_isearch = Some((query, forward));
+    }
+
+    fn set_isearch_message(&mut self, query: &str, forward: bool) {
+        let label = if forward { "I-search" } else { "I-search backward" };
+        self.message = Some(format!("{}: {}", label, query));
+    }
+
+    /// Move the cursor to the next/previous occurrence of `query`. `advance`
+    /// starts the scan one char past point so repeated `C-s` walks matches.
+    fn isearch_step(&mut self, query: &str, forward: bool, advance: bool) {
+        if query.is_empty() {
+            return;
+        }
+        let (text, head) = {
+            let w = self.ws.borrow();
+            (w.buffer().to_string(), w.primary_head())
+        };
+        // Work in char offsets to match the rest of the editor.
+        let chars: Vec<char> = text.chars().collect();
+        let pat: Vec<char> = query.chars().collect();
+        let found = if forward {
+            let from = if advance { head + 1 } else { head };
+            (from..=chars.len().saturating_sub(pat.len()))
+                .find(|&i| chars[i..].starts_with(&pat))
+        } else {
+            let start = if advance { head.saturating_sub(1) } else { head };
+            (0..=start.min(chars.len().saturating_sub(pat.len())))
+                .rev()
+                .find(|&i| chars[i..].starts_with(&pat))
+        };
+        // On a miss, keep point; the message still shows the query.
+        if let Some(i) = found {
+            self.ws.borrow_mut().execute(Action::Move(Motion::To(i)));
         }
     }
 
@@ -669,6 +1253,7 @@ impl App {
             self.handle_key(ck);
         }
 
+        self.lsp.shutdown_all();
         crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen)?;
         crossterm::terminal::disable_raw_mode()?;
         Ok(())
@@ -686,6 +1271,12 @@ impl App {
 
         let result = rt.block_on(self.async_run());
 
+        // Kill language servers, and detach the runtime without waiting for the
+        // blocking stdin reader (which is parked in event::read()) — otherwise
+        // dropping the runtime hangs on exit.
+        self.lsp.shutdown_all();
+        rt.shutdown_background();
+
         crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen)?;
         crossterm::terminal::disable_raw_mode()?;
         result
@@ -697,14 +1288,9 @@ impl App {
         // Spawn blocking reader
         let tx_reader = tx.clone();
         tokio::task::spawn_blocking(move || {
-            loop {
-                match crossterm::event::read() {
-                    Ok(ev) => {
-                        if tx_reader.send(AppEvent::Input(ev)).is_err() {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
+            while let Ok(ev) = crossterm::event::read() {
+                if tx_reader.send(AppEvent::Input(ev)).is_err() {
+                    break;
                 }
             }
         });
@@ -717,10 +1303,7 @@ impl App {
                 event = rx.recv() => {
                     match event {
                         Some(AppEvent::Input(ev)) => {
-                            match ev {
-                                crossterm::event::Event::Key(k) => self.handle_key(k),
-                                _ => {}
-                            }
+                            if let crossterm::event::Event::Key(k) = ev { self.handle_key(k) }
                         }
                         None => break,
                     }
@@ -772,6 +1355,60 @@ impl App {
             if self.renderer.should_close() || self.should_quit { break; }
             std::thread::sleep(Duration::from_millis(16));
         }
+        self.lsp.shutdown_all();
+    }
+
+    /// Build the preview pane for the picker's selected entry: the file's
+    /// highlighted contents, windowed around the target line when there is one.
+    fn picker_preview(&mut self, height: usize) -> Vec<StyledLine> {
+        const PREVIEW_MAX_BYTES: usize = 512 * 1024;
+        let action = match self.picker.as_mut().and_then(|p| p.selected_action()) {
+            Some(a) => a,
+            None => return Vec::new(),
+        };
+        // Resolve the selection to a file (and optional 1-indexed line).
+        let (path, line): (PathBuf, Option<usize>) = match action {
+            PickerAction::OpenPath(p) => (p, None),
+            PickerAction::OpenLocation(p, l, _) => (p, Some(l)),
+            PickerAction::OpenBuffer(id) => {
+                let w = self.ws.borrow();
+                match w.buffers.get(id).and_then(|d| d.file_path.clone()) {
+                    Some(p) => (p, None),
+                    None => return Vec::new(),
+                }
+            }
+            PickerAction::RunCmd(_) => return Vec::new(),
+        };
+
+        // Load + highlight the file, reusing the cache when the path is unchanged.
+        let cached = match &self.preview_cache {
+            Some((p, lines)) if *p == path => Some(lines),
+            _ => None,
+        };
+        if cached.is_none() {
+            let text = match std::fs::metadata(&path) {
+                Ok(m) if m.len() as usize <= PREVIEW_MAX_BYTES => {
+                    std::fs::read_to_string(&path).unwrap_or_default()
+                }
+                _ => String::new(),
+            };
+            let lines = match SyntaxEngine::new(&text, &ruster_syntax::lang_ext_for_path(&path)) {
+                Ok(engine) => engine.styled_lines().to_vec(),
+                Err(_) => plain_lines(&text),
+            };
+            self.preview_cache = Some((path.clone(), lines));
+        }
+        let lines = match &self.preview_cache {
+            Some((_, l)) => l,
+            None => return Vec::new(),
+        };
+
+        // Window the content: centered on the target line, else from the top.
+        let start = match line {
+            Some(l) => l.saturating_sub(1).saturating_sub(height / 3),
+            None => 0,
+        };
+        lines.iter().skip(start).take(height).cloned().collect()
     }
 
     /// Drain any streamed picker results (`:Files`/`:Rg`) into the open picker.
@@ -798,8 +1435,539 @@ impl App {
         }
     }
 
+    /// Ensure every visible buffer has a syntax engine (built lazily from its
+    /// file extension), then reparse the active buffer's engine.
+    fn update_syntax(&mut self) {
+        let (visible, active) = {
+            let w = self.ws.borrow();
+            let active = w.active_buffer();
+            let visible: Vec<BufferId> = w
+                .windows
+                .compute_rects(CoreRect::new(0, 0, 1000, 1000))
+                .into_iter()
+                .filter_map(|(id, _)| w.windows.window(id).map(|win| win.buffer))
+                .collect();
+            (visible, active)
+        };
+        for buf in visible {
+            if self.syntax.contains_key(&buf) || self.syntax_tried.contains(&buf) {
+                continue;
+            }
+            self.syntax_tried.insert(buf);
+            let (content, ext) = {
+                let w = self.ws.borrow();
+                match w.buffers.get(buf) {
+                    Some(d) => {
+                        let ext = d
+                            .file_path
+                            .as_ref()
+                            .map(|p| ruster_syntax::lang_ext_for_path(p))
+                            .unwrap_or_default();
+                        (d.buffer.to_string(), ext)
+                    }
+                    None => continue,
+                }
+            };
+            if let Ok(engine) = SyntaxEngine::new(&content, &ext) {
+                self.syntax.insert(buf, engine);
+            }
+        }
+        let active_content = self.ws.borrow().buffers.get(active).map(|d| d.buffer.to_string());
+        if let (Some(c), Some(engine)) = (active_content.as_ref(), self.syntax.get_mut(&active)) {
+            engine.reparse(c);
+        }
+    }
+
+    /// Sync the active buffer to its language server (didOpen/didChange) and
+    /// drain incoming LSP messages, dispatching diagnostics and responses.
+    fn update_lsp(&mut self) {
+        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        // Register / update the active buffer if it's a supported file.
+        let active = self.ws.borrow().active_buffer();
+        let info = {
+            let w = self.ws.borrow();
+            w.buffers.get(active).and_then(|d| {
+                let path = d.file_path.clone()?;
+                let ext = ruster_syntax::lang_ext_for_path(&path);
+                let lang = ruster_syntax::lang_key(&ext);
+                if lang.is_empty() {
+                    return None;
+                }
+                Some((path, lang.to_string(), d.buffer.to_string()))
+            })
+        };
+        if let Some((path, lang, text)) = info {
+            if self.lsp.ensure(&lang, &root) {
+                // The server needs an absolute file URI to match its index.
+                let abs = std::fs::canonicalize(&path).unwrap_or_else(|_| {
+                    if path.is_absolute() { path.clone() } else { root.join(&path) }
+                });
+                let uri = ruster_lsp::protocol::uri_from_path(&abs);
+                match self.lsp_docs.get_mut(&active) {
+                    None => {
+                        let language_id = ruster_lsp::registry::language_id(&lang).to_string();
+                        self.lsp.did_open(&lang, &uri, &language_id, 0, &text);
+                        self.lsp_docs.insert(active, LspDoc { uri, lang, version: 0, synced: text });
+                    }
+                    Some(doc) if doc.synced != text => {
+                        doc.version += 1;
+                        let version = doc.version;
+                        let uri = doc.uri.clone();
+                        let lang = doc.lang.clone();
+                        doc.synced = text.clone();
+                        self.lsp.did_change(&lang, &uri, version, &text);
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+        // Drain and dispatch server messages.
+        for routed in self.lsp.poll() {
+            match routed.message {
+                ServerMessage::Notification { method, params }
+                    if method == "textDocument/publishDiagnostics" =>
+                {
+                    let (path, diags) = ruster_lsp::parse_diagnostics(&params);
+                    if let Some(buf) = self.buffer_for_path(&path) {
+                        self.diagnostics.insert(buf, diags);
+                    }
+                }
+                ServerMessage::Response { id, result, .. } => {
+                    if let Some(action) = self.lsp_pending.remove(&(routed.lang.clone(), id)) {
+                        self.handle_lsp_response(action, result);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Expand a snippet whose trigger word precedes the cursor (insert mode).
+    /// Returns whether an expansion happened.
+    fn try_snippet_expand(&mut self) -> bool {
+        let active = self.ws.borrow().active_buffer();
+        let filetype = {
+            let w = self.ws.borrow();
+            w.buffers
+                .get(active)
+                .and_then(|d| d.file_path.as_ref())
+                .map(|p| ruster_syntax::lang_key(&ruster_syntax::lang_ext_for_path(p)).to_string())
+                .unwrap_or_default()
+        };
+        if filetype.is_empty() {
+            return false;
+        }
+        let (content, head) = {
+            let w = self.ws.borrow();
+            (w.buffer().to_string(), w.primary_head())
+        };
+        let trigger = word_before(&content, head);
+        if trigger.is_empty() {
+            return false;
+        }
+        let body = match self.snippets.get(&filetype, &trigger) {
+            Some(b) => b.to_string(),
+            None => return false,
+        };
+        let exp = ruster_core::snippets::expand(&body);
+        let start = head - trigger.chars().count();
+        {
+            let mut w = self.ws.borrow_mut();
+            w.execute(Action::BeginBatch);
+            w.execute(Action::Edit(EditOp::DeleteRange(start, head)));
+            w.execute(Action::Edit(EditOp::InsertString(exp.text.clone())));
+            w.execute(Action::EndBatch);
+        }
+        // Absolute tabstop offsets; visit the first now, keep the rest for Tab.
+        let mut stops: Vec<usize> = exp.stops.iter().map(|s| start + s.start).collect();
+        if !stops.is_empty() {
+            let first = stops.remove(0);
+            self.ws.borrow_mut().execute(Action::Move(Motion::To(first)));
+            self.snippet_stops = stops;
+        }
+        true
+    }
+
+    /// A one-line summary of a diagnostic on the cursor's line, if any.
+    fn current_line_diagnostic(&self) -> Option<String> {
+        let active = self.ws.borrow().active_buffer();
+        let diags = self.diagnostics.get(&active)?;
+        let line = {
+            let w = self.ws.borrow();
+            w.buffer().char_to_line(w.primary_head()) as u32
+        };
+        diags.iter().find(|d| d.start.line == line).map(|d| {
+            let sev = match d.severity {
+                1 => "E",
+                2 => "W",
+                3 => "I",
+                _ => "H",
+            };
+            format!("[{}] {}", sev, d.message.replace('\n', " "))
+        })
+    }
+
+    /// The open buffer whose file path matches `path`, if any.
+    fn buffer_for_path(&self, path: &str) -> Option<BufferId> {
+        let target = std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path));
+        let w = self.ws.borrow();
+        w.buffers.ids().iter().copied().find(|&id| {
+            w.buffers
+                .get(id)
+                .and_then(|d| d.file_path.as_ref())
+                .map(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()) == target)
+                .unwrap_or(false)
+        })
+    }
+
+    /// The active buffer's (lang, uri, cursor position) for an LSP request.
+    fn active_lsp_target(&self) -> Option<(String, String, LspPosition)> {
+        let active = self.ws.borrow().active_buffer();
+        let doc = self.lsp_docs.get(&active)?;
+        let (content, head) = {
+            let w = self.ws.borrow();
+            let d = w.buffers.get(active)?;
+            (d.buffer.to_string(), w.primary_head())
+        };
+        let pos = ruster_lsp::offset_to_position(&content, head);
+        Some((doc.lang.clone(), doc.uri.clone(), pos))
+    }
+
+    /// Send an LSP request built from the active position and record its action.
+    /// Returns whether the request was actually sent.
+    fn lsp_request(&mut self, method: &str, params: serde_json::Value, action: LspAction) -> bool {
+        let lang = match self.active_lsp_target() {
+            Some((lang, _, _)) => lang,
+            None => {
+                self.message = Some("No language server for this buffer".to_string());
+                return false;
+            }
+        };
+        if let Some(id) = self.lsp.request(&lang, method, params) {
+            self.lsp_pending.insert((lang, id), action);
+            true
+        } else {
+            self.message = Some("Language server still starting…".to_string());
+            false
+        }
+    }
+
+    fn lsp_hover(&mut self) {
+        if let Some((_, uri, pos)) = self.active_lsp_target() {
+            let params = ruster_lsp::protocol::text_document_position(&uri, pos);
+            self.lsp_request("textDocument/hover", params, LspAction::Hover);
+        }
+    }
+
+    fn lsp_definition(&mut self) {
+        if let Some((_, uri, pos)) = self.active_lsp_target() {
+            let params = ruster_lsp::protocol::text_document_position(&uri, pos);
+            self.lsp_request("textDocument/definition", params, LspAction::Definition);
+        }
+    }
+
+    fn lsp_references(&mut self) {
+        if let Some((_, uri, pos)) = self.active_lsp_target() {
+            let params = ruster_lsp::protocol::references_params(&uri, pos);
+            self.lsp_request("textDocument/references", params, LspAction::References);
+        }
+    }
+
+    fn lsp_format(&mut self) -> bool {
+        if let Some((_, uri, _)) = self.active_lsp_target() {
+            let params = ruster_lsp::protocol::formatting_params(
+                &uri,
+                self.config.tabstop,
+                self.config.expandtab,
+            );
+            self.lsp_request("textDocument/formatting", params, LspAction::Format)
+        } else {
+            false
+        }
+    }
+
+    fn lsp_document_symbols(&mut self) {
+        if let Some((_, uri, _)) = self.active_lsp_target() {
+            let params = ruster_lsp::protocol::document_symbol_params(&uri);
+            self.lsp_request("textDocument/documentSymbol", params, LspAction::DocumentSymbol);
+        }
+    }
+
+    fn lsp_workspace_symbols(&mut self, query: &str) {
+        if self.active_lsp_target().is_some() {
+            let params = ruster_lsp::protocol::workspace_symbol_params(query);
+            self.lsp_request("workspace/symbol", params, LspAction::WorkspaceSymbol);
+        }
+    }
+
+    /// Kick off call hierarchy: resolve the symbol under the cursor, then (in
+    /// the response handler) request its callers or callees.
+    fn lsp_call_hierarchy(&mut self, incoming: bool) {
+        if let Some((_, uri, pos)) = self.active_lsp_target() {
+            let params = ruster_lsp::protocol::prepare_call_hierarchy_params(&uri, pos);
+            self.lsp_request(
+                "textDocument/prepareCallHierarchy",
+                params,
+                LspAction::PrepareCallHierarchy(incoming),
+            );
+        }
+    }
+
+    fn lsp_rename(&mut self, new_name: &str) {
+        if let Some((_, uri, pos)) = self.active_lsp_target() {
+            let params = ruster_lsp::protocol::rename_params(&uri, pos, new_name);
+            self.lsp_request("textDocument/rename", params, LspAction::Rename);
+        }
+    }
+
+    fn handle_lsp_response(&mut self, action: LspAction, result: serde_json::Value) {
+        match action {
+            LspAction::Hover => {
+                if let Some(text) = ruster_lsp::parse_hover(&result) {
+                    self.hover = Some(build_hover_lines(&text));
+                } else {
+                    self.message = Some("No hover info".to_string());
+                }
+            }
+            LspAction::Definition => {
+                let locs = ruster_lsp::parse_locations(&result);
+                if let Some(loc) = locs.first() {
+                    self.open_path(
+                        std::path::Path::new(&loc.uri),
+                        Some((loc.start.line as usize + 1, loc.start.character as usize + 1)),
+                    );
+                } else {
+                    self.message = Some("No definition found".to_string());
+                }
+            }
+            LspAction::References => {
+                let locs = ruster_lsp::parse_locations(&result);
+                if locs.is_empty() {
+                    self.message = Some("No references".to_string());
+                    return;
+                }
+                let items = locs
+                    .into_iter()
+                    .map(|loc| {
+                        let line = loc.start.line as usize + 1;
+                        let col = loc.start.character as usize + 1;
+                        PickerItem::new(
+                            format!("{}:{}:{}", loc.uri, line, col),
+                            PickerAction::OpenLocation(PathBuf::from(loc.uri), line, col),
+                        )
+                    })
+                    .collect();
+                self.picker = Some(PickerState::new("References", items));
+            }
+            LspAction::Format => {
+                let edits = ruster_lsp::parse_text_edits(&result);
+                self.apply_lsp_edits_to_active(&edits);
+                if self.pending_format_save {
+                    self.pending_format_save = false;
+                    self.write_active_file(false);
+                }
+            }
+            LspAction::Rename => {
+                let per_file = ruster_lsp::parse_workspace_edit(&result);
+                for (path, edits) in per_file {
+                    self.apply_lsp_edits_to_path(&path, &edits);
+                }
+            }
+            LspAction::DocumentSymbol => {
+                let syms = ruster_lsp::parse_document_symbols(&result);
+                let active_uri = self
+                    .active_lsp_target()
+                    .map(|(_, uri, _)| uri)
+                    .unwrap_or_default();
+                let items = syms
+                    .into_iter()
+                    .map(|s| {
+                        let indent = "  ".repeat(s.depth as usize);
+                        let path = s
+                            .uri
+                            .clone()
+                            .unwrap_or_else(|| active_uri.trim_start_matches("file://").to_string());
+                        PickerItem::new(
+                            format!("{}{}", indent, s.name),
+                            PickerAction::OpenLocation(
+                                PathBuf::from(path),
+                                s.start.line as usize + 1,
+                                s.start.character as usize + 1,
+                            ),
+                        )
+                    })
+                    .collect();
+                self.picker = Some(PickerState::new("Symbols", items));
+            }
+            LspAction::WorkspaceSymbol => {
+                let syms = ruster_lsp::parse_workspace_symbols(&result);
+                let items = syms
+                    .into_iter()
+                    .filter_map(|s| {
+                        let uri = s.uri?;
+                        Some(PickerItem::new(
+                            format!("{}  {}", s.name, uri),
+                            PickerAction::OpenLocation(
+                                PathBuf::from(uri),
+                                s.start.line as usize + 1,
+                                s.start.character as usize + 1,
+                            ),
+                        ))
+                    })
+                    .collect();
+                self.picker = Some(PickerState::new("Workspace symbols", items));
+            }
+            LspAction::PrepareCallHierarchy(incoming) => {
+                let items = ruster_lsp::parse_call_hierarchy_prepare(&result);
+                match items.into_iter().next() {
+                    Some(item) => {
+                        // Step 2: request the calls for the resolved item.
+                        let method = if incoming {
+                            "callHierarchy/incomingCalls"
+                        } else {
+                            "callHierarchy/outgoingCalls"
+                        };
+                        let params = ruster_lsp::protocol::call_hierarchy_calls_params(&item);
+                        self.lsp_request(method, params, LspAction::CallHierarchy(incoming));
+                    }
+                    None => self.message = Some("No call hierarchy for symbol".to_string()),
+                }
+            }
+            LspAction::CallHierarchy(incoming) => {
+                let calls = ruster_lsp::parse_call_hierarchy_calls(&result, incoming);
+                if calls.is_empty() {
+                    self.message = Some(
+                        if incoming { "No callers" } else { "No callees" }.to_string(),
+                    );
+                    return;
+                }
+                let title = if incoming { "Callers" } else { "Callees" };
+                let items = calls
+                    .into_iter()
+                    .map(|c| {
+                        let line = c.start.line as usize + 1;
+                        let col = c.start.character as usize + 1;
+                        let label = match &c.detail {
+                            Some(d) => format!("{}  {}", c.name, d),
+                            None => c.name.clone(),
+                        };
+                        PickerItem::new(
+                            format!("{}  {}:{}", label, c.uri, line),
+                            PickerAction::OpenLocation(PathBuf::from(c.uri), line, col),
+                        )
+                    })
+                    .collect();
+                self.picker = Some(PickerState::new(title, items));
+            }
+        }
+    }
+
+    /// Apply LSP text edits to the active buffer, replacing its whole content.
+    fn apply_lsp_edits_to_active(&mut self, edits: &[ruster_lsp::TextEdit]) {
+        if edits.is_empty() {
+            return;
+        }
+        let content = self.ws.borrow().active_doc().buffer.to_string();
+        let new = ruster_lsp::apply_edits(&content, edits);
+        if new != content {
+            self.replace_active_content(&new);
+        }
+    }
+
+    fn apply_lsp_edits_to_path(&mut self, path: &str, edits: &[ruster_lsp::TextEdit]) {
+        if edits.is_empty() {
+            return;
+        }
+        // Only apply to the active buffer for now (multi-file rename opens each
+        // affected file is a follow-up); apply if the path matches the active doc.
+        let active_path = self
+            .ws
+            .borrow()
+            .active_doc()
+            .file_path
+            .clone();
+        let matches = active_path
+            .map(|p| std::fs::canonicalize(&p).ok() == std::fs::canonicalize(path).ok())
+            .unwrap_or(false);
+        if matches {
+            self.apply_lsp_edits_to_active(edits);
+        }
+    }
+
+    /// `:s/pat/rep/[g]` — substitute on the cursor's line, or the whole buffer
+    /// for `:%s`. Reports how many replacements were made.
+    fn substitute(&mut self, pattern: &str, replacement: &str, all: bool, whole_buffer: bool) {
+        if pattern.is_empty() {
+            return;
+        }
+        let (content, cursor_line) = {
+            let w = self.ws.borrow();
+            let head = w.primary_head();
+            (w.buffer().to_string(), w.buffer().char_to_line(head))
+        };
+        let replace_in = |line: &str, count: &mut usize| -> String {
+            if all {
+                *count += line.matches(pattern).count();
+                line.replace(pattern, replacement)
+            } else if let Some(idx) = line.find(pattern) {
+                *count += 1;
+                let mut s = String::with_capacity(line.len());
+                s.push_str(&line[..idx]);
+                s.push_str(replacement);
+                s.push_str(&line[idx + pattern.len()..]);
+                s
+            } else {
+                line.to_string()
+            }
+        };
+
+        let mut count = 0usize;
+        let had_trailing_newline = content.ends_with('\n');
+        let new: Vec<String> = content
+            .split('\n')
+            .enumerate()
+            .map(|(i, line)| {
+                if whole_buffer || i == cursor_line {
+                    replace_in(line, &mut count)
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect();
+        if count == 0 {
+            self.message = Some(format!("Pattern not found: {}", pattern));
+            return;
+        }
+        let mut text = new.join("\n");
+        if had_trailing_newline && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        self.replace_active_content(&text);
+        self.message = Some(format!(
+            "{} substitution{}",
+            count,
+            if count == 1 { "" } else { "s" }
+        ));
+    }
+
+    /// Replace the active buffer's entire content via a single undo batch.
+    fn replace_active_content(&mut self, new: &str) {
+        let len = self.ws.borrow().active_doc().buffer.len_chars();
+        let mut w = self.ws.borrow_mut();
+        w.execute(Action::BeginBatch);
+        if len > 0 {
+            w.execute(Action::Edit(EditOp::DeleteRange(0, len)));
+        }
+        if !new.is_empty() {
+            w.execute(Action::Edit(EditOp::InsertString(new.to_string())));
+        }
+        w.execute(Action::EndBatch);
+        w.execute(Action::Move(Motion::To(0)));
+    }
+
     fn render(&mut self) {
         self.drain_pending_results();
+        self.update_lsp();
         let (cols, rows) = self.renderer.viewport_cells();
         // Reserve a bottom row for the cmdline/message only while one is shown,
         // so the statusline sits flush at the very bottom otherwise.
@@ -808,20 +1976,24 @@ impl App {
         let reserved = if has_cmdline { 1 } else { 0 };
         let buf_area = CoreRect::new(0, 0, cols, rows.saturating_sub(reserved));
 
-        // Reparse syntax for the tracked buffer, then snapshot its styled lines.
-        let syntax_content = self.ws.borrow().buffers
-            .get(self.syntax_buffer)
-            .map(|d| d.buffer.to_string());
-        if let (Some(c), Some(syn)) = (syntax_content.as_ref(), self.syntax.as_mut()) {
-            syn.reparse(c);
-        }
-        let styled: Option<Vec<StyledLine>> = self.syntax.as_ref().map(|s| s.styled_lines().to_vec());
+        // Ensure a syntax engine exists for every visible buffer, then reparse the
+        // active buffer (the only one whose text can have changed this frame).
+        self.update_syntax();
 
         let mode = self.vim.mode;
-        let mode_lbl = crate::widgets::mode_label(&mode).to_string();
-        let cursor_kind = match mode {
-            VimMode::Insert | VimMode::Cmdline => CursorKind::Bar,
-            _ => CursorKind::Block,
+        // In Emacs mode the statusline shows an Emacs indicator instead of the
+        // vim mode label, and the cursor is always a bar (modeless insert).
+        let (mode_lbl, emacs) = match self.editmode {
+            EditMode::Emacs => ("-- EMACS --".to_string(), true),
+            EditMode::Neovim => (crate::widgets::mode_label(&mode).to_string(), false),
+        };
+        let cursor_kind = if emacs {
+            CursorKind::Bar
+        } else {
+            match mode {
+                VimMode::Insert | VimMode::Cmdline => CursorKind::Bar,
+                _ => CursorKind::Block,
+            }
         };
         let smooth = self.has_smooth_cursor;
         let (anim_x, anim_y) = (self.cursor_anim.cell_x, self.cursor_anim.cell_y);
@@ -831,6 +2003,13 @@ impl App {
         let lua_center = self.lua.statusline_sections("center").join("  ");
         let lua_right = self.lua.statusline_sections("right").join("  ");
 
+        // The Emacs region (mark..point) is highlighted like a char selection.
+        let emacs_mark = if self.editmode == EditMode::Emacs {
+            self.emacs.mark()
+        } else {
+            None
+        };
+
         let mut views: Vec<WindowView> = Vec::new();
         {
             let mut w = self.ws.borrow_mut();
@@ -838,15 +2017,80 @@ impl App {
             let rects = w.windows.compute_rects(buf_area);
             for (wid, rect) in rects {
                 let is_active = wid == active_id;
-                let (buf_id, head, mut scroll) = {
+                let (buf_id, head, anchor, mut scroll, extra_heads) = {
                     let win = w.windows.window(wid).expect("window exists");
-                    (win.buffer, win.cursors.head(), win.scroll_top)
+                    let primary = win.cursors.primary();
+                    // Heads of every cursor except the primary, for multi-cursor
+                    // rendering (the active window only).
+                    let extra_heads: Vec<usize> = if is_active && win.cursors.count() > 1 {
+                        let p = primary.head;
+                        win.cursors
+                            .iter_heads()
+                            .filter(|&h| h != p)
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    (win.buffer, primary.head, primary.anchor, win.scroll_top, extra_heads)
                 };
-                let (content, cline, ccol, name, line_count) = {
+                let (content, cline, ccol, name, line_count, selection, extra_cursors) = {
                     let doc = w.buffers.get(buf_id).expect("buffer exists");
                     let cline = doc.buffer.char_to_line(head);
                     let ccol = head - doc.buffer.line_start_char(cline);
-                    (doc.buffer.to_string(), cline, ccol, doc.name.clone(), doc.buffer.line_count())
+                    // Visual-mode selection spans anchor..head (inclusive).
+                    let selection = if is_active
+                        && matches!(
+                            mode,
+                            VimMode::VisualChar | VimMode::VisualLine | VimMode::VisualBlock
+                        )
+                    {
+                        let (lo, hi) = (anchor.min(head), anchor.max(head));
+                        let sl = doc.buffer.char_to_line(lo);
+                        let el = doc.buffer.char_to_line(hi);
+                        Some(SelectionView {
+                            start: (sl as u16, (lo - doc.buffer.line_start_char(sl)) as u16),
+                            end: (el as u16, (hi - doc.buffer.line_start_char(el)) as u16),
+                            kind: match mode {
+                                VimMode::VisualLine => ruster_render::SelectionKind::Line,
+                                VimMode::VisualBlock => ruster_render::SelectionKind::Block,
+                                _ => ruster_render::SelectionKind::Char,
+                            },
+                        })
+                    } else if is_active {
+                        // Emacs region: mark..point, shown like a char selection.
+                        emacs_mark.filter(|&m| m != head).map(|m| {
+                            let (lo, hi) = (m.min(head), m.max(head));
+                            // The point itself is exclusive, so the last covered
+                            // char is hi - 1.
+                            let last = hi - 1;
+                            let sl = doc.buffer.char_to_line(lo);
+                            let el = doc.buffer.char_to_line(last);
+                            SelectionView {
+                                start: (sl as u16, (lo - doc.buffer.line_start_char(sl)) as u16),
+                                end: (el as u16, (last - doc.buffer.line_start_char(el)) as u16),
+                                kind: ruster_render::SelectionKind::Char,
+                            }
+                        })
+                    } else {
+                        None
+                    };
+                    let extra_cursors: Vec<(u16, u16)> = extra_heads
+                        .iter()
+                        .map(|&h| {
+                            let l = doc.buffer.char_to_line(h);
+                            let c = h - doc.buffer.line_start_char(l);
+                            (l as u16, c as u16)
+                        })
+                        .collect();
+                    (
+                        doc.buffer.to_string(),
+                        cline,
+                        ccol,
+                        doc.name.clone(),
+                        doc.buffer.line_count(),
+                        selection,
+                        extra_cursors,
+                    )
                 };
                 // Keep the cursor visible within this window's text area.
                 let buf_h = rect.height.saturating_sub(1) as usize;
@@ -859,18 +2103,19 @@ impl App {
                 }
                 if let Some(win) = w.windows.window_mut(wid) {
                     win.scroll_top = scroll;
+                    // Record the geometry so half-page scrolling can use it.
+                    win.height = buf_h;
                 }
 
-                let lines: Vec<StyledLine> = if buf_id == self.syntax_buffer {
-                    styled.clone().unwrap_or_else(|| plain_lines(&content))
-                } else {
-                    plain_lines(&content)
+                let lines: Vec<StyledLine> = match self.dired_styled.get(&buf_id) {
+                    // Dired listings are colored by entry type.
+                    Some(styled) => styled.clone(),
+                    None => match self.syntax.get(&buf_id) {
+                        Some(engine) => engine.styled_lines().to_vec(),
+                        None => plain_lines(&content),
+                    },
                 };
-                let pct = if line_count > 0 {
-                    (cline + 1) * 100 / line_count
-                } else {
-                    100
-                };
+                let pct = ((cline + 1) * 100).checked_div(line_count).unwrap_or(100);
                 let mut left = if is_active { mode_lbl.clone() } else { String::new() };
                 let mut center = name;
                 let mut right = format!("{}%  {},{}", pct, cline + 1, ccol + 1);
@@ -903,6 +2148,7 @@ impl App {
                     rect: RRect::new(rect.x, rect.y, rect.width, rect.height),
                     lines,
                     cursor: (cline as u16, ccol as u16),
+                    extra_cursors,
                     cursor_kind,
                     cursor_visible: is_active,
                     cursor_smooth,
@@ -910,6 +2156,7 @@ impl App {
                     gutter,
                     statusline,
                     active: is_active,
+                    selection,
                 });
             }
         }
@@ -919,10 +2166,15 @@ impl App {
         } else {
             match mode {
                 VimMode::Cmdline => Some(crate::widgets::cmdline_label(self.vim.cmdline_buffer())),
-                _ => self.message.clone(),
+                _ => self.message.clone().or_else(|| self.current_line_diagnostic()),
             }
         };
-        let picker_view = self.picker.as_mut().map(|p| p.view());
+        let picker_view = self.picker.as_mut().map(|p| p.view()).map(|mut v| {
+            // Attach a preview of the selected entry (height ≈ the picker's rows).
+            let preview_height = v.rows.len().clamp(8, 24);
+            v.preview = self.picker_preview(preview_height);
+            v
+        });
 
         // Animate the bottom which-key panel sliding up while a leader sequence
         // is pending, and back down after it resolves/cancels.
@@ -938,7 +2190,7 @@ impl App {
         // it has begun appearing, keep it up until the sequence ends.
         let past_timeout = self
             .leader_since
-            .map_or(false, |t| now.duration_since(t).as_millis() as u32 >= self.config.timeoutlen);
+            .is_some_and(|t| now.duration_since(t).as_millis() as u32 >= self.config.timeoutlen);
         let show = self.leader_pending.is_some() && (self.whichkey_anim > 0.01 || past_timeout);
         let target = if show { 1.0 } else { 0.0 };
         self.whichkey_anim += (target - self.whichkey_anim) * (1.0 - (-18.0 * dt).exp());
@@ -961,6 +2213,7 @@ impl App {
             message: None,
             picker: picker_view,
             whichkey,
+            hover: self.hover.clone(),
         };
         self.renderer.render_frame(&state);
     }
@@ -994,8 +2247,11 @@ impl App {
             "bd" | "bdelete" => Ok(CmdAction::BufferDelete),
             "Dired" | "dired" | "Explore" | "Ex" => Ok(CmdAction::Dired(None)),
             "Files" | "files" => Ok(CmdAction::Files),
+            "fmt" | "format" => Ok(CmdAction::Format),
+            "callers" | "incomingcalls" => Ok(CmdAction::CallHierarchy(true)),
+            "callees" | "outgoingcalls" => Ok(CmdAction::CallHierarchy(false)),
             _ if trimmed.starts_with("w ") || trimmed.starts_with("write ") => {
-                let path = trimmed.splitn(2, ' ').nth(1).unwrap_or("").trim().to_string();
+                let path = trimmed.split_once(' ').map(|x| x.1).unwrap_or("").trim().to_string();
                 if path.is_empty() {
                     Err("No path given".to_string())
                 } else {
@@ -1003,16 +2259,38 @@ impl App {
                 }
             }
             _ if trimmed.starts_with("Dired ") || trimmed.starts_with("dired ") => {
-                let path = trimmed.splitn(2, ' ').nth(1).unwrap_or("").trim().to_string();
+                let path = trimmed.split_once(' ').map(|x| x.1).unwrap_or("").trim().to_string();
                 Ok(CmdAction::Dired(Some(path)))
             }
             _ if trimmed.starts_with("Rg ") || trimmed.starts_with("rg ") => {
-                let pat = trimmed.splitn(2, ' ').nth(1).unwrap_or("").trim().to_string();
+                let pat = trimmed.split_once(' ').map(|x| x.1).unwrap_or("").trim().to_string();
                 if pat.is_empty() {
                     Err("No pattern given".to_string())
                 } else {
                     Ok(CmdAction::Rg(pat))
                 }
+            }
+            _ if trimmed.starts_with("rename ") => {
+                let name = trimmed.split_once(' ').map(|x| x.1).unwrap_or("").trim().to_string();
+                if name.is_empty() {
+                    Err("No name given".to_string())
+                } else {
+                    Ok(CmdAction::Rename(name))
+                }
+            }
+            _ if trimmed.starts_with("sym ") => {
+                let q = trimmed.split_once(' ').map(|x| x.1).unwrap_or("").trim().to_string();
+                Ok(CmdAction::WorkspaceSymbol(q))
+            }
+            _ if trimmed.starts_with("set editmode") || trimmed == "set editmode" => {
+                match trimmed.rsplit(' ').next().unwrap_or("") {
+                    "emacs" => Ok(CmdAction::SetEditMode(EditMode::Emacs)),
+                    "neovim" | "vim" | "nvim" => Ok(CmdAction::SetEditMode(EditMode::Neovim)),
+                    _ => Err("Usage: :set editmode neovim|emacs".to_string()),
+                }
+            }
+            _ if parse_substitute(trimmed).is_some() => {
+                Ok(parse_substitute(trimmed).expect("checked above"))
             }
             _ => Err(format!("Unknown command: {}", cmdline)),
         }
@@ -1058,6 +2336,16 @@ impl App {
             CmdAction::Dired(arg) => self.open_dired(arg),
             CmdAction::Files => self.open_files_picker(),
             CmdAction::Rg(pattern) => self.run_rg(&pattern),
+            CmdAction::Rename(name) => self.lsp_rename(&name),
+            CmdAction::Format => {
+                self.lsp_format();
+            }
+            CmdAction::WorkspaceSymbol(q) => self.lsp_workspace_symbols(&q),
+            CmdAction::CallHierarchy(incoming) => self.lsp_call_hierarchy(incoming),
+            CmdAction::SetEditMode(mode) => self.set_editmode(mode),
+            CmdAction::Substitute { pattern, replacement, all, whole_buffer } => {
+                self.substitute(&pattern, &replacement, all, whole_buffer)
+            }
         }
     }
 
@@ -1153,7 +2441,11 @@ impl App {
 
     /// Reload a dired buffer's listing for `path` and reset its window cursor.
     fn refresh_dired(&mut self, id: BufferId, path: PathBuf) {
-        let text = ruster_core::dired::render(&path);
+        // List once, then derive the text, colors and lookup table from it.
+        let entries = ruster_core::dired::list(&path, self.dired_show_hidden);
+        let text = ruster_core::dired::render_entries(&entries);
+        self.dired_styled.insert(id, dired_styled_lines(&entries));
+        self.dired_entries.insert(id, entries);
         {
             let mut w = self.ws.borrow_mut();
             if let Some(doc) = w.buffers.get_mut(id) {
@@ -1181,21 +2473,58 @@ impl App {
     /// Handle a key in a dired buffer. Returns true if the key was consumed
     /// (movement keys fall through to vim so j/k/gg/G still work).
     fn handle_dired_key(&mut self, ck: crossterm::event::KeyEvent) -> bool {
+        let ctrl = ck.modifiers.contains(KeyModifiers::CONTROL);
+        // Pending `yy` copy / `dd` cut: a matching second key completes it.
+        if self.dired_pending_y {
+            self.dired_pending_y = false;
+            if ck.code == KeyCode::Char('y') {
+                self.dired_yank_under_cursor(false);
+                return true;
+            }
+        }
+        if self.dired_pending_d {
+            self.dired_pending_d = false;
+            if ck.code == KeyCode::Char('d') {
+                self.dired_yank_under_cursor(true);
+                return true;
+            }
+        }
+        // Pending `g`: `gg` jumps to the top, `g?` shows dired help. Handled
+        // locally (rather than falling through to vim) so `?` stays free for
+        // reverse-search. Any other key is a no-op that ends the prefix.
+        if self.dired_pending_g {
+            self.dired_pending_g = false;
+            match ck.code {
+                KeyCode::Char('g') => self.ws.borrow_mut().execute(Action::Move(Motion::To(0))),
+                KeyCode::Char('?') => self.hover = Some(dired_help_lines()),
+                _ => {}
+            }
+            return true;
+        }
+        if ctrl {
+            match ck.code {
+                KeyCode::Char('n') => {
+                    self.ws.borrow_mut().execute(Action::Move(Motion::Line(1)));
+                    return true;
+                }
+                KeyCode::Char('p') => {
+                    self.ws.borrow_mut().execute(Action::Move(Motion::Line(-1)));
+                    return true;
+                }
+                _ => {}
+            }
+        }
         match ck.code {
-            KeyCode::Enter => {
+            KeyCode::Enter | KeyCode::Char('l') => {
                 self.dired_open_at_cursor();
                 true
             }
-            KeyCode::Char('-') | KeyCode::Char('^') => {
+            KeyCode::Char('h') | KeyCode::Char('-') | KeyCode::Char('^') => {
                 self.dired_go_up();
                 true
             }
             KeyCode::Char('+') => {
-                self.dired_prompt = Some(DiredPrompt { kind: DiredPromptKind::CreateFile, input: String::new() });
-                true
-            }
-            KeyCode::Char('%') => {
-                self.dired_prompt = Some(DiredPrompt { kind: DiredPromptKind::CreateDir, input: String::new() });
+                self.dired_prompt = Some(DiredPrompt { kind: DiredPromptKind::Create, input: String::new() });
                 true
             }
             KeyCode::Char('R') => {
@@ -1213,12 +2542,113 @@ impl App {
                 }
                 true
             }
-            // Movement keys pass through to vim for navigation.
-            KeyCode::Char('j') | KeyCode::Char('k') | KeyCode::Char('g')
-            | KeyCode::Char('G') | KeyCode::Up | KeyCode::Down => false,
-            // Swallow everything else to keep the listing read-only.
-            _ => true,
+            KeyCode::Char('y') => {
+                self.dired_pending_y = true;
+                true
+            }
+            KeyCode::Char('d') => {
+                self.dired_pending_d = true;
+                true
+            }
+            KeyCode::Char('p') => {
+                self.dired_paste();
+                true
+            }
+            KeyCode::Char('.') => {
+                self.dired_show_hidden = !self.dired_show_hidden;
+                self.dired_refresh_current();
+                self.message = Some(format!(
+                    "Hidden files {}",
+                    if self.dired_show_hidden { "shown" } else { "hidden" }
+                ));
+                true
+            }
+            // `g` starts the dired prefix (`gg` top, `g?` help).
+            KeyCode::Char('g') => {
+                self.dired_pending_g = true;
+                true
+            }
+            // Everything else falls through to normal handling. The buffer is
+            // read-only (edits are no-ops), so this safely enables `:` commands,
+            // `/`/`?`/`n`/`N` search, motions, the Space leader, and — in Emacs
+            // mode — `C-s`/`M-x`, all operating over the listing.
+            _ => false,
         }
+    }
+
+    /// Record the entry under the cursor for a later paste. `cut` moves on paste.
+    fn dired_yank_under_cursor(&mut self, cut: bool) {
+        match self.dired_current_target() {
+            Some((path, name)) => {
+                self.dired_clipboard = Some((path, cut));
+                self.message = Some(format!(
+                    "{} '{}'",
+                    if cut { "Cut" } else { "Copied" },
+                    name
+                ));
+            }
+            None => self.message = Some("Nothing selected".to_string()),
+        }
+    }
+
+    /// Paste the dired clipboard into the current directory (copy, or move for a cut).
+    fn dired_paste(&mut self) {
+        let (src, cut) = match self.dired_clipboard.clone() {
+            Some(s) => s,
+            None => {
+                self.message = Some("Clipboard empty".to_string());
+                return;
+            }
+        };
+        let id = self.ws.borrow().active_buffer();
+        let dir = match self.dired_dirs.get(&id) {
+            Some(d) => d.clone(),
+            None => return,
+        };
+        let name = match src.file_name() {
+            Some(n) => n.to_os_string(),
+            None => return,
+        };
+        let dest = dir.join(&name);
+        if dest.exists() {
+            self.message = Some(format!("'{}' already exists", name.to_string_lossy()));
+            return;
+        }
+        let result = if cut {
+            // Try a rename first; fall back to copy+remove across filesystems.
+            std::fs::rename(&src, &dest).or_else(|_| {
+                let copied = if src.is_dir() {
+                    copy_dir_recursive(&src, &dest)
+                } else {
+                    std::fs::copy(&src, &dest).map(|_| ())
+                };
+                copied.and_then(|()| {
+                    if src.is_dir() {
+                        std::fs::remove_dir_all(&src)
+                    } else {
+                        std::fs::remove_file(&src)
+                    }
+                })
+            })
+        } else if src.is_dir() {
+            copy_dir_recursive(&src, &dest)
+        } else {
+            std::fs::copy(&src, &dest).map(|_| ())
+        };
+        match result {
+            Ok(()) => {
+                self.message = Some(format!(
+                    "{} '{}'",
+                    if cut { "Moved" } else { "Pasted" },
+                    name.to_string_lossy()
+                ));
+                if cut {
+                    self.dired_clipboard = None; // a cut is consumed by the paste
+                }
+            }
+            Err(e) => self.message = Some(format!("Paste failed: {}", e)),
+        }
+        self.dired_refresh_current();
     }
 
     /// The (path, name) of the entry under the cursor in the active dired buffer,
@@ -1230,7 +2660,7 @@ impl App {
             let w = self.ws.borrow();
             w.buffer().char_to_line(w.primary_head())
         };
-        let entries = ruster_core::dired::list(&dir);
+        let entries = self.dired_entries.get(&id)?;
         let entry = entries.get(line)?;
         if entry.name == ".." {
             return None;
@@ -1250,11 +2680,20 @@ impl App {
                     if let Some(DiredPrompt { kind: DiredPromptKind::Delete(path), .. }) =
                         self.dired_prompt.take()
                     {
-                        let _ = if path.is_dir() {
+                        let result = if path.is_dir() {
                             std::fs::remove_dir_all(&path)
                         } else {
                             std::fs::remove_file(&path)
                         };
+                        let name = path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("")
+                            .to_string();
+                        self.message = Some(match result {
+                            Ok(()) => format!("Deleted '{}'", name),
+                            Err(e) => format!("Delete failed for '{}': {}", name, e),
+                        });
                     }
                     self.dired_refresh_current();
                 }
@@ -1291,14 +2730,43 @@ impl App {
         };
         let input = prompt.input.trim().to_string();
         match prompt.kind {
-            DiredPromptKind::CreateFile if !input.is_empty() => {
-                let _ = std::fs::File::create(dir.join(&input));
-            }
-            DiredPromptKind::CreateDir if !input.is_empty() => {
-                let _ = std::fs::create_dir_all(dir.join(&input));
+            // A trailing '/' creates a directory, otherwise a file.
+            DiredPromptKind::Create if !input.is_empty() => {
+                let is_dir = input.ends_with('/');
+                let name = input.trim_end_matches('/').to_string();
+                if name.is_empty() {
+                    self.message = Some("No name given".to_string());
+                } else {
+                    let target = dir.join(&name);
+                    if target.exists() {
+                        self.message = Some(format!("'{}' already exists", name));
+                    } else {
+                        let result = if is_dir {
+                            std::fs::create_dir_all(&target)
+                        } else {
+                            if let Some(parent) = target.parent() {
+                                let _ = std::fs::create_dir_all(parent);
+                            }
+                            std::fs::File::create(&target).map(|_| ())
+                        };
+                        self.message = Some(match result {
+                            Ok(()) => format!(
+                                "Created {} '{}'",
+                                if is_dir { "directory" } else { "file" },
+                                name
+                            ),
+                            Err(e) => format!("Create failed: {}", e),
+                        });
+                    }
+                }
             }
             DiredPromptKind::Rename(old) if !input.is_empty() => {
-                let _ = std::fs::rename(dir.join(&old), dir.join(&input));
+                let target = dir.join(&input);
+                if target.exists() {
+                    self.message = Some(format!("'{}' already exists", input));
+                } else if let Err(e) = std::fs::rename(dir.join(&old), &target) {
+                    self.message = Some(format!("Rename failed: {}", e));
+                }
             }
             _ => {}
         }
@@ -1323,8 +2791,7 @@ impl App {
             let w = self.ws.borrow();
             w.buffer().char_to_line(w.primary_head())
         };
-        let entries = ruster_core::dired::list(&dir);
-        let entry = match entries.get(line) {
+        let entry = match self.dired_entries.get(&id).and_then(|e| e.get(line)) {
             Some(e) => e.clone(),
             None => return,
         };
@@ -1420,6 +2887,26 @@ impl App {
                 self.message = Some("E514: cannot close last buffer".to_string());
             }
         }
+    }
+
+    /// Replay a recorded macro by feeding its keys back through `handle_key`,
+    /// so each one sees the state left by the previous.
+    fn replay_macro(&mut self, reg: char) {
+        if self.replaying {
+            return; // don't let a macro invoke itself
+        }
+        let keys = match self.macros.get(&reg) {
+            Some(k) => k.clone(),
+            None => {
+                self.message = Some(format!("No macro in @{}", reg));
+                return;
+            }
+        };
+        self.replaying = true;
+        for k in keys {
+            self.handle_key(k);
+        }
+        self.replaying = false;
     }
 
     /// Route a key to the open picker: type to filter, arrows/Ctrl-n/p to move,
@@ -1548,7 +3035,54 @@ impl App {
                 self.save_file(false);
                 self.should_quit = true;
             }
+            LeaderAction::Hover => self.lsp_hover(),
+            LeaderAction::Definition => self.lsp_definition(),
+            LeaderAction::References => self.lsp_references(),
+            LeaderAction::Format => {
+                self.lsp_format();
+            }
+            LeaderAction::Rename => {
+                // Seed the cmdline with :rename for the new name.
+                self.message = Some("Use :rename <new-name>".to_string());
+            }
+            LeaderAction::DocumentSymbol => self.lsp_document_symbols(),
+            LeaderAction::Diagnostics => self.open_diagnostics_picker(),
+            LeaderAction::IncomingCalls => self.lsp_call_hierarchy(true),
+            LeaderAction::OutgoingCalls => self.lsp_call_hierarchy(false),
         }
+    }
+
+    /// Show the active buffer's diagnostics in a picker; Enter jumps to one.
+    fn open_diagnostics_picker(&mut self) {
+        let active = self.ws.borrow().active_buffer();
+        let path = self.ws.borrow().active_doc().file_path.clone();
+        let diags = self.diagnostics.get(&active).cloned().unwrap_or_default();
+        if diags.is_empty() {
+            self.message = Some("No diagnostics".to_string());
+            return;
+        }
+        let path = match path {
+            Some(p) => p,
+            None => return,
+        };
+        let items = diags
+            .into_iter()
+            .map(|d| {
+                let sev = match d.severity {
+                    1 => "E",
+                    2 => "W",
+                    3 => "I",
+                    _ => "H",
+                };
+                let line = d.start.line as usize + 1;
+                let col = d.start.character as usize + 1;
+                PickerItem::new(
+                    format!("{} {}:{}  {}", sev, line, col, d.message.replace('\n', " ")),
+                    PickerAction::OpenLocation(path.clone(), line, col),
+                )
+            })
+            .collect();
+        self.picker = Some(PickerState::new("Diagnostics", items));
     }
 
     /// Interpret the key following a `Ctrl-w` prefix.
@@ -1569,6 +3103,21 @@ impl App {
     }
 
     fn save_file(&mut self, force: bool) {
+        // Format-on-save: format via LSP first, then write when the edits arrive.
+        if self.config.format_on_save && !self.pending_format_save {
+            let active = self.ws.borrow().active_buffer();
+            if self.lsp_docs.contains_key(&active) {
+                self.pending_format_save = true;
+                if self.lsp_format() {
+                    return; // write deferred until the format response
+                }
+                self.pending_format_save = false; // couldn't format; save now
+            }
+        }
+        self.write_active_file(force);
+    }
+
+    fn write_active_file(&mut self, force: bool) {
         let (path, content) = {
             let w = self.ws.borrow();
             let doc = w.active_doc();
@@ -1760,6 +3309,186 @@ mod tests {
     }
 
     #[test]
+    fn per_buffer_syntax_engines_created_lazily() {
+        let mut a = App::new("fn main() {}".into(), PathBuf::from("main.rs"));
+        let rust_buf = a.ws.borrow().active_buffer();
+        assert!(a.syntax.contains_key(&rust_buf), "initial rust buffer has an engine");
+
+        // Open a Python file into a new active buffer.
+        let tmp = std::env::temp_dir().join("ruster_syn_test.py");
+        std::fs::write(&tmp, "def f():\n    return 1\n").unwrap();
+        a.open_path(&tmp, None);
+        let py_buf = a.ws.borrow().active_buffer();
+        assert_ne!(rust_buf, py_buf);
+        a.update_syntax();
+        assert!(a.syntax.contains_key(&py_buf), "python buffer gets its own engine");
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn substitute_current_line_and_whole_buffer() {
+        // `:s/a/X/` replaces the first match on the cursor's line only.
+        let mut a = App::new("aaa\naaa\n".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(a.parse_cmdline(":s/a/X/").unwrap());
+        assert_eq!(a.ws.borrow().buffer().to_string(), "Xaa\naaa\n");
+
+        // `:s/a/X/g` replaces every match on that line.
+        let mut a = App::new("aaa\naaa\n".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(a.parse_cmdline(":s/a/X/g").unwrap());
+        assert_eq!(a.ws.borrow().buffer().to_string(), "XXX\naaa\n");
+
+        // `:%s/a/X/g` replaces throughout the buffer.
+        let mut a = App::new("aaa\naaa\n".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(a.parse_cmdline(":%s/a/X/g").unwrap());
+        assert_eq!(a.ws.borrow().buffer().to_string(), "XXX\nXXX\n");
+    }
+
+    #[test]
+    fn substitute_reports_when_pattern_is_missing() {
+        let mut a = App::new("hello\n".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(a.parse_cmdline(":s/zzz/x/").unwrap());
+        assert!(a.message.as_deref().unwrap_or("").contains("not found"));
+        assert_eq!(a.ws.borrow().buffer().to_string(), "hello\n");
+    }
+
+    #[test]
+    fn substitute_parsing_does_not_swallow_other_commands() {
+        let a = App::new("x".into(), PathBuf::from("f.txt"));
+        // ":sp" is a split, not a substitution.
+        assert_eq!(a.parse_cmdline(":sp"), Ok(CmdAction::Split(SplitDir::Horizontal)));
+        assert_eq!(a.parse_cmdline(":sym foo"), Ok(CmdAction::WorkspaceSymbol("foo".into())));
+    }
+
+    #[test]
+    fn call_hierarchy_commands_parse() {
+        let a = App::new("x".into(), PathBuf::from("f.txt"));
+        assert_eq!(a.parse_cmdline(":callers"), Ok(CmdAction::CallHierarchy(true)));
+        assert_eq!(a.parse_cmdline(":callees"), Ok(CmdAction::CallHierarchy(false)));
+    }
+
+    #[test]
+    fn macro_record_and_replay() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("aaa\nbbb\nccc\n".into(), PathBuf::from("f.txt"));
+
+        // qq  x  q   — record "delete a char" into register q.
+        a.handle_key(CtKey::new(KeyCode::Char('q'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('q'), none));
+        assert!(a.macro_recording.is_some(), "recording started");
+        a.handle_key(CtKey::new(KeyCode::Char('x'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('q'), none));
+        assert!(a.macro_recording.is_none(), "recording stopped");
+        assert_eq!(a.macros.get(&'q').map(|k| k.len()), Some(1));
+        assert_eq!(a.ws.borrow().buffer().to_string(), "aa\nbbb\nccc\n");
+
+        // @q replays it.
+        a.handle_key(CtKey::new(KeyCode::Char('@'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('q'), none));
+        assert_eq!(a.ws.borrow().buffer().to_string(), "a\nbbb\nccc\n");
+    }
+
+    #[test]
+    fn set_editmode_switches_paradigm_and_routes_to_emacs() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let ctrl = KeyModifiers::CONTROL;
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("hello".into(), PathBuf::from("f.txt"));
+        assert_eq!(a.editmode, EditMode::Neovim);
+
+        a.apply_cmd(a.parse_cmdline(":set editmode emacs").unwrap());
+        assert_eq!(a.editmode, EditMode::Emacs);
+
+        // Modeless: a plain key self-inserts (no Normal mode). Cursor is at 0.
+        a.handle_key(CtKey::new(KeyCode::Char('X'), none));
+        assert_eq!(a.ws.borrow().buffer().to_string(), "Xhello");
+
+        // C-a jumps to line start, then C-e to line end.
+        a.handle_key(CtKey::new(KeyCode::Char('e'), ctrl));
+        a.handle_key(CtKey::new(KeyCode::Char('!'), none));
+        assert_eq!(a.ws.borrow().buffer().to_string(), "Xhello!");
+
+        // Switching back restores modal editing.
+        a.apply_cmd(a.parse_cmdline(":set editmode neovim").unwrap());
+        assert_eq!(a.editmode, EditMode::Neovim);
+    }
+
+    #[test]
+    fn emacs_region_renders_a_selection() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let ctrl = KeyModifiers::CONTROL;
+        let mut a = App::new("hello world".into(), PathBuf::from("f.txt"));
+        a.set_editmode(EditMode::Emacs);
+        a.ws.borrow_mut().execute(Action::Move(Motion::To(0)));
+        // Set the mark, then move right five chars to select "hello".
+        a.handle_key(CtKey::new(KeyCode::Char(' '), ctrl));
+        assert_eq!(a.emacs.mark(), Some(0));
+        for _ in 0..5 {
+            a.handle_key(CtKey::new(KeyCode::Char('f'), ctrl));
+        }
+        // Mark at 0, point at 5 — the region spans "hello".
+        assert_eq!(a.emacs.mark(), Some(0));
+        assert_eq!(a.ws.borrow().primary_head(), 5);
+        // The render path builds a SelectionView for the region without panic.
+        a.render();
+    }
+
+    #[test]
+    fn emacs_ctrl_x_ctrl_c_quits() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let ctrl = KeyModifiers::CONTROL;
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.set_editmode(EditMode::Emacs);
+        a.handle_key(CtKey::new(KeyCode::Char('x'), ctrl));
+        assert!(a.emacs_ctrl_x, "C-x armed the prefix");
+        a.handle_key(CtKey::new(KeyCode::Char('c'), ctrl));
+        assert!(a.should_quit);
+    }
+
+    #[test]
+    fn emacs_isearch_jumps_to_match() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let ctrl = KeyModifiers::CONTROL;
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("foo bar foo".into(), PathBuf::from("f.txt"));
+        a.set_editmode(EditMode::Emacs);
+        a.ws.borrow_mut().execute(Action::Move(Motion::To(0)));
+        // C-s starts isearch; typing "bar" moves point to offset 4.
+        a.handle_key(CtKey::new(KeyCode::Char('s'), ctrl));
+        for c in "bar".chars() {
+            a.handle_key(CtKey::new(KeyCode::Char(c), none));
+        }
+        assert_eq!(a.ws.borrow().primary_head(), 4);
+        // Enter ends the search.
+        a.handle_key(CtKey::new(KeyCode::Enter, none));
+        assert!(a.emacs_isearch.is_none());
+    }
+
+    #[test]
+    fn visual_mode_produces_a_selection_for_the_active_window() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("hello world\nsecond line\n".into(), PathBuf::from("f.txt"));
+        // Enter visual mode and extend right a few characters.
+        a.handle_key(CtKey::new(KeyCode::Char('v'), none));
+        assert_eq!(a.vim.mode, VimMode::VisualChar);
+        for _ in 0..4 {
+            a.handle_key(CtKey::new(KeyCode::Char('l'), none));
+        }
+        // The active window's view carries the selection.
+        let w = a.ws.borrow();
+        let win = w.windows.active_window();
+        let primary = win.cursors.primary();
+        assert_ne!(primary.anchor, primary.head, "selection spans a range");
+        drop(w);
+
+        // Line-wise visual selects whole lines.
+        a.handle_key(CtKey::new(KeyCode::Esc, none));
+        a.handle_key(CtKey::new(KeyCode::Char('V'), none));
+        assert_eq!(a.vim.mode, VimMode::VisualLine);
+    }
+
+    #[test]
     fn render_with_dummy_renderer_is_noop_and_safe() {
         // Ensures the multi-window render path builds a FrameState without panicking.
         let mut a = App::new("line1\nline2\nline3".into(), PathBuf::from("f.txt"));
@@ -1833,6 +3562,109 @@ mod tests {
         assert_eq!(a.ws.borrow().buffers.len(), 1);
     }
 
+    /// Open dired on a fresh temp dir containing the given subdirectories.
+    fn dired_on_temp(name: &str, subdirs: &[&str]) -> (App, PathBuf) {
+        let tmp = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_dir_all(&tmp);
+        for s in subdirs {
+            std::fs::create_dir_all(tmp.join(s)).unwrap();
+        }
+        if subdirs.is_empty() {
+            std::fs::create_dir_all(&tmp).unwrap();
+        }
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::Dired(Some(tmp.to_string_lossy().into_owned())));
+        (a, tmp)
+    }
+
+    #[test]
+    fn dired_colon_falls_through_to_cmdline() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let (mut a, tmp) = dired_on_temp("ruster_dired_colon", &[]);
+        a.handle_key(CtKey::new(KeyCode::Char(':'), KeyModifiers::NONE));
+        assert_eq!(a.vim.mode, VimMode::Cmdline, ": reaches the command line in dired");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn dired_slash_falls_through_to_search() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let (mut a, tmp) = dired_on_temp("ruster_dired_slash", &[]);
+        a.handle_key(CtKey::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        assert_eq!(a.vim.mode, VimMode::Cmdline, "/ opens a search prompt in dired");
+        assert!(a.vim.cmdline_buffer().starts_with('/'));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn dired_search_moves_cursor_and_enter_opens_entry() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        // Listing is "../", "adir/", "zebra/" (dirs sorted). Search for "zeb".
+        let (mut a, tmp) = dired_on_temp("ruster_dired_search", &["adir", "zebra"]);
+        for c in "/zeb".chars() {
+            a.handle_key(CtKey::new(KeyCode::Char(c), none));
+        }
+        a.handle_key(CtKey::new(KeyCode::Enter, none)); // run the search → Move
+        // The cursor is now on the "zebra/" line; a search key like 'd' in the
+        // term must not have been hijacked by dired.
+        assert!(a.dired_prompt.is_none(), "search term did not trigger dired keys");
+        a.handle_key(CtKey::new(KeyCode::Enter, none)); // dired open at cursor
+        let name = a.ws.borrow().active_doc().name.clone();
+        assert!(name.ends_with("zebra"), "search then Enter opened zebra, got {name}");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn dired_edit_keys_are_noops() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let (mut a, tmp) = dired_on_temp("ruster_dired_ro", &["adir"]);
+        let before = a.ws.borrow().buffer().to_string();
+        // `x` deletes a char in vim; `i` then text would insert — both no-op here.
+        a.handle_key(CtKey::new(KeyCode::Char('x'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('i'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('Z'), none));
+        a.handle_key(CtKey::new(KeyCode::Esc, none));
+        assert_eq!(a.ws.borrow().buffer().to_string(), before, "listing is read-only");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn dired_n_repeats_search_plus_creates() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let (mut a, tmp) = dired_on_temp("ruster_dired_n", &["adir"]);
+        // `n` is search-repeat now, not create: it must not open a Create prompt.
+        a.handle_key(CtKey::new(KeyCode::Char('n'), none));
+        assert!(a.dired_prompt.is_none(), "n no longer creates");
+        // `+` still opens the Create prompt.
+        a.handle_key(CtKey::new(KeyCode::Char('+'), none));
+        assert!(matches!(
+            a.dired_prompt,
+            Some(DiredPrompt { kind: DiredPromptKind::Create, .. })
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn dired_g_prefix_top_and_help() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let (mut a, tmp) = dired_on_temp("ruster_dired_g", &["adir", "zebra"]);
+        // Move down, then `gg` returns to the top.
+        a.handle_key(CtKey::new(KeyCode::Char('j'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('j'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('g'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('g'), none));
+        assert_eq!(a.ws.borrow().primary_head(), 0, "gg jumps to the top");
+        // `g?` shows the dired help popup.
+        a.handle_key(CtKey::new(KeyCode::Char('g'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('?'), none));
+        assert!(a.hover.is_some(), "g? shows dired help");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     #[test]
     fn dired_opens_and_descends_into_subdir() {
         use ruster_core::document::{DocKind, SpecialKind};
@@ -1880,6 +3712,52 @@ mod tests {
         a.dired_open_at_cursor();
         let id2 = a.ws.borrow().active_buffer();
         assert!(!ruster_core::dired::is_drives_view(a.dired_dirs.get(&id2).unwrap()));
+    }
+
+    #[test]
+    fn picker_preview_shows_selected_file_contents() {
+        let tmp = std::env::temp_dir().join("ruster_preview_test.rs");
+        std::fs::write(&tmp, "fn preview_me() {\n    let x = 1;\n}\n").unwrap();
+
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.picker = Some(PickerState::new(
+            "Files",
+            vec![PickerItem::new(
+                "preview_test.rs",
+                PickerAction::OpenPath(tmp.clone()),
+            )],
+        ));
+        let preview = a.picker_preview(10);
+        assert!(
+            preview.iter().any(|l| l.text.contains("preview_me")),
+            "preview shows the file contents"
+        );
+        // Rust source is syntax-highlighted in the preview.
+        assert!(preview.iter().any(|l| !l.highlights.is_empty()));
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn picker_preview_windows_around_a_location() {
+        let tmp = std::env::temp_dir().join("ruster_preview_loc.rs");
+        let body: String = (1..=60).map(|i| format!("// line {}\n", i)).collect();
+        std::fs::write(&tmp, &body).unwrap();
+
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.picker = Some(PickerState::new(
+            "References",
+            vec![PickerItem::new(
+                "loc",
+                PickerAction::OpenLocation(tmp.clone(), 40, 1),
+            )],
+        ));
+        let preview = a.picker_preview(9);
+        // The window is centred near line 40, not the top of the file.
+        assert!(preview.iter().any(|l| l.text.contains("line 40")));
+        assert!(!preview.iter().any(|l| l.text.contains("line 1\n")));
+
+        let _ = std::fs::remove_file(&tmp);
     }
 
     #[test]
@@ -1934,6 +3812,165 @@ mod tests {
     }
 
     #[test]
+    fn dired_create_dir_with_trailing_slash_and_rejects_duplicates() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let tmp = std::env::temp_dir().join("ruster_dired_create");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::Dired(Some(tmp.to_string_lossy().into_owned())));
+
+        // "sub/" creates a directory.
+        a.handle_key(CtKey::new(KeyCode::Char('+'), none));
+        for c in "sub/".chars() {
+            a.handle_key(CtKey::new(KeyCode::Char(c), none));
+        }
+        a.handle_key(CtKey::new(KeyCode::Enter, none));
+        assert!(tmp.join("sub").is_dir(), "trailing slash creates a directory");
+
+        // Creating it again reports that it exists.
+        a.handle_key(CtKey::new(KeyCode::Char('+'), none));
+        for c in "sub/".chars() {
+            a.handle_key(CtKey::new(KeyCode::Char(c), none));
+        }
+        a.handle_key(CtKey::new(KeyCode::Enter, none));
+        assert!(a.message.as_deref().unwrap_or("").contains("already exists"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn dired_colors_dirs_execs_and_files_differently() {
+        use ruster_render::Color;
+        let tmp = std::env::temp_dir().join("ruster_dired_colors");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("adir")).unwrap();
+        std::fs::write(tmp.join("plain.txt"), "x").unwrap();
+        std::fs::write(tmp.join("runme.sh"), "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let p = tmp.join("runme.sh");
+            let mut perms = std::fs::metadata(&p).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&p, perms).unwrap();
+        }
+
+        let entries = ruster_core::dired::list(&tmp, true);
+        let styled = dired_styled_lines(&entries);
+        let fg_of = |name: &str| -> Option<Color> {
+            styled
+                .iter()
+                .find(|l| l.text.trim_end_matches('/') == name)
+                .and_then(|l| l.highlights.first().map(|(_, _, s)| s.fg))
+        };
+
+        // Directories are blue, and ".." counts as one.
+        assert_eq!(fg_of("adir"), Some(Color::Rgb(137, 180, 250)));
+        assert_eq!(fg_of(".."), Some(Color::Rgb(137, 180, 250)));
+        // A plain file has no color override.
+        assert_eq!(fg_of("plain.txt"), None);
+        #[cfg(unix)]
+        {
+            // An executable is green.
+            assert_eq!(fg_of("runme.sh"), Some(Color::Rgb(166, 227, 161)));
+        }
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn dired_dot_toggles_hidden_files() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let tmp = std::env::temp_dir().join("ruster_dired_dot");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join(".hidden"), "x").unwrap();
+        std::fs::write(tmp.join("shown.txt"), "y").unwrap();
+
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::Dired(Some(tmp.to_string_lossy().into_owned())));
+
+        // Hidden by default.
+        let text = a.ws.borrow().buffer().to_string();
+        assert!(text.contains("shown.txt"));
+        assert!(!text.contains(".hidden"), "dot-files hidden by default");
+
+        // '.' reveals them.
+        a.handle_key(CtKey::new(KeyCode::Char('.'), none));
+        assert!(a.dired_show_hidden);
+        let text = a.ws.borrow().buffer().to_string();
+        assert!(text.contains(".hidden"), "dot-files shown after toggle");
+
+        // '.' again hides them.
+        a.handle_key(CtKey::new(KeyCode::Char('.'), none));
+        let text = a.ws.borrow().buffer().to_string();
+        assert!(!text.contains(".hidden"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn dired_yy_copies_and_p_pastes() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let tmp = std::env::temp_dir().join("ruster_dired_copy");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("sub")).unwrap();
+        std::fs::write(tmp.join("a.txt"), "hello").unwrap();
+
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::Dired(Some(tmp.to_string_lossy().into_owned())));
+
+        // Listing: "..", "sub/", "a.txt" — put the cursor on a.txt (line 2).
+        let line2 = a.ws.borrow().buffer().line_start_char(2);
+        a.ws.borrow_mut().execute(Action::Move(Motion::To(line2)));
+        a.handle_key(CtKey::new(KeyCode::Char('y'), none));
+        assert!(a.dired_pending_y, "first y is pending");
+        a.handle_key(CtKey::new(KeyCode::Char('y'), none));
+        assert_eq!(a.dired_clipboard.as_ref().map(|(_, cut)| *cut), Some(false));
+
+        // Descend into sub/ and paste.
+        let dired_buf = a.ws.borrow().active_buffer();
+        a.refresh_dired(dired_buf, tmp.join("sub"));
+        a.handle_key(CtKey::new(KeyCode::Char('p'), none));
+        assert!(tmp.join("sub").join("a.txt").exists(), "file pasted into sub/");
+        assert!(tmp.join("a.txt").exists(), "copy leaves the original");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn dired_dd_cuts_and_p_moves() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let tmp = std::env::temp_dir().join("ruster_dired_cut");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("sub")).unwrap();
+        std::fs::write(tmp.join("b.txt"), "hi").unwrap();
+
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::Dired(Some(tmp.to_string_lossy().into_owned())));
+        let line2 = a.ws.borrow().buffer().line_start_char(2);
+        a.ws.borrow_mut().execute(Action::Move(Motion::To(line2)));
+        a.handle_key(CtKey::new(KeyCode::Char('d'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('d'), none));
+        assert_eq!(a.dired_clipboard.as_ref().map(|(_, cut)| *cut), Some(true));
+
+        let dired_buf = a.ws.borrow().active_buffer();
+        a.refresh_dired(dired_buf, tmp.join("sub"));
+        a.handle_key(CtKey::new(KeyCode::Char('p'), none));
+        assert!(tmp.join("sub").join("b.txt").exists(), "moved into sub/");
+        assert!(!tmp.join("b.txt").exists(), "cut removes the original");
+        assert!(a.dired_clipboard.is_none(), "cut is consumed by the paste");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn parse_rg_vimgrep_line() {
         let (path, line, col, body) =
             parse_rg_line("src/main.rs:12:5:let x = 1").expect("parses");
@@ -1962,6 +3999,87 @@ mod tests {
         assert_eq!(a.parse_cmdline(":Files"), Ok(CmdAction::Files));
         assert_eq!(a.parse_cmdline(":Rg todo"), Ok(CmdAction::Rg("todo".into())));
         assert!(a.parse_cmdline(":Rg").is_err());
+    }
+
+    #[test]
+    fn snippet_expands_on_tab_in_insert() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        // Type the trigger "fn" in a .rs buffer, then Tab in insert mode.
+        let mut a = App::new(String::new(), PathBuf::from("f.rs"));
+        a.vim.mode = VimMode::Insert;
+        for c in "fn".chars() {
+            a.handle_key(CtKey::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        a.handle_key(CtKey::new(KeyCode::Tab, KeyModifiers::NONE));
+        let text = a.ws.borrow().active_doc().buffer.to_string();
+        assert!(text.contains("fn name("), "snippet expanded: {text:?}");
+        // Two more tabstops ($2 args, $0 body) remain after the first jump.
+        assert_eq!(a.snippet_stops.len(), 2);
+    }
+
+    #[test]
+    fn hover_markdown_highlights_code_and_strips_fences() {
+        let md = "```rust\npub struct Range {}\n```\n\n---\n\nsize = 16 (0x10)";
+        let lines = build_hover_lines(md);
+        // Fence markers and separators are removed.
+        assert!(lines.iter().all(|l| !l.text.contains("```")));
+        assert!(lines.iter().all(|l| l.text.trim() != "---"));
+        // The code line is syntax-highlighted.
+        assert!(lines
+            .iter()
+            .any(|l| l.text.contains("struct") && !l.highlights.is_empty()));
+        // Prose survives as plain text.
+        assert!(lines.iter().any(|l| l.text.contains("size = 16")));
+    }
+
+    #[test]
+    fn word_before_extracts_identifier() {
+        assert_eq!(word_before("  foo", 5), "foo");
+        assert_eq!(word_before("a.bar", 5), "bar");
+        assert_eq!(word_before("x = ", 4), "");
+    }
+
+    #[test]
+    fn parse_lsp_commands() {
+        let a = App::new("x".into(), PathBuf::from("f.rs"));
+        assert_eq!(a.parse_cmdline(":fmt"), Ok(CmdAction::Format));
+        assert_eq!(a.parse_cmdline(":rename Foo"), Ok(CmdAction::Rename("Foo".into())));
+        assert!(a.parse_cmdline(":rename").is_err());
+    }
+
+    #[test]
+    fn leader_code_group_resolves() {
+        assert!(matches!(
+            leader_resolve(&['c', 'k']),
+            LeaderResolve::Action(LeaderAction::Hover)
+        ));
+        assert!(matches!(
+            leader_resolve(&['c', 'g']),
+            LeaderResolve::Action(LeaderAction::Definition)
+        ));
+        let (title, rows) = leader_whichkey(&['c']).expect("code panel");
+        assert_eq!(title, "SPC c");
+        assert!(rows.iter().any(|r| r.contains("hover")));
+        assert!(rows.iter().any(|r| r.contains("references")));
+    }
+
+    #[test]
+    fn diagnostics_stored_and_surfaced_on_line() {
+        let mut a = App::new("let x = 1;\n".into(), PathBuf::from("f.rs"));
+        let buf = a.ws.borrow().active_buffer();
+        a.diagnostics.insert(
+            buf,
+            vec![ruster_lsp::Diagnostic {
+                start: ruster_lsp::results::LspPositionEq { line: 0, character: 4 },
+                end: ruster_lsp::results::LspPositionEq { line: 0, character: 5 },
+                severity: 1,
+                message: "unused".into(),
+            }],
+        );
+        // Cursor is on line 0, so the diagnostic surfaces.
+        let msg = a.current_line_diagnostic().expect("diagnostic on line");
+        assert!(msg.contains("unused"));
+        assert!(msg.starts_with("[E]"));
     }
 
     #[test]

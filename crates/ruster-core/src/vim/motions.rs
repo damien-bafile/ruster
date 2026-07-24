@@ -61,6 +61,126 @@ pub fn last_printable_in_line(editor: &dyn EditorView) -> usize {
     if content_len > 0 { start + content_len - 1 } else { start }
 }
 
+/// Position just past the last character on `line`, before any newline — where
+/// `A` starts appending and where `$`-style operators stop.
+pub fn line_content_end(editor: &dyn EditorView, line: usize) -> usize {
+    let buf = editor.buffer();
+    let start = buf.line_start_char(line);
+    let end = buf.line_end_char(line);
+    if end > start && buf.char_at(end - 1) == '\n' {
+        end - 1
+    } else {
+        end
+    }
+}
+
+/// First non-blank character on `line` — where `I` starts inserting.
+pub fn first_non_blank(editor: &dyn EditorView, line: usize) -> usize {
+    let buf = editor.buffer();
+    let start = buf.line_start_char(line);
+    let end = line_content_end(editor, line);
+    let mut i = start;
+    while i < end && buf.char_at(i).is_whitespace() {
+        i += 1;
+    }
+    i
+}
+
+/// Target position for `f`/`t`/`F`/`T` searching `target` on the cursor's line.
+/// `f`/`t` search forward, `F`/`T` backward; `t`/`T` stop just short.
+pub fn find_char_in_line(
+    editor: &dyn EditorView,
+    cmd: char,
+    target: char,
+    from: usize,
+) -> Option<usize> {
+    let buf = editor.buffer();
+    let line = char_to_line(editor, from);
+    let start = buf.line_start_char(line);
+    let end = line_content_end(editor, line);
+    match cmd {
+        'f' | 't' => {
+            let mut i = from + 1;
+            while i < end {
+                if buf.char_at(i) == target {
+                    return Some(if cmd == 't' { i.saturating_sub(1) } else { i });
+                }
+                i += 1;
+            }
+            None
+        }
+        'F' | 'T' => {
+            let mut i = from;
+            while i > start {
+                i -= 1;
+                if buf.char_at(i) == target {
+                    return Some(if cmd == 'T' { i + 1 } else { i });
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// The bracket matching the one at (or next on the line after) `from`.
+pub fn matching_bracket(editor: &dyn EditorView, from: usize) -> Option<usize> {
+    const PAIRS: [(char, char); 3] = [('(', ')'), ('[', ']'), ('{', '}')];
+    let buf = editor.buffer();
+    let len = buf.len_chars();
+    let line = char_to_line(editor, from);
+    let line_end = line_content_end(editor, line);
+
+    // Find the first bracket at or after the cursor, on this line.
+    let mut at = None;
+    let mut i = from;
+    while i < line_end {
+        let c = buf.char_at(i);
+        if PAIRS.iter().any(|(o, cl)| *o == c || *cl == c) {
+            at = Some(i);
+            break;
+        }
+        i += 1;
+    }
+    let at = at?;
+    let c = buf.char_at(at);
+
+    if let Some((open, close)) = PAIRS.iter().find(|(o, _)| *o == c) {
+        let mut depth = 0i32;
+        let mut j = at;
+        while j < len {
+            let ch = buf.char_at(j);
+            if ch == *open {
+                depth += 1;
+            } else if ch == *close {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(j);
+                }
+            }
+            j += 1;
+        }
+        return None;
+    }
+    if let Some((open, close)) = PAIRS.iter().find(|(_, cl)| *cl == c) {
+        let mut depth = 0i32;
+        let mut j = at as i64;
+        while j >= 0 {
+            let ch = buf.char_at(j as usize);
+            if ch == *close {
+                depth += 1;
+            } else if ch == *open {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(j as usize);
+                }
+            }
+            j -= 1;
+        }
+    }
+    None
+}
+
 pub fn char_to_line(editor: &dyn EditorView, char_idx: usize) -> usize {
     let mut acc = 0usize;
     for line in 0..editor.buffer().line_count() {
