@@ -209,7 +209,3 @@ impl LuaRuntime {
         false
     }
 }
-
-pub(crate) fn queue_action(runtime: &LuaRuntime, action: LuaAction) {
-    runtime.pending.borrow_mut().push(action);
-}
