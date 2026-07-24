@@ -1,6 +1,6 @@
 use crate::action::{Action, EditOp, Motion};
 use crate::buffer::Buffer;
-use crate::cursor::CursorSet;
+use crate::cursor::{CursorSet, Range};
 use crate::undo::UndoStack;
 
 /// Read-only view of editable state that key handling (vim/emacs) reads.
@@ -10,6 +10,11 @@ use crate::undo::UndoStack;
 /// over the active window's document + cursor set.
 pub trait EditorView {
     fn buffer(&self) -> &Buffer;
+    /// Visible text rows, for half-page motions. Defaults to a conventional
+    /// terminal height for headless callers that have no viewport.
+    fn viewport_height(&self) -> usize {
+        24
+    }
     fn primary_head(&self) -> usize;
     fn cursors(&self) -> &CursorSet;
     fn char_to_line(&self, char_idx: usize) -> usize {
@@ -65,6 +70,11 @@ impl<'a> EditSession<'a> {
                     self.cursors.set_head(at, self.buffer);
                 }
             }
+            Action::UndoTime(forward) => {
+                if let Some((_n, at)) = self.undo.undo_time(self.buffer, forward) {
+                    self.cursors.set_head(at, self.buffer);
+                }
+            }
             Action::BeginVisual(anchor) => {
                 self.cursors.set_visual_anchor(anchor);
             }
@@ -72,6 +82,9 @@ impl<'a> EditSession<'a> {
             Action::Edit(e) => self.apply_edit(e),
             Action::AddCursor(pos) => self.cursors.add_cursor(pos),
             Action::ClearExtraCursors => self.cursors.clear_extra(),
+            // Scrolling is window state, which an EditSession does not borrow;
+            // Workspace handles it before delegating here.
+            Action::Scroll(_) => {}
             Action::CmdlineResult(_) => {}
             Action::Textobject { .. } => {}
             Action::IndentLine => {
@@ -104,55 +117,81 @@ impl<'a> EditSession<'a> {
     }
 
     fn apply_edit(&mut self, e: EditOp) {
-        let all: Vec<usize> = if self.cursors.count() > 1 {
-            let mut positions: Vec<usize> = (0..self.cursors.count())
-                .map(|i| self.cursors.cursors[i].head)
-                .collect();
-            positions.sort_unstable_by(|a, b| b.cmp(a));
-            positions
-        } else {
-            vec![self.cursors.head()]
-        };
+        // Single cursor: apply directly and move the caret via `set_head`, which
+        // also refreshes `desired_col` for later vertical motion.
+        if self.cursors.count() == 1 {
+            let at = self.cursors.head();
+            if let Some(new_head) = self.apply_edit_at(at, &e) {
+                self.cursors.set_head(new_head, self.buffer);
+            }
+            return;
+        }
+        self.apply_edit_multi(e);
+    }
 
-        for &at in &all {
-            match e.clone() {
-                EditOp::InsertChar(c) => {
-                    let mut buf = [0u8; 4];
-                    let text = c.encode_utf8(&mut buf);
-                    let ch = self.buffer.insert(at, text);
-                    self.undo.push(ch);
-                    if all.len() == 1 {
-                        self.cursors.set_head(at + 1, self.buffer);
-                    }
-                }
-                EditOp::InsertString(s) => {
-                    let n = s.chars().count();
-                    let ch = self.buffer.insert(at, &s);
-                    self.undo.push(ch);
-                    if all.len() == 1 {
-                        self.cursors.set_head(at + n, self.buffer);
-                    }
-                }
-                EditOp::DeleteRange(start, end) if end > start => {
-                    let safe_end = end.min(self.buffer.len_chars());
-                    let ch = self.buffer.delete(start..safe_end);
-                    self.undo.push(ch);
-                    if all.len() == 1 {
-                        self.cursors.set_head(start, self.buffer);
-                    }
-                }
-                EditOp::DeleteRange(_, _) => {}
-                EditOp::Backspace => {
-                    if at > 0 {
-                        let ch = self.buffer.delete(at - 1..at);
-                        self.undo.push(ch);
-                        if all.len() == 1 {
-                            self.cursors.set_head(at - 1, self.buffer);
-                        }
-                    }
+    /// Apply one edit at `at`, pushing the change onto the undo batch. Returns
+    /// where the cursor that owned this edit should land, or `None` for a no-op.
+    fn apply_edit_at(&mut self, at: usize, e: &EditOp) -> Option<usize> {
+        match e {
+            EditOp::InsertChar(c) => {
+                let mut buf = [0u8; 4];
+                let text = c.encode_utf8(&mut buf);
+                self.undo.push(self.buffer.insert(at, text));
+                Some(at + 1)
+            }
+            EditOp::InsertString(s) => {
+                let n = s.chars().count();
+                self.undo.push(self.buffer.insert(at, s));
+                Some(at + n)
+            }
+            EditOp::DeleteRange(start, end) if end > start => {
+                let safe_end = (*end).min(self.buffer.len_chars());
+                self.undo.push(self.buffer.delete(*start..safe_end));
+                Some(*start)
+            }
+            EditOp::DeleteRange(_, _) => None,
+            EditOp::Backspace => {
+                if at > 0 {
+                    self.undo.push(self.buffer.delete(at - 1..at));
+                    Some(at - 1)
+                } else {
+                    None
                 }
             }
         }
+    }
+
+    /// Apply the same edit at every cursor. Cursors are processed low offset to
+    /// high, and each later position is shifted by the net length change of all
+    /// earlier edits — so every cursor lands where its own text ended up and no
+    /// edit disturbs a position that hasn't been applied yet. `DeleteRange` is
+    /// reinterpreted as "delete this many chars at each cursor" (its absolute
+    /// bounds mean nothing once there are several carets).
+    fn apply_edit_multi(&mut self, e: EditOp) {
+        let mut order: Vec<usize> = (0..self.cursors.count()).collect();
+        order.sort_by_key(|&i| self.cursors.cursors[i].head);
+
+        let mut shift: isize = 0;
+        for i in order {
+            let base = self.cursors.cursors[i].head as isize + shift;
+            let at = base.max(0) as usize;
+            let before = self.buffer.len_chars();
+            let new_head = match &e {
+                EditOp::DeleteRange(start, end) if end > start => {
+                    // Delete `end - start` chars starting at this cursor.
+                    let del_end = (at + (end - start)).min(self.buffer.len_chars());
+                    if del_end > at {
+                        self.undo.push(self.buffer.delete(at..del_end));
+                    }
+                    Some(at)
+                }
+                _ => self.apply_edit_at(at, &e),
+            };
+            // Track how the buffer length changed so later cursors stay aligned.
+            shift += self.buffer.len_chars() as isize - before as isize;
+            self.cursors.cursors[i] = Range::caret(new_head.unwrap_or(at));
+        }
+        self.cursors.merge_overlaps();
     }
 }
 
@@ -216,6 +255,45 @@ mod tests {
         assert_eq!(e.buffer().to_string(), "ab!");
         e.execute(Action::Undo);
         assert_eq!(e.buffer().to_string(), "ab");
+    }
+
+    #[test]
+    fn multi_cursor_insert_lands_at_every_cursor_without_drift() {
+        // Two cursors on the two 'x's. Typing "ab" at both must produce the
+        // same text at each — not the drifting corruption a stale-offset apply
+        // gives ("xax b" etc.).
+        let mut e = Editor::from_str("x.x");
+        e.execute(Action::Move(Motion::To(0))); // primary at 0
+        e.execute(Action::AddCursor(2)); // second cursor at the other 'x'
+        e.execute(Action::BeginBatch);
+        e.execute(Action::Edit(EditOp::InsertChar('a')));
+        e.execute(Action::Edit(EditOp::InsertChar('b')));
+        e.execute(Action::EndBatch);
+        assert_eq!(e.buffer().to_string(), "abx.abx");
+    }
+
+    #[test]
+    fn multi_cursor_backspace_deletes_at_every_cursor() {
+        let mut e = Editor::from_str("ax.bx");
+        e.execute(Action::Move(Motion::To(1))); // after 'a'
+        e.execute(Action::AddCursor(4)); // after 'b'
+        e.execute(Action::BeginBatch);
+        e.execute(Action::Edit(EditOp::Backspace));
+        e.execute(Action::EndBatch);
+        assert_eq!(e.buffer().to_string(), "x.x");
+    }
+
+    #[test]
+    fn multi_cursor_insert_undoes_as_one_step() {
+        let mut e = Editor::from_str("x.x");
+        e.execute(Action::Move(Motion::To(0)));
+        e.execute(Action::AddCursor(2));
+        e.execute(Action::BeginBatch);
+        e.execute(Action::Edit(EditOp::InsertChar('a')));
+        e.execute(Action::EndBatch);
+        assert_eq!(e.buffer().to_string(), "ax.ax");
+        e.execute(Action::Undo);
+        assert_eq!(e.buffer().to_string(), "x.x");
     }
 
     #[test]

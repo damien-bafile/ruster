@@ -12,7 +12,9 @@ All keys and commands work identically in the TUI and GUI backends.
 | `i` | Normal | Insert mode (before cursor) |
 | `v` | Normal | Visual (character-wise) |
 | `V` | Normal | Visual (line-wise) |
+| `C-v` | Normal | Visual (block-wise / column) |
 | `:` | Normal | Command-line |
+| `/` `?` | Normal | Search prompt (forwards / backwards) |
 | `Esc` | Insert / Visual / Cmdline | Back to Normal (also clears extra cursors) |
 
 ## Normal mode — motions
@@ -26,6 +28,13 @@ Most motions accept a count prefix (e.g. `5j`, `3w`).
 | `0` | Start of line |
 | `$` | End of line |
 | `w` `b` `e` | Next word start / previous word start / word end |
+| `f{char}` / `F{char}` | Jump to next / previous occurrence of `{char}` on the line |
+| `t{char}` / `T{char}` | Jump just before / after `{char}` on the line |
+| `;` / `,` | Repeat the last find forwards / backwards |
+| `%` | Jump to the matching bracket |
+| `/{pat}` / `?{pat}` | Search forwards / backwards (wraps around) |
+| `n` / `N` | Repeat the search in the same / opposite direction |
+| `*` | Search forwards for the word under the cursor |
 | `gg` | Top of buffer |
 | `G` | Bottom of buffer |
 
@@ -33,12 +42,24 @@ Most motions accept a count prefix (e.g. `5j`, `3w`).
 
 | Key | Action |
 |-----|--------|
-| `x` | Delete character under cursor |
-| `p` | Paste (system clipboard, falls back to register) |
+| `i` `a` | Insert before / append after the cursor |
+| `I` `A` | Insert at first non-blank / append at end of line |
+| `o` `O` | Open a new line below / above |
+| `x` / `X` | Delete character under / before the cursor |
+| `r{char}` | Replace the character under the cursor |
+| `~` | Toggle the case of the character under the cursor |
+| `D` / `C` | Delete / change to end of line |
+| `Y` / `S` | Yank / change the whole line |
+| `p` / `P` | Paste after / before the cursor (line-wise registers paste below / above) |
 | `u` | Undo |
 | `C-r` | Redo |
 | `.` | Repeat last change |
-| `C-d` | Add a cursor at the next occurrence of the word under the cursor (multi-cursor) |
+| `C-d` / `C-u` | Scroll a half page down / up (cursor keeps its screen row) |
+| `C-n` | Add a cursor at the next occurrence of the word under the cursor (multi-cursor) |
+| `q{reg}` … `q` | Record a macro into `{reg}` / stop recording |
+| `@{reg}` | Replay the macro in `{reg}` |
+| `u` / `C-r` | Undo / redo along the current branch |
+| `g-` / `g+` | Move backward/forward through *every* undo state in time order, including branches abandoned by editing after an undo |
 | `Esc` | Clear extra cursors |
 
 ### Operators
@@ -74,7 +95,9 @@ Examples: `daf` delete around function, `ciw` change inner word, `yi(` yank insi
 
 ## Visual mode
 
-Extend the selection with motions `h` `j` `k` `l` `w` `b` `e` `0`, then act:
+`v` selects character-wise, `V` line-wise, and `C-v` **block-wise** (a column
+rectangle). Extend the selection with motions `h` `j` `k` `l` `w` `b` `e` `0`,
+then act:
 
 | Key | Action |
 |-----|--------|
@@ -83,6 +106,10 @@ Extend the selection with motions `h` `j` `k` `l` `w` `b` `e` `0`, then act:
 | `y` | Yank selection |
 | `>` / `<` | Indent / de-indent |
 | `Esc` | Leave visual mode |
+
+In block mode `d`/`x`/`y` operate on the rectangle: every line's selected
+columns are removed or copied (rows joined by newlines), and lines shorter than
+the block are clipped rather than padded.
 
 ## Insert mode
 
@@ -163,6 +190,13 @@ Press `SPC` in Normal mode; the which-key panel lists continuations.
 | `:fmt` / `:format` | Format the buffer |
 | `:rename <name>` | Rename the symbol under the cursor |
 | `:sym <query>` | Workspace symbol search |
+
+### Editing
+| Command | Action |
+|---------|--------|
+| `:s/pat/rep/` | Replace the first match on the current line |
+| `:s/pat/rep/g` | Replace every match on the current line |
+| `:%s/pat/rep/g` | Replace throughout the buffer |
 
 Then `:` + `Tab` opens a fuzzy **command palette** of these commands.
 

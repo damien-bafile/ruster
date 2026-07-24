@@ -216,6 +216,27 @@ impl Renderer for RaylibRenderer {
                             CursorKind::Bar => s.draw_rectangle(cx, cy, 2, LINE_H, Color::new(245, 224, 220, 255)),
                         }
                     }
+
+                    // Extra multi-cursor carets, always drawn as blocks.
+                    for &(cl, cc) in &view.extra_cursors {
+                        let cl = cl as usize;
+                        if cl < scroll || cl >= scroll + buf_rows {
+                            continue;
+                        }
+                        let vis_row = (cl - scroll) as i32;
+                        let col = cc as usize;
+                        let text_before = view
+                            .lines
+                            .get(cl)
+                            .map(|l| {
+                                let end = col.min(l.text.len());
+                                &l.text[..end]
+                            })
+                            .unwrap_or("");
+                        let cx = text_x as f32 + measure(text_before);
+                        let cy = py + vis_row * LINE_H;
+                        s.draw_rectangle(cx as i32, cy, char_w as i32, LINE_H, Color::new(245, 224, 220, 140));
+                    }
                 }
 
                 // Per-window statusline on its bottom row.

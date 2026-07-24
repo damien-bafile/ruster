@@ -111,16 +111,249 @@ mod tests {
     }
 
     #[test]
-    fn yy_then_p_yanks_and_pastes_at_cursor() {
+    fn yy_then_p_pastes_the_line_below() {
         let mut e = Editor::from_str("hello");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
         for a in v.handle(KeyEvent::Char('y'), &e) { e.execute(a); }
         for a in v.handle(KeyEvent::Char('y'), &e) { e.execute(a); }
         assert_eq!(e.buffer().to_string(), "hello");
+        // `yy` is line-wise, so `p` puts the copy on the following line.
         for a in v.handle(KeyEvent::Char('p'), &e) { e.execute(a); }
-        assert_eq!(e.buffer().to_string(), "hellohello");
-        assert_eq!(e.primary_head(), 5);
+        assert_eq!(e.buffer().to_string(), "hello\nhello");
+    }
+
+    #[test]
+    fn insert_entry_keys() {
+        // `a` appends after the cursor.
+        let mut e = Editor::from_str("ab");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('a'), &e) { e.execute(a); }
+        assert_eq!(e.primary_head(), 1, "a moves one right");
+
+        // `A` appends at end of line.
+        let mut e = Editor::from_str("ab\ncd");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('A'), &e) { e.execute(a); }
+        assert_eq!(e.primary_head(), 2, "A goes to end of the first line");
+
+        // `I` goes to the first non-blank.
+        let mut e = Editor::from_str("   xy");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('I'), &e) { e.execute(a); }
+        assert_eq!(e.primary_head(), 3, "I skips leading blanks");
+    }
+
+    #[test]
+    fn open_line_below_and_above() {
+        let mut e = Editor::from_str("one\ntwo");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('o'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "one\n\ntwo");
+
+        let mut e = Editor::from_str("one\ntwo");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('O'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "\none\ntwo");
+        assert_eq!(e.primary_head(), 0, "cursor sits on the new empty line");
+    }
+
+    #[test]
+    fn replace_char_and_toggle_case() {
+        let mut e = Editor::from_str("cat");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('r'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('b'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "bat");
+
+        let mut e = Editor::from_str("cat");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('~'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "Cat");
+    }
+
+    #[test]
+    fn capital_d_deletes_to_end_of_line() {
+        let mut e = Editor::from_str("hello world\nnext");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('D'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "he\nnext");
+    }
+
+    #[test]
+    fn find_char_motions_and_repeat() {
+        // "one,two,three" — f, jumps to the first comma, ; to the next.
+        let mut e = Editor::from_str("one,two,three");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('f'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char(','), &e) { e.execute(a); }
+        assert_eq!(e.primary_head(), 3);
+        for a in v.handle(KeyEvent::Char(';'), &e) { e.execute(a); }
+        assert_eq!(e.primary_head(), 7, "; repeats the find");
+
+        // `t` stops just before the target.
+        let mut e = Editor::from_str("one,two");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('t'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char(','), &e) { e.execute(a); }
+        assert_eq!(e.primary_head(), 2);
+    }
+
+    #[test]
+    fn operator_with_find_motion() {
+        // `dt,` deletes up to (not including) the comma.
+        let mut e = Editor::from_str("one,two");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('d'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('t'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char(','), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), ",two", "dt, stops before the comma");
+
+        // `df,` is inclusive of the comma.
+        let mut e = Editor::from_str("one,two");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('d'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('f'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char(','), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "two");
+    }
+
+    #[test]
+    fn ctrl_v_block_delete_removes_a_rectangle() {
+        // Delete the first two columns of all three lines.
+        let mut e = Editor::from_str("abcd\nefgh\nijkl");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Ctrl('v'), &e) { e.execute(a); }
+        assert_eq!(v.mode, crate::vim::VimMode::VisualBlock);
+        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('j'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('j'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('d'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "cd\ngh\nkl");
+        assert_eq!(v.mode, crate::vim::VimMode::Normal);
+    }
+
+    #[test]
+    fn block_yank_joins_rows_with_newlines() {
+        let mut e = Editor::from_str("abcd\nefgh");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Ctrl('v'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('j'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('y'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "abcd\nefgh", "yank leaves text alone");
+        assert_eq!(v.register.as_deref(), Some("ab\nef"));
+    }
+
+    #[test]
+    fn block_clips_to_short_lines() {
+        // Middle line is shorter than the block's columns.
+        let mut e = Editor::from_str("abcd\nx\nijkl");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Ctrl('v'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('j'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('j'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('d'), &e) { e.execute(a); }
+        // Columns 0..=2 removed where present; "x" only loses its single char.
+        assert_eq!(e.buffer().to_string(), "d\n\nl");
+    }
+
+    #[test]
+    fn slash_search_and_n_repeat() {
+        let mut e = Editor::from_str("alpha beta alpha gamma alpha");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        // Type "/alpha" then Enter.
+        for a in v.handle(KeyEvent::Char('/'), &e) { e.execute(a); }
+        for c in "alpha".chars() {
+            for a in v.handle(KeyEvent::Char(c), &e) { e.execute(a); }
+        }
+        for a in v.handle(KeyEvent::Enter, &e) { e.execute(a); }
+        assert_eq!(e.primary_head(), 11, "jumps to the second 'alpha'");
+        // `n` goes to the third.
+        for a in v.handle(KeyEvent::Char('n'), &e) { e.execute(a); }
+        assert_eq!(e.primary_head(), 23);
+        // `N` goes back.
+        for a in v.handle(KeyEvent::Char('N'), &e) { e.execute(a); }
+        assert_eq!(e.primary_head(), 11);
+    }
+
+    #[test]
+    fn search_wraps_around_the_buffer() {
+        let mut e = Editor::from_str("needle and more");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('/'), &e) { e.execute(a); }
+        for c in "needle".chars() {
+            for a in v.handle(KeyEvent::Char(c), &e) { e.execute(a); }
+        }
+        // Only match is at 0, behind the cursor — the search wraps to it.
+        for a in v.handle(KeyEvent::Enter, &e) { e.execute(a); }
+        assert_eq!(e.primary_head(), 0);
+    }
+
+    #[test]
+    fn star_searches_word_under_cursor() {
+        let mut e = Editor::from_str("foo bar foo");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('*'), &e) { e.execute(a); }
+        assert_eq!(e.primary_head(), 8, "jumps to the next 'foo'");
+    }
+
+    #[test]
+    fn escape_cancels_search_without_moving() {
+        let mut e = Editor::from_str("alpha beta");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('/'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('b'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Esc, &e) { e.execute(a); }
+        assert_eq!(e.primary_head(), 0);
+        assert_eq!(v.mode, crate::vim::VimMode::Normal);
+    }
+
+    #[test]
+    fn percent_jumps_between_matching_brackets() {
+        let mut e = Editor::from_str("foo(bar(baz))");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        // From the start, % finds the first '(' at 3 and jumps to its match.
+        for a in v.handle(KeyEvent::Char('%'), &e) { e.execute(a); }
+        assert_eq!(e.primary_head(), 12, "outer close paren");
+        // And back again.
+        for a in v.handle(KeyEvent::Char('%'), &e) { e.execute(a); }
+        assert_eq!(e.primary_head(), 3, "back to the opener");
+    }
+
+    #[test]
+    fn yy_then_capital_p_pastes_the_line_above() {
+        let mut e = Editor::from_str("hello");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('y'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('y'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('P'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "hello\nhello");
     }
 
     #[test]
@@ -155,8 +388,9 @@ mod tests {
         for a in v.handle(KeyEvent::Char('y'), &e) { e.execute(a); }
         for a in v.handle(KeyEvent::Char('G'), &e) { e.execute(a); }
         assert_eq!(e.buffer().to_string(), "foo\nbar\nbaz");
+        // `yG` is line-wise: `p` puts the three lines after the current one.
         for a in v.handle(KeyEvent::Char('p'), &e) { e.execute(a); }
-        assert_eq!(e.buffer().to_string(), "foo\nbar\nbazfoo\nbar\nbaz");
+        assert_eq!(e.buffer().to_string(), "foo\nfoo\nbar\nbaz\nbar\nbaz");
     }
 
     #[test]
