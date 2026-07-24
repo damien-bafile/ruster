@@ -197,6 +197,10 @@ scrolled to the target line for location results.
 Copy/cut/paste refuse to overwrite an existing name, and a cut is consumed by
 its paste (the original is removed only after a successful move).
 
+Entries are colored by type: **directories** blue (bold, with a trailing `/`),
+**executables** green, **symlinks** teal, and regular files in the default
+foreground.
+
 ## Snippets
 
 In Insert mode, type a trigger word and press `Tab` to expand it, then `Tab` to

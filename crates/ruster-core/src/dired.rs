@@ -7,6 +7,26 @@ use std::path::Path;
 pub struct DirEntry {
     pub name: String,
     pub is_dir: bool,
+    /// Has an executable permission bit (always false off unix).
+    pub is_exec: bool,
+    pub is_symlink: bool,
+}
+
+impl DirEntry {
+    fn dir(name: &str) -> Self {
+        DirEntry { name: name.to_string(), is_dir: true, is_exec: false, is_symlink: false }
+    }
+}
+
+#[cfg(unix)]
+fn executable(meta: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    meta.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+fn executable(_meta: &std::fs::Metadata) -> bool {
+    false
 }
 
 /// List `path`: `..` first (unless `path` is a filesystem root), then
@@ -17,11 +37,20 @@ pub fn list(path: &Path) -> Vec<DirEntry> {
     if let Ok(rd) = std::fs::read_dir(path) {
         for entry in rd.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            let file_type = entry.file_type().ok();
+            let is_symlink = file_type.map(|t| t.is_symlink()).unwrap_or(false);
+            // Resolve through symlinks so a link to a directory sorts as one.
+            let is_dir = entry.path().is_dir();
+            let is_exec = entry
+                .metadata()
+                .ok()
+                .map(|m| !m.is_dir() && executable(&m))
+                .unwrap_or(false);
+            let item = DirEntry { name, is_dir, is_exec, is_symlink };
             if is_dir {
-                dirs.push(DirEntry { name, is_dir: true });
+                dirs.push(item);
             } else {
-                files.push(DirEntry { name, is_dir: false });
+                files.push(item);
             }
         }
     }
@@ -30,7 +59,7 @@ pub fn list(path: &Path) -> Vec<DirEntry> {
 
     let mut out = Vec::new();
     if path.parent().is_some() {
-        out.push(DirEntry { name: "..".to_string(), is_dir: true });
+        out.push(DirEntry::dir(".."));
     }
     out.extend(dirs);
     out.extend(files);

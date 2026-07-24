@@ -104,6 +104,39 @@ fn copy_dir_recursive(src: &std::path::Path, dest: &std::path::Path) -> std::io:
     Ok(())
 }
 
+/// Color a directory listing by entry type: directories blue, executables
+/// green, symlinks teal, regular files default.
+fn dired_styled_lines(entries: &[ruster_core::dired::DirEntry]) -> Vec<StyledLine> {
+    use ruster_render::{Color, SyntaxStyle};
+    let style = |fg: Color, bold: bool| SyntaxStyle { fg, bg: Color::Default, bold, italic: false };
+    entries
+        .iter()
+        .map(|e| {
+            let text = if e.is_dir {
+                format!("{}/", e.name)
+            } else {
+                e.name.clone()
+            };
+            let s = if e.is_symlink {
+                style(Color::Rgb(137, 220, 235), false) // teal
+            } else if e.is_dir {
+                style(Color::Rgb(137, 180, 250), true) // blue, bold
+            } else if e.is_exec {
+                style(Color::Rgb(166, 227, 161), false) // green
+            } else {
+                style(Color::Default, false)
+            };
+            let len = text.chars().count();
+            let highlights = if matches!(s.fg, Color::Default) {
+                Vec::new()
+            } else {
+                vec![(0, len, s)]
+            };
+            StyledLine { text, highlights }
+        })
+        .collect()
+}
+
 /// The dired keymap, shown as a popup by `?`.
 fn dired_help_lines() -> Vec<StyledLine> {
     let entries = [
@@ -463,6 +496,8 @@ pub struct App {
     preview_cache: Option<(PathBuf, Vec<StyledLine>)>,
     /// Current directory for each open dired (file-explorer) buffer.
     dired_dirs: std::collections::HashMap<BufferId, PathBuf>,
+    /// Colored listing lines for each dired buffer, rebuilt on refresh.
+    dired_styled: std::collections::HashMap<BufferId, Vec<StyledLine>>,
     /// An in-progress dired file operation awaiting mini-buffer input.
     dired_prompt: Option<DiredPrompt>,
     /// Path awaiting paste in dired, and whether it's a cut (`true` = move).
@@ -662,6 +697,7 @@ impl App {
             anim_clock: std::time::Instant::now(),
             leader_since: None,
             dired_dirs: std::collections::HashMap::new(),
+            dired_styled: std::collections::HashMap::new(),
             dired_prompt: None,
             dired_clipboard: None,
             dired_pending_y: false,
@@ -1526,9 +1562,13 @@ impl App {
                     win.scroll_top = scroll;
                 }
 
-                let lines: Vec<StyledLine> = match self.syntax.get(&buf_id) {
-                    Some(engine) => engine.styled_lines().to_vec(),
-                    None => plain_lines(&content),
+                let lines: Vec<StyledLine> = match self.dired_styled.get(&buf_id) {
+                    // Dired listings are colored by entry type.
+                    Some(styled) => styled.clone(),
+                    None => match self.syntax.get(&buf_id) {
+                        Some(engine) => engine.styled_lines().to_vec(),
+                        None => plain_lines(&content),
+                    },
                 };
                 let pct = if line_count > 0 {
                     (cline + 1) * 100 / line_count
@@ -1841,6 +1881,8 @@ impl App {
 
     /// Reload a dired buffer's listing for `path` and reset its window cursor.
     fn refresh_dired(&mut self, id: BufferId, path: PathBuf) {
+        let entries = ruster_core::dired::list(&path);
+        self.dired_styled.insert(id, dired_styled_lines(&entries));
         let text = ruster_core::dired::render(&path);
         {
             let mut w = self.ws.borrow_mut();
@@ -2820,6 +2862,46 @@ mod tests {
         }
         a.handle_key(CtKey::new(KeyCode::Enter, none));
         assert!(a.message.as_deref().unwrap_or("").contains("already exists"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn dired_colors_dirs_execs_and_files_differently() {
+        use ruster_render::Color;
+        let tmp = std::env::temp_dir().join("ruster_dired_colors");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("adir")).unwrap();
+        std::fs::write(tmp.join("plain.txt"), "x").unwrap();
+        std::fs::write(tmp.join("runme.sh"), "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let p = tmp.join("runme.sh");
+            let mut perms = std::fs::metadata(&p).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&p, perms).unwrap();
+        }
+
+        let entries = ruster_core::dired::list(&tmp);
+        let styled = dired_styled_lines(&entries);
+        let fg_of = |name: &str| -> Option<Color> {
+            styled
+                .iter()
+                .find(|l| l.text.trim_end_matches('/') == name)
+                .and_then(|l| l.highlights.first().map(|(_, _, s)| s.fg))
+        };
+
+        // Directories are blue, and ".." counts as one.
+        assert_eq!(fg_of("adir"), Some(Color::Rgb(137, 180, 250)));
+        assert_eq!(fg_of(".."), Some(Color::Rgb(137, 180, 250)));
+        // A plain file has no color override.
+        assert_eq!(fg_of("plain.txt"), None);
+        #[cfg(unix)]
+        {
+            // An executable is green.
+            assert_eq!(fg_of("runme.sh"), Some(Color::Rgb(166, 227, 161)));
+        }
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
