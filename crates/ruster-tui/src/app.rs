@@ -1953,6 +1953,13 @@ impl App {
         let lua_center = self.lua.statusline_sections("center").join("  ");
         let lua_right = self.lua.statusline_sections("right").join("  ");
 
+        // The Emacs region (mark..point) is highlighted like a char selection.
+        let emacs_mark = if self.editmode == EditMode::Emacs {
+            self.emacs.mark()
+        } else {
+            None
+        };
+
         let mut views: Vec<WindowView> = Vec::new();
         {
             let mut w = self.ws.borrow_mut();
@@ -1998,6 +2005,21 @@ impl App {
                                 VimMode::VisualBlock => ruster_render::SelectionKind::Block,
                                 _ => ruster_render::SelectionKind::Char,
                             },
+                        })
+                    } else if is_active {
+                        // Emacs region: mark..point, shown like a char selection.
+                        emacs_mark.filter(|&m| m != head).map(|m| {
+                            let (lo, hi) = (m.min(head), m.max(head));
+                            // The point itself is exclusive, so the last covered
+                            // char is hi - 1.
+                            let last = hi - 1;
+                            let sl = doc.buffer.char_to_line(lo);
+                            let el = doc.buffer.char_to_line(last);
+                            SelectionView {
+                                start: (sl as u16, (lo - doc.buffer.line_start_char(sl)) as u16),
+                                end: (el as u16, (last - doc.buffer.line_start_char(el)) as u16),
+                                kind: ruster_render::SelectionKind::Char,
+                            }
                         })
                     } else {
                         None
@@ -3248,6 +3270,26 @@ mod tests {
         // Switching back restores modal editing.
         a.apply_cmd(a.parse_cmdline(":set editmode neovim").unwrap());
         assert_eq!(a.editmode, EditMode::Neovim);
+    }
+
+    #[test]
+    fn emacs_region_renders_a_selection() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let ctrl = KeyModifiers::CONTROL;
+        let mut a = App::new("hello world".into(), PathBuf::from("f.txt"));
+        a.set_editmode(EditMode::Emacs);
+        a.ws.borrow_mut().execute(Action::Move(Motion::To(0)));
+        // Set the mark, then move right five chars to select "hello".
+        a.handle_key(CtKey::new(KeyCode::Char(' '), ctrl));
+        assert_eq!(a.emacs.mark(), Some(0));
+        for _ in 0..5 {
+            a.handle_key(CtKey::new(KeyCode::Char('f'), ctrl));
+        }
+        // Mark at 0, point at 5 — the region spans "hello".
+        assert_eq!(a.emacs.mark(), Some(0));
+        assert_eq!(a.ws.borrow().primary_head(), 5);
+        // The render path builds a SelectionView for the region without panic.
+        a.render();
     }
 
     #[test]
