@@ -25,16 +25,23 @@ pub struct WindowCallbacks {
     pub close_win: Box<dyn FnMut(i32)>,
 }
 
+/// Buffer/cursor bridge callbacks the app installs so Lua can read and edit the
+/// active buffer. Boxed because their concrete closures live in the frontend.
+type GetLinesFn = Box<dyn FnMut(i32, Option<i32>) -> Vec<String>>;
+type SetLinesFn = Box<dyn FnMut(i32, i32, Vec<String>)>;
+type GetCursorFn = Box<dyn FnMut() -> (i32, i32)>;
+type SetCursorFn = Box<dyn FnMut(i32, i32)>;
+
 pub struct LuaRuntime {
     pub lua: Lua,
     pub(crate) keymaps: RefCell<Vec<LuaKeymap>>,
     pub(crate) pending: RefCell<Vec<LuaAction>>,
     pub events: RefCell<EventBus>,
     pub current_dt: RefCell<f64>,
-    pub(crate) get_lines: RefCell<Option<Box<dyn FnMut(i32, Option<i32>) -> Vec<String>>>>,
-    pub(crate) set_lines: RefCell<Option<Box<dyn FnMut(i32, i32, Vec<String>)>>>,
-    pub(crate) get_cursor: RefCell<Option<Box<dyn FnMut() -> (i32, i32)>>>,
-    pub(crate) set_cursor: RefCell<Option<Box<dyn FnMut(i32, i32)>>>,
+    pub(crate) get_lines: RefCell<Option<GetLinesFn>>,
+    pub(crate) set_lines: RefCell<Option<SetLinesFn>>,
+    pub(crate) get_cursor: RefCell<Option<GetCursorFn>>,
+    pub(crate) set_cursor: RefCell<Option<SetCursorFn>>,
     /// Lua-registered statusline sections: (position, callback registry key).
     pub(crate) statusline: RefCell<Vec<(String, RegistryKey)>>,
     /// Window/buffer manipulation callbacks installed by the app.
@@ -119,6 +126,14 @@ impl LuaRuntime {
         }
     }
 
+    /// Expose the active editing paradigm to Lua as `ruster.editmode`
+    /// (`"neovim"` or `"emacs"`), so plugins can support both.
+    pub fn set_editmode(&self, editmode: &str) {
+        if let Ok(ruster) = self.lua.globals().get::<mlua::Table>("ruster") {
+            let _ = ruster.set("editmode", editmode);
+        }
+    }
+
     pub fn fire_event_str(&self, name: &str, string_args: &[&str]) {
         let vals: Vec<mlua::Value> = string_args.iter()
             .map(|s| mlua::Value::String(self.lua.create_string(s).unwrap()))
@@ -200,8 +215,4 @@ impl LuaRuntime {
         }
         false
     }
-}
-
-pub(crate) fn queue_action(runtime: &LuaRuntime, action: LuaAction) {
-    runtime.pending.borrow_mut().push(action);
 }

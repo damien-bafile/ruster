@@ -9,12 +9,8 @@ use crate::position::LspPosition;
 
 /// `file://` URI for a filesystem path (absolute paths only; best-effort).
 pub fn uri_from_path(path: &Path) -> String {
-    let s = path.to_string_lossy();
-    if s.starts_with('/') {
-        format!("file://{}", s)
-    } else {
-        format!("file://{}", s) // relative — servers generally still accept it
-    }
+    // Relative paths are uncommon here, but servers generally still accept them.
+    format!("file://{}", path.to_string_lossy())
 }
 
 /// `initialize` params advertising the capabilities ruster actually uses.
@@ -32,6 +28,7 @@ pub fn initialize_params(root: &Path) -> Value {
                 "rename": {},
                 "formatting": {},
                 "documentSymbol": { "hierarchicalDocumentSymbolSupport": true },
+                "callHierarchy": { "dynamicRegistration": false },
                 "publishDiagnostics": {}
             },
             "workspace": { "symbol": {} }
@@ -95,6 +92,20 @@ pub fn formatting_params(uri: &str, tab_size: u32, insert_spaces: bool) -> Value
 
 pub fn document_symbol_params(uri: &str) -> Value {
     json!({ "textDocument": { "uri": uri } })
+}
+
+/// Step 1 of call hierarchy: resolve the symbol at `pos` into a hierarchy item.
+pub fn prepare_call_hierarchy_params(uri: &str, pos: LspPosition) -> Value {
+    json!({
+        "textDocument": { "uri": uri },
+        "position": { "line": pos.line, "character": pos.character }
+    })
+}
+
+/// Step 2: given a `CallHierarchyItem` (from prepare), request its incoming or
+/// outgoing calls. The method name selects the direction.
+pub fn call_hierarchy_calls_params(item: &Value) -> Value {
+    json!({ "item": item })
 }
 
 pub fn workspace_symbol_params(query: &str) -> Value {

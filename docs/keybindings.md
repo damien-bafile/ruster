@@ -58,8 +58,7 @@ Most motions accept a count prefix (e.g. `5j`, `3w`).
 | `C-n` | Add a cursor at the next occurrence of the word under the cursor (multi-cursor) |
 | `q{reg}` … `q` | Record a macro into `{reg}` / stop recording |
 | `@{reg}` | Replay the macro in `{reg}` |
-| `u` / `C-r` | Undo / redo along the current branch |
-| `g-` / `g+` | Move backward/forward through *every* undo state in time order, including branches abandoned by editing after an undo |
+| `g-` / `g+` | Step backward/forward through *every* undo state in time order, including branches abandoned by editing after an undo |
 | `Esc` | Clear extra cursors |
 
 ### Operators
@@ -153,6 +152,8 @@ Press `SPC` in Normal mode; the which-key panel lists continuations.
 | `SPC c f` | Format (`:fmt`) |
 | `SPC c o` | Document symbols (outline) |
 | `SPC c d` | Diagnostics list |
+| `SPC c i` | Incoming calls (`:callers`) |
+| `SPC c y` | Outgoing calls (`:callees`) |
 | `SPC q q` | Quit |
 | `SPC q w` | Save and quit |
 
@@ -190,6 +191,8 @@ Press `SPC` in Normal mode; the which-key panel lists continuations.
 | `:fmt` / `:format` | Format the buffer |
 | `:rename <name>` | Rename the symbol under the cursor |
 | `:sym <query>` | Workspace symbol search |
+| `:callers` / `:incomingcalls` | Call hierarchy: who calls the symbol under the cursor |
+| `:callees` / `:outgoingcalls` | Call hierarchy: what the symbol under the cursor calls |
 
 ### Editing
 | Command | Action |
@@ -199,6 +202,46 @@ Press `SPC` in Normal mode; the which-key panel lists continuations.
 | `:%s/pat/rep/g` | Replace throughout the buffer |
 
 Then `:` + `Tab` opens a fuzzy **command palette** of these commands.
+
+## Emacs mode
+
+ruster ships two editing paradigms. Switch at any time:
+
+| Command | Action |
+|---------|--------|
+| `:set editmode emacs` | Modeless Emacs editing |
+| `:set editmode neovim` | Modal vim editing (the default) |
+
+Lua plugins can read the active paradigm from `ruster.editmode` (`"neovim"` /
+`"emacs"`). The statusline shows `-- EMACS --` while it is active.
+
+In Emacs mode every printable key self-inserts; `Ctrl`/`Alt` chords are commands:
+
+| Key | Action |
+|-----|--------|
+| `C-f` / `C-b` | Forward / backward char |
+| `C-n` / `C-p` | Next / previous line |
+| `C-a` / `C-e` | Beginning / end of line |
+| `M-f` / `M-b` | Forward / backward word |
+| `M-<` / `M->` | Beginning / end of buffer |
+| `C-v` / `M-v` | Scroll down / up a page |
+| `C-SPC` | Set the mark (start a region) |
+| `C-w` / `M-w` | Kill (cut) / copy the region |
+| `C-k` | Kill to end of line (or the newline) |
+| `M-d` | Kill word forward |
+| `C-y` | Yank (paste) the last kill |
+| `M-y` | Yank-pop (cycle the kill ring) — right after a yank |
+| `C-d` / `Del` | Delete the character after the cursor |
+| `C-u <n>` | Universal argument: repeat the next command `n` times |
+| `C-/` or `C-_` | Undo |
+| `C-s` / `C-r` | Incremental search forward / backward (repeat to jump) |
+| `M-x` | Run a command (opens the command palette) |
+| `C-g` | Cancel — clear the mark / prefix |
+| `C-x C-s` | Save the file |
+| `C-x C-c` | Quit |
+| `C-x C-f` | Find file · `C-x C-b` buffer list |
+| `C-x u` | Undo |
+| `C-x 0` / `1` / `2` / `3` | Close / only / split-below / split-right window |
 
 ## Pickers (ibuffer, files, references, symbols, command palette)
 
@@ -225,12 +268,24 @@ scrolled to the target line for location results.
 | `p` | Paste into this directory |
 | `R` | Rename entry |
 | `D` | Delete entry (with `y`/`n` confirm) |
-| `+` / `n` | New file — or directory if the name ends with `/` |
+| `+` | New file — or directory if the name ends with `/` |
 | `.` | Toggle hidden (dot-)files |
-| `?` | Show this keymap in a popup |
+| `g?` | Show this keymap in a popup |
 
-Copy/cut/paste refuse to overwrite an existing name, and a cut is consumed by
-its paste (the original is removed only after a successful move).
+A dired buffer is a **read-only buffer**, so the normal editor keys work over
+the listing while its own keys above take priority:
+
+| Key | Action |
+|-----|--------|
+| `/` `?` `n` `N` | Search the listing and jump between matches |
+| `:` … | Any `:` command (`:q`, `:Files`, …) |
+| `gg` / `G` | Top / bottom of the listing |
+| `SPC` … | The Space leader / which-key menu |
+| (Emacs mode) `C-s` `C-r`, `M-x` | Incremental search, run a command |
+
+Editing keys (`i`, `x`, `dd`-as-delete-line, …) are inert — the listing can't be
+typed into. Copy/cut/paste refuse to overwrite an existing name, and a cut is
+consumed by its paste (the original is removed only after a successful move).
 
 Entries are colored by type: **directories** blue (bold, with a trailing `/`),
 **executables** green, **symlinks** teal, and regular files in the default

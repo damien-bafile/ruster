@@ -56,7 +56,7 @@ pub fn parse_lua_key(s: &str) -> Option<LuaKey> {
             }
         }
         _ if inner.len() >= 2 && inner.starts_with('F') => {
-            inner[1..].parse::<u8>().ok().filter(|&n| n >= 1 && n <= 12).map(LuaKey::F)
+            inner[1..].parse::<u8>().ok().filter(|&n| (1..=12).contains(&n)).map(LuaKey::F)
         }
         _ => None,
     }

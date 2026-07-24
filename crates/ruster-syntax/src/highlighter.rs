@@ -5,14 +5,13 @@ use crate::theme::{style_for_capture, RAINBOW_PALETTE};
 pub struct Highlighter {
     query: tree_sitter::Query,
     cursor: tree_sitter::QueryCursor,
-    language: tree_sitter::Language,
 }
 
 impl Highlighter {
     pub fn new(language: tree_sitter::Language, query_source: &str) -> Result<Self, String> {
         let query = tree_sitter::Query::new(&language, query_source)
             .map_err(|e| format!("query error: {}", e))?;
-        Ok(Highlighter { query, cursor: tree_sitter::QueryCursor::new(), language })
+        Ok(Highlighter { query, cursor: tree_sitter::QueryCursor::new() })
     }
 
     pub fn highlight_lines(

@@ -114,7 +114,7 @@ impl Renderer for TuiRenderer {
                 let rows = rows.max(picker.preview.len() as u16);
                 let ph = rows.clamp(3, area.height.saturating_sub(2));
                 let px = area.x + (area.width.saturating_sub(pw)) / 2;
-                let py = area.y + (area.height.saturating_sub(ph)) / 3;
+                let py = area.y + (area.height.saturating_sub(ph)) / 2;
                 let parea = Rect::new(px, py, pw, ph);
                 frame.render_widget(crate::widgets::PickerWidget::new(picker.clone()), parea);
             }

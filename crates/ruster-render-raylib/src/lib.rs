@@ -20,6 +20,22 @@ pub struct RaylibRenderer {
 }
 
 impl RaylibRenderer {
+    /// Glyphs to bake into the font atlas. Raylib's default is only the 95
+    /// printable ASCII codepoints, so anything else (en/em dashes, curly
+    /// quotes, ellipsis, bullets, arrows, box-drawing) renders as `?`. We add
+    /// Latin-1 and the common Unicode punctuation the docs and UI actually use.
+    /// `load_font_ex` takes the character set as a string.
+    fn font_chars() -> String {
+        let mut s = String::new();
+        for c in (0x20u32..=0x7E).chain(0xA0..=0xFF) {
+            if let Some(ch) = char::from_u32(c) {
+                s.push(ch);
+            }
+        }
+        s.push_str("–—‘’“”•…←↑→↓─│✓✗");
+        s
+    }
+
     fn try_load_mono_font(rl: &mut RaylibHandle, thread: &RaylibThread) -> WeakFont {
         let home = std::env::var("HOME").unwrap_or_default();
         let candidates = [
@@ -27,8 +43,9 @@ impl RaylibRenderer {
             "/System/Library/Fonts/SFNSMono.ttf".to_string(),
             "/System/Library/Fonts/Supplemental/Andale Mono.ttf".to_string(),
         ];
+        let chars = Self::font_chars();
         for path in &candidates {
-            if let Ok(font) = rl.load_font_ex(thread, path, FONT_SIZE, None) {
+            if let Ok(font) = rl.load_font_ex(thread, path, FONT_SIZE, Some(&chars)) {
                 return font.make_weak();
             }
         }
@@ -71,18 +88,31 @@ impl RaylibRenderer {
             mods |= KeyModifiers::SUPER;
         }
 
-        while let Some(c) = self.rl.get_char_pressed() {
-            if mods.contains(KeyModifiers::CONTROL) && (1..=26).contains(&(c as u32)) {
-                let letter = char::from_u32((c as u32) + 96).unwrap_or('?');
-                self.event_buffer.push(KeyEvent::new(KeyCode::Char(letter), mods));
-            } else if let Some(ch) = char::from_u32(c as u32) {
-                self.event_buffer.push(KeyEvent::new(KeyCode::Char(ch), mods));
+        // With Ctrl or Alt held, the OS text layer can't be trusted to produce
+        // the base letter (it drops or composes modified keys), so Emacs/vim
+        // chords are reconstructed from the physical key. Otherwise, plain
+        // typing goes through the char queue for correct layout and casing.
+        if mods.contains(KeyModifiers::CONTROL) || mods.contains(KeyModifiers::ALT) {
+            // Discard the (absent or mangled) char events for this frame.
+            while self.rl.get_char_pressed().is_some() {}
+            let shift = mods.contains(KeyModifiers::SHIFT);
+            while let Some(k) = self.rl.get_key_pressed() {
+                if let Some(ch) = key::modified_char_for_key(k, shift) {
+                    self.event_buffer.push(KeyEvent::new(KeyCode::Char(ch), mods));
+                } else if let Some(event) = key::map_raylib_key(k) {
+                    self.event_buffer.push(KeyEvent::new(event.code, mods));
+                }
             }
-        }
-
-        while let Some(k) = self.rl.get_key_pressed() {
-            if let Some(event) = key::map_raylib_key(k) {
-                self.event_buffer.push(KeyEvent::new(event.code, mods));
+        } else {
+            while let Some(c) = self.rl.get_char_pressed() {
+                if let Some(ch) = char::from_u32(c as u32) {
+                    self.event_buffer.push(KeyEvent::new(KeyCode::Char(ch), mods));
+                }
+            }
+            while let Some(k) = self.rl.get_key_pressed() {
+                if let Some(event) = key::map_raylib_key(k) {
+                    self.event_buffer.push(KeyEvent::new(event.code, mods));
+                }
             }
         }
 
@@ -172,9 +202,7 @@ impl Renderer for RaylibRenderer {
                             ruster_render::Color::Default => default_color,
                         };
                         let end = (offset + len).min(n);
-                        for pos in offset..end {
-                            char_colors[pos] = fg;
-                        }
+                        char_colors[offset..end].fill(fg);
                     }
                     let mut x_offset = text_x as f32;
                     let mut pos = 0;
@@ -292,7 +320,7 @@ impl Renderer for RaylibRenderer {
             let n_rows = (picker.rows.len() as i32 + 2).max(picker.preview.len() as i32);
             let box_h = (n_rows * LINE_H).clamp(3 * LINE_H, (screen_h - 40).max(3 * LINE_H));
             let box_x = (screen_w - box_w) / 2;
-            let box_y = screen_h / 4;
+            let box_y = ((screen_h - box_h) / 2).max(0);
             let list_w = if has_preview { box_w * 2 / 5 } else { box_w };
             d.draw_rectangle(box_x, box_y, box_w, box_h, box_bg);
             if has_preview {
@@ -300,22 +328,37 @@ impl Renderer for RaylibRenderer {
                 d.draw_rectangle(box_x + list_w, box_y, 1, box_h, accent);
             }
             d.draw_rectangle_lines(box_x, box_y, box_w, box_h, accent);
-            // Clip contents to the box so long labels don't overflow.
-            let mut s = d.begin_scissor_mode(box_x + 1, box_y + 1, box_w - 2, box_h - 2);
-            s.draw_text_ex(font, &format!(" {} ", picker.title), Vector2::new(box_x as f32 + 4.0, box_y as f32), FONT_SIZE as f32, 1.0, accent);
-            s.draw_text_ex(font, &format!(" > {}", picker.query), Vector2::new(box_x as f32 + 4.0, (box_y + LINE_H) as f32), FONT_SIZE as f32, 1.0, default_color);
-            let max_visible = ((box_h - 2 * LINE_H) / LINE_H).max(0) as usize;
-            for (i, row) in picker.rows.iter().take(max_visible).enumerate() {
-                let ry = box_y + (2 + i as i32) * LINE_H;
-                if row.selected {
-                    s.draw_rectangle(box_x, ry, list_w, LINE_H, accent);
-                    s.draw_text_ex(font, &format!(" {}", row.label), Vector2::new(box_x as f32 + 4.0, ry as f32), FONT_SIZE as f32, 1.0, box_bg);
-                } else {
-                    s.draw_text_ex(font, &format!(" {}", row.label), Vector2::new(box_x as f32 + 4.0, ry as f32), FONT_SIZE as f32, 1.0, default_color);
+            // List column — title, query, and rows, clipped to the list width
+            // so long labels don't bleed across the divider into the preview.
+            let list_clip_w = if has_preview { list_w } else { box_w };
+            {
+                let mut s = d.begin_scissor_mode(
+                    box_x + 1,
+                    box_y + 1,
+                    (list_clip_w - 2).max(1),
+                    box_h - 2,
+                );
+                s.draw_text_ex(font, &format!(" {} ", picker.title), Vector2::new(box_x as f32 + 4.0, box_y as f32), FONT_SIZE as f32, 1.0, accent);
+                s.draw_text_ex(font, &format!(" > {}", picker.query), Vector2::new(box_x as f32 + 4.0, (box_y + LINE_H) as f32), FONT_SIZE as f32, 1.0, default_color);
+                let max_visible = ((box_h - 2 * LINE_H) / LINE_H).max(0) as usize;
+                for (i, row) in picker.rows.iter().take(max_visible).enumerate() {
+                    let ry = box_y + (2 + i as i32) * LINE_H;
+                    if row.selected {
+                        s.draw_rectangle(box_x, ry, list_clip_w, LINE_H, accent);
+                        s.draw_text_ex(font, &format!(" {}", row.label), Vector2::new(box_x as f32 + 4.0, ry as f32), FONT_SIZE as f32, 1.0, box_bg);
+                    } else {
+                        s.draw_text_ex(font, &format!(" {}", row.label), Vector2::new(box_x as f32 + 4.0, ry as f32), FONT_SIZE as f32, 1.0, default_color);
+                    }
                 }
             }
-            // Preview column (syntax-highlighted).
+            // Preview column (syntax-highlighted), clipped to its own pane.
             if has_preview {
+                let mut s = d.begin_scissor_mode(
+                    box_x + list_w + 1,
+                    box_y + 1,
+                    (box_w - list_w - 2).max(1),
+                    box_h - 2,
+                );
                 let px = box_x + list_w + 6;
                 for (i, line) in picker.preview.iter().enumerate() {
                     let ly = box_y + i as i32 * LINE_H;
@@ -337,9 +380,7 @@ impl Renderer for RaylibRenderer {
                             ruster_render::Color::Default => default_color,
                         };
                         let end = (offset + len).min(n);
-                        for pos in offset..end {
-                            char_colors[pos] = fg;
-                        }
+                        char_colors[offset..end].fill(fg);
                     }
                     let mut x_off = px as f32;
                     let mut pos = 0;
@@ -387,9 +428,7 @@ impl Renderer for RaylibRenderer {
                             ruster_render::Color::Default => default_color,
                         };
                         let end = (offset + len).min(n);
-                        for pos in offset..end {
-                            char_colors[pos] = fg;
-                        }
+                        char_colors[offset..end].fill(fg);
                     }
                     let mut x_off = box_x as f32 + 6.0;
                     let mut pos = 0;

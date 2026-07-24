@@ -149,9 +149,11 @@ fn dired_help_lines() -> Vec<StyledLine> {
         "p            paste into this directory",
         "R            rename entry",
         "D            delete entry (confirm)",
-        "+ / n        new file, or dir if name ends with /",
+        "+            new file, or dir if name ends with /",
         ".            toggle hidden files",
-        "?            this help",
+        "/ ? n N      search the listing (as in a normal buffer)",
+        ": commands   run any :command",
+        "g?           this help",
     ];
     std::iter::once(StyledLine { text: " dired keys".to_string(), highlights: vec![] })
         .chain(entries.iter().map(|e| StyledLine { text: format!("  {}", e), highlights: vec![] }))
@@ -242,6 +244,10 @@ enum CmdAction {
     Rename(String),
     Format,
     WorkspaceSymbol(String),
+    /// Call hierarchy: `true` = incoming/callers, `false` = outgoing/callees.
+    CallHierarchy(bool),
+    /// Switch editing paradigm (`:set editmode neovim|emacs`).
+    SetEditMode(EditMode),
     /// `:s/pat/rep/[g]` — replace on the current line, or the whole buffer
     /// when `whole_buffer` (`:%s/...`). `all` is the `g` flag.
     Substitute {
@@ -292,6 +298,11 @@ const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("bd", "delete buffer"),
     ("Dired", "file explorer"),
     ("Files", "find files"),
+    ("fmt", "format buffer"),
+    ("callers", "incoming calls (call hierarchy)"),
+    ("callees", "outgoing calls (call hierarchy)"),
+    ("set editmode emacs", "switch to Emacs (modeless) editing"),
+    ("set editmode neovim", "switch to Neovim (modal) editing"),
 ];
 
 /// The which-key continuations shown after a `Ctrl-w` prefix.
@@ -316,6 +327,8 @@ enum LeaderAction {
     Rename,
     DocumentSymbol,
     Diagnostics,
+    IncomingCalls,
+    OutgoingCalls,
 }
 
 enum LeaderNode {
@@ -355,6 +368,8 @@ static CODE_GROUP: &[(char, LeaderNode)] = &[
     ('n', LeaderNode::Action("rename", LeaderAction::Rename)),
     ('o', LeaderNode::Action("document symbols", LeaderAction::DocumentSymbol)),
     ('d', LeaderNode::Action("diagnostics", LeaderAction::Diagnostics)),
+    ('i', LeaderNode::Action("incoming calls", LeaderAction::IncomingCalls)),
+    ('y', LeaderNode::Action("outgoing calls", LeaderAction::OutgoingCalls)),
 ];
 
 static LEADER_ROOT: &[(char, LeaderNode)] = &[
@@ -380,6 +395,11 @@ enum LspAction {
     Rename,
     DocumentSymbol,
     WorkspaceSymbol,
+    /// Step 1 of call hierarchy resolved an item; fire the calls request in the
+    /// given direction (`true` = incoming/callers, `false` = outgoing/callees).
+    PrepareCallHierarchy(bool),
+    /// Step 2 returned the calls; `true` = incoming.
+    CallHierarchy(bool),
 }
 
 /// Per-buffer LSP document state (registered with `didOpen`).
@@ -545,6 +565,8 @@ pub struct App {
     /// True after the first `y` (`yy` copy) or `d` (`dd` cut).
     dired_pending_y: bool,
     dired_pending_d: bool,
+    /// True after `g` in dired, awaiting `g` (top) or `?` (help).
+    dired_pending_g: bool,
     /// Language server manager (one server per language).
     lsp: LspManager,
     /// Per-buffer LSP document registration state.
@@ -568,6 +590,21 @@ pub struct App {
     pending_macro: Option<char>,
     /// Guard so a macro can't recursively replay itself.
     replaying: bool,
+    /// Which editing paradigm is active (`:set editmode neovim|emacs`).
+    editmode: EditMode,
+    /// Emacs-mode editing state (mark, kill-ring, prefix arg).
+    emacs: ruster_core::emacs::EmacsState,
+    /// True after `C-x`, awaiting the second key of the prefix.
+    emacs_ctrl_x: bool,
+    /// Active incremental search: (query, forward). Emacs `C-s`/`C-r`.
+    emacs_isearch: Option<(String, bool)>,
+}
+
+/// The active editing paradigm. Neovim is modal; Emacs is modeless.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditMode {
+    Neovim,
+    Emacs,
 }
 
 impl App {
@@ -751,6 +788,7 @@ impl App {
             dired_clipboard: None,
             dired_pending_y: false,
             dired_pending_d: false,
+            dired_pending_g: false,
             lsp,
             lsp_docs: std::collections::HashMap::new(),
             diagnostics: std::collections::HashMap::new(),
@@ -769,6 +807,10 @@ impl App {
             macro_recording: None,
             pending_macro: None,
             replaying: false,
+            editmode: EditMode::Neovim,
+            emacs: ruster_core::emacs::EmacsState::new(),
+            emacs_ctrl_x: false,
+            emacs_isearch: None,
         }
     }
 
@@ -794,8 +836,21 @@ impl App {
             return;
         }
 
-        // Dired buffers intercept navigation keys (movement falls through).
-        if self.active_is_dired() && self.handle_dired_key(ck) {
+        // Dired claims its action keys, but only while at rest — never while a
+        // command-line/search prompt (vim Cmdline or an Emacs isearch) is open,
+        // or a search term containing a dired key (e.g. `d` in "docs") would be
+        // hijacked. Unclaimed keys fall through to normal handling.
+        if self.active_is_dired()
+            && self.vim.mode == VimMode::Normal
+            && self.emacs_isearch.is_none()
+            && self.handle_dired_key(ck)
+        {
+            return;
+        }
+
+        // Emacs is modeless: everything else routes to its own handler.
+        if self.editmode == EditMode::Emacs {
+            self.handle_key_emacs(ck);
             return;
         }
 
@@ -960,6 +1015,175 @@ impl App {
         }
     }
 
+    /// Switch editing paradigm, resetting per-mode state and notifying Lua.
+    fn set_editmode(&mut self, mode: EditMode) {
+        self.editmode = mode;
+        self.emacs_ctrl_x = false;
+        self.emacs_isearch = None;
+        self.emacs.cancel();
+        // Leave the vim layer in a clean Normal state so a later switch back
+        // doesn't resume a half-finished operator or visual selection.
+        self.vim = VimState::new();
+        let name = match mode {
+            EditMode::Neovim => "neovim",
+            EditMode::Emacs => "emacs",
+        };
+        self.lua.set_editmode(name);
+        self.message = Some(format!("editmode: {}", name));
+    }
+
+    /// Handle a key in Emacs (modeless) mode. App-level chords — the `C-x`
+    /// prefix, `M-x`, isearch, `C-g` — are dealt with here; pure editing is
+    /// delegated to [`ruster_core::emacs::EmacsState`], mirroring how the vim
+    /// path intercepts the leader/`Ctrl-w` prefixes before delegating.
+    fn handle_key_emacs(&mut self, ck: crossterm::event::KeyEvent) {
+        use crossterm::event::KeyModifiers as KM;
+
+        // An active incremental search captures keys until it ends.
+        if self.emacs_isearch.is_some() {
+            self.handle_isearch_key(ck);
+            return;
+        }
+
+        let ctrl = ck.modifiers.contains(KM::CONTROL);
+
+        // Second key of a `C-x` prefix.
+        if self.emacs_ctrl_x {
+            self.emacs_ctrl_x = false;
+            match ck.code {
+                KeyCode::Char('s') if ctrl => {
+                    self.write_active_file(false);
+                }
+                KeyCode::Char('c') if ctrl => self.should_quit = true,
+                KeyCode::Char('f') if ctrl => self.open_files_picker(),
+                KeyCode::Char('b') if ctrl => self.open_ibuffer(),
+                KeyCode::Char('u') => self.ws.borrow_mut().execute(Action::Undo),
+                KeyCode::Char('0') => {
+                    self.ws.borrow_mut().windows.close_active();
+                }
+                KeyCode::Char('1') => self.ws.borrow_mut().windows.only(),
+                KeyCode::Char('2') => self.ws.borrow_mut().split(SplitDir::Horizontal),
+                KeyCode::Char('3') => self.ws.borrow_mut().split(SplitDir::Vertical),
+                _ => self.message = Some("C-x undefined".to_string()),
+            }
+            return;
+        }
+
+        let key = crossterm_to_ruster_key(ck);
+        match key {
+            KeyEvent::Ctrl('x') => {
+                self.emacs_ctrl_x = true;
+                return;
+            }
+            KeyEvent::Ctrl('g') => {
+                self.emacs.cancel();
+                self.message = Some("Quit".to_string());
+                return;
+            }
+            KeyEvent::Alt('x') => {
+                // M-x: run a command via the palette.
+                self.open_command_picker("");
+                return;
+            }
+            KeyEvent::Ctrl('s') => {
+                self.start_isearch(true);
+                return;
+            }
+            KeyEvent::Ctrl('r') => {
+                self.start_isearch(false);
+                return;
+            }
+            _ => {}
+        }
+
+        let actions = self.emacs.handle(key, &*self.ws.borrow());
+        for action in actions {
+            self.ws.borrow_mut().execute(action);
+        }
+        self.message = None;
+    }
+
+    /// Begin an Emacs incremental search in the given direction.
+    fn start_isearch(&mut self, forward: bool) {
+        self.emacs_isearch = Some((String::new(), forward));
+        self.message = Some(if forward { "I-search: ".into() } else { "I-search backward: ".into() });
+    }
+
+    /// Drive an active incremental search: printable keys extend the query and
+    /// jump to the next match; `C-s`/`C-r` repeat; `Enter`/`C-g`/`Esc` end it.
+    fn handle_isearch_key(&mut self, ck: crossterm::event::KeyEvent) {
+        let (mut query, mut forward) = self.emacs_isearch.take().unwrap();
+        match ck.code {
+            KeyCode::Enter | KeyCode::Esc => {
+                self.message = None;
+                return;
+            }
+            KeyCode::Backspace => {
+                query.pop();
+            }
+            KeyCode::Char('s') if ck.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                forward = true;
+                self.isearch_step(&query, true, true);
+                self.emacs_isearch = Some((query.clone(), forward));
+                self.set_isearch_message(&query, forward);
+                return;
+            }
+            KeyCode::Char('r') if ck.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                forward = false;
+                self.isearch_step(&query, false, true);
+                self.emacs_isearch = Some((query.clone(), forward));
+                self.set_isearch_message(&query, forward);
+                return;
+            }
+            KeyCode::Char('g') if ck.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                self.message = None;
+                return;
+            }
+            KeyCode::Char(c) => {
+                query.push(c);
+            }
+            _ => {}
+        }
+        // Search from the current point for the (possibly extended) query.
+        self.isearch_step(&query, forward, false);
+        self.set_isearch_message(&query, forward);
+        self.emacs_isearch = Some((query, forward));
+    }
+
+    fn set_isearch_message(&mut self, query: &str, forward: bool) {
+        let label = if forward { "I-search" } else { "I-search backward" };
+        self.message = Some(format!("{}: {}", label, query));
+    }
+
+    /// Move the cursor to the next/previous occurrence of `query`. `advance`
+    /// starts the scan one char past point so repeated `C-s` walks matches.
+    fn isearch_step(&mut self, query: &str, forward: bool, advance: bool) {
+        if query.is_empty() {
+            return;
+        }
+        let (text, head) = {
+            let w = self.ws.borrow();
+            (w.buffer().to_string(), w.primary_head())
+        };
+        // Work in char offsets to match the rest of the editor.
+        let chars: Vec<char> = text.chars().collect();
+        let pat: Vec<char> = query.chars().collect();
+        let found = if forward {
+            let from = if advance { head + 1 } else { head };
+            (from..=chars.len().saturating_sub(pat.len()))
+                .find(|&i| chars[i..].starts_with(&pat))
+        } else {
+            let start = if advance { head.saturating_sub(1) } else { head };
+            (0..=start.min(chars.len().saturating_sub(pat.len())))
+                .rev()
+                .find(|&i| chars[i..].starts_with(&pat))
+        };
+        // On a miss, keep point; the message still shows the query.
+        if let Some(i) = found {
+            self.ws.borrow_mut().execute(Action::Move(Motion::To(i)));
+        }
+    }
+
     pub fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         crossterm::terminal::enable_raw_mode()?;
         let mut stdout = std::io::stdout();
@@ -1018,14 +1242,9 @@ impl App {
         // Spawn blocking reader
         let tx_reader = tx.clone();
         tokio::task::spawn_blocking(move || {
-            loop {
-                match crossterm::event::read() {
-                    Ok(ev) => {
-                        if tx_reader.send(AppEvent::Input(ev)).is_err() {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
+            while let Ok(ev) = crossterm::event::read() {
+                if tx_reader.send(AppEvent::Input(ev)).is_err() {
+                    break;
                 }
             }
         });
@@ -1038,10 +1257,7 @@ impl App {
                 event = rx.recv() => {
                     match event {
                         Some(AppEvent::Input(ev)) => {
-                            match ev {
-                                crossterm::event::Event::Key(k) => self.handle_key(k),
-                                _ => {}
-                            }
+                            if let crossterm::event::Event::Key(k) = ev { self.handle_key(k) }
                         }
                         None => break,
                     }
@@ -1438,6 +1654,19 @@ impl App {
         }
     }
 
+    /// Kick off call hierarchy: resolve the symbol under the cursor, then (in
+    /// the response handler) request its callers or callees.
+    fn lsp_call_hierarchy(&mut self, incoming: bool) {
+        if let Some((_, uri, pos)) = self.active_lsp_target() {
+            let params = ruster_lsp::protocol::prepare_call_hierarchy_params(&uri, pos);
+            self.lsp_request(
+                "textDocument/prepareCallHierarchy",
+                params,
+                LspAction::PrepareCallHierarchy(incoming),
+            );
+        }
+    }
+
     fn lsp_rename(&mut self, new_name: &str) {
         if let Some((_, uri, pos)) = self.active_lsp_target() {
             let params = ruster_lsp::protocol::rename_params(&uri, pos, new_name);
@@ -1541,6 +1770,48 @@ impl App {
                     })
                     .collect();
                 self.picker = Some(PickerState::new("Workspace symbols", items));
+            }
+            LspAction::PrepareCallHierarchy(incoming) => {
+                let items = ruster_lsp::parse_call_hierarchy_prepare(&result);
+                match items.into_iter().next() {
+                    Some(item) => {
+                        // Step 2: request the calls for the resolved item.
+                        let method = if incoming {
+                            "callHierarchy/incomingCalls"
+                        } else {
+                            "callHierarchy/outgoingCalls"
+                        };
+                        let params = ruster_lsp::protocol::call_hierarchy_calls_params(&item);
+                        self.lsp_request(method, params, LspAction::CallHierarchy(incoming));
+                    }
+                    None => self.message = Some("No call hierarchy for symbol".to_string()),
+                }
+            }
+            LspAction::CallHierarchy(incoming) => {
+                let calls = ruster_lsp::parse_call_hierarchy_calls(&result, incoming);
+                if calls.is_empty() {
+                    self.message = Some(
+                        if incoming { "No callers" } else { "No callees" }.to_string(),
+                    );
+                    return;
+                }
+                let title = if incoming { "Callers" } else { "Callees" };
+                let items = calls
+                    .into_iter()
+                    .map(|c| {
+                        let line = c.start.line as usize + 1;
+                        let col = c.start.character as usize + 1;
+                        let label = match &c.detail {
+                            Some(d) => format!("{}  {}", c.name, d),
+                            None => c.name.clone(),
+                        };
+                        PickerItem::new(
+                            format!("{}  {}:{}", label, c.uri, line),
+                            PickerAction::OpenLocation(PathBuf::from(c.uri), line, col),
+                        )
+                    })
+                    .collect();
+                self.picker = Some(PickerState::new(title, items));
             }
         }
     }
@@ -1664,10 +1935,19 @@ impl App {
         self.update_syntax();
 
         let mode = self.vim.mode;
-        let mode_lbl = crate::widgets::mode_label(&mode).to_string();
-        let cursor_kind = match mode {
-            VimMode::Insert | VimMode::Cmdline => CursorKind::Bar,
-            _ => CursorKind::Block,
+        // In Emacs mode the statusline shows an Emacs indicator instead of the
+        // vim mode label, and the cursor is always a bar (modeless insert).
+        let (mode_lbl, emacs) = match self.editmode {
+            EditMode::Emacs => ("-- EMACS --".to_string(), true),
+            EditMode::Neovim => (crate::widgets::mode_label(&mode).to_string(), false),
+        };
+        let cursor_kind = if emacs {
+            CursorKind::Bar
+        } else {
+            match mode {
+                VimMode::Insert | VimMode::Cmdline => CursorKind::Bar,
+                _ => CursorKind::Block,
+            }
         };
         let smooth = self.has_smooth_cursor;
         let (anim_x, anim_y) = (self.cursor_anim.cell_x, self.cursor_anim.cell_y);
@@ -1676,6 +1956,13 @@ impl App {
         let lua_left = self.lua.statusline_sections("left").join("  ");
         let lua_center = self.lua.statusline_sections("center").join("  ");
         let lua_right = self.lua.statusline_sections("right").join("  ");
+
+        // The Emacs region (mark..point) is highlighted like a char selection.
+        let emacs_mark = if self.editmode == EditMode::Emacs {
+            self.emacs.mark()
+        } else {
+            None
+        };
 
         let mut views: Vec<WindowView> = Vec::new();
         {
@@ -1723,6 +2010,21 @@ impl App {
                                 _ => ruster_render::SelectionKind::Char,
                             },
                         })
+                    } else if is_active {
+                        // Emacs region: mark..point, shown like a char selection.
+                        emacs_mark.filter(|&m| m != head).map(|m| {
+                            let (lo, hi) = (m.min(head), m.max(head));
+                            // The point itself is exclusive, so the last covered
+                            // char is hi - 1.
+                            let last = hi - 1;
+                            let sl = doc.buffer.char_to_line(lo);
+                            let el = doc.buffer.char_to_line(last);
+                            SelectionView {
+                                start: (sl as u16, (lo - doc.buffer.line_start_char(sl)) as u16),
+                                end: (el as u16, (last - doc.buffer.line_start_char(el)) as u16),
+                                kind: ruster_render::SelectionKind::Char,
+                            }
+                        })
                     } else {
                         None
                     };
@@ -1767,11 +2069,7 @@ impl App {
                         None => plain_lines(&content),
                     },
                 };
-                let pct = if line_count > 0 {
-                    (cline + 1) * 100 / line_count
-                } else {
-                    100
-                };
+                let pct = ((cline + 1) * 100).checked_div(line_count).unwrap_or(100);
                 let mut left = if is_active { mode_lbl.clone() } else { String::new() };
                 let mut center = name;
                 let mut right = format!("{}%  {},{}", pct, cline + 1, ccol + 1);
@@ -1846,7 +2144,7 @@ impl App {
         // it has begun appearing, keep it up until the sequence ends.
         let past_timeout = self
             .leader_since
-            .map_or(false, |t| now.duration_since(t).as_millis() as u32 >= self.config.timeoutlen);
+            .is_some_and(|t| now.duration_since(t).as_millis() as u32 >= self.config.timeoutlen);
         let show = self.leader_pending.is_some() && (self.whichkey_anim > 0.01 || past_timeout);
         let target = if show { 1.0 } else { 0.0 };
         self.whichkey_anim += (target - self.whichkey_anim) * (1.0 - (-18.0 * dt).exp());
@@ -1904,8 +2202,10 @@ impl App {
             "Dired" | "dired" | "Explore" | "Ex" => Ok(CmdAction::Dired(None)),
             "Files" | "files" => Ok(CmdAction::Files),
             "fmt" | "format" => Ok(CmdAction::Format),
+            "callers" | "incomingcalls" => Ok(CmdAction::CallHierarchy(true)),
+            "callees" | "outgoingcalls" => Ok(CmdAction::CallHierarchy(false)),
             _ if trimmed.starts_with("w ") || trimmed.starts_with("write ") => {
-                let path = trimmed.splitn(2, ' ').nth(1).unwrap_or("").trim().to_string();
+                let path = trimmed.split_once(' ').map(|x| x.1).unwrap_or("").trim().to_string();
                 if path.is_empty() {
                     Err("No path given".to_string())
                 } else {
@@ -1913,11 +2213,11 @@ impl App {
                 }
             }
             _ if trimmed.starts_with("Dired ") || trimmed.starts_with("dired ") => {
-                let path = trimmed.splitn(2, ' ').nth(1).unwrap_or("").trim().to_string();
+                let path = trimmed.split_once(' ').map(|x| x.1).unwrap_or("").trim().to_string();
                 Ok(CmdAction::Dired(Some(path)))
             }
             _ if trimmed.starts_with("Rg ") || trimmed.starts_with("rg ") => {
-                let pat = trimmed.splitn(2, ' ').nth(1).unwrap_or("").trim().to_string();
+                let pat = trimmed.split_once(' ').map(|x| x.1).unwrap_or("").trim().to_string();
                 if pat.is_empty() {
                     Err("No pattern given".to_string())
                 } else {
@@ -1925,7 +2225,7 @@ impl App {
                 }
             }
             _ if trimmed.starts_with("rename ") => {
-                let name = trimmed.splitn(2, ' ').nth(1).unwrap_or("").trim().to_string();
+                let name = trimmed.split_once(' ').map(|x| x.1).unwrap_or("").trim().to_string();
                 if name.is_empty() {
                     Err("No name given".to_string())
                 } else {
@@ -1933,8 +2233,15 @@ impl App {
                 }
             }
             _ if trimmed.starts_with("sym ") => {
-                let q = trimmed.splitn(2, ' ').nth(1).unwrap_or("").trim().to_string();
+                let q = trimmed.split_once(' ').map(|x| x.1).unwrap_or("").trim().to_string();
                 Ok(CmdAction::WorkspaceSymbol(q))
+            }
+            _ if trimmed.starts_with("set editmode") || trimmed == "set editmode" => {
+                match trimmed.rsplit(' ').next().unwrap_or("") {
+                    "emacs" => Ok(CmdAction::SetEditMode(EditMode::Emacs)),
+                    "neovim" | "vim" | "nvim" => Ok(CmdAction::SetEditMode(EditMode::Neovim)),
+                    _ => Err("Usage: :set editmode neovim|emacs".to_string()),
+                }
             }
             _ if parse_substitute(trimmed).is_some() => {
                 Ok(parse_substitute(trimmed).expect("checked above"))
@@ -1988,6 +2295,8 @@ impl App {
                 self.lsp_format();
             }
             CmdAction::WorkspaceSymbol(q) => self.lsp_workspace_symbols(&q),
+            CmdAction::CallHierarchy(incoming) => self.lsp_call_hierarchy(incoming),
+            CmdAction::SetEditMode(mode) => self.set_editmode(mode),
             CmdAction::Substitute { pattern, replacement, all, whole_buffer } => {
                 self.substitute(&pattern, &replacement, all, whole_buffer)
             }
@@ -2130,6 +2439,18 @@ impl App {
                 return true;
             }
         }
+        // Pending `g`: `gg` jumps to the top, `g?` shows dired help. Handled
+        // locally (rather than falling through to vim) so `?` stays free for
+        // reverse-search. Any other key is a no-op that ends the prefix.
+        if self.dired_pending_g {
+            self.dired_pending_g = false;
+            match ck.code {
+                KeyCode::Char('g') => self.ws.borrow_mut().execute(Action::Move(Motion::To(0))),
+                KeyCode::Char('?') => self.hover = Some(dired_help_lines()),
+                _ => {}
+            }
+            return true;
+        }
         if ctrl {
             match ck.code {
                 KeyCode::Char('n') => {
@@ -2152,7 +2473,7 @@ impl App {
                 self.dired_go_up();
                 true
             }
-            KeyCode::Char('+') | KeyCode::Char('n') => {
+            KeyCode::Char('+') => {
                 self.dired_prompt = Some(DiredPrompt { kind: DiredPromptKind::Create, input: String::new() });
                 true
             }
@@ -2183,10 +2504,6 @@ impl App {
                 self.dired_paste();
                 true
             }
-            KeyCode::Char('?') => {
-                self.hover = Some(dired_help_lines());
-                true
-            }
             KeyCode::Char('.') => {
                 self.dired_show_hidden = !self.dired_show_hidden;
                 self.dired_refresh_current();
@@ -2196,11 +2513,16 @@ impl App {
                 ));
                 true
             }
-            // Movement keys pass through to vim for navigation.
-            KeyCode::Char('j') | KeyCode::Char('k') | KeyCode::Char('g')
-            | KeyCode::Char('G') | KeyCode::Up | KeyCode::Down => false,
-            // Swallow everything else to keep the listing read-only.
-            _ => true,
+            // `g` starts the dired prefix (`gg` top, `g?` help).
+            KeyCode::Char('g') => {
+                self.dired_pending_g = true;
+                true
+            }
+            // Everything else falls through to normal handling. The buffer is
+            // read-only (edits are no-ops), so this safely enables `:` commands,
+            // `/`/`?`/`n`/`N` search, motions, the Space leader, and — in Emacs
+            // mode — `C-s`/`M-x`, all operating over the listing.
+            _ => false,
         }
     }
 
@@ -2661,6 +2983,8 @@ impl App {
             }
             LeaderAction::DocumentSymbol => self.lsp_document_symbols(),
             LeaderAction::Diagnostics => self.open_diagnostics_picker(),
+            LeaderAction::IncomingCalls => self.lsp_call_hierarchy(true),
+            LeaderAction::OutgoingCalls => self.lsp_call_hierarchy(false),
         }
     }
 
@@ -2908,6 +3232,13 @@ mod tests {
     }
 
     #[test]
+    fn call_hierarchy_commands_parse() {
+        let a = App::new("x".into(), PathBuf::from("f.txt"));
+        assert_eq!(a.parse_cmdline(":callers"), Ok(CmdAction::CallHierarchy(true)));
+        assert_eq!(a.parse_cmdline(":callees"), Ok(CmdAction::CallHierarchy(false)));
+    }
+
+    #[test]
     fn macro_record_and_replay() {
         use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
         let none = KeyModifiers::NONE;
@@ -2927,6 +3258,82 @@ mod tests {
         a.handle_key(CtKey::new(KeyCode::Char('@'), none));
         a.handle_key(CtKey::new(KeyCode::Char('q'), none));
         assert_eq!(a.ws.borrow().buffer().to_string(), "a\nbbb\nccc\n");
+    }
+
+    #[test]
+    fn set_editmode_switches_paradigm_and_routes_to_emacs() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let ctrl = KeyModifiers::CONTROL;
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("hello".into(), PathBuf::from("f.txt"));
+        assert_eq!(a.editmode, EditMode::Neovim);
+
+        a.apply_cmd(a.parse_cmdline(":set editmode emacs").unwrap());
+        assert_eq!(a.editmode, EditMode::Emacs);
+
+        // Modeless: a plain key self-inserts (no Normal mode). Cursor is at 0.
+        a.handle_key(CtKey::new(KeyCode::Char('X'), none));
+        assert_eq!(a.ws.borrow().buffer().to_string(), "Xhello");
+
+        // C-a jumps to line start, then C-e to line end.
+        a.handle_key(CtKey::new(KeyCode::Char('e'), ctrl));
+        a.handle_key(CtKey::new(KeyCode::Char('!'), none));
+        assert_eq!(a.ws.borrow().buffer().to_string(), "Xhello!");
+
+        // Switching back restores modal editing.
+        a.apply_cmd(a.parse_cmdline(":set editmode neovim").unwrap());
+        assert_eq!(a.editmode, EditMode::Neovim);
+    }
+
+    #[test]
+    fn emacs_region_renders_a_selection() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let ctrl = KeyModifiers::CONTROL;
+        let mut a = App::new("hello world".into(), PathBuf::from("f.txt"));
+        a.set_editmode(EditMode::Emacs);
+        a.ws.borrow_mut().execute(Action::Move(Motion::To(0)));
+        // Set the mark, then move right five chars to select "hello".
+        a.handle_key(CtKey::new(KeyCode::Char(' '), ctrl));
+        assert_eq!(a.emacs.mark(), Some(0));
+        for _ in 0..5 {
+            a.handle_key(CtKey::new(KeyCode::Char('f'), ctrl));
+        }
+        // Mark at 0, point at 5 — the region spans "hello".
+        assert_eq!(a.emacs.mark(), Some(0));
+        assert_eq!(a.ws.borrow().primary_head(), 5);
+        // The render path builds a SelectionView for the region without panic.
+        a.render();
+    }
+
+    #[test]
+    fn emacs_ctrl_x_ctrl_c_quits() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let ctrl = KeyModifiers::CONTROL;
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.set_editmode(EditMode::Emacs);
+        a.handle_key(CtKey::new(KeyCode::Char('x'), ctrl));
+        assert!(a.emacs_ctrl_x, "C-x armed the prefix");
+        a.handle_key(CtKey::new(KeyCode::Char('c'), ctrl));
+        assert!(a.should_quit);
+    }
+
+    #[test]
+    fn emacs_isearch_jumps_to_match() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let ctrl = KeyModifiers::CONTROL;
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("foo bar foo".into(), PathBuf::from("f.txt"));
+        a.set_editmode(EditMode::Emacs);
+        a.ws.borrow_mut().execute(Action::Move(Motion::To(0)));
+        // C-s starts isearch; typing "bar" moves point to offset 4.
+        a.handle_key(CtKey::new(KeyCode::Char('s'), ctrl));
+        for c in "bar".chars() {
+            a.handle_key(CtKey::new(KeyCode::Char(c), none));
+        }
+        assert_eq!(a.ws.borrow().primary_head(), 4);
+        // Enter ends the search.
+        a.handle_key(CtKey::new(KeyCode::Enter, none));
+        assert!(a.emacs_isearch.is_none());
     }
 
     #[test]
@@ -3025,6 +3432,109 @@ mod tests {
         let mut a = App::new("x".into(), PathBuf::from("f.txt"));
         a.apply_cmd(CmdAction::BufferDelete);
         assert_eq!(a.ws.borrow().buffers.len(), 1);
+    }
+
+    /// Open dired on a fresh temp dir containing the given subdirectories.
+    fn dired_on_temp(name: &str, subdirs: &[&str]) -> (App, PathBuf) {
+        let tmp = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_dir_all(&tmp);
+        for s in subdirs {
+            std::fs::create_dir_all(tmp.join(s)).unwrap();
+        }
+        if subdirs.is_empty() {
+            std::fs::create_dir_all(&tmp).unwrap();
+        }
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::Dired(Some(tmp.to_string_lossy().into_owned())));
+        (a, tmp)
+    }
+
+    #[test]
+    fn dired_colon_falls_through_to_cmdline() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let (mut a, tmp) = dired_on_temp("ruster_dired_colon", &[]);
+        a.handle_key(CtKey::new(KeyCode::Char(':'), KeyModifiers::NONE));
+        assert_eq!(a.vim.mode, VimMode::Cmdline, ": reaches the command line in dired");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn dired_slash_falls_through_to_search() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let (mut a, tmp) = dired_on_temp("ruster_dired_slash", &[]);
+        a.handle_key(CtKey::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        assert_eq!(a.vim.mode, VimMode::Cmdline, "/ opens a search prompt in dired");
+        assert!(a.vim.cmdline_buffer().starts_with('/'));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn dired_search_moves_cursor_and_enter_opens_entry() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        // Listing is "../", "adir/", "zebra/" (dirs sorted). Search for "zeb".
+        let (mut a, tmp) = dired_on_temp("ruster_dired_search", &["adir", "zebra"]);
+        for c in "/zeb".chars() {
+            a.handle_key(CtKey::new(KeyCode::Char(c), none));
+        }
+        a.handle_key(CtKey::new(KeyCode::Enter, none)); // run the search → Move
+        // The cursor is now on the "zebra/" line; a search key like 'd' in the
+        // term must not have been hijacked by dired.
+        assert!(a.dired_prompt.is_none(), "search term did not trigger dired keys");
+        a.handle_key(CtKey::new(KeyCode::Enter, none)); // dired open at cursor
+        let name = a.ws.borrow().active_doc().name.clone();
+        assert!(name.ends_with("zebra"), "search then Enter opened zebra, got {name}");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn dired_edit_keys_are_noops() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let (mut a, tmp) = dired_on_temp("ruster_dired_ro", &["adir"]);
+        let before = a.ws.borrow().buffer().to_string();
+        // `x` deletes a char in vim; `i` then text would insert — both no-op here.
+        a.handle_key(CtKey::new(KeyCode::Char('x'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('i'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('Z'), none));
+        a.handle_key(CtKey::new(KeyCode::Esc, none));
+        assert_eq!(a.ws.borrow().buffer().to_string(), before, "listing is read-only");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn dired_n_repeats_search_plus_creates() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let (mut a, tmp) = dired_on_temp("ruster_dired_n", &["adir"]);
+        // `n` is search-repeat now, not create: it must not open a Create prompt.
+        a.handle_key(CtKey::new(KeyCode::Char('n'), none));
+        assert!(a.dired_prompt.is_none(), "n no longer creates");
+        // `+` still opens the Create prompt.
+        a.handle_key(CtKey::new(KeyCode::Char('+'), none));
+        assert!(matches!(
+            a.dired_prompt,
+            Some(DiredPrompt { kind: DiredPromptKind::Create, .. })
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn dired_g_prefix_top_and_help() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let (mut a, tmp) = dired_on_temp("ruster_dired_g", &["adir", "zebra"]);
+        // Move down, then `gg` returns to the top.
+        a.handle_key(CtKey::new(KeyCode::Char('j'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('j'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('g'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('g'), none));
+        assert_eq!(a.ws.borrow().primary_head(), 0, "gg jumps to the top");
+        // `g?` shows the dired help popup.
+        a.handle_key(CtKey::new(KeyCode::Char('g'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('?'), none));
+        assert!(a.hover.is_some(), "g? shows dired help");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
@@ -3163,7 +3673,7 @@ mod tests {
         a.apply_cmd(CmdAction::Dired(Some(tmp.to_string_lossy().into_owned())));
 
         // "sub/" creates a directory.
-        a.handle_key(CtKey::new(KeyCode::Char('n'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('+'), none));
         for c in "sub/".chars() {
             a.handle_key(CtKey::new(KeyCode::Char(c), none));
         }
