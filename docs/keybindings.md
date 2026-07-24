@@ -175,16 +175,27 @@ Then `:` + `Tab` opens a fuzzy **command palette** of these commands.
 | `<CR>` | Accept |
 | `Esc` | Cancel |
 
+Pickers that select a file (files, buffers, references, symbols, diagnostics)
+show a **syntax-highlighted preview** of the selected entry beside the list,
+scrolled to the target line for location results.
+
 ## Dired (file explorer)
 
 | Key | Action |
 |-----|--------|
-| `<CR>` | Open file / descend into directory |
-| `-` / `^` | Go to parent directory |
-| `+` / `%` | Create file / directory |
+| `<CR>` / `l` | Open file / descend into directory |
+| `h` / `-` / `^` | Go to parent directory |
+| `j` / `k`, `C-n` / `C-p` | Move cursor |
+| `yy` | Copy entry |
+| `dd` | Cut entry |
+| `p` | Paste into this directory |
 | `R` | Rename entry |
 | `D` | Delete entry (with `y`/`n` confirm) |
-| `j` / `k` | Move cursor |
+| `+` / `n` | New file — or directory if the name ends with `/` |
+| `?` | Show this keymap in a popup |
+
+Copy/cut/paste refuse to overwrite an existing name, and a cut is consumed by
+its paste (the original is removed only after a successful move).
 
 ## Snippets
 

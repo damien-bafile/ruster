@@ -258,6 +258,7 @@ impl PickerWidget {
 impl Widget for PickerWidget {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let bg = Color::Rgb(30, 30, 46);
+        let preview_bg = Color::Rgb(24, 24, 37);
         for y in area.top()..area.bottom() {
             for x in area.left()..area.right() {
                 if let Some(cell) = buf.cell_mut((x, y)) {
@@ -276,6 +277,11 @@ impl Widget for PickerWidget {
             }
         };
 
+        // Split into a list column and (when there's a preview) a preview column.
+        let has_preview = !self.view.preview.is_empty();
+        let list_w = if has_preview { area.width * 2 / 5 } else { area.width };
+        let list_right = area.x + list_w;
+
         // Title row.
         let title = format!(" {} ", self.view.title);
         for (i, ch) in title.chars().enumerate() {
@@ -286,7 +292,7 @@ impl Widget for PickerWidget {
         for (i, ch) in query.chars().enumerate() {
             put(buf, area.x + i as u16, area.y + 1, ch, Color::White, bg);
         }
-        // Item rows.
+        // Item rows (clipped to the list column).
         for (row, item) in self.view.rows.iter().enumerate() {
             let y = area.y + 2 + row as u16;
             if y >= area.bottom() { break; }
@@ -295,12 +301,48 @@ impl Widget for PickerWidget {
             } else {
                 (Color::Rgb(205, 214, 244), bg)
             };
-            for x in area.left()..area.right() {
+            for x in area.left()..list_right.min(area.right()) {
                 put(buf, x, y, ' ', fg, row_bg);
             }
             let label = format!(" {}", item.label);
             for (i, ch) in label.chars().enumerate() {
-                put(buf, area.x + i as u16, y, ch, fg, row_bg);
+                let x = area.x + i as u16;
+                if x >= list_right { break; }
+                put(buf, x, y, ch, fg, row_bg);
+            }
+        }
+
+        // Preview column: highlighted file contents.
+        if has_preview {
+            let px = list_right + 1;
+            for y in area.top()..area.bottom() {
+                for x in px..area.right() {
+                    if let Some(cell) = buf.cell_mut((x, y)) {
+                        cell.set_bg(preview_bg);
+                    }
+                }
+                // Divider between the two columns.
+                put(buf, list_right, y, '│', Color::Rgb(69, 71, 90), bg);
+            }
+            for (row, line) in self.view.preview.iter().enumerate() {
+                let y = area.y + row as u16;
+                if y >= area.bottom() { break; }
+                let mut colors: std::collections::HashMap<usize, RColor> =
+                    std::collections::HashMap::new();
+                for (offset, len, style) in &line.highlights {
+                    for c in 0..*len {
+                        colors.insert(offset + c, style.fg);
+                    }
+                }
+                for (i, ch) in line.text.chars().enumerate() {
+                    let x = px + 1 + i as u16;
+                    if x >= area.right() { break; }
+                    let fg = colors
+                        .get(&i)
+                        .map(ruster_render_color_to_tui)
+                        .unwrap_or(Color::Rgb(205, 214, 244));
+                    put(buf, x, y, ch, fg, preview_bg);
+                }
             }
         }
     }

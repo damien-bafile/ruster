@@ -247,12 +247,20 @@ impl Renderer for RaylibRenderer {
         if let Some(picker) = &state.picker {
             let accent = Color::new(137, 180, 250, 255);
             let box_bg = Color::new(30, 30, 46, 255);
-            let box_w = (screen_w * 6 / 10).clamp(240.min(screen_w), screen_w - 20);
-            let n_rows = picker.rows.len() as i32;
-            let box_h = ((n_rows + 2) * LINE_H).clamp(3 * LINE_H, (screen_h - 40).max(3 * LINE_H));
+            let preview_bg = Color::new(24, 24, 37, 255);
+            let has_preview = !picker.preview.is_empty();
+            let frac = if has_preview { 9 } else { 6 };
+            let box_w = (screen_w * frac / 10).clamp(240.min(screen_w), screen_w - 20);
+            let n_rows = (picker.rows.len() as i32 + 2).max(picker.preview.len() as i32);
+            let box_h = (n_rows * LINE_H).clamp(3 * LINE_H, (screen_h - 40).max(3 * LINE_H));
             let box_x = (screen_w - box_w) / 2;
             let box_y = screen_h / 4;
+            let list_w = if has_preview { box_w * 2 / 5 } else { box_w };
             d.draw_rectangle(box_x, box_y, box_w, box_h, box_bg);
+            if has_preview {
+                d.draw_rectangle(box_x + list_w, box_y, box_w - list_w, box_h, preview_bg);
+                d.draw_rectangle(box_x + list_w, box_y, 1, box_h, accent);
+            }
             d.draw_rectangle_lines(box_x, box_y, box_w, box_h, accent);
             // Clip contents to the box so long labels don't overflow.
             let mut s = d.begin_scissor_mode(box_x + 1, box_y + 1, box_w - 2, box_h - 2);
@@ -262,10 +270,51 @@ impl Renderer for RaylibRenderer {
             for (i, row) in picker.rows.iter().take(max_visible).enumerate() {
                 let ry = box_y + (2 + i as i32) * LINE_H;
                 if row.selected {
-                    s.draw_rectangle(box_x, ry, box_w, LINE_H, accent);
+                    s.draw_rectangle(box_x, ry, list_w, LINE_H, accent);
                     s.draw_text_ex(font, &format!(" {}", row.label), Vector2::new(box_x as f32 + 4.0, ry as f32), FONT_SIZE as f32, 1.0, box_bg);
                 } else {
                     s.draw_text_ex(font, &format!(" {}", row.label), Vector2::new(box_x as f32 + 4.0, ry as f32), FONT_SIZE as f32, 1.0, default_color);
+                }
+            }
+            // Preview column (syntax-highlighted).
+            if has_preview {
+                let px = box_x + list_w + 6;
+                for (i, line) in picker.preview.iter().enumerate() {
+                    let ly = box_y + i as i32 * LINE_H;
+                    if ly > box_y + box_h {
+                        break;
+                    }
+                    let n = line.text.len();
+                    if n == 0 {
+                        continue;
+                    }
+                    if line.highlights.is_empty() {
+                        s.draw_text_ex(font, &line.text, Vector2::new(px as f32, ly as f32), FONT_SIZE as f32, 1.0, default_color);
+                        continue;
+                    }
+                    let mut char_colors: Vec<Color> = vec![default_color; n];
+                    for &(offset, len, ref style) in &line.highlights {
+                        let fg = match style.fg {
+                            ruster_render::Color::Rgb(r, g, b) => Color::new(r, g, b, 255),
+                            ruster_render::Color::Default => default_color,
+                        };
+                        let end = (offset + len).min(n);
+                        for pos in offset..end {
+                            char_colors[pos] = fg;
+                        }
+                    }
+                    let mut x_off = px as f32;
+                    let mut pos = 0;
+                    while pos < n {
+                        let c = char_colors[pos];
+                        let start = pos;
+                        while pos < n && char_colors[pos] == c {
+                            pos += 1;
+                        }
+                        let seg = &line.text[start..pos];
+                        s.draw_text_ex(font, seg, Vector2::new(x_off, ly as f32), FONT_SIZE as f32, 1.0, c);
+                        x_off += measure(seg);
+                    }
                 }
             }
         }

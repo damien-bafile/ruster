@@ -137,6 +137,8 @@ pub struct PickerView {
     pub title: String,
     pub query: String,
     pub rows: Vec<PickerRow>,
+    /// Syntax-highlighted preview of the selected entry (empty = no preview pane).
+    pub preview: Vec<StyledLine>,
 }
 
 /// A which-key hint panel that slides up from the bottom mini-buffer. `anim` is

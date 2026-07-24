@@ -458,6 +458,9 @@ pub struct App {
     /// Streaming results for the active picker (`:Files` walk, `:Rg` output),
     /// drained into the picker each frame. Backend-agnostic (polled in render).
     pending_results: Option<std::sync::mpsc::Receiver<PickerItem>>,
+    /// Cached highlighted contents of the file currently shown in the picker
+    /// preview, so it isn't re-read and re-parsed every frame.
+    preview_cache: Option<(PathBuf, Vec<StyledLine>)>,
     /// Current directory for each open dired (file-explorer) buffer.
     dired_dirs: std::collections::HashMap<BufferId, PathBuf>,
     /// An in-progress dired file operation awaiting mini-buffer input.
@@ -653,6 +656,7 @@ impl App {
             has_smooth_cursor: false, cursor_anim, pending_ctrl_w: false, picker: None,
             leader_pending: None,
             pending_results: None,
+            preview_cache: None,
             whichkey_anim: 0.0,
             whichkey_cache: None,
             anim_clock: std::time::Instant::now(),
@@ -965,6 +969,59 @@ impl App {
             std::thread::sleep(Duration::from_millis(16));
         }
         self.lsp.shutdown_all();
+    }
+
+    /// Build the preview pane for the picker's selected entry: the file's
+    /// highlighted contents, windowed around the target line when there is one.
+    fn picker_preview(&mut self, height: usize) -> Vec<StyledLine> {
+        const PREVIEW_MAX_BYTES: usize = 512 * 1024;
+        let action = match self.picker.as_mut().and_then(|p| p.selected_action()) {
+            Some(a) => a,
+            None => return Vec::new(),
+        };
+        // Resolve the selection to a file (and optional 1-indexed line).
+        let (path, line): (PathBuf, Option<usize>) = match action {
+            PickerAction::OpenPath(p) => (p, None),
+            PickerAction::OpenLocation(p, l, _) => (p, Some(l)),
+            PickerAction::OpenBuffer(id) => {
+                let w = self.ws.borrow();
+                match w.buffers.get(id).and_then(|d| d.file_path.clone()) {
+                    Some(p) => (p, None),
+                    None => return Vec::new(),
+                }
+            }
+            PickerAction::RunCmd(_) => return Vec::new(),
+        };
+
+        // Load + highlight the file, reusing the cache when the path is unchanged.
+        let cached = match &self.preview_cache {
+            Some((p, lines)) if *p == path => Some(lines),
+            _ => None,
+        };
+        if cached.is_none() {
+            let text = match std::fs::metadata(&path) {
+                Ok(m) if m.len() as usize <= PREVIEW_MAX_BYTES => {
+                    std::fs::read_to_string(&path).unwrap_or_default()
+                }
+                _ => String::new(),
+            };
+            let lines = match SyntaxEngine::new(&text, &ruster_syntax::lang_ext_for_path(&path)) {
+                Ok(engine) => engine.styled_lines().to_vec(),
+                Err(_) => plain_lines(&text),
+            };
+            self.preview_cache = Some((path.clone(), lines));
+        }
+        let lines = match &self.preview_cache {
+            Some((_, l)) => l,
+            None => return Vec::new(),
+        };
+
+        // Window the content: centered on the target line, else from the top.
+        let start = match line {
+            Some(l) => l.saturating_sub(1).saturating_sub(height / 3),
+            None => 0,
+        };
+        lines.iter().skip(start).take(height).cloned().collect()
     }
 
     /// Drain any streamed picker results (`:Files`/`:Rg`) into the open picker.
@@ -1529,7 +1586,12 @@ impl App {
                 _ => self.message.clone().or_else(|| self.current_line_diagnostic()),
             }
         };
-        let picker_view = self.picker.as_mut().map(|p| p.view());
+        let picker_view = self.picker.as_mut().map(|p| p.view()).map(|mut v| {
+            // Attach a preview of the selected entry (height ≈ the picker's rows).
+            let preview_height = v.rows.len().clamp(8, 24);
+            v.preview = self.picker_preview(preview_height);
+            v
+        });
 
         // Animate the bottom which-key panel sliding up while a leader sequence
         // is pending, and back down after it resolves/cancels.
@@ -2633,6 +2695,52 @@ mod tests {
         assert!(name.ends_with("sub"), "descended into sub, got {name}");
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn picker_preview_shows_selected_file_contents() {
+        let tmp = std::env::temp_dir().join("ruster_preview_test.rs");
+        std::fs::write(&tmp, "fn preview_me() {\n    let x = 1;\n}\n").unwrap();
+
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.picker = Some(PickerState::new(
+            "Files",
+            vec![PickerItem::new(
+                "preview_test.rs",
+                PickerAction::OpenPath(tmp.clone()),
+            )],
+        ));
+        let preview = a.picker_preview(10);
+        assert!(
+            preview.iter().any(|l| l.text.contains("preview_me")),
+            "preview shows the file contents"
+        );
+        // Rust source is syntax-highlighted in the preview.
+        assert!(preview.iter().any(|l| !l.highlights.is_empty()));
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn picker_preview_windows_around_a_location() {
+        let tmp = std::env::temp_dir().join("ruster_preview_loc.rs");
+        let body: String = (1..=60).map(|i| format!("// line {}\n", i)).collect();
+        std::fs::write(&tmp, &body).unwrap();
+
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.picker = Some(PickerState::new(
+            "References",
+            vec![PickerItem::new(
+                "loc",
+                PickerAction::OpenLocation(tmp.clone(), 40, 1),
+            )],
+        ));
+        let preview = a.picker_preview(9);
+        // The window is centred near line 40, not the top of the file.
+        assert!(preview.iter().any(|l| l.text.contains("line 40")));
+        assert!(!preview.iter().any(|l| l.text.contains("line 1\n")));
+
+        let _ = std::fs::remove_file(&tmp);
     }
 
     #[test]

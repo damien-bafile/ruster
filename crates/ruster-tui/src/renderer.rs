@@ -104,10 +104,12 @@ impl Renderer for TuiRenderer {
                 }
             }
 
-            // Floating picker overlay, centered.
+            // Floating picker overlay, centered. Wider when it has a preview pane.
             if let Some(picker) = &state.picker {
-                let pw = (area.width * 6 / 10).clamp(20, area.width.saturating_sub(2));
+                let frac = if picker.preview.is_empty() { 6 } else { 9 };
+                let pw = (area.width * frac / 10).clamp(20, area.width.saturating_sub(2));
                 let rows = picker.rows.len() as u16 + 2; // title + query + rows
+                let rows = rows.max(picker.preview.len() as u16);
                 let ph = rows.clamp(3, area.height.saturating_sub(2));
                 let px = area.x + (area.width.saturating_sub(pw)) / 2;
                 let py = area.y + (area.height.saturating_sub(ph)) / 3;
