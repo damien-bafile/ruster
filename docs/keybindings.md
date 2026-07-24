@@ -192,6 +192,7 @@ scrolled to the target line for location results.
 | `R` | Rename entry |
 | `D` | Delete entry (with `y`/`n` confirm) |
 | `+` / `n` | New file — or directory if the name ends with `/` |
+| `.` | Toggle hidden (dot-)files |
 | `?` | Show this keymap in a popup |
 
 Copy/cut/paste refuse to overwrite an existing name, and a cut is consumed by

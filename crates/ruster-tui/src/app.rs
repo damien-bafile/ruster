@@ -150,6 +150,7 @@ fn dired_help_lines() -> Vec<StyledLine> {
         "R            rename entry",
         "D            delete entry (confirm)",
         "+ / n        new file, or dir if name ends with /",
+        ".            toggle hidden files",
         "?            this help",
     ];
     std::iter::once(StyledLine { text: " dired keys".to_string(), highlights: vec![] })
@@ -498,6 +499,11 @@ pub struct App {
     dired_dirs: std::collections::HashMap<BufferId, PathBuf>,
     /// Colored listing lines for each dired buffer, rebuilt on refresh.
     dired_styled: std::collections::HashMap<BufferId, Vec<StyledLine>>,
+    /// The entries backing each dired buffer, so the listing text, colors and
+    /// cursor→entry lookup always agree.
+    dired_entries: std::collections::HashMap<BufferId, Vec<ruster_core::dired::DirEntry>>,
+    /// Whether dired shows dot-files (toggled with `.`).
+    dired_show_hidden: bool,
     /// An in-progress dired file operation awaiting mini-buffer input.
     dired_prompt: Option<DiredPrompt>,
     /// Path awaiting paste in dired, and whether it's a cut (`true` = move).
@@ -698,6 +704,8 @@ impl App {
             leader_since: None,
             dired_dirs: std::collections::HashMap::new(),
             dired_styled: std::collections::HashMap::new(),
+            dired_entries: std::collections::HashMap::new(),
+            dired_show_hidden: false,
             dired_prompt: None,
             dired_clipboard: None,
             dired_pending_y: false,
@@ -1881,9 +1889,11 @@ impl App {
 
     /// Reload a dired buffer's listing for `path` and reset its window cursor.
     fn refresh_dired(&mut self, id: BufferId, path: PathBuf) {
-        let entries = ruster_core::dired::list(&path);
+        // List once, then derive the text, colors and lookup table from it.
+        let entries = ruster_core::dired::list(&path, self.dired_show_hidden);
+        let text = ruster_core::dired::render_entries(&entries);
         self.dired_styled.insert(id, dired_styled_lines(&entries));
-        let text = ruster_core::dired::render(&path);
+        self.dired_entries.insert(id, entries);
         {
             let mut w = self.ws.borrow_mut();
             if let Some(doc) = w.buffers.get_mut(id) {
@@ -1980,6 +1990,15 @@ impl App {
                 self.hover = Some(dired_help_lines());
                 true
             }
+            KeyCode::Char('.') => {
+                self.dired_show_hidden = !self.dired_show_hidden;
+                self.dired_refresh_current();
+                self.message = Some(format!(
+                    "Hidden files {}",
+                    if self.dired_show_hidden { "shown" } else { "hidden" }
+                ));
+                true
+            }
             // Movement keys pass through to vim for navigation.
             KeyCode::Char('j') | KeyCode::Char('k') | KeyCode::Char('g')
             | KeyCode::Char('G') | KeyCode::Up | KeyCode::Down => false,
@@ -2072,7 +2091,7 @@ impl App {
             let w = self.ws.borrow();
             w.buffer().char_to_line(w.primary_head())
         };
-        let entries = ruster_core::dired::list(&dir);
+        let entries = self.dired_entries.get(&id)?;
         let entry = entries.get(line)?;
         if entry.name == ".." {
             return None;
@@ -2203,8 +2222,7 @@ impl App {
             let w = self.ws.borrow();
             w.buffer().char_to_line(w.primary_head())
         };
-        let entries = ruster_core::dired::list(&dir);
-        let entry = match entries.get(line) {
+        let entry = match self.dired_entries.get(&id).and_then(|e| e.get(line)) {
             Some(e) => e.clone(),
             None => return,
         };
@@ -2883,7 +2901,7 @@ mod tests {
             std::fs::set_permissions(&p, perms).unwrap();
         }
 
-        let entries = ruster_core::dired::list(&tmp);
+        let entries = ruster_core::dired::list(&tmp, true);
         let styled = dired_styled_lines(&entries);
         let fg_of = |name: &str| -> Option<Color> {
             styled
@@ -2902,6 +2920,38 @@ mod tests {
             // An executable is green.
             assert_eq!(fg_of("runme.sh"), Some(Color::Rgb(166, 227, 161)));
         }
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn dired_dot_toggles_hidden_files() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let tmp = std::env::temp_dir().join("ruster_dired_dot");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join(".hidden"), "x").unwrap();
+        std::fs::write(tmp.join("shown.txt"), "y").unwrap();
+
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::Dired(Some(tmp.to_string_lossy().into_owned())));
+
+        // Hidden by default.
+        let text = a.ws.borrow().buffer().to_string();
+        assert!(text.contains("shown.txt"));
+        assert!(!text.contains(".hidden"), "dot-files hidden by default");
+
+        // '.' reveals them.
+        a.handle_key(CtKey::new(KeyCode::Char('.'), none));
+        assert!(a.dired_show_hidden);
+        let text = a.ws.borrow().buffer().to_string();
+        assert!(text.contains(".hidden"), "dot-files shown after toggle");
+
+        // '.' again hides them.
+        a.handle_key(CtKey::new(KeyCode::Char('.'), none));
+        let text = a.ws.borrow().buffer().to_string();
+        assert!(!text.contains(".hidden"));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

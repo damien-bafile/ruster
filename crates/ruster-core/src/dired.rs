@@ -30,13 +30,17 @@ fn executable(_meta: &std::fs::Metadata) -> bool {
 }
 
 /// List `path`: `..` first (unless `path` is a filesystem root), then
-/// directories, then files, each group sorted alphabetically.
-pub fn list(path: &Path) -> Vec<DirEntry> {
+/// directories, then files, each group sorted alphabetically. Dot-files are
+/// included only when `show_hidden` is true (`..` always shows).
+pub fn list(path: &Path, show_hidden: bool) -> Vec<DirEntry> {
     let mut dirs: Vec<DirEntry> = Vec::new();
     let mut files: Vec<DirEntry> = Vec::new();
     if let Ok(rd) = std::fs::read_dir(path) {
         for entry in rd.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
+            if !show_hidden && name.starts_with('.') {
+                continue;
+            }
             let file_type = entry.file_type().ok();
             let is_symlink = file_type.map(|t| t.is_symlink()).unwrap_or(false);
             // Resolve through symlinks so a link to a directory sorts as one.
@@ -66,15 +70,19 @@ pub fn list(path: &Path) -> Vec<DirEntry> {
     out
 }
 
-/// Render a directory listing as buffer text, one entry per line. Directories
-/// are shown with a trailing `/`. The line index of each entry matches the
-/// index returned by [`list`].
-pub fn render(path: &Path) -> String {
-    list(path)
+/// Render already-listed entries as buffer text, one per line. Directories are
+/// shown with a trailing `/`; line index matches the entry index.
+pub fn render_entries(entries: &[DirEntry]) -> String {
+    entries
         .iter()
         .map(|e| if e.is_dir { format!("{}/", e.name) } else { e.name.clone() })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// List and render `path` in one step.
+pub fn render(path: &Path, show_hidden: bool) -> String {
+    render_entries(&list(path, show_hidden))
 }
 
 #[cfg(test)]
@@ -89,7 +97,7 @@ mod tests {
         std::fs::write(tmp.join("zfile.txt"), "y").unwrap();
         std::fs::write(tmp.join("afile.txt"), "x").unwrap();
 
-        let entries = list(&tmp);
+        let entries = list(&tmp, true);
         assert_eq!(entries[0].name, "..");
         assert!(entries[0].is_dir);
         assert_eq!(entries[1].name, "subdir");
@@ -101,8 +109,30 @@ mod tests {
     }
 
     #[test]
+    fn hidden_files_are_filtered_unless_requested() {
+        let tmp = std::env::temp_dir().join("ruster_dired_hidden");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join(".git")).unwrap();
+        std::fs::write(tmp.join(".env"), "x").unwrap();
+        std::fs::write(tmp.join("visible.txt"), "y").unwrap();
+
+        let shown = list(&tmp, false);
+        assert!(shown.iter().any(|e| e.name == "visible.txt"));
+        assert!(!shown.iter().any(|e| e.name == ".env"));
+        assert!(!shown.iter().any(|e| e.name == ".git"));
+        // ".." is navigation, not a hidden entry.
+        assert!(shown.iter().any(|e| e.name == ".."));
+
+        let all = list(&tmp, true);
+        assert!(all.iter().any(|e| e.name == ".env"));
+        assert!(all.iter().any(|e| e.name == ".git"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn root_omits_dotdot() {
-        let entries = list(Path::new("/"));
+        let entries = list(Path::new("/"), true);
         assert!(!entries.iter().any(|e| e.name == ".."));
     }
 
@@ -112,7 +142,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(tmp.join("d")).unwrap();
         std::fs::write(tmp.join("f"), "x").unwrap();
-        let text = render(&tmp);
+        let text = render(&tmp, true);
         // ".." then "d/" then "f"
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[0], "../");
