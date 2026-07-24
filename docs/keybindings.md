@@ -12,6 +12,7 @@ All keys and commands work identically in the TUI and GUI backends.
 | `i` | Normal | Insert mode (before cursor) |
 | `v` | Normal | Visual (character-wise) |
 | `V` | Normal | Visual (line-wise) |
+| `C-v` | Normal | Visual (block-wise / column) |
 | `:` | Normal | Command-line |
 | `/` `?` | Normal | Search prompt (forwards / backwards) |
 | `Esc` | Insert / Visual / Cmdline | Back to Normal (also clears extra cursors) |
@@ -89,7 +90,9 @@ Examples: `daf` delete around function, `ciw` change inner word, `yi(` yank insi
 
 ## Visual mode
 
-Extend the selection with motions `h` `j` `k` `l` `w` `b` `e` `0`, then act:
+`v` selects character-wise, `V` line-wise, and `C-v` **block-wise** (a column
+rectangle). Extend the selection with motions `h` `j` `k` `l` `w` `b` `e` `0`,
+then act:
 
 | Key | Action |
 |-----|--------|
@@ -98,6 +101,10 @@ Extend the selection with motions `h` `j` `k` `l` `w` `b` `e` `0`, then act:
 | `y` | Yank selection |
 | `>` / `<` | Indent / de-indent |
 | `Esc` | Leave visual mode |
+
+In block mode `d`/`x`/`y` operate on the rectangle: every line's selected
+columns are removed or copied (rows joined by newlines), and lines shorter than
+the block are clipped rather than padded.
 
 ## Insert mode
 

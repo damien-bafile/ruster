@@ -107,14 +107,24 @@ pub struct StatuslineView {
     pub active: bool,
 }
 
+/// How a visual selection covers the lines it spans.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionKind {
+    /// From the start column on the first line to the end column on the last.
+    Char,
+    /// Whole lines, ignoring columns.
+    Line,
+    /// The same column range on every line (rectangle).
+    Block,
+}
+
 /// A visual-mode selection in buffer coordinates. `start`/`end` are
-/// `(line, col)` and both ends are **inclusive**; `line_wise` selects whole
-/// lines regardless of the columns.
+/// `(line, col)` and both ends are **inclusive**.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SelectionView {
     pub start: (u16, u16),
     pub end: (u16, u16),
-    pub line_wise: bool,
+    pub kind: SelectionKind,
 }
 
 impl SelectionView {
@@ -124,12 +134,27 @@ impl SelectionView {
         if line < self.start.0 || line > self.end.0 {
             return None;
         }
-        if self.line_wise {
-            return Some((0, line_len));
+        match self.kind {
+            SelectionKind::Line => Some((0, line_len)),
+            SelectionKind::Block => {
+                // A rectangle: the same columns on every line, clipped to it.
+                let (lo, hi) = if self.start.1 <= self.end.1 {
+                    (self.start.1, self.end.1)
+                } else {
+                    (self.end.1, self.start.1)
+                };
+                if lo > line_len {
+                    None
+                } else {
+                    Some((lo, hi.min(line_len)))
+                }
+            }
+            SelectionKind::Char => {
+                let start = if line == self.start.0 { self.start.1 } else { 0 };
+                let end = if line == self.end.0 { self.end.1 } else { line_len };
+                Some((start, end))
+            }
         }
-        let start = if line == self.start.0 { self.start.1 } else { 0 };
-        let end = if line == self.end.0 { self.end.1 } else { line_len };
-        Some((start, end))
     }
 }
 
@@ -209,8 +234,8 @@ pub trait Renderer {
 #[cfg(test)]
 mod tests {
     use crate::{
-        CursorKind, FrameState, GutterView, Rect, Renderer, SelectionView, StatuslineView,
-        StyledLine, WindowView,
+        CursorKind, FrameState, GutterView, Rect, Renderer, SelectionKind, SelectionView,
+        StatuslineView, StyledLine, WindowView,
     };
 
     struct TestRenderer;
@@ -242,7 +267,7 @@ mod tests {
     #[test]
     fn selection_spans_per_line() {
         // charwise from (1,4) to (3,2)
-        let sel = SelectionView { start: (1, 4), end: (3, 2), line_wise: false };
+        let sel = SelectionView { start: (1, 4), end: (3, 2), kind: SelectionKind::Char };
         assert_eq!(sel.span_on(0, 10), None, "before the selection");
         assert_eq!(sel.span_on(1, 10), Some((4, 10)), "first line: from start col");
         assert_eq!(sel.span_on(2, 10), Some((0, 10)), "middle line: whole line");
@@ -250,13 +275,20 @@ mod tests {
         assert_eq!(sel.span_on(4, 10), None, "after the selection");
 
         // single-line charwise
-        let one = SelectionView { start: (2, 3), end: (2, 7), line_wise: false };
+        let one = SelectionView { start: (2, 3), end: (2, 7), kind: SelectionKind::Char };
         assert_eq!(one.span_on(2, 20), Some((3, 7)));
 
         // line-wise ignores columns
-        let lw = SelectionView { start: (1, 5), end: (2, 1), line_wise: true };
+        let lw = SelectionView { start: (1, 5), end: (2, 1), kind: SelectionKind::Line };
         assert_eq!(lw.span_on(1, 8), Some((0, 8)));
         assert_eq!(lw.span_on(2, 4), Some((0, 4)));
+
+        // block-wise selects the same columns on every line, clipped per line
+        let blk = SelectionView { start: (1, 2), end: (3, 5), kind: SelectionKind::Block };
+        assert_eq!(blk.span_on(1, 10), Some((2, 5)));
+        assert_eq!(blk.span_on(2, 10), Some((2, 5)));
+        assert_eq!(blk.span_on(3, 4), Some((2, 4)), "clipped to a short line");
+        assert_eq!(blk.span_on(3, 1), None, "line ends before the block starts");
     }
 
     #[test]

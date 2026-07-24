@@ -12,6 +12,7 @@ pub fn mode_label(mode: &VimMode) -> &'static str {
         VimMode::Insert => "-- INSERT --",
         VimMode::VisualChar => "-- VISUAL --",
         VimMode::VisualLine => "-- V-LINE --",
+        VimMode::VisualBlock => "-- V-BLOCK --",
         VimMode::Cmdline => "-- CMDLINE --",
     }
 }

@@ -15,7 +15,7 @@ use std::cell::RefCell;
 
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VimMode { Normal, Insert, VisualChar, VisualLine, Cmdline }
+pub enum VimMode { Normal, Insert, VisualChar, VisualLine, VisualBlock, Cmdline }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OpState { Idle, Pending(char, u32) }
@@ -154,7 +154,9 @@ impl VimState {
         match self.mode {
             VimMode::Normal => self.handle_normal(key, editor, n, &mut out),
             VimMode::Insert => self.handle_insert(key, editor, &mut out),
-            VimMode::VisualChar | VimMode::VisualLine => self.handle_visual(key, editor, n, &mut out),
+            VimMode::VisualChar | VimMode::VisualLine | VimMode::VisualBlock => {
+                self.handle_visual(key, editor, n, &mut out)
+            }
             VimMode::Cmdline => {
                 match key {
                     KeyEvent::Esc => {
@@ -591,6 +593,14 @@ impl VimState {
                 }
                 self.count = None;
             }
+            // `C-v` enters block-wise (rectangular) visual mode.
+            KeyEvent::Ctrl('v') => {
+                let at = editor.primary_head();
+                self.mode = VimMode::VisualBlock;
+                self.anchor = Some(at);
+                out.push(Action::BeginVisual(at));
+                self.count = None;
+            }
             _ => { self.count = None; }
         }
     }
@@ -798,20 +808,50 @@ impl VimState {
                 self.count = None;
             }
             KeyEvent::Char('x') | KeyEvent::Char('d') => {
-                let (start, end) = self.visual_range(editor);
-                out.push(Action::BeginBatch);
-                out.push(Action::Edit(EditOp::DeleteRange(start, end)));
-                out.push(Action::EndBatch);
+                if self.mode == VimMode::VisualBlock {
+                    let ranges = self.block_ranges(editor);
+                    // Yank the block, then delete each row bottom-up.
+                    let mut rows: Vec<String> = ranges
+                        .iter()
+                        .map(|&(s, e)| editor.buffer().slice_string(s, e))
+                        .collect();
+                    rows.reverse(); // block_ranges is bottom-up
+                    self.register = Some(rows.join("\n"));
+                    out.push(Action::BeginBatch);
+                    for (s, e) in ranges {
+                        out.push(Action::Edit(EditOp::DeleteRange(s, e)));
+                    }
+                    out.push(Action::EndBatch);
+                } else {
+                    let (start, end) = self.visual_range(editor);
+                    out.push(Action::BeginBatch);
+                    out.push(Action::Edit(EditOp::DeleteRange(start, end)));
+                    out.push(Action::EndBatch);
+                }
                 self.mode = VimMode::Normal;
                 self.anchor = None;
                 self.count = None;
             }
             KeyEvent::Char('y') => {
-                let (start, end) = self.visual_range(editor);
-                let safe_end = end.min(editor.buffer().len_chars());
-                let text = editor.buffer().slice_string(start, safe_end);
-                self.register = Some(text.clone());
-                self.clipboard_set(&text);
+                let start = if self.mode == VimMode::VisualBlock {
+                    let ranges = self.block_ranges(editor);
+                    let mut rows: Vec<String> = ranges
+                        .iter()
+                        .map(|&(s, e)| editor.buffer().slice_string(s, e))
+                        .collect();
+                    rows.reverse(); // block_ranges is bottom-up
+                    let text = rows.join("\n");
+                    self.register = Some(text.clone());
+                    self.clipboard_set(&text);
+                    ranges.last().map(|&(s, _)| s).unwrap_or_else(|| editor.primary_head())
+                } else {
+                    let (start, end) = self.visual_range(editor);
+                    let safe_end = end.min(editor.buffer().len_chars());
+                    let text = editor.buffer().slice_string(start, safe_end);
+                    self.register = Some(text.clone());
+                    self.clipboard_set(&text);
+                    start
+                };
                 // Vim: after visual yank, cursor jumps to start of selection.
                 out.push(Action::Move(Motion::To(start)));
                 self.mode = VimMode::Normal;
@@ -842,6 +882,31 @@ impl VimState {
             }
             _ => {}
         }
+    }
+
+    /// Per-line `(start, end)` char ranges covered by a block-wise selection,
+    /// ordered **bottom-to-top** so deleting them in order keeps earlier
+    /// offsets valid. Short lines are clipped, empty spans dropped.
+    fn block_ranges(&self, editor: &dyn EditorView) -> Vec<(usize, usize)> {
+        let anchor = self.anchor.unwrap_or_else(|| editor.primary_head());
+        let head = editor.primary_head();
+        let buf = editor.buffer();
+        let (al, hl) = (char_to_line(editor, anchor), char_to_line(editor, head));
+        let ac = anchor - buf.line_start_char(al);
+        let hc = head - buf.line_start_char(hl);
+        let (top, bottom) = (al.min(hl), al.max(hl));
+        let (lo, hi) = (ac.min(hc), ac.max(hc)); // inclusive columns
+        let mut ranges = Vec::new();
+        for line in (top..=bottom).rev() {
+            let line_start = buf.line_start_char(line);
+            let line_end = line_content_end(editor, line);
+            let start = (line_start + lo).min(line_end);
+            let end = (line_start + hi + 1).min(line_end);
+            if end > start {
+                ranges.push((start, end));
+            }
+        }
+        ranges
     }
 
     fn visual_range(&self, editor: &dyn EditorView) -> (usize, usize) {

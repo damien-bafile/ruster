@@ -803,7 +803,7 @@ impl App {
         let mode = match prev_mode {
             VimMode::Normal => "n",
             VimMode::Insert => "i",
-            VimMode::VisualChar | VimMode::VisualLine => "v",
+            VimMode::VisualChar | VimMode::VisualLine | VimMode::VisualBlock => "v",
             VimMode::Cmdline => "x",
         };
         if self.lua.handle_key(mode, &ck) {
@@ -1558,7 +1558,10 @@ impl App {
                     let ccol = head - doc.buffer.line_start_char(cline);
                     // Visual-mode selection spans anchor..head (inclusive).
                     let selection = if is_active
-                        && matches!(mode, VimMode::VisualChar | VimMode::VisualLine)
+                        && matches!(
+                            mode,
+                            VimMode::VisualChar | VimMode::VisualLine | VimMode::VisualBlock
+                        )
                     {
                         let (lo, hi) = (anchor.min(head), anchor.max(head));
                         let sl = doc.buffer.char_to_line(lo);
@@ -1566,7 +1569,11 @@ impl App {
                         Some(SelectionView {
                             start: (sl as u16, (lo - doc.buffer.line_start_char(sl)) as u16),
                             end: (el as u16, (hi - doc.buffer.line_start_char(el)) as u16),
-                            line_wise: mode == VimMode::VisualLine,
+                            kind: match mode {
+                                VimMode::VisualLine => ruster_render::SelectionKind::Line,
+                                VimMode::VisualBlock => ruster_render::SelectionKind::Block,
+                                _ => ruster_render::SelectionKind::Char,
+                            },
                         })
                     } else {
                         None

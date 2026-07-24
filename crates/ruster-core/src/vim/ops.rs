@@ -233,6 +233,51 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_v_block_delete_removes_a_rectangle() {
+        // Delete the first two columns of all three lines.
+        let mut e = Editor::from_str("abcd\nefgh\nijkl");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Ctrl('v'), &e) { e.execute(a); }
+        assert_eq!(v.mode, crate::vim::VimMode::VisualBlock);
+        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('j'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('j'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('d'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "cd\ngh\nkl");
+        assert_eq!(v.mode, crate::vim::VimMode::Normal);
+    }
+
+    #[test]
+    fn block_yank_joins_rows_with_newlines() {
+        let mut e = Editor::from_str("abcd\nefgh");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Ctrl('v'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('j'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('y'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "abcd\nefgh", "yank leaves text alone");
+        assert_eq!(v.register.as_deref(), Some("ab\nef"));
+    }
+
+    #[test]
+    fn block_clips_to_short_lines() {
+        // Middle line is shorter than the block's columns.
+        let mut e = Editor::from_str("abcd\nx\nijkl");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Ctrl('v'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('j'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('j'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('d'), &e) { e.execute(a); }
+        // Columns 0..=2 removed where present; "x" only loses its single char.
+        assert_eq!(e.buffer().to_string(), "d\n\nl");
+    }
+
+    #[test]
     fn slash_search_and_n_repeat() {
         let mut e = Editor::from_str("alpha beta alpha gamma alpha");
         let mut v = VimState::new();
