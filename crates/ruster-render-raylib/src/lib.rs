@@ -322,7 +322,7 @@ impl Renderer for RaylibRenderer {
             let n_rows = (picker.rows.len() as i32 + 2).max(picker.preview.len() as i32);
             let box_h = (n_rows * LINE_H).clamp(3 * LINE_H, (screen_h - 40).max(3 * LINE_H));
             let box_x = (screen_w - box_w) / 2;
-            let box_y = screen_h / 4;
+            let box_y = ((screen_h - box_h) / 2).max(0);
             let list_w = if has_preview { box_w * 2 / 5 } else { box_w };
             d.draw_rectangle(box_x, box_y, box_w, box_h, box_bg);
             if has_preview {
