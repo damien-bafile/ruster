@@ -50,6 +50,7 @@ fn ruster_render_color_to_tui(c: &RColor) -> Color {
 pub struct BufferWidget {
     lines: Vec<StyledLine>,
     cursor: (u16, u16),
+    extra_cursors: Vec<(u16, u16)>,
     syntax: bool,
     cursor_visible: bool,
     cursor_kind: CursorKind,
@@ -63,6 +64,7 @@ impl BufferWidget {
         BufferWidget {
             lines,
             cursor,
+            extra_cursors: Vec::new(),
             syntax: false,
             cursor_visible: true,
             cursor_kind: CursorKind::Block,
@@ -70,6 +72,11 @@ impl BufferWidget {
             gutter: GutterView::default(),
             selection: None,
         }
+    }
+
+    pub fn with_extra_cursors(mut self, extra: Vec<(u16, u16)>) -> Self {
+        self.extra_cursors = extra;
+        self
     }
 
     pub fn with_selection(mut self, selection: Option<ruster_render::SelectionView>) -> Self {
@@ -192,6 +199,25 @@ impl Widget for BufferWidget {
                         apply_cursor(cell, self.cursor_kind);
                     }
                 }
+            }
+        }
+
+        // Extra multi-cursor carets, painted over the text as solid blocks so
+        // they're visible without being the terminal's focus cursor.
+        for &(cl, cc) in &self.extra_cursors {
+            if (cl as usize) < scroll {
+                continue;
+            }
+            let row = cl as usize - scroll;
+            if row as u16 >= area.height {
+                continue;
+            }
+            let x = text_x + cc;
+            if x >= area.right() {
+                continue;
+            }
+            if let Some(cell) = buf.cell_mut((x, area.y + row as u16)) {
+                apply_cursor(cell, self.cursor_kind);
             }
         }
     }
@@ -481,8 +507,28 @@ impl Widget for HoverWidget {
 
 #[cfg(test)]
 mod tests {
+    use super::BufferWidget;
     use crate::widgets::{cmdline_label, mode_label};
+    use ratatui::buffer::Buffer as RBuffer;
+    use ratatui::layout::Rect;
+    use ratatui::widgets::Widget;
     use ruster_core::vim::VimMode;
+    use ruster_render::StyledLine;
+
+    #[test]
+    fn extra_cursors_paint_a_block_over_their_cell() {
+        let line = StyledLine { text: "abcd".to_string(), highlights: vec![] };
+        let area = Rect::new(0, 0, 10, 1);
+        let mut buf = RBuffer::empty(area);
+        // Primary at col 0, an extra caret at col 2 ('c').
+        BufferWidget::new(vec![line], (0, 0))
+            .with_extra_cursors(vec![(0, 2)])
+            .render(area, &mut buf);
+        // The extra caret reverses fg/bg on its cell; the char is preserved.
+        let cell = buf.cell((2, 0)).unwrap();
+        assert_eq!(cell.symbol(), "c");
+        assert_ne!(cell.bg, ratatui::style::Color::Reset, "extra caret paints a block");
+    }
 
     #[test]
     fn mode_label_normal() {

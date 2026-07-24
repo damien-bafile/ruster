@@ -1684,12 +1684,23 @@ impl App {
             let rects = w.windows.compute_rects(buf_area);
             for (wid, rect) in rects {
                 let is_active = wid == active_id;
-                let (buf_id, head, anchor, mut scroll) = {
+                let (buf_id, head, anchor, mut scroll, extra_heads) = {
                     let win = w.windows.window(wid).expect("window exists");
                     let primary = win.cursors.primary();
-                    (win.buffer, primary.head, primary.anchor, win.scroll_top)
+                    // Heads of every cursor except the primary, for multi-cursor
+                    // rendering (the active window only).
+                    let extra_heads: Vec<usize> = if is_active && win.cursors.count() > 1 {
+                        let p = primary.head;
+                        win.cursors
+                            .iter_heads()
+                            .filter(|&h| h != p)
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    (win.buffer, primary.head, primary.anchor, win.scroll_top, extra_heads)
                 };
-                let (content, cline, ccol, name, line_count, selection) = {
+                let (content, cline, ccol, name, line_count, selection, extra_cursors) = {
                     let doc = w.buffers.get(buf_id).expect("buffer exists");
                     let cline = doc.buffer.char_to_line(head);
                     let ccol = head - doc.buffer.line_start_char(cline);
@@ -1715,6 +1726,14 @@ impl App {
                     } else {
                         None
                     };
+                    let extra_cursors: Vec<(u16, u16)> = extra_heads
+                        .iter()
+                        .map(|&h| {
+                            let l = doc.buffer.char_to_line(h);
+                            let c = h - doc.buffer.line_start_char(l);
+                            (l as u16, c as u16)
+                        })
+                        .collect();
                     (
                         doc.buffer.to_string(),
                         cline,
@@ -1722,6 +1741,7 @@ impl App {
                         doc.name.clone(),
                         doc.buffer.line_count(),
                         selection,
+                        extra_cursors,
                     )
                 };
                 // Keep the cursor visible within this window's text area.
@@ -1784,6 +1804,7 @@ impl App {
                     rect: RRect::new(rect.x, rect.y, rect.width, rect.height),
                     lines,
                     cursor: (cline as u16, ccol as u16),
+                    extra_cursors,
                     cursor_kind,
                     cursor_visible: is_active,
                     cursor_smooth,

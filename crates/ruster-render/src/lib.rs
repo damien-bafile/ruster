@@ -164,6 +164,9 @@ pub struct WindowView {
     pub lines: Vec<StyledLine>,
     /// Absolute cursor position in buffer coords: (line, col).
     pub cursor: (u16, u16),
+    /// Additional multi-cursor carets in buffer coords, drawn as blocks. Empty
+    /// in the common single-cursor case.
+    pub extra_cursors: Vec<(u16, u16)>,
     pub cursor_kind: CursorKind,
     pub cursor_visible: bool,
     pub cursor_smooth: Option<(f32, f32)>,
@@ -248,6 +251,7 @@ mod tests {
             rect: Rect::new(0, 0, 80, 24),
             lines: vec![StyledLine { text: "hello".to_string(), highlights: vec![] }],
             cursor: (0, 0),
+            extra_cursors: Vec::new(),
             cursor_kind: CursorKind::Block,
             cursor_visible: true,
             cursor_smooth: None,

@@ -17,6 +17,7 @@ mod tests {
             rect: Rect::new(0, 0, 80, 24),
             lines: vec![StyledLine { text: "hi".to_string(), highlights: vec![] }],
             cursor: (0, 1),
+            extra_cursors: Vec::new(),
             cursor_kind: CursorKind::Bar,
             cursor_visible: true,
             cursor_smooth: None,

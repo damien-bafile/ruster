@@ -77,6 +77,23 @@ impl CursorSet {
         self.primary = self.cursors.len() - 1;
     }
 
+    /// Collapse cursors that have landed on the same position into one, keeping
+    /// whichever the primary pointed at. Editing can push two carets together
+    /// (e.g. adjacent occurrences), and duplicates would then edit in lockstep.
+    pub fn merge_overlaps(&mut self) {
+        if self.cursors.len() <= 1 {
+            return;
+        }
+        let primary_head = self.cursors[self.primary].head;
+        let mut seen = std::collections::HashSet::new();
+        self.cursors.retain(|r| seen.insert(r.head));
+        self.primary = self
+            .cursors
+            .iter()
+            .position(|r| r.head == primary_head)
+            .unwrap_or(0);
+    }
+
     pub fn clear_extra(&mut self) {
         let original = self.cursors[0];
         self.cursors.truncate(0);
@@ -86,6 +103,11 @@ impl CursorSet {
 
     pub fn count(&self) -> usize {
         self.cursors.len()
+    }
+
+    /// Head offset of every cursor, primary included, in storage order.
+    pub fn iter_heads(&self) -> impl Iterator<Item = usize> + '_ {
+        self.cursors.iter().map(|r| r.head)
     }
 
     fn grapheme_step(&self, buffer: &Buffer, from: usize, dir: Dir) -> usize {

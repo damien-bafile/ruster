@@ -64,6 +64,7 @@ impl Renderer for TuiRenderer {
                     .with_cursor_kind(view.cursor_kind)
                     .with_scroll(view.scroll_offset)
                     .with_gutter(view.gutter.clone())
+                    .with_extra_cursors(view.extra_cursors.clone())
                     .with_selection(view.selection);
                 frame.render_widget(buf_widget, buf_area);
 
