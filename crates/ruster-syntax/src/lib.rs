@@ -114,6 +114,7 @@ pub fn language_for_ext(ext: &str) -> Option<tree_sitter::Language> {
         "yaml" | "yml"    => Some(tree_sitter_yaml::LANGUAGE.into()),
         "lua"             => Some(tree_sitter_lua::LANGUAGE.into()),
         "scm" | "ss" | "sld" | "sls" | "sch" | "scheme" => Some(tree_sitter_scheme::LANGUAGE.into()),
+        "just" | "justfile" => Some(tree_sitter_just::LANGUAGE.into()),
         _ => None,
     }
 }
@@ -131,8 +132,25 @@ pub fn lang_key(ext: &str) -> &'static str {
         "yaml" | "yml" => "yaml",
         "lua" => "lua",
         "scm" | "ss" | "sld" | "sls" | "sch" | "scheme" => "scheme",
+        "just" | "justfile" => "just",
         _ => "",
     }
+}
+
+/// The lookup key to use for a path: its extension when that maps to a known
+/// language, otherwise the (lowercased, dot-stripped) file name — so
+/// extensionless files like `justfile` / `.justfile` / `Justfile` are recognised.
+pub fn lang_ext_for_path(path: &std::path::Path) -> String {
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        let lower = ext.to_lowercase();
+        if !lang_key(&lower).is_empty() {
+            return lower;
+        }
+    }
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.to_lowercase().trim_start_matches('.').to_string())
+        .unwrap_or_default()
 }
 
 /// Highlight and textobject query sources for a language key. Languages without
@@ -151,6 +169,7 @@ fn query_files_for_lang(key: &str) -> (&'static str, &'static str) {
         "yaml" => (include_str!("../queries/yaml/highlights.scm"), ""),
         "c" => (include_str!("../queries/c/highlights.scm"), ""),
         "scheme" => (include_str!("../queries/scheme/highlights.scm"), ""),
+        "just" => (include_str!("../queries/just/highlights.scm"), ""),
         _ => ("", ""),
     }
 }
@@ -219,6 +238,7 @@ mod tests {
             ("toml", "# c\n[table]\nkey = \"value\"\nn = 42\nb = true\n"),
             ("yaml", "# c\nname: value\ncount: 3\nflag: true\n"),
             ("scm", "; comment\n(define (square x)\n  (* x x))\n"),
+            ("justfile", "# comment\nbuild:\n    cargo build\n"),
         ];
         for (ext, src) in cases {
             let engine = SyntaxEngine::new(src, ext)
@@ -226,6 +246,24 @@ mod tests {
             let has = engine.styled_lines().iter().any(|l| !l.highlights.is_empty());
             assert!(has, "{ext} produced no highlights");
         }
+    }
+
+    #[test]
+    fn extensionless_justfiles_are_detected_by_name() {
+        use std::path::Path;
+        for name in ["justfile", "Justfile", ".justfile", "/proj/justfile"] {
+            assert_eq!(
+                lang_key(&lang_ext_for_path(Path::new(name))),
+                "just",
+                "{name} should resolve to just"
+            );
+        }
+        // A normal extension still wins.
+        assert_eq!(lang_key(&lang_ext_for_path(Path::new("src/main.rs"))), "rust");
+        // *.just files work via the extension.
+        assert_eq!(lang_key(&lang_ext_for_path(Path::new("tasks.just"))), "just");
+        // Unknown files resolve to nothing.
+        assert_eq!(lang_key(&lang_ext_for_path(Path::new("README.md"))), "");
     }
 
     #[test]

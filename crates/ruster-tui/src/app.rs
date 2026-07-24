@@ -492,9 +492,8 @@ impl App {
         let initial_buffer = ws.borrow().active_buffer();
         let vim = VimState::new();
         let renderer = Box::new(TuiRenderer::dummy());
-        let ext = file_path.extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
+        let ext = ruster_syntax::lang_ext_for_path(&file_path);
+        let ext = ext.as_str();
         let mut syntax: std::collections::HashMap<BufferId, SyntaxEngine> =
             std::collections::HashMap::new();
         if let Ok(engine) = SyntaxEngine::new(&content, ext) {
@@ -1018,10 +1017,8 @@ impl App {
                         let ext = d
                             .file_path
                             .as_ref()
-                            .and_then(|p| p.extension())
-                            .and_then(|e| e.to_str())
-                            .unwrap_or("")
-                            .to_string();
+                            .map(|p| ruster_syntax::lang_ext_for_path(p))
+                            .unwrap_or_default();
                         (d.buffer.to_string(), ext)
                     }
                     None => continue,
@@ -1047,8 +1044,8 @@ impl App {
             let w = self.ws.borrow();
             w.buffers.get(active).and_then(|d| {
                 let path = d.file_path.clone()?;
-                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                let lang = ruster_syntax::lang_key(ext);
+                let ext = ruster_syntax::lang_ext_for_path(&path);
+                let lang = ruster_syntax::lang_key(&ext);
                 if lang.is_empty() {
                     return None;
                 }
@@ -1110,9 +1107,7 @@ impl App {
             w.buffers
                 .get(active)
                 .and_then(|d| d.file_path.as_ref())
-                .and_then(|p| p.extension())
-                .and_then(|e| e.to_str())
-                .map(|e| ruster_syntax::lang_key(e).to_string())
+                .map(|p| ruster_syntax::lang_key(&ruster_syntax::lang_ext_for_path(p)).to_string())
                 .unwrap_or_default()
         };
         if filetype.is_empty() {
