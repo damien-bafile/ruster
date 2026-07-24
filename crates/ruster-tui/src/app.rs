@@ -244,6 +244,8 @@ enum CmdAction {
     WorkspaceSymbol(String),
     /// Call hierarchy: `true` = incoming/callers, `false` = outgoing/callees.
     CallHierarchy(bool),
+    /// Switch editing paradigm (`:set editmode neovim|emacs`).
+    SetEditMode(EditMode),
     /// `:s/pat/rep/[g]` — replace on the current line, or the whole buffer
     /// when `whole_buffer` (`:%s/...`). `all` is the `g` flag.
     Substitute {
@@ -297,6 +299,8 @@ const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("fmt", "format buffer"),
     ("callers", "incoming calls (call hierarchy)"),
     ("callees", "outgoing calls (call hierarchy)"),
+    ("set editmode emacs", "switch to Emacs (modeless) editing"),
+    ("set editmode neovim", "switch to Neovim (modal) editing"),
 ];
 
 /// The which-key continuations shown after a `Ctrl-w` prefix.
@@ -582,6 +586,21 @@ pub struct App {
     pending_macro: Option<char>,
     /// Guard so a macro can't recursively replay itself.
     replaying: bool,
+    /// Which editing paradigm is active (`:set editmode neovim|emacs`).
+    editmode: EditMode,
+    /// Emacs-mode editing state (mark, kill-ring, prefix arg).
+    emacs: ruster_core::emacs::EmacsState,
+    /// True after `C-x`, awaiting the second key of the prefix.
+    emacs_ctrl_x: bool,
+    /// Active incremental search: (query, forward). Emacs `C-s`/`C-r`.
+    emacs_isearch: Option<(String, bool)>,
+}
+
+/// The active editing paradigm. Neovim is modal; Emacs is modeless.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditMode {
+    Neovim,
+    Emacs,
 }
 
 impl App {
@@ -783,6 +802,10 @@ impl App {
             macro_recording: None,
             pending_macro: None,
             replaying: false,
+            editmode: EditMode::Neovim,
+            emacs: ruster_core::emacs::EmacsState::new(),
+            emacs_ctrl_x: false,
+            emacs_isearch: None,
         }
     }
 
@@ -810,6 +833,12 @@ impl App {
 
         // Dired buffers intercept navigation keys (movement falls through).
         if self.active_is_dired() && self.handle_dired_key(ck) {
+            return;
+        }
+
+        // Emacs is modeless: everything else routes to its own handler.
+        if self.editmode == EditMode::Emacs {
+            self.handle_key_emacs(ck);
             return;
         }
 
@@ -971,6 +1000,175 @@ impl App {
             let mode_str = format!("{:?}", self.vim.mode);
             self.lua.set_mode(&mode_str);
             self.lua.fire_event_str("ModeChanged", &[&mode_str]);
+        }
+    }
+
+    /// Switch editing paradigm, resetting per-mode state and notifying Lua.
+    fn set_editmode(&mut self, mode: EditMode) {
+        self.editmode = mode;
+        self.emacs_ctrl_x = false;
+        self.emacs_isearch = None;
+        self.emacs.cancel();
+        // Leave the vim layer in a clean Normal state so a later switch back
+        // doesn't resume a half-finished operator or visual selection.
+        self.vim = VimState::new();
+        let name = match mode {
+            EditMode::Neovim => "neovim",
+            EditMode::Emacs => "emacs",
+        };
+        self.lua.set_editmode(name);
+        self.message = Some(format!("editmode: {}", name));
+    }
+
+    /// Handle a key in Emacs (modeless) mode. App-level chords — the `C-x`
+    /// prefix, `M-x`, isearch, `C-g` — are dealt with here; pure editing is
+    /// delegated to [`ruster_core::emacs::EmacsState`], mirroring how the vim
+    /// path intercepts the leader/`Ctrl-w` prefixes before delegating.
+    fn handle_key_emacs(&mut self, ck: crossterm::event::KeyEvent) {
+        use crossterm::event::KeyModifiers as KM;
+
+        // An active incremental search captures keys until it ends.
+        if self.emacs_isearch.is_some() {
+            self.handle_isearch_key(ck);
+            return;
+        }
+
+        let ctrl = ck.modifiers.contains(KM::CONTROL);
+
+        // Second key of a `C-x` prefix.
+        if self.emacs_ctrl_x {
+            self.emacs_ctrl_x = false;
+            match ck.code {
+                KeyCode::Char('s') if ctrl => {
+                    self.write_active_file(false);
+                }
+                KeyCode::Char('c') if ctrl => self.should_quit = true,
+                KeyCode::Char('f') if ctrl => self.open_files_picker(),
+                KeyCode::Char('b') if ctrl => self.open_ibuffer(),
+                KeyCode::Char('u') => self.ws.borrow_mut().execute(Action::Undo),
+                KeyCode::Char('0') => {
+                    self.ws.borrow_mut().windows.close_active();
+                }
+                KeyCode::Char('1') => self.ws.borrow_mut().windows.only(),
+                KeyCode::Char('2') => self.ws.borrow_mut().split(SplitDir::Horizontal),
+                KeyCode::Char('3') => self.ws.borrow_mut().split(SplitDir::Vertical),
+                _ => self.message = Some("C-x undefined".to_string()),
+            }
+            return;
+        }
+
+        let key = crossterm_to_ruster_key(ck);
+        match key {
+            KeyEvent::Ctrl('x') => {
+                self.emacs_ctrl_x = true;
+                return;
+            }
+            KeyEvent::Ctrl('g') => {
+                self.emacs.cancel();
+                self.message = Some("Quit".to_string());
+                return;
+            }
+            KeyEvent::Alt('x') => {
+                // M-x: run a command via the palette.
+                self.open_command_picker("");
+                return;
+            }
+            KeyEvent::Ctrl('s') => {
+                self.start_isearch(true);
+                return;
+            }
+            KeyEvent::Ctrl('r') => {
+                self.start_isearch(false);
+                return;
+            }
+            _ => {}
+        }
+
+        let actions = self.emacs.handle(key, &*self.ws.borrow());
+        for action in actions {
+            self.ws.borrow_mut().execute(action);
+        }
+        self.message = None;
+    }
+
+    /// Begin an Emacs incremental search in the given direction.
+    fn start_isearch(&mut self, forward: bool) {
+        self.emacs_isearch = Some((String::new(), forward));
+        self.message = Some(if forward { "I-search: ".into() } else { "I-search backward: ".into() });
+    }
+
+    /// Drive an active incremental search: printable keys extend the query and
+    /// jump to the next match; `C-s`/`C-r` repeat; `Enter`/`C-g`/`Esc` end it.
+    fn handle_isearch_key(&mut self, ck: crossterm::event::KeyEvent) {
+        let (mut query, mut forward) = self.emacs_isearch.take().unwrap();
+        match ck.code {
+            KeyCode::Enter | KeyCode::Esc => {
+                self.message = None;
+                return;
+            }
+            KeyCode::Backspace => {
+                query.pop();
+            }
+            KeyCode::Char('s') if ck.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                forward = true;
+                self.isearch_step(&query, true, true);
+                self.emacs_isearch = Some((query.clone(), forward));
+                self.set_isearch_message(&query, forward);
+                return;
+            }
+            KeyCode::Char('r') if ck.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                forward = false;
+                self.isearch_step(&query, false, true);
+                self.emacs_isearch = Some((query.clone(), forward));
+                self.set_isearch_message(&query, forward);
+                return;
+            }
+            KeyCode::Char('g') if ck.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                self.message = None;
+                return;
+            }
+            KeyCode::Char(c) => {
+                query.push(c);
+            }
+            _ => {}
+        }
+        // Search from the current point for the (possibly extended) query.
+        self.isearch_step(&query, forward, false);
+        self.set_isearch_message(&query, forward);
+        self.emacs_isearch = Some((query, forward));
+    }
+
+    fn set_isearch_message(&mut self, query: &str, forward: bool) {
+        let label = if forward { "I-search" } else { "I-search backward" };
+        self.message = Some(format!("{}: {}", label, query));
+    }
+
+    /// Move the cursor to the next/previous occurrence of `query`. `advance`
+    /// starts the scan one char past point so repeated `C-s` walks matches.
+    fn isearch_step(&mut self, query: &str, forward: bool, advance: bool) {
+        if query.is_empty() {
+            return;
+        }
+        let (text, head) = {
+            let w = self.ws.borrow();
+            (w.buffer().to_string(), w.primary_head())
+        };
+        // Work in char offsets to match the rest of the editor.
+        let chars: Vec<char> = text.chars().collect();
+        let pat: Vec<char> = query.chars().collect();
+        let found = if forward {
+            let from = if advance { head + 1 } else { head };
+            (from..=chars.len().saturating_sub(pat.len()))
+                .find(|&i| chars[i..].starts_with(&pat))
+        } else {
+            let start = if advance { head.saturating_sub(1) } else { head };
+            (0..=start.min(chars.len().saturating_sub(pat.len())))
+                .rev()
+                .find(|&i| chars[i..].starts_with(&pat))
+        };
+        match found {
+            Some(i) => self.ws.borrow_mut().execute(Action::Move(Motion::To(i))),
+            None => {} // keep point; message still shows the query
         }
     }
 
@@ -1733,10 +1931,19 @@ impl App {
         self.update_syntax();
 
         let mode = self.vim.mode;
-        let mode_lbl = crate::widgets::mode_label(&mode).to_string();
-        let cursor_kind = match mode {
-            VimMode::Insert | VimMode::Cmdline => CursorKind::Bar,
-            _ => CursorKind::Block,
+        // In Emacs mode the statusline shows an Emacs indicator instead of the
+        // vim mode label, and the cursor is always a bar (modeless insert).
+        let (mode_lbl, emacs) = match self.editmode {
+            EditMode::Emacs => ("-- EMACS --".to_string(), true),
+            EditMode::Neovim => (crate::widgets::mode_label(&mode).to_string(), false),
+        };
+        let cursor_kind = if emacs {
+            CursorKind::Bar
+        } else {
+            match mode {
+                VimMode::Insert | VimMode::Cmdline => CursorKind::Bar,
+                _ => CursorKind::Block,
+            }
         };
         let smooth = self.has_smooth_cursor;
         let (anim_x, anim_y) = (self.cursor_anim.cell_x, self.cursor_anim.cell_y);
@@ -2007,6 +2214,13 @@ impl App {
                 let q = trimmed.splitn(2, ' ').nth(1).unwrap_or("").trim().to_string();
                 Ok(CmdAction::WorkspaceSymbol(q))
             }
+            _ if trimmed.starts_with("set editmode") || trimmed == "set editmode" => {
+                match trimmed.rsplit(' ').next().unwrap_or("") {
+                    "emacs" => Ok(CmdAction::SetEditMode(EditMode::Emacs)),
+                    "neovim" | "vim" | "nvim" => Ok(CmdAction::SetEditMode(EditMode::Neovim)),
+                    _ => Err("Usage: :set editmode neovim|emacs".to_string()),
+                }
+            }
             _ if parse_substitute(trimmed).is_some() => {
                 Ok(parse_substitute(trimmed).expect("checked above"))
             }
@@ -2060,6 +2274,7 @@ impl App {
             }
             CmdAction::WorkspaceSymbol(q) => self.lsp_workspace_symbols(&q),
             CmdAction::CallHierarchy(incoming) => self.lsp_call_hierarchy(incoming),
+            CmdAction::SetEditMode(mode) => self.set_editmode(mode),
             CmdAction::Substitute { pattern, replacement, all, whole_buffer } => {
                 self.substitute(&pattern, &replacement, all, whole_buffer)
             }
@@ -3008,6 +3223,62 @@ mod tests {
         a.handle_key(CtKey::new(KeyCode::Char('@'), none));
         a.handle_key(CtKey::new(KeyCode::Char('q'), none));
         assert_eq!(a.ws.borrow().buffer().to_string(), "a\nbbb\nccc\n");
+    }
+
+    #[test]
+    fn set_editmode_switches_paradigm_and_routes_to_emacs() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let ctrl = KeyModifiers::CONTROL;
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("hello".into(), PathBuf::from("f.txt"));
+        assert_eq!(a.editmode, EditMode::Neovim);
+
+        a.apply_cmd(a.parse_cmdline(":set editmode emacs").unwrap());
+        assert_eq!(a.editmode, EditMode::Emacs);
+
+        // Modeless: a plain key self-inserts (no Normal mode). Cursor is at 0.
+        a.handle_key(CtKey::new(KeyCode::Char('X'), none));
+        assert_eq!(a.ws.borrow().buffer().to_string(), "Xhello");
+
+        // C-a jumps to line start, then C-e to line end.
+        a.handle_key(CtKey::new(KeyCode::Char('e'), ctrl));
+        a.handle_key(CtKey::new(KeyCode::Char('!'), none));
+        assert_eq!(a.ws.borrow().buffer().to_string(), "Xhello!");
+
+        // Switching back restores modal editing.
+        a.apply_cmd(a.parse_cmdline(":set editmode neovim").unwrap());
+        assert_eq!(a.editmode, EditMode::Neovim);
+    }
+
+    #[test]
+    fn emacs_ctrl_x_ctrl_c_quits() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let ctrl = KeyModifiers::CONTROL;
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.set_editmode(EditMode::Emacs);
+        a.handle_key(CtKey::new(KeyCode::Char('x'), ctrl));
+        assert!(a.emacs_ctrl_x, "C-x armed the prefix");
+        a.handle_key(CtKey::new(KeyCode::Char('c'), ctrl));
+        assert!(a.should_quit);
+    }
+
+    #[test]
+    fn emacs_isearch_jumps_to_match() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let ctrl = KeyModifiers::CONTROL;
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("foo bar foo".into(), PathBuf::from("f.txt"));
+        a.set_editmode(EditMode::Emacs);
+        a.ws.borrow_mut().execute(Action::Move(Motion::To(0)));
+        // C-s starts isearch; typing "bar" moves point to offset 4.
+        a.handle_key(CtKey::new(KeyCode::Char('s'), ctrl));
+        for c in "bar".chars() {
+            a.handle_key(CtKey::new(KeyCode::Char(c), none));
+        }
+        assert_eq!(a.ws.borrow().primary_head(), 4);
+        // Enter ends the search.
+        a.handle_key(CtKey::new(KeyCode::Enter, none));
+        assert!(a.emacs_isearch.is_none());
     }
 
     #[test]

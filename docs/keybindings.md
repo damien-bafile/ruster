@@ -204,6 +204,46 @@ Press `SPC` in Normal mode; the which-key panel lists continuations.
 
 Then `:` + `Tab` opens a fuzzy **command palette** of these commands.
 
+## Emacs mode
+
+ruster ships two editing paradigms. Switch at any time:
+
+| Command | Action |
+|---------|--------|
+| `:set editmode emacs` | Modeless Emacs editing |
+| `:set editmode neovim` | Modal vim editing (the default) |
+
+Lua plugins can read the active paradigm from `ruster.editmode` (`"neovim"` /
+`"emacs"`). The statusline shows `-- EMACS --` while it is active.
+
+In Emacs mode every printable key self-inserts; `Ctrl`/`Alt` chords are commands:
+
+| Key | Action |
+|-----|--------|
+| `C-f` / `C-b` | Forward / backward char |
+| `C-n` / `C-p` | Next / previous line |
+| `C-a` / `C-e` | Beginning / end of line |
+| `M-f` / `M-b` | Forward / backward word |
+| `M-<` / `M->` | Beginning / end of buffer |
+| `C-v` / `M-v` | Scroll down / up a page |
+| `C-SPC` | Set the mark (start a region) |
+| `C-w` / `M-w` | Kill (cut) / copy the region |
+| `C-k` | Kill to end of line (or the newline) |
+| `M-d` | Kill word forward |
+| `C-y` | Yank (paste) the last kill |
+| `M-y` | Yank-pop (cycle the kill ring) — right after a yank |
+| `C-d` / `Del` | Delete the character after the cursor |
+| `C-u <n>` | Universal argument: repeat the next command `n` times |
+| `C-/` or `C-_` | Undo |
+| `C-s` / `C-r` | Incremental search forward / backward (repeat to jump) |
+| `M-x` | Run a command (opens the command palette) |
+| `C-g` | Cancel — clear the mark / prefix |
+| `C-x C-s` | Save the file |
+| `C-x C-c` | Quit |
+| `C-x C-f` | Find file · `C-x C-b` buffer list |
+| `C-x u` | Undo |
+| `C-x 0` / `1` / `2` / `3` | Close / only / split-below / split-right window |
+
 ## Pickers (ibuffer, files, references, symbols, command palette)
 
 | Key | Action |

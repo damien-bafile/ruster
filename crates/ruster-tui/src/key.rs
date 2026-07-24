@@ -7,7 +7,10 @@ pub fn crossterm_to_ruster_key(ck: CKEvent) -> KeyEvent {
         KeyCode::Enter => KeyEvent::Enter,
         KeyCode::Backspace => KeyEvent::Backspace,
         KeyCode::Delete => KeyEvent::Delete,
-        KeyCode::Char(c) if ck.modifiers == KeyModifiers::CONTROL => {
+        // Alt/Meta chords (Emacs `M-…`). Checked before Ctrl so `C-M-…` maps to
+        // the Meta form, which is what the Emacs bindings expect.
+        KeyCode::Char(c) if ck.modifiers.contains(KeyModifiers::ALT) => KeyEvent::Alt(c),
+        KeyCode::Char(c) if ck.modifiers.contains(KeyModifiers::CONTROL) => {
             KeyEvent::Ctrl(c)
         }
         KeyCode::Char(c) => KeyEvent::Char(c),
@@ -31,6 +34,12 @@ mod tests {
     fn ctrl_keys_roundtrip() {
         let ck = CKEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert_eq!(crossterm_to_ruster_key(ck), KeyEvent::Ctrl('c'));
+    }
+
+    #[test]
+    fn alt_keys_map_to_meta() {
+        let ck = CKEvent::new(KeyCode::Char('f'), KeyModifiers::ALT);
+        assert_eq!(crossterm_to_ruster_key(ck), KeyEvent::Alt('f'));
     }
 
     #[test]

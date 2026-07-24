@@ -119,6 +119,14 @@ impl LuaRuntime {
         }
     }
 
+    /// Expose the active editing paradigm to Lua as `ruster.editmode`
+    /// (`"neovim"` or `"emacs"`), so plugins can support both.
+    pub fn set_editmode(&self, editmode: &str) {
+        if let Ok(ruster) = self.lua.globals().get::<mlua::Table>("ruster") {
+            let _ = ruster.set("editmode", editmode);
+        }
+    }
+
     pub fn fire_event_str(&self, name: &str, string_args: &[&str]) {
         let vals: Vec<mlua::Value> = string_args.iter()
             .map(|s| mlua::Value::String(self.lua.create_string(s).unwrap()))

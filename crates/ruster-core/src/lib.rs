@@ -11,6 +11,7 @@ pub mod workspace;
 pub mod windows;
 pub mod editor;
 pub mod vim;
+pub mod emacs;
 pub mod editorconfig;
 #[cfg(test)]
 mod scenario;
