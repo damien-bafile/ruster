@@ -77,6 +77,18 @@ impl CursorSet {
         self.primary = self.cursors.len() - 1;
     }
 
+    /// Clamp every cursor so no anchor/head exceeds `max` (typically the new
+    /// buffer's `len_chars`). Used when a window switches to a shorter buffer so
+    /// stale positions can't index out of bounds. `max` itself is a valid index
+    /// (one past the last char), so it is not decremented.
+    pub fn clamp_to(&mut self, max: usize) {
+        for c in &mut self.cursors {
+            c.anchor = c.anchor.min(max);
+            c.head = c.head.min(max);
+        }
+        self.desired_col = self.desired_col.min(max);
+    }
+
     pub fn clear_extra(&mut self) {
         let original = self.cursors[0];
         self.cursors.truncate(0);

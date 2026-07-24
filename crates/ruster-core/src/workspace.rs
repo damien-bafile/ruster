@@ -184,11 +184,17 @@ impl Workspace {
         self.windows.split(dir);
     }
 
-    /// Point the active window at `id`.
+    /// Point the active window at `id`, clamping its cursor(s) to the new
+    /// buffer's bounds so a stale position from a longer buffer can't index out
+    /// of range (which would panic in `char_to_line` during render).
     pub fn set_active_buffer(&mut self, id: BufferId) {
-        if self.buffers.get(id).is_some() {
-            self.windows.active_window_mut().buffer = id;
-        }
+        let max = match self.buffers.get(id) {
+            Some(doc) => doc.buffer.len_chars(),
+            None => return,
+        };
+        let win = self.windows.active_window_mut();
+        win.buffer = id;
+        win.cursors.clamp_to(max);
     }
 }
 
@@ -242,6 +248,29 @@ mod workspace_tests {
         let scratch = w.buffers.create_scratch("scratch");
         w.set_active_buffer(scratch);
         assert_eq!(w.active_buffer(), scratch);
+    }
+
+    #[test]
+    fn switching_to_shorter_buffer_clamps_cursor() {
+        // Long buffer, cursor pushed near the end.
+        let mut w = Workspace::from_file(
+            PathBuf::from("long.txt"),
+            "0123456789\nabcdefghij\nklmnopqrst".into(),
+        );
+        let end = w.buffer().len_chars();
+        w.execute(Action::Move(crate::action::Motion::To(end)));
+        assert!(w.active_window().cursors.head() > 2);
+
+        // Switch to a much shorter buffer; the stale head must be clamped so
+        // later char_to_line(head) does not index out of bounds and panic.
+        let short = w.buffers.open_file(PathBuf::from("short.txt"), "hi".into());
+        w.set_active_buffer(short);
+
+        let head = w.active_window().cursors.head();
+        let max = w.buffer().len_chars();
+        assert!(head <= max, "cursor {head} must be clamped to buffer len {max}");
+        // Would panic before the fix.
+        let _ = w.buffer().char_to_line(head);
     }
 }
 
