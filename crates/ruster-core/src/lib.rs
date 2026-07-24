@@ -6,10 +6,12 @@ pub mod action;
 pub mod command;
 pub mod document;
 pub mod dired;
+pub mod snippets;
 pub mod workspace;
 pub mod windows;
 pub mod editor;
 pub mod vim;
+pub mod emacs;
 pub mod editorconfig;
 #[cfg(test)]
 mod scenario;

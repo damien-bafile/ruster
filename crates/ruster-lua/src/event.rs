@@ -5,6 +5,12 @@ pub struct EventBus {
     handlers: HashMap<String, Vec<RegistryKey>>,
 }
 
+impl Default for EventBus {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EventBus {
     pub fn new() -> Self {
         EventBus { handlers: HashMap::new() }

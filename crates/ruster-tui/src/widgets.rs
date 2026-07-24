@@ -12,6 +12,7 @@ pub fn mode_label(mode: &VimMode) -> &'static str {
         VimMode::Insert => "-- INSERT --",
         VimMode::VisualChar => "-- VISUAL --",
         VimMode::VisualLine => "-- V-LINE --",
+        VimMode::VisualBlock => "-- V-BLOCK --",
         VimMode::Cmdline => "-- CMDLINE --",
     }
 }
@@ -49,11 +50,13 @@ fn ruster_render_color_to_tui(c: &RColor) -> Color {
 pub struct BufferWidget {
     lines: Vec<StyledLine>,
     cursor: (u16, u16),
+    extra_cursors: Vec<(u16, u16)>,
     syntax: bool,
     cursor_visible: bool,
     cursor_kind: CursorKind,
     scroll_offset: u16,
     gutter: GutterView,
+    selection: Option<ruster_render::SelectionView>,
 }
 
 impl BufferWidget {
@@ -61,12 +64,24 @@ impl BufferWidget {
         BufferWidget {
             lines,
             cursor,
+            extra_cursors: Vec::new(),
             syntax: false,
             cursor_visible: true,
             cursor_kind: CursorKind::Block,
             scroll_offset: 0,
             gutter: GutterView::default(),
+            selection: None,
         }
+    }
+
+    pub fn with_extra_cursors(mut self, extra: Vec<(u16, u16)>) -> Self {
+        self.extra_cursors = extra;
+        self
+    }
+
+    pub fn with_selection(mut self, selection: Option<ruster_render::SelectionView>) -> Self {
+        self.selection = selection;
+        self
     }
 
     pub fn with_syntax(mut self, yes: bool) -> Self {
@@ -132,23 +147,46 @@ impl Widget for BufferWidget {
             }
         }
 
+        let selection_bg = Color::Rgb(88, 91, 112);
         for (row, line) in self.lines.iter().skip(scroll).enumerate() {
             if row as u16 >= area.height { break; }
             let y = area.y + row as u16;
             let buffer_line = row + scroll;
             let is_cursor_line = buffer_line as u16 == self.cursor.0;
             let line_len = line.text.chars().count() as u16;
+            // Columns selected on this line, if any.
+            let sel_span = self
+                .selection
+                .and_then(|s| s.span_on(buffer_line as u16, line_len));
+            // Paint the selection background first (covers empty lines too).
+            if let Some((sel_start, sel_end)) = sel_span {
+                for col in sel_start..=sel_end.min(line_len.max(sel_start)) {
+                    let x = text_x + col;
+                    if x >= area.right() { break; }
+                    if let Some(cell) = buf.cell_mut((x, y)) {
+                        cell.set_bg(selection_bg);
+                    }
+                }
+            }
             for (j, ch) in line.text.chars().enumerate() {
                 let x = text_x + j as u16;
                 if x >= area.right() { break; }
+                let selected = sel_span
+                    .map(|(s, e)| j as u16 >= s && j as u16 <= e)
+                    .unwrap_or(false);
                 if let Some(cell) = buf.cell_mut((x, y)) {
                     cell.set_char(ch);
                     if is_cursor_line && j as u16 == self.cursor.1 && self.cursor_visible {
                         apply_cursor(cell, self.cursor_kind);
-                    } else if let Some((fg, bg)) = style_map.get(&(row as u16, j as u16)) {
-                        cell.set_fg(ruster_render_color_to_tui(fg));
-                        if !matches!(bg, RColor::Default) {
-                            cell.set_bg(ruster_render_color_to_tui(bg));
+                    } else {
+                        if let Some((fg, bg)) = style_map.get(&(row as u16, j as u16)) {
+                            cell.set_fg(ruster_render_color_to_tui(fg));
+                            if !matches!(bg, RColor::Default) {
+                                cell.set_bg(ruster_render_color_to_tui(bg));
+                            }
+                        }
+                        if selected {
+                            cell.set_bg(selection_bg);
                         }
                     }
                 }
@@ -161,6 +199,25 @@ impl Widget for BufferWidget {
                         apply_cursor(cell, self.cursor_kind);
                     }
                 }
+            }
+        }
+
+        // Extra multi-cursor carets, painted over the text as solid blocks so
+        // they're visible without being the terminal's focus cursor.
+        for &(cl, cc) in &self.extra_cursors {
+            if (cl as usize) < scroll {
+                continue;
+            }
+            let row = cl as usize - scroll;
+            if row as u16 >= area.height {
+                continue;
+            }
+            let x = text_x + cc;
+            if x >= area.right() {
+                continue;
+            }
+            if let Some(cell) = buf.cell_mut((x, area.y + row as u16)) {
+                apply_cursor(cell, self.cursor_kind);
             }
         }
     }
@@ -258,6 +315,7 @@ impl PickerWidget {
 impl Widget for PickerWidget {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let bg = Color::Rgb(30, 30, 46);
+        let preview_bg = Color::Rgb(24, 24, 37);
         for y in area.top()..area.bottom() {
             for x in area.left()..area.right() {
                 if let Some(cell) = buf.cell_mut((x, y)) {
@@ -276,6 +334,11 @@ impl Widget for PickerWidget {
             }
         };
 
+        // Split into a list column and (when there's a preview) a preview column.
+        let has_preview = !self.view.preview.is_empty();
+        let list_w = if has_preview { area.width * 2 / 5 } else { area.width };
+        let list_right = area.x + list_w;
+
         // Title row.
         let title = format!(" {} ", self.view.title);
         for (i, ch) in title.chars().enumerate() {
@@ -286,7 +349,7 @@ impl Widget for PickerWidget {
         for (i, ch) in query.chars().enumerate() {
             put(buf, area.x + i as u16, area.y + 1, ch, Color::White, bg);
         }
-        // Item rows.
+        // Item rows (clipped to the list column).
         for (row, item) in self.view.rows.iter().enumerate() {
             let y = area.y + 2 + row as u16;
             if y >= area.bottom() { break; }
@@ -295,12 +358,48 @@ impl Widget for PickerWidget {
             } else {
                 (Color::Rgb(205, 214, 244), bg)
             };
-            for x in area.left()..area.right() {
+            for x in area.left()..list_right.min(area.right()) {
                 put(buf, x, y, ' ', fg, row_bg);
             }
             let label = format!(" {}", item.label);
             for (i, ch) in label.chars().enumerate() {
-                put(buf, area.x + i as u16, y, ch, fg, row_bg);
+                let x = area.x + i as u16;
+                if x >= list_right { break; }
+                put(buf, x, y, ch, fg, row_bg);
+            }
+        }
+
+        // Preview column: highlighted file contents.
+        if has_preview {
+            let px = list_right + 1;
+            for y in area.top()..area.bottom() {
+                for x in px..area.right() {
+                    if let Some(cell) = buf.cell_mut((x, y)) {
+                        cell.set_bg(preview_bg);
+                    }
+                }
+                // Divider between the two columns.
+                put(buf, list_right, y, '│', Color::Rgb(69, 71, 90), bg);
+            }
+            for (row, line) in self.view.preview.iter().enumerate() {
+                let y = area.y + row as u16;
+                if y >= area.bottom() { break; }
+                let mut colors: std::collections::HashMap<usize, RColor> =
+                    std::collections::HashMap::new();
+                for (offset, len, style) in &line.highlights {
+                    for c in 0..*len {
+                        colors.insert(offset + c, style.fg);
+                    }
+                }
+                for (i, ch) in line.text.chars().enumerate() {
+                    let x = px + 1 + i as u16;
+                    if x >= area.right() { break; }
+                    let fg = colors
+                        .get(&i)
+                        .map(ruster_render_color_to_tui)
+                        .unwrap_or(Color::Rgb(205, 214, 244));
+                    put(buf, x, y, ch, fg, preview_bg);
+                }
             }
         }
     }
@@ -356,10 +455,80 @@ impl Widget for WhichKeyWidget {
     }
 }
 
+/// Renders an LSP hover popup: a bordered box of syntax-highlighted lines.
+pub struct HoverWidget {
+    lines: Vec<StyledLine>,
+}
+
+impl HoverWidget {
+    pub fn new(lines: Vec<StyledLine>) -> Self {
+        HoverWidget { lines }
+    }
+}
+
+impl Widget for HoverWidget {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let bg = Color::Rgb(24, 24, 37);
+        let default_fg = Color::Rgb(205, 214, 244);
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_char(' ');
+                    cell.set_bg(bg);
+                }
+            }
+        }
+        for (row, line) in self.lines.iter().enumerate() {
+            let y = area.y + row as u16;
+            if y >= area.bottom() { break; }
+            // Map char index -> highlight fg for this line.
+            let mut colors: std::collections::HashMap<usize, RColor> = std::collections::HashMap::new();
+            for (offset, len, style) in &line.highlights {
+                for c in 0..*len {
+                    colors.insert(offset + c, style.fg);
+                }
+            }
+            for (i, ch) in line.text.chars().enumerate() {
+                let x = area.x + 1 + i as u16;
+                if x >= area.right() { break; }
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_char(ch);
+                    let fg = colors
+                        .get(&i)
+                        .map(ruster_render_color_to_tui)
+                        .unwrap_or(default_fg);
+                    cell.set_fg(fg);
+                    cell.set_bg(bg);
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::BufferWidget;
     use crate::widgets::{cmdline_label, mode_label};
+    use ratatui::buffer::Buffer as RBuffer;
+    use ratatui::layout::Rect;
+    use ratatui::widgets::Widget;
     use ruster_core::vim::VimMode;
+    use ruster_render::StyledLine;
+
+    #[test]
+    fn extra_cursors_paint_a_block_over_their_cell() {
+        let line = StyledLine { text: "abcd".to_string(), highlights: vec![] };
+        let area = Rect::new(0, 0, 10, 1);
+        let mut buf = RBuffer::empty(area);
+        // Primary at col 0, an extra caret at col 2 ('c').
+        BufferWidget::new(vec![line], (0, 0))
+            .with_extra_cursors(vec![(0, 2)])
+            .render(area, &mut buf);
+        // The extra caret reverses fg/bg on its cell; the char is preserved.
+        let cell = buf.cell((2, 0)).unwrap();
+        assert_eq!(cell.symbol(), "c");
+        assert_ne!(cell.bg, ratatui::style::Color::Reset, "extra caret paints a block");
+    }
 
     #[test]
     fn mode_label_normal() {

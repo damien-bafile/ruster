@@ -107,12 +107,66 @@ pub struct StatuslineView {
     pub active: bool,
 }
 
+/// How a visual selection covers the lines it spans.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionKind {
+    /// From the start column on the first line to the end column on the last.
+    Char,
+    /// Whole lines, ignoring columns.
+    Line,
+    /// The same column range on every line (rectangle).
+    Block,
+}
+
+/// A visual-mode selection in buffer coordinates. `start`/`end` are
+/// `(line, col)` and both ends are **inclusive**.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectionView {
+    pub start: (u16, u16),
+    pub end: (u16, u16),
+    pub kind: SelectionKind,
+}
+
+impl SelectionView {
+    /// The inclusive column span selected on `line`, if any. `line_len` is the
+    /// line's character count.
+    pub fn span_on(&self, line: u16, line_len: u16) -> Option<(u16, u16)> {
+        if line < self.start.0 || line > self.end.0 {
+            return None;
+        }
+        match self.kind {
+            SelectionKind::Line => Some((0, line_len)),
+            SelectionKind::Block => {
+                // A rectangle: the same columns on every line, clipped to it.
+                let (lo, hi) = if self.start.1 <= self.end.1 {
+                    (self.start.1, self.end.1)
+                } else {
+                    (self.end.1, self.start.1)
+                };
+                if lo > line_len {
+                    None
+                } else {
+                    Some((lo, hi.min(line_len)))
+                }
+            }
+            SelectionKind::Char => {
+                let start = if line == self.start.0 { self.start.1 } else { 0 };
+                let end = if line == self.end.0 { self.end.1 } else { line_len };
+                Some((start, end))
+            }
+        }
+    }
+}
+
 /// Everything needed to draw a single window into its rectangle.
 pub struct WindowView {
     pub rect: Rect,
     pub lines: Vec<StyledLine>,
     /// Absolute cursor position in buffer coords: (line, col).
     pub cursor: (u16, u16),
+    /// Additional multi-cursor carets in buffer coords, drawn as blocks. Empty
+    /// in the common single-cursor case.
+    pub extra_cursors: Vec<(u16, u16)>,
     pub cursor_kind: CursorKind,
     pub cursor_visible: bool,
     pub cursor_smooth: Option<(f32, f32)>,
@@ -121,6 +175,8 @@ pub struct WindowView {
     pub gutter: GutterView,
     pub statusline: StatuslineView,
     pub active: bool,
+    /// Visual-mode selection to highlight (active window only).
+    pub selection: Option<SelectionView>,
 }
 
 /// One row of a floating picker overlay.
@@ -137,6 +193,8 @@ pub struct PickerView {
     pub title: String,
     pub query: String,
     pub rows: Vec<PickerRow>,
+    /// Syntax-highlighted preview of the selected entry (empty = no preview pane).
+    pub preview: Vec<StyledLine>,
 }
 
 /// A which-key hint panel that slides up from the bottom mini-buffer. `anim` is
@@ -157,6 +215,8 @@ pub struct FrameState<'a> {
     pub message: Option<&'a str>,
     pub picker: Option<PickerView>,
     pub whichkey: Option<WhichKeyView>,
+    /// LSP hover popup lines (syntax-highlighted), in a floating box near the top.
+    pub hover: Option<Vec<StyledLine>>,
 }
 
 pub trait Renderer {
@@ -177,7 +237,8 @@ pub trait Renderer {
 #[cfg(test)]
 mod tests {
     use crate::{
-        CursorKind, FrameState, GutterView, Rect, Renderer, StatuslineView, StyledLine, WindowView,
+        CursorKind, FrameState, GutterView, Rect, Renderer, SelectionKind, SelectionView,
+        StatuslineView, StyledLine, WindowView,
     };
 
     struct TestRenderer;
@@ -190,6 +251,7 @@ mod tests {
             rect: Rect::new(0, 0, 80, 24),
             lines: vec![StyledLine { text: "hello".to_string(), highlights: vec![] }],
             cursor: (0, 0),
+            extra_cursors: Vec::new(),
             cursor_kind: CursorKind::Block,
             cursor_visible: true,
             cursor_smooth: None,
@@ -202,7 +264,35 @@ mod tests {
                 active: true,
             },
             active: true,
+            selection: None,
         }
+    }
+
+    #[test]
+    fn selection_spans_per_line() {
+        // charwise from (1,4) to (3,2)
+        let sel = SelectionView { start: (1, 4), end: (3, 2), kind: SelectionKind::Char };
+        assert_eq!(sel.span_on(0, 10), None, "before the selection");
+        assert_eq!(sel.span_on(1, 10), Some((4, 10)), "first line: from start col");
+        assert_eq!(sel.span_on(2, 10), Some((0, 10)), "middle line: whole line");
+        assert_eq!(sel.span_on(3, 10), Some((0, 2)), "last line: up to end col");
+        assert_eq!(sel.span_on(4, 10), None, "after the selection");
+
+        // single-line charwise
+        let one = SelectionView { start: (2, 3), end: (2, 7), kind: SelectionKind::Char };
+        assert_eq!(one.span_on(2, 20), Some((3, 7)));
+
+        // line-wise ignores columns
+        let lw = SelectionView { start: (1, 5), end: (2, 1), kind: SelectionKind::Line };
+        assert_eq!(lw.span_on(1, 8), Some((0, 8)));
+        assert_eq!(lw.span_on(2, 4), Some((0, 4)));
+
+        // block-wise selects the same columns on every line, clipped per line
+        let blk = SelectionView { start: (1, 2), end: (3, 5), kind: SelectionKind::Block };
+        assert_eq!(blk.span_on(1, 10), Some((2, 5)));
+        assert_eq!(blk.span_on(2, 10), Some((2, 5)));
+        assert_eq!(blk.span_on(3, 4), Some((2, 4)), "clipped to a short line");
+        assert_eq!(blk.span_on(3, 1), None, "line ends before the block starts");
     }
 
     #[test]
@@ -213,6 +303,7 @@ mod tests {
             message: None,
             picker: None,
             whichkey: None,
+            hover: None,
         };
         let mut r = TestRenderer;
         r.render_frame(&state);

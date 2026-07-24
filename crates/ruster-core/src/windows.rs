@@ -34,11 +34,14 @@ pub struct Window {
     pub buffer: BufferId,
     pub cursors: CursorSet,
     pub scroll_top: usize,
+    /// Text rows this window last rendered with. Only the renderer knows the
+    /// real geometry, so it records it here for half-page scrolling to use.
+    pub height: usize,
 }
 
 impl Window {
     fn new(buffer: BufferId) -> Self {
-        Window { buffer, cursors: CursorSet::single(0), scroll_top: 0 }
+        Window { buffer, cursors: CursorSet::single(0), scroll_top: 0, height: 0 }
     }
 }
 
@@ -212,7 +215,7 @@ impl WindowTree {
                 FocusDir::Left | FocusDir::Right => (r.cx() - active_rect.cx()).abs(),
                 FocusDir::Up | FocusDir::Down => (r.cy() - active_rect.cy()).abs(),
             };
-            if best.map_or(true, |(_, d)| dist < d) {
+            if best.is_none_or(|(_, d)| dist < d) {
                 best = Some((*id, dist));
             }
         }

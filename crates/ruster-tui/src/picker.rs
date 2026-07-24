@@ -116,6 +116,14 @@ impl PickerState {
         self.selected = 0;
     }
 
+    /// The action of the currently-selected item without consuming it (used to
+    /// build the preview pane).
+    pub fn selected_action(&mut self) -> Option<PickerAction> {
+        let filtered = self.filtered();
+        let idx = *filtered.get(self.selected)?;
+        Some(self.items[idx].action.clone())
+    }
+
     /// The action of the currently-selected item, if any.
     pub fn accept(&mut self) -> Option<PickerAction> {
         let filtered = self.filtered();
@@ -139,6 +147,7 @@ impl PickerState {
             title: self.title.clone(),
             query: self.filter.clone(),
             rows,
+            preview: Vec::new(), // filled in by the app
         }
     }
 }

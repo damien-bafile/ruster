@@ -8,6 +8,21 @@ use crate::document::{BufferId, DocKind, Document, SpecialKind};
 use crate::editor::{EditSession, EditorView};
 use crate::windows::{SplitDir, Window, WindowTree};
 
+/// Whether an action changes buffer text (and so is refused on a read-only
+/// document). Navigation, scrolling, cursor, and batch markers are not mutating.
+fn action_mutates(a: &Action) -> bool {
+    matches!(
+        a,
+        Action::Edit(_)
+            | Action::IndentLine
+            | Action::DeindentLine
+            | Action::Undo
+            | Action::Redo
+            | Action::UndoTime(_)
+            | Action::Textobject { .. }
+    )
+}
+
 /// Registry of all open [`Document`]s (vim "buffers").
 ///
 /// Ids are stable for the lifetime of a document. [`order`](Self::ids) tracks
@@ -159,7 +174,32 @@ impl Workspace {
     }
 
     /// Run an editing action against the active window/document.
+    ///
+    /// Actions that change buffer text (see [`action_mutates`]) are no-ops on a
+    /// read-only document; navigation actions always apply.
     pub fn execute(&mut self, action: Action) {
+        if let Action::Scroll(delta) = action {
+            let win = self.windows.active_window_mut();
+            win.scroll_top = win.scroll_top.saturating_add_signed(delta as isize);
+            let last = self
+                .buffers
+                .get(self.windows.active_window().buffer)
+                .map(|d| d.buffer.line_count().saturating_sub(1))
+                .unwrap_or(0);
+            let win = self.windows.active_window_mut();
+            win.scroll_top = win.scroll_top.min(last);
+            return;
+        }
+        // Read-only (ruster-managed) buffers ignore mutating actions, so global
+        // keys can fall through to them safely — search and motion still work.
+        let read_only = self
+            .buffers
+            .get(self.windows.active_window().buffer)
+            .map(Document::read_only)
+            .unwrap_or(false);
+        if read_only && action_mutates(&action) {
+            return;
+        }
         let marks_modified = matches!(
             action,
             Action::Edit(_) | Action::IndentLine | Action::DeindentLine | Action::Undo | Action::Redo
@@ -208,6 +248,12 @@ impl EditorView for Workspace {
     fn cursors(&self) -> &CursorSet {
         &self.active_window().cursors
     }
+    fn viewport_height(&self) -> usize {
+        match self.active_window().height {
+            0 => 24, // not rendered yet
+            h => h,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -225,6 +271,51 @@ mod workspace_tests {
         let mut w = ws();
         assert!(!w.active_doc().modified);
         w.execute(Action::Edit(EditOp::InsertChar('!')));
+        assert!(w.active_doc().modified);
+    }
+
+    /// A workspace whose active window views a dired special buffer seeded with
+    /// three lines of listing text.
+    fn ws_special() -> (Workspace, BufferId) {
+        let mut w = ws();
+        let id = w.buffers.create_special(SpecialKind::Dired, "*dired*");
+        w.buffers.get_mut(id).unwrap().buffer = Buffer::from_str("a\nb\nc");
+        w.set_active_buffer(id);
+        (w, id)
+    }
+
+    #[test]
+    fn edits_are_noops_on_a_read_only_special_buffer() {
+        let (mut w, _) = ws_special();
+        for a in [
+            Action::Edit(EditOp::InsertChar('X')),
+            Action::Edit(EditOp::Backspace),
+            Action::IndentLine,
+            Action::DeindentLine,
+            Action::Undo,
+            Action::Redo,
+        ] {
+            w.execute(a);
+        }
+        assert_eq!(w.active_doc().buffer.to_string(), "a\nb\nc");
+        assert!(!w.active_doc().modified);
+    }
+
+    #[test]
+    fn navigation_still_works_on_a_read_only_special_buffer() {
+        let (mut w, _) = ws_special();
+        // Move is allowed even though edits are blocked.
+        w.execute(Action::Move(crate::action::Motion::To(2)));
+        assert_eq!(w.primary_head(), 2);
+    }
+
+    #[test]
+    fn edits_still_mutate_a_normal_file_buffer() {
+        // Regression: the read-only guard must not affect ordinary buffers.
+        let mut w = ws();
+        w.execute(Action::Move(crate::action::Motion::To(0)));
+        w.execute(Action::Edit(EditOp::InsertChar('X')));
+        assert_eq!(w.active_doc().buffer.to_string(), "Xhello");
         assert!(w.active_doc().modified);
     }
 
