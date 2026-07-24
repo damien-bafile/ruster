@@ -6,7 +6,10 @@ use crate::action::{Action, EditOp, Motion};
 use crate::cursor::Edge;
 use crate::editor::EditorView;
 use crate::key::KeyEvent;
-use crate::vim::motions::{next_word_start, prev_word_start, word_end, last_printable_in_line, char_to_line};
+use crate::vim::motions::{
+    char_to_line, first_non_blank, last_printable_in_line, line_content_end, next_word_start,
+    prev_word_start, word_end,
+};
 use std::cell::RefCell;
 
 
@@ -57,6 +60,11 @@ pub struct VimState {
     pending: OpState,
     pending_textobj: Option<char>,
     register: Option<String>,
+    /// True when the register holds whole lines (from `dd`/`yy`/`Y`), which
+    /// changes where `p`/`P` paste.
+    register_linewise: bool,
+    /// True after `r`, waiting for the replacement character.
+    pending_replace: bool,
     last_change: Option<LastChange>,
     anchor: Option<usize>,
     cmdline_buffer: String,
@@ -73,6 +81,8 @@ impl VimState {
             pending: OpState::Idle,
             pending_textobj: None,
             register: None,
+            register_linewise: false,
+            pending_replace: false,
             last_change: None,
             anchor: None,
             cmdline_buffer: String::new(),
@@ -144,6 +154,23 @@ impl VimState {
     }
 
     fn handle_normal(&mut self, key: KeyEvent, editor: &dyn EditorView, n: u32, out: &mut Vec<Action>) {
+        // `r<char>` replaces the character under the cursor.
+        if self.pending_replace {
+            self.pending_replace = false;
+            if let KeyEvent::Char(c) = key {
+                let at = editor.primary_head();
+                if at < editor.buffer().len_chars() && editor.buffer().char_at(at) != '\n' {
+                    out.push(Action::BeginBatch);
+                    out.push(Action::Edit(EditOp::DeleteRange(at, at + 1)));
+                    out.push(Action::Edit(EditOp::InsertString(c.to_string())));
+                    out.push(Action::Move(Motion::To(at)));
+                    out.push(Action::EndBatch);
+                }
+            }
+            self.count = None;
+            return;
+        }
+
         if self.stroke_count(key) { return; }
 
         let pending_now = self.pending;
@@ -180,6 +207,8 @@ impl VimState {
                 }
                 KeyEvent::Char(m @ ('w' | 'b' | 'e' | '0' | '$' | 'G' | 'd' | 'y' | 'c')) => {
                     self.pending = OpState::Idle;
+                    // Doubled operators (dd/yy/cc) and `G` act on whole lines.
+                    self.register_linewise = m == op || m == 'G';
                     if let Some((start, end)) = crate::vim::ops::range_for_motion(editor, m, count) {
                         self.apply_operator(op, start, end, editor, out);
                         if op == 'd' || op == 'c' {
@@ -247,6 +276,106 @@ impl VimState {
                 self.count = None;
                 out.push(Action::BeginBatch);
             }
+            // `a` append after the cursor.
+            KeyEvent::Char('a') if self.pending == OpState::Idle && self.pending_textobj.is_none() && self.anchor.is_none() => {
+                let head = editor.primary_head();
+                let line = char_to_line(editor, head);
+                let end = line_content_end(editor, line);
+                out.push(Action::Move(Motion::To((head + 1).min(end))));
+                self.mode = VimMode::Insert;
+                out.push(Action::BeginBatch);
+                self.count = None;
+            }
+            // `A` append at end of line.
+            KeyEvent::Char('A') => {
+                let line = char_to_line(editor, editor.primary_head());
+                out.push(Action::Move(Motion::To(line_content_end(editor, line))));
+                self.mode = VimMode::Insert;
+                out.push(Action::BeginBatch);
+                self.count = None;
+            }
+            // `I` insert before the first non-blank.
+            KeyEvent::Char('I') => {
+                let line = char_to_line(editor, editor.primary_head());
+                out.push(Action::Move(Motion::To(first_non_blank(editor, line))));
+                self.mode = VimMode::Insert;
+                out.push(Action::BeginBatch);
+                self.count = None;
+            }
+            // `o` / `O` open a line below / above.
+            KeyEvent::Char('o') => {
+                let line = char_to_line(editor, editor.primary_head());
+                let end = line_content_end(editor, line);
+                out.push(Action::BeginBatch);
+                out.push(Action::Move(Motion::To(end)));
+                out.push(Action::Edit(EditOp::InsertString("\n".to_string())));
+                self.mode = VimMode::Insert;
+                self.count = None;
+            }
+            KeyEvent::Char('O') => {
+                let line = char_to_line(editor, editor.primary_head());
+                let start = editor.buffer().line_start_char(line);
+                out.push(Action::BeginBatch);
+                out.push(Action::Move(Motion::To(start)));
+                out.push(Action::Edit(EditOp::InsertString("\n".to_string())));
+                out.push(Action::Move(Motion::To(start)));
+                self.mode = VimMode::Insert;
+                self.count = None;
+            }
+            // `r` waits for the replacement character.
+            KeyEvent::Char('r') => {
+                self.pending_replace = true;
+            }
+            // `~` toggle the case of the character under the cursor.
+            KeyEvent::Char('~') => {
+                let at = editor.primary_head();
+                if at < editor.buffer().len_chars() {
+                    let c = editor.buffer().char_at(at);
+                    if c != '\n' {
+                        let flipped: String = if c.is_uppercase() {
+                            c.to_lowercase().collect()
+                        } else {
+                            c.to_uppercase().collect()
+                        };
+                        out.push(Action::BeginBatch);
+                        out.push(Action::Edit(EditOp::DeleteRange(at, at + 1)));
+                        out.push(Action::Edit(EditOp::InsertString(flipped)));
+                        out.push(Action::EndBatch);
+                    }
+                }
+                self.count = None;
+            }
+            // `X` delete the character before the cursor.
+            KeyEvent::Char('X') => {
+                let at = editor.primary_head();
+                if at > 0 {
+                    out.push(Action::BeginBatch);
+                    out.push(Action::Edit(EditOp::DeleteRange(at - 1, at)));
+                    out.push(Action::EndBatch);
+                }
+                self.count = None;
+            }
+            // `D` / `C` act to end of line; `Y` / `S` act on the whole line.
+            KeyEvent::Char('D') | KeyEvent::Char('C') => {
+                let head = editor.primary_head();
+                let line = char_to_line(editor, head);
+                let end = line_content_end(editor, line);
+                let op = if key == KeyEvent::Char('D') { 'd' } else { 'c' };
+                self.register_linewise = false;
+                if end >= head {
+                    self.apply_operator(op, head, end, editor, out);
+                }
+                self.count = None;
+            }
+            KeyEvent::Char('Y') | KeyEvent::Char('S') => {
+                let line = char_to_line(editor, editor.primary_head());
+                let start = editor.buffer().line_start_char(line);
+                let end = editor.buffer().line_end_char(line);
+                let op = if key == KeyEvent::Char('Y') { 'y' } else { 'c' };
+                self.register_linewise = true;
+                self.apply_operator(op, start, end, editor, out);
+                self.count = None;
+            }
             KeyEvent::Char('d') if self.pending == OpState::Idle => {
                 self.pending = OpState::Pending('d', n);
                 self.count = None;
@@ -277,12 +406,40 @@ impl VimState {
                 }
                 self.count = None;
             }
-            KeyEvent::Char('p') => {
+            // `p` pastes after the cursor (or on the line below for a line-wise
+            // register); `P` pastes before (or on the line above).
+            KeyEvent::Char('p') | KeyEvent::Char('P') => {
                 let text = self.clipboard_get()
                     .or_else(|| self.register.clone())
                     .unwrap_or_default();
                 if !text.is_empty() {
+                    let after = key == KeyEvent::Char('p');
+                    let head = editor.primary_head();
+                    let line = char_to_line(editor, head);
+                    let (pos, text) = if self.register_linewise {
+                        let body = text.trim_end_matches('\n').to_string();
+                        if after {
+                            let end = editor.buffer().line_end_char(line);
+                            let buf_len = editor.buffer().len_chars();
+                            if end >= buf_len {
+                                // Last line has no trailing newline: start one.
+                                (buf_len, format!("\n{}", body))
+                            } else {
+                                (end, format!("{}\n", body))
+                            }
+                        } else {
+                            (editor.buffer().line_start_char(line), format!("{}\n", body))
+                        }
+                    } else {
+                        let pos = if after {
+                            (head + 1).min(line_content_end(editor, line))
+                        } else {
+                            head
+                        };
+                        (pos, text)
+                    };
                     out.push(Action::BeginBatch);
+                    out.push(Action::Move(Motion::To(pos)));
                     out.push(Action::Edit(EditOp::InsertString(text)));
                     out.push(Action::EndBatch);
                 }
@@ -353,6 +510,9 @@ impl VimState {
         let text = editor.buffer().slice_string(start, safe_end);
         match op {
             'd' => {
+                // Vim's `d` also fills the unnamed register.
+                self.register = Some(text.clone());
+                self.clipboard_set(&text);
                 out.push(Action::BeginBatch);
                 out.push(Action::Edit(EditOp::DeleteRange(start, end)));
                 out.push(Action::EndBatch);
@@ -403,6 +563,11 @@ impl VimState {
     }
 
     fn handle_visual(&mut self, key: KeyEvent, editor: &dyn EditorView, n: u32, out: &mut Vec<Action>) {
+        // A line-wise selection yanks/deletes whole lines, which changes where
+        // a later `p`/`P` pastes.
+        if matches!(key, KeyEvent::Char('x' | 'd' | 'y' | 'c')) {
+            self.register_linewise = self.mode == VimMode::VisualLine;
+        }
         if self.stroke_count(key) { return; }
         let anchor = match self.anchor { Some(a) => a, None => editor.primary_head() };
         match key {
@@ -583,9 +748,9 @@ mod tests {
         for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); }
         for a in v.handle(KeyEvent::Char('y'), &e) { e.execute(a); }
         assert_eq!(e.buffer().to_string(), "abc"); // unchanged by yank
-        // p inserts register "ab" at cursor 0 -> "ababc"
+        // Character-wise `p` pastes *after* the cursor: "a" + "ab" + "bc".
         for a in v.handle(KeyEvent::Char('p'), &e) { e.execute(a); }
-        assert_eq!(e.buffer().to_string(), "ababc");
+        assert_eq!(e.buffer().to_string(), "aabbc");
     }
 
     #[test]

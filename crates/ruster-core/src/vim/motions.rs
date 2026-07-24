@@ -61,6 +61,31 @@ pub fn last_printable_in_line(editor: &dyn EditorView) -> usize {
     if content_len > 0 { start + content_len - 1 } else { start }
 }
 
+/// Position just past the last character on `line`, before any newline — where
+/// `A` starts appending and where `$`-style operators stop.
+pub fn line_content_end(editor: &dyn EditorView, line: usize) -> usize {
+    let buf = editor.buffer();
+    let start = buf.line_start_char(line);
+    let end = buf.line_end_char(line);
+    if end > start && buf.char_at(end - 1) == '\n' {
+        end - 1
+    } else {
+        end
+    }
+}
+
+/// First non-blank character on `line` — where `I` starts inserting.
+pub fn first_non_blank(editor: &dyn EditorView, line: usize) -> usize {
+    let buf = editor.buffer();
+    let start = buf.line_start_char(line);
+    let end = line_content_end(editor, line);
+    let mut i = start;
+    while i < end && buf.char_at(i).is_whitespace() {
+        i += 1;
+    }
+    i
+}
+
 pub fn char_to_line(editor: &dyn EditorView, char_idx: usize) -> usize {
     let mut acc = 0usize;
     for line in 0..editor.buffer().line_count() {

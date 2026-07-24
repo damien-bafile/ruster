@@ -111,16 +111,94 @@ mod tests {
     }
 
     #[test]
-    fn yy_then_p_yanks_and_pastes_at_cursor() {
+    fn yy_then_p_pastes_the_line_below() {
         let mut e = Editor::from_str("hello");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
         for a in v.handle(KeyEvent::Char('y'), &e) { e.execute(a); }
         for a in v.handle(KeyEvent::Char('y'), &e) { e.execute(a); }
         assert_eq!(e.buffer().to_string(), "hello");
+        // `yy` is line-wise, so `p` puts the copy on the following line.
         for a in v.handle(KeyEvent::Char('p'), &e) { e.execute(a); }
-        assert_eq!(e.buffer().to_string(), "hellohello");
-        assert_eq!(e.primary_head(), 5);
+        assert_eq!(e.buffer().to_string(), "hello\nhello");
+    }
+
+    #[test]
+    fn insert_entry_keys() {
+        // `a` appends after the cursor.
+        let mut e = Editor::from_str("ab");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('a'), &e) { e.execute(a); }
+        assert_eq!(e.primary_head(), 1, "a moves one right");
+
+        // `A` appends at end of line.
+        let mut e = Editor::from_str("ab\ncd");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('A'), &e) { e.execute(a); }
+        assert_eq!(e.primary_head(), 2, "A goes to end of the first line");
+
+        // `I` goes to the first non-blank.
+        let mut e = Editor::from_str("   xy");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('I'), &e) { e.execute(a); }
+        assert_eq!(e.primary_head(), 3, "I skips leading blanks");
+    }
+
+    #[test]
+    fn open_line_below_and_above() {
+        let mut e = Editor::from_str("one\ntwo");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('o'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "one\n\ntwo");
+
+        let mut e = Editor::from_str("one\ntwo");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('O'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "\none\ntwo");
+        assert_eq!(e.primary_head(), 0, "cursor sits on the new empty line");
+    }
+
+    #[test]
+    fn replace_char_and_toggle_case() {
+        let mut e = Editor::from_str("cat");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('r'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('b'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "bat");
+
+        let mut e = Editor::from_str("cat");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('~'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "Cat");
+    }
+
+    #[test]
+    fn capital_d_deletes_to_end_of_line() {
+        let mut e = Editor::from_str("hello world\nnext");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('D'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "he\nnext");
+    }
+
+    #[test]
+    fn yy_then_capital_p_pastes_the_line_above() {
+        let mut e = Editor::from_str("hello");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('y'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('y'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('P'), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "hello\nhello");
     }
 
     #[test]
@@ -155,8 +233,9 @@ mod tests {
         for a in v.handle(KeyEvent::Char('y'), &e) { e.execute(a); }
         for a in v.handle(KeyEvent::Char('G'), &e) { e.execute(a); }
         assert_eq!(e.buffer().to_string(), "foo\nbar\nbaz");
+        // `yG` is line-wise: `p` puts the three lines after the current one.
         for a in v.handle(KeyEvent::Char('p'), &e) { e.execute(a); }
-        assert_eq!(e.buffer().to_string(), "foo\nbar\nbazfoo\nbar\nbaz");
+        assert_eq!(e.buffer().to_string(), "foo\nfoo\nbar\nbaz\nbar\nbaz");
     }
 
     #[test]
