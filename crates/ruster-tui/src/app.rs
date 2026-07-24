@@ -88,6 +88,42 @@ fn build_hover_lines(markdown: &str) -> Vec<StyledLine> {
     out
 }
 
+/// Recursively copy a directory tree.
+fn copy_dir_recursive(src: &std::path::Path, dest: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dest)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dest.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// The dired keymap, shown as a popup by `?`.
+fn dired_help_lines() -> Vec<StyledLine> {
+    let entries = [
+        "Enter / l    open file or enter directory",
+        "h / -        parent directory",
+        "j / k        move cursor",
+        "C-n / C-p    move cursor down / up",
+        "yy           copy entry",
+        "dd           cut entry",
+        "p            paste into this directory",
+        "R            rename entry",
+        "D            delete entry (confirm)",
+        "+ / n        new file, or dir if name ends with /",
+        "?            this help",
+    ];
+    std::iter::once(StyledLine { text: " dired keys".to_string(), highlights: vec![] })
+        .chain(entries.iter().map(|e| StyledLine { text: format!("  {}", e), highlights: vec![] }))
+        .collect()
+}
+
 /// The identifier word immediately before char offset `head`.
 fn word_before(content: &str, head: usize) -> String {
     let chars: Vec<char> = content.chars().collect();
@@ -289,8 +325,8 @@ struct LspDoc {
 
 /// An in-progress dired file operation awaiting input in the mini-buffer.
 enum DiredPromptKind {
-    CreateFile,
-    CreateDir,
+    /// Unified create: a trailing `/` makes a directory, otherwise a file.
+    Create,
     Rename(String),
     Delete(PathBuf),
 }
@@ -302,8 +338,7 @@ struct DiredPrompt {
 
 fn dired_prompt_display(p: &DiredPrompt) -> String {
     match &p.kind {
-        DiredPromptKind::CreateFile => format!("Create file: {}", p.input),
-        DiredPromptKind::CreateDir => format!("Create dir: {}", p.input),
+        DiredPromptKind::Create => format!("Create (end with / for dir): {}", p.input),
         DiredPromptKind::Rename(old) => format!("Rename '{}' to: {}", old, p.input),
         DiredPromptKind::Delete(path) => format!(
             "Delete '{}'? (y/n)",
@@ -427,6 +462,11 @@ pub struct App {
     dired_dirs: std::collections::HashMap<BufferId, PathBuf>,
     /// An in-progress dired file operation awaiting mini-buffer input.
     dired_prompt: Option<DiredPrompt>,
+    /// Path awaiting paste in dired, and whether it's a cut (`true` = move).
+    dired_clipboard: Option<(PathBuf, bool)>,
+    /// True after the first `y` (`yy` copy) or `d` (`dd` cut).
+    dired_pending_y: bool,
+    dired_pending_d: bool,
     /// Language server manager (one server per language).
     lsp: LspManager,
     /// Per-buffer LSP document registration state.
@@ -620,6 +660,9 @@ impl App {
             leader_since: None,
             dired_dirs: std::collections::HashMap::new(),
             dired_prompt: None,
+            dired_clipboard: None,
+            dired_pending_y: false,
+            dired_pending_d: false,
             lsp,
             lsp_docs: std::collections::HashMap::new(),
             diagnostics: std::collections::HashMap::new(),
@@ -1765,21 +1808,46 @@ impl App {
     /// Handle a key in a dired buffer. Returns true if the key was consumed
     /// (movement keys fall through to vim so j/k/gg/G still work).
     fn handle_dired_key(&mut self, ck: crossterm::event::KeyEvent) -> bool {
+        let ctrl = ck.modifiers.contains(KeyModifiers::CONTROL);
+        // Pending `yy` copy / `dd` cut: a matching second key completes it.
+        if self.dired_pending_y {
+            self.dired_pending_y = false;
+            if ck.code == KeyCode::Char('y') {
+                self.dired_yank_under_cursor(false);
+                return true;
+            }
+        }
+        if self.dired_pending_d {
+            self.dired_pending_d = false;
+            if ck.code == KeyCode::Char('d') {
+                self.dired_yank_under_cursor(true);
+                return true;
+            }
+        }
+        if ctrl {
+            match ck.code {
+                KeyCode::Char('n') => {
+                    self.ws.borrow_mut().execute(Action::Move(Motion::Line(1)));
+                    return true;
+                }
+                KeyCode::Char('p') => {
+                    self.ws.borrow_mut().execute(Action::Move(Motion::Line(-1)));
+                    return true;
+                }
+                _ => {}
+            }
+        }
         match ck.code {
-            KeyCode::Enter => {
+            KeyCode::Enter | KeyCode::Char('l') => {
                 self.dired_open_at_cursor();
                 true
             }
-            KeyCode::Char('-') | KeyCode::Char('^') => {
+            KeyCode::Char('h') | KeyCode::Char('-') | KeyCode::Char('^') => {
                 self.dired_go_up();
                 true
             }
-            KeyCode::Char('+') => {
-                self.dired_prompt = Some(DiredPrompt { kind: DiredPromptKind::CreateFile, input: String::new() });
-                true
-            }
-            KeyCode::Char('%') => {
-                self.dired_prompt = Some(DiredPrompt { kind: DiredPromptKind::CreateDir, input: String::new() });
+            KeyCode::Char('+') | KeyCode::Char('n') => {
+                self.dired_prompt = Some(DiredPrompt { kind: DiredPromptKind::Create, input: String::new() });
                 true
             }
             KeyCode::Char('R') => {
@@ -1797,12 +1865,103 @@ impl App {
                 }
                 true
             }
+            KeyCode::Char('y') => {
+                self.dired_pending_y = true;
+                true
+            }
+            KeyCode::Char('d') => {
+                self.dired_pending_d = true;
+                true
+            }
+            KeyCode::Char('p') => {
+                self.dired_paste();
+                true
+            }
+            KeyCode::Char('?') => {
+                self.hover = Some(dired_help_lines());
+                true
+            }
             // Movement keys pass through to vim for navigation.
             KeyCode::Char('j') | KeyCode::Char('k') | KeyCode::Char('g')
             | KeyCode::Char('G') | KeyCode::Up | KeyCode::Down => false,
             // Swallow everything else to keep the listing read-only.
             _ => true,
         }
+    }
+
+    /// Record the entry under the cursor for a later paste. `cut` moves on paste.
+    fn dired_yank_under_cursor(&mut self, cut: bool) {
+        match self.dired_current_target() {
+            Some((path, name)) => {
+                self.dired_clipboard = Some((path, cut));
+                self.message = Some(format!(
+                    "{} '{}'",
+                    if cut { "Cut" } else { "Copied" },
+                    name
+                ));
+            }
+            None => self.message = Some("Nothing selected".to_string()),
+        }
+    }
+
+    /// Paste the dired clipboard into the current directory (copy, or move for a cut).
+    fn dired_paste(&mut self) {
+        let (src, cut) = match self.dired_clipboard.clone() {
+            Some(s) => s,
+            None => {
+                self.message = Some("Clipboard empty".to_string());
+                return;
+            }
+        };
+        let id = self.ws.borrow().active_buffer();
+        let dir = match self.dired_dirs.get(&id) {
+            Some(d) => d.clone(),
+            None => return,
+        };
+        let name = match src.file_name() {
+            Some(n) => n.to_os_string(),
+            None => return,
+        };
+        let dest = dir.join(&name);
+        if dest.exists() {
+            self.message = Some(format!("'{}' already exists", name.to_string_lossy()));
+            return;
+        }
+        let result = if cut {
+            // Try a rename first; fall back to copy+remove across filesystems.
+            std::fs::rename(&src, &dest).or_else(|_| {
+                let copied = if src.is_dir() {
+                    copy_dir_recursive(&src, &dest)
+                } else {
+                    std::fs::copy(&src, &dest).map(|_| ())
+                };
+                copied.and_then(|()| {
+                    if src.is_dir() {
+                        std::fs::remove_dir_all(&src)
+                    } else {
+                        std::fs::remove_file(&src)
+                    }
+                })
+            })
+        } else if src.is_dir() {
+            copy_dir_recursive(&src, &dest)
+        } else {
+            std::fs::copy(&src, &dest).map(|_| ())
+        };
+        match result {
+            Ok(()) => {
+                self.message = Some(format!(
+                    "{} '{}'",
+                    if cut { "Moved" } else { "Pasted" },
+                    name.to_string_lossy()
+                ));
+                if cut {
+                    self.dired_clipboard = None; // a cut is consumed by the paste
+                }
+            }
+            Err(e) => self.message = Some(format!("Paste failed: {}", e)),
+        }
+        self.dired_refresh_current();
     }
 
     /// The (path, name) of the entry under the cursor in the active dired buffer,
@@ -1834,11 +1993,20 @@ impl App {
                     if let Some(DiredPrompt { kind: DiredPromptKind::Delete(path), .. }) =
                         self.dired_prompt.take()
                     {
-                        let _ = if path.is_dir() {
+                        let result = if path.is_dir() {
                             std::fs::remove_dir_all(&path)
                         } else {
                             std::fs::remove_file(&path)
                         };
+                        let name = path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("")
+                            .to_string();
+                        self.message = Some(match result {
+                            Ok(()) => format!("Deleted '{}'", name),
+                            Err(e) => format!("Delete failed for '{}': {}", name, e),
+                        });
                     }
                     self.dired_refresh_current();
                 }
@@ -1875,14 +2043,43 @@ impl App {
         };
         let input = prompt.input.trim().to_string();
         match prompt.kind {
-            DiredPromptKind::CreateFile if !input.is_empty() => {
-                let _ = std::fs::File::create(dir.join(&input));
-            }
-            DiredPromptKind::CreateDir if !input.is_empty() => {
-                let _ = std::fs::create_dir_all(dir.join(&input));
+            // A trailing '/' creates a directory, otherwise a file.
+            DiredPromptKind::Create if !input.is_empty() => {
+                let is_dir = input.ends_with('/');
+                let name = input.trim_end_matches('/').to_string();
+                if name.is_empty() {
+                    self.message = Some("No name given".to_string());
+                } else {
+                    let target = dir.join(&name);
+                    if target.exists() {
+                        self.message = Some(format!("'{}' already exists", name));
+                    } else {
+                        let result = if is_dir {
+                            std::fs::create_dir_all(&target)
+                        } else {
+                            if let Some(parent) = target.parent() {
+                                let _ = std::fs::create_dir_all(parent);
+                            }
+                            std::fs::File::create(&target).map(|_| ())
+                        };
+                        self.message = Some(match result {
+                            Ok(()) => format!(
+                                "Created {} '{}'",
+                                if is_dir { "directory" } else { "file" },
+                                name
+                            ),
+                            Err(e) => format!("Create failed: {}", e),
+                        });
+                    }
+                }
             }
             DiredPromptKind::Rename(old) if !input.is_empty() => {
-                let _ = std::fs::rename(dir.join(&old), dir.join(&input));
+                let target = dir.join(&input);
+                if target.exists() {
+                    self.message = Some(format!("'{}' already exists", input));
+                } else if let Err(e) = std::fs::rename(dir.join(&old), &target) {
+                    self.message = Some(format!("Rename failed: {}", e));
+                }
             }
             _ => {}
         }
@@ -2490,6 +2687,93 @@ mod tests {
         ));
         a.handle_key(CtKey::new(KeyCode::Char('y'), none));
         assert!(!tmp.join("new.txt").exists(), "file deleted");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn dired_create_dir_with_trailing_slash_and_rejects_duplicates() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let tmp = std::env::temp_dir().join("ruster_dired_create");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::Dired(Some(tmp.to_string_lossy().into_owned())));
+
+        // "sub/" creates a directory.
+        a.handle_key(CtKey::new(KeyCode::Char('n'), none));
+        for c in "sub/".chars() {
+            a.handle_key(CtKey::new(KeyCode::Char(c), none));
+        }
+        a.handle_key(CtKey::new(KeyCode::Enter, none));
+        assert!(tmp.join("sub").is_dir(), "trailing slash creates a directory");
+
+        // Creating it again reports that it exists.
+        a.handle_key(CtKey::new(KeyCode::Char('+'), none));
+        for c in "sub/".chars() {
+            a.handle_key(CtKey::new(KeyCode::Char(c), none));
+        }
+        a.handle_key(CtKey::new(KeyCode::Enter, none));
+        assert!(a.message.as_deref().unwrap_or("").contains("already exists"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn dired_yy_copies_and_p_pastes() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let tmp = std::env::temp_dir().join("ruster_dired_copy");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("sub")).unwrap();
+        std::fs::write(tmp.join("a.txt"), "hello").unwrap();
+
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::Dired(Some(tmp.to_string_lossy().into_owned())));
+
+        // Listing: "..", "sub/", "a.txt" — put the cursor on a.txt (line 2).
+        let line2 = a.ws.borrow().buffer().line_start_char(2);
+        a.ws.borrow_mut().execute(Action::Move(Motion::To(line2)));
+        a.handle_key(CtKey::new(KeyCode::Char('y'), none));
+        assert!(a.dired_pending_y, "first y is pending");
+        a.handle_key(CtKey::new(KeyCode::Char('y'), none));
+        assert_eq!(a.dired_clipboard.as_ref().map(|(_, cut)| *cut), Some(false));
+
+        // Descend into sub/ and paste.
+        let dired_buf = a.ws.borrow().active_buffer();
+        a.refresh_dired(dired_buf, tmp.join("sub"));
+        a.handle_key(CtKey::new(KeyCode::Char('p'), none));
+        assert!(tmp.join("sub").join("a.txt").exists(), "file pasted into sub/");
+        assert!(tmp.join("a.txt").exists(), "copy leaves the original");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn dired_dd_cuts_and_p_moves() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let tmp = std::env::temp_dir().join("ruster_dired_cut");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("sub")).unwrap();
+        std::fs::write(tmp.join("b.txt"), "hi").unwrap();
+
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::Dired(Some(tmp.to_string_lossy().into_owned())));
+        let line2 = a.ws.borrow().buffer().line_start_char(2);
+        a.ws.borrow_mut().execute(Action::Move(Motion::To(line2)));
+        a.handle_key(CtKey::new(KeyCode::Char('d'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('d'), none));
+        assert_eq!(a.dired_clipboard.as_ref().map(|(_, cut)| *cut), Some(true));
+
+        let dired_buf = a.ws.borrow().active_buffer();
+        a.refresh_dired(dired_buf, tmp.join("sub"));
+        a.handle_key(CtKey::new(KeyCode::Char('p'), none));
+        assert!(tmp.join("sub").join("b.txt").exists(), "moved into sub/");
+        assert!(!tmp.join("b.txt").exists(), "cut removes the original");
+        assert!(a.dired_clipboard.is_none(), "cut is consumed by the paste");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
