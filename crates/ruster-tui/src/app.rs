@@ -1388,7 +1388,9 @@ impl App {
         if cached.is_none() {
             let text = match std::fs::metadata(&path) {
                 Ok(m) if m.len() as usize <= PREVIEW_MAX_BYTES => {
-                    std::fs::read_to_string(&path).unwrap_or_default()
+                    // Normalize CRLF like Document::from_file does, so a stray
+                    // `\r` doesn't render as a tofu glyph in the GUI backend.
+                    std::fs::read_to_string(&path).unwrap_or_default().replace("\r\n", "\n")
                 }
                 _ => String::new(),
             };
