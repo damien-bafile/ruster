@@ -268,12 +268,24 @@ scrolled to the target line for location results.
 | `p` | Paste into this directory |
 | `R` | Rename entry |
 | `D` | Delete entry (with `y`/`n` confirm) |
-| `+` / `n` | New file — or directory if the name ends with `/` |
+| `+` | New file — or directory if the name ends with `/` |
 | `.` | Toggle hidden (dot-)files |
-| `?` | Show this keymap in a popup |
+| `g?` | Show this keymap in a popup |
 
-Copy/cut/paste refuse to overwrite an existing name, and a cut is consumed by
-its paste (the original is removed only after a successful move).
+A dired buffer is a **read-only buffer**, so the normal editor keys work over
+the listing while its own keys above take priority:
+
+| Key | Action |
+|-----|--------|
+| `/` `?` `n` `N` | Search the listing and jump between matches |
+| `:` … | Any `:` command (`:q`, `:Files`, …) |
+| `gg` / `G` | Top / bottom of the listing |
+| `SPC` … | The Space leader / which-key menu |
+| (Emacs mode) `C-s` `C-r`, `M-x` | Incremental search, run a command |
+
+Editing keys (`i`, `x`, `dd`-as-delete-line, …) are inert — the listing can't be
+typed into. Copy/cut/paste refuse to overwrite an existing name, and a cut is
+consumed by its paste (the original is removed only after a successful move).
 
 Entries are colored by type: **directories** blue (bold, with a trailing `/`),
 **executables** green, **symlinks** teal, and regular files in the default

@@ -149,9 +149,11 @@ fn dired_help_lines() -> Vec<StyledLine> {
         "p            paste into this directory",
         "R            rename entry",
         "D            delete entry (confirm)",
-        "+ / n        new file, or dir if name ends with /",
+        "+            new file, or dir if name ends with /",
         ".            toggle hidden files",
-        "?            this help",
+        "/ ? n N      search the listing (as in a normal buffer)",
+        ": commands   run any :command",
+        "g?           this help",
     ];
     std::iter::once(StyledLine { text: " dired keys".to_string(), highlights: vec![] })
         .chain(entries.iter().map(|e| StyledLine { text: format!("  {}", e), highlights: vec![] }))
@@ -563,6 +565,8 @@ pub struct App {
     /// True after the first `y` (`yy` copy) or `d` (`dd` cut).
     dired_pending_y: bool,
     dired_pending_d: bool,
+    /// True after `g` in dired, awaiting `g` (top) or `?` (help).
+    dired_pending_g: bool,
     /// Language server manager (one server per language).
     lsp: LspManager,
     /// Per-buffer LSP document registration state.
@@ -784,6 +788,7 @@ impl App {
             dired_clipboard: None,
             dired_pending_y: false,
             dired_pending_d: false,
+            dired_pending_g: false,
             lsp,
             lsp_docs: std::collections::HashMap::new(),
             diagnostics: std::collections::HashMap::new(),
@@ -831,8 +836,15 @@ impl App {
             return;
         }
 
-        // Dired buffers intercept navigation keys (movement falls through).
-        if self.active_is_dired() && self.handle_dired_key(ck) {
+        // Dired claims its action keys, but only while at rest — never while a
+        // command-line/search prompt (vim Cmdline or an Emacs isearch) is open,
+        // or a search term containing a dired key (e.g. `d` in "docs") would be
+        // hijacked. Unclaimed keys fall through to normal handling.
+        if self.active_is_dired()
+            && self.vim.mode == VimMode::Normal
+            && self.emacs_isearch.is_none()
+            && self.handle_dired_key(ck)
+        {
             return;
         }
 
@@ -2439,6 +2451,18 @@ impl App {
                 return true;
             }
         }
+        // Pending `g`: `gg` jumps to the top, `g?` shows dired help. Handled
+        // locally (rather than falling through to vim) so `?` stays free for
+        // reverse-search. Any other key is a no-op that ends the prefix.
+        if self.dired_pending_g {
+            self.dired_pending_g = false;
+            match ck.code {
+                KeyCode::Char('g') => self.ws.borrow_mut().execute(Action::Move(Motion::To(0))),
+                KeyCode::Char('?') => self.hover = Some(dired_help_lines()),
+                _ => {}
+            }
+            return true;
+        }
         if ctrl {
             match ck.code {
                 KeyCode::Char('n') => {
@@ -2461,7 +2485,7 @@ impl App {
                 self.dired_go_up();
                 true
             }
-            KeyCode::Char('+') | KeyCode::Char('n') => {
+            KeyCode::Char('+') => {
                 self.dired_prompt = Some(DiredPrompt { kind: DiredPromptKind::Create, input: String::new() });
                 true
             }
@@ -2492,10 +2516,6 @@ impl App {
                 self.dired_paste();
                 true
             }
-            KeyCode::Char('?') => {
-                self.hover = Some(dired_help_lines());
-                true
-            }
             KeyCode::Char('.') => {
                 self.dired_show_hidden = !self.dired_show_hidden;
                 self.dired_refresh_current();
@@ -2505,11 +2525,16 @@ impl App {
                 ));
                 true
             }
-            // Movement keys pass through to vim for navigation.
-            KeyCode::Char('j') | KeyCode::Char('k') | KeyCode::Char('g')
-            | KeyCode::Char('G') | KeyCode::Up | KeyCode::Down => false,
-            // Swallow everything else to keep the listing read-only.
-            _ => true,
+            // `g` starts the dired prefix (`gg` top, `g?` help).
+            KeyCode::Char('g') => {
+                self.dired_pending_g = true;
+                true
+            }
+            // Everything else falls through to normal handling. The buffer is
+            // read-only (edits are no-ops), so this safely enables `:` commands,
+            // `/`/`?`/`n`/`N` search, motions, the Space leader, and — in Emacs
+            // mode — `C-s`/`M-x`, all operating over the listing.
+            _ => false,
         }
     }
 
@@ -3421,6 +3446,109 @@ mod tests {
         assert_eq!(a.ws.borrow().buffers.len(), 1);
     }
 
+    /// Open dired on a fresh temp dir containing the given subdirectories.
+    fn dired_on_temp(name: &str, subdirs: &[&str]) -> (App, PathBuf) {
+        let tmp = std::env::temp_dir().join(name);
+        let _ = std::fs::remove_dir_all(&tmp);
+        for s in subdirs {
+            std::fs::create_dir_all(tmp.join(s)).unwrap();
+        }
+        if subdirs.is_empty() {
+            std::fs::create_dir_all(&tmp).unwrap();
+        }
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::Dired(Some(tmp.to_string_lossy().into_owned())));
+        (a, tmp)
+    }
+
+    #[test]
+    fn dired_colon_falls_through_to_cmdline() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let (mut a, tmp) = dired_on_temp("ruster_dired_colon", &[]);
+        a.handle_key(CtKey::new(KeyCode::Char(':'), KeyModifiers::NONE));
+        assert_eq!(a.vim.mode, VimMode::Cmdline, ": reaches the command line in dired");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn dired_slash_falls_through_to_search() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let (mut a, tmp) = dired_on_temp("ruster_dired_slash", &[]);
+        a.handle_key(CtKey::new(KeyCode::Char('/'), KeyModifiers::NONE));
+        assert_eq!(a.vim.mode, VimMode::Cmdline, "/ opens a search prompt in dired");
+        assert!(a.vim.cmdline_buffer().starts_with('/'));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn dired_search_moves_cursor_and_enter_opens_entry() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        // Listing is "../", "adir/", "zebra/" (dirs sorted). Search for "zeb".
+        let (mut a, tmp) = dired_on_temp("ruster_dired_search", &["adir", "zebra"]);
+        for c in "/zeb".chars() {
+            a.handle_key(CtKey::new(KeyCode::Char(c), none));
+        }
+        a.handle_key(CtKey::new(KeyCode::Enter, none)); // run the search → Move
+        // The cursor is now on the "zebra/" line; a search key like 'd' in the
+        // term must not have been hijacked by dired.
+        assert!(a.dired_prompt.is_none(), "search term did not trigger dired keys");
+        a.handle_key(CtKey::new(KeyCode::Enter, none)); // dired open at cursor
+        let name = a.ws.borrow().active_doc().name.clone();
+        assert!(name.ends_with("zebra"), "search then Enter opened zebra, got {name}");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn dired_edit_keys_are_noops() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let (mut a, tmp) = dired_on_temp("ruster_dired_ro", &["adir"]);
+        let before = a.ws.borrow().buffer().to_string();
+        // `x` deletes a char in vim; `i` then text would insert — both no-op here.
+        a.handle_key(CtKey::new(KeyCode::Char('x'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('i'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('Z'), none));
+        a.handle_key(CtKey::new(KeyCode::Esc, none));
+        assert_eq!(a.ws.borrow().buffer().to_string(), before, "listing is read-only");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn dired_n_repeats_search_plus_creates() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let (mut a, tmp) = dired_on_temp("ruster_dired_n", &["adir"]);
+        // `n` is search-repeat now, not create: it must not open a Create prompt.
+        a.handle_key(CtKey::new(KeyCode::Char('n'), none));
+        assert!(a.dired_prompt.is_none(), "n no longer creates");
+        // `+` still opens the Create prompt.
+        a.handle_key(CtKey::new(KeyCode::Char('+'), none));
+        assert!(matches!(
+            a.dired_prompt,
+            Some(DiredPrompt { kind: DiredPromptKind::Create, .. })
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn dired_g_prefix_top_and_help() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let (mut a, tmp) = dired_on_temp("ruster_dired_g", &["adir", "zebra"]);
+        // Move down, then `gg` returns to the top.
+        a.handle_key(CtKey::new(KeyCode::Char('j'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('j'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('g'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('g'), none));
+        assert_eq!(a.ws.borrow().primary_head(), 0, "gg jumps to the top");
+        // `g?` shows the dired help popup.
+        a.handle_key(CtKey::new(KeyCode::Char('g'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('?'), none));
+        assert!(a.hover.is_some(), "g? shows dired help");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     #[test]
     fn dired_opens_and_descends_into_subdir() {
         use ruster_core::document::{DocKind, SpecialKind};
@@ -3557,7 +3685,7 @@ mod tests {
         a.apply_cmd(CmdAction::Dired(Some(tmp.to_string_lossy().into_owned())));
 
         // "sub/" creates a directory.
-        a.handle_key(CtKey::new(KeyCode::Char('n'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('+'), none));
         for c in "sub/".chars() {
             a.handle_key(CtKey::new(KeyCode::Char(c), none));
         }
