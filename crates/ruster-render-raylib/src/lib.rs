@@ -313,22 +313,37 @@ impl Renderer for RaylibRenderer {
                 d.draw_rectangle(box_x + list_w, box_y, 1, box_h, accent);
             }
             d.draw_rectangle_lines(box_x, box_y, box_w, box_h, accent);
-            // Clip contents to the box so long labels don't overflow.
-            let mut s = d.begin_scissor_mode(box_x + 1, box_y + 1, box_w - 2, box_h - 2);
-            s.draw_text_ex(font, &format!(" {} ", picker.title), Vector2::new(box_x as f32 + 4.0, box_y as f32), FONT_SIZE as f32, 1.0, accent);
-            s.draw_text_ex(font, &format!(" > {}", picker.query), Vector2::new(box_x as f32 + 4.0, (box_y + LINE_H) as f32), FONT_SIZE as f32, 1.0, default_color);
-            let max_visible = ((box_h - 2 * LINE_H) / LINE_H).max(0) as usize;
-            for (i, row) in picker.rows.iter().take(max_visible).enumerate() {
-                let ry = box_y + (2 + i as i32) * LINE_H;
-                if row.selected {
-                    s.draw_rectangle(box_x, ry, list_w, LINE_H, accent);
-                    s.draw_text_ex(font, &format!(" {}", row.label), Vector2::new(box_x as f32 + 4.0, ry as f32), FONT_SIZE as f32, 1.0, box_bg);
-                } else {
-                    s.draw_text_ex(font, &format!(" {}", row.label), Vector2::new(box_x as f32 + 4.0, ry as f32), FONT_SIZE as f32, 1.0, default_color);
+            // List column — title, query, and rows, clipped to the list width
+            // so long labels don't bleed across the divider into the preview.
+            let list_clip_w = if has_preview { list_w } else { box_w };
+            {
+                let mut s = d.begin_scissor_mode(
+                    box_x + 1,
+                    box_y + 1,
+                    (list_clip_w - 2).max(1),
+                    box_h - 2,
+                );
+                s.draw_text_ex(font, &format!(" {} ", picker.title), Vector2::new(box_x as f32 + 4.0, box_y as f32), FONT_SIZE as f32, 1.0, accent);
+                s.draw_text_ex(font, &format!(" > {}", picker.query), Vector2::new(box_x as f32 + 4.0, (box_y + LINE_H) as f32), FONT_SIZE as f32, 1.0, default_color);
+                let max_visible = ((box_h - 2 * LINE_H) / LINE_H).max(0) as usize;
+                for (i, row) in picker.rows.iter().take(max_visible).enumerate() {
+                    let ry = box_y + (2 + i as i32) * LINE_H;
+                    if row.selected {
+                        s.draw_rectangle(box_x, ry, list_clip_w, LINE_H, accent);
+                        s.draw_text_ex(font, &format!(" {}", row.label), Vector2::new(box_x as f32 + 4.0, ry as f32), FONT_SIZE as f32, 1.0, box_bg);
+                    } else {
+                        s.draw_text_ex(font, &format!(" {}", row.label), Vector2::new(box_x as f32 + 4.0, ry as f32), FONT_SIZE as f32, 1.0, default_color);
+                    }
                 }
             }
-            // Preview column (syntax-highlighted).
+            // Preview column (syntax-highlighted), clipped to its own pane.
             if has_preview {
+                let mut s = d.begin_scissor_mode(
+                    box_x + list_w + 1,
+                    box_y + 1,
+                    (box_w - list_w - 2).max(1),
+                    box_h - 2,
+                );
                 let px = box_x + list_w + 6;
                 for (i, line) in picker.preview.iter().enumerate() {
                     let ly = box_y + i as i32 * LINE_H;
