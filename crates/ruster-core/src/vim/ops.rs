@@ -191,6 +191,61 @@ mod tests {
     }
 
     #[test]
+    fn find_char_motions_and_repeat() {
+        // "one,two,three" — f, jumps to the first comma, ; to the next.
+        let mut e = Editor::from_str("one,two,three");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('f'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char(','), &e) { e.execute(a); }
+        assert_eq!(e.primary_head(), 3);
+        for a in v.handle(KeyEvent::Char(';'), &e) { e.execute(a); }
+        assert_eq!(e.primary_head(), 7, "; repeats the find");
+
+        // `t` stops just before the target.
+        let mut e = Editor::from_str("one,two");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('t'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char(','), &e) { e.execute(a); }
+        assert_eq!(e.primary_head(), 2);
+    }
+
+    #[test]
+    fn operator_with_find_motion() {
+        // `dt,` deletes up to (not including) the comma.
+        let mut e = Editor::from_str("one,two");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('d'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('t'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char(','), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), ",two", "dt, stops before the comma");
+
+        // `df,` is inclusive of the comma.
+        let mut e = Editor::from_str("one,two");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('d'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('f'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char(','), &e) { e.execute(a); }
+        assert_eq!(e.buffer().to_string(), "two");
+    }
+
+    #[test]
+    fn percent_jumps_between_matching_brackets() {
+        let mut e = Editor::from_str("foo(bar(baz))");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        // From the start, % finds the first '(' at 3 and jumps to its match.
+        for a in v.handle(KeyEvent::Char('%'), &e) { e.execute(a); }
+        assert_eq!(e.primary_head(), 12, "outer close paren");
+        // And back again.
+        for a in v.handle(KeyEvent::Char('%'), &e) { e.execute(a); }
+        assert_eq!(e.primary_head(), 3, "back to the opener");
+    }
+
+    #[test]
     fn yy_then_capital_p_pastes_the_line_above() {
         let mut e = Editor::from_str("hello");
         let mut v = VimState::new();

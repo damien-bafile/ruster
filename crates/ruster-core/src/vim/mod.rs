@@ -7,8 +7,8 @@ use crate::cursor::Edge;
 use crate::editor::EditorView;
 use crate::key::KeyEvent;
 use crate::vim::motions::{
-    char_to_line, first_non_blank, last_printable_in_line, line_content_end, next_word_start,
-    prev_word_start, word_end,
+    char_to_line, find_char_in_line, first_non_blank, last_printable_in_line, line_content_end,
+    matching_bracket, next_word_start, prev_word_start, word_end,
 };
 use std::cell::RefCell;
 
@@ -65,6 +65,10 @@ pub struct VimState {
     register_linewise: bool,
     /// True after `r`, waiting for the replacement character.
     pending_replace: bool,
+    /// Set after `f`/`t`/`F`/`T`, waiting for the target character.
+    pending_find: Option<char>,
+    /// The last find (command, target) so `;` and `,` can repeat it.
+    last_find: Option<(char, char)>,
     last_change: Option<LastChange>,
     anchor: Option<usize>,
     cmdline_buffer: String,
@@ -83,6 +87,8 @@ impl VimState {
             register: None,
             register_linewise: false,
             pending_replace: false,
+            pending_find: None,
+            last_find: None,
             last_change: None,
             anchor: None,
             cmdline_buffer: String::new(),
@@ -171,6 +177,19 @@ impl VimState {
             return;
         }
 
+        // `f`/`t`/`F`/`T` waiting for their target character. If an operator is
+        // pending (e.g. `dt,`), apply it over the range instead of just moving.
+        if let Some(cmd) = self.pending_find.take() {
+            if let KeyEvent::Char(target) = key {
+                self.last_find = Some((cmd, target));
+                self.apply_find(cmd, target, editor, out);
+            } else {
+                self.pending = OpState::Idle;
+            }
+            self.count = None;
+            return;
+        }
+
         if self.stroke_count(key) { return; }
 
         let pending_now = self.pending;
@@ -216,6 +235,12 @@ impl VimState {
                             self.last_change = Some(LastChange::OperatorMotion { op, motion: m, count });
                         }
                     }
+                    return;
+                }
+                // `df,` / `dt,` — wait for the find target, keeping the operator.
+                KeyEvent::Char(f @ ('f' | 't' | 'F' | 'T')) => {
+                    self.pending_find = Some(f);
+                    self.pending = OpState::Pending(op, count);
                     return;
                 }
                 KeyEvent::Char('>') if op == '>' => {
@@ -325,6 +350,35 @@ impl VimState {
             // `r` waits for the replacement character.
             KeyEvent::Char('r') => {
                 self.pending_replace = true;
+            }
+            // `f`/`t`/`F`/`T` wait for the character to jump to.
+            KeyEvent::Char(f @ ('f' | 't' | 'F' | 'T')) => {
+                self.pending_find = Some(f);
+            }
+            // `;` repeats the last find, `,` repeats it reversed.
+            KeyEvent::Char(';') | KeyEvent::Char(',') => {
+                if let Some((cmd, target)) = self.last_find {
+                    let cmd = if key == KeyEvent::Char(';') {
+                        cmd
+                    } else {
+                        match cmd {
+                            'f' => 'F',
+                            'F' => 'f',
+                            't' => 'T',
+                            'T' => 't',
+                            other => other,
+                        }
+                    };
+                    self.apply_find(cmd, target, editor, out);
+                }
+                self.count = None;
+            }
+            // `%` jumps to the matching bracket.
+            KeyEvent::Char('%') => {
+                if let Some(pos) = matching_bracket(editor, editor.primary_head()) {
+                    out.push(Action::Move(Motion::To(pos)));
+                }
+                self.count = None;
             }
             // `~` toggle the case of the character under the cursor.
             KeyEvent::Char('~') => {
@@ -502,6 +556,32 @@ impl VimState {
                     out.push(Action::EndBatch);
                 }
             }
+        }
+    }
+
+    /// Resolve an `f`/`t`/`F`/`T` target: move there, or apply a pending
+    /// operator over the span between the cursor and the target.
+    fn apply_find(&mut self, cmd: char, target: char, editor: &dyn EditorView, out: &mut Vec<Action>) {
+        let head = editor.primary_head();
+        let found = match find_char_in_line(editor, cmd, target, head) {
+            Some(p) => p,
+            None => {
+                self.pending = OpState::Idle;
+                return;
+            }
+        };
+        if let OpState::Pending(op, _) = self.pending {
+            self.pending = OpState::Idle;
+            self.register_linewise = false;
+            // Forward finds are inclusive of the landing character.
+            let (start, end) = if found >= head {
+                (head, (found + 1).min(editor.buffer().len_chars()))
+            } else {
+                (found, head)
+            };
+            self.apply_operator(op, start, end, editor, out);
+        } else {
+            out.push(Action::Move(Motion::To(found)));
         }
     }
 

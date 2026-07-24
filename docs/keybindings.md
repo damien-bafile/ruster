@@ -26,6 +26,10 @@ Most motions accept a count prefix (e.g. `5j`, `3w`).
 | `0` | Start of line |
 | `$` | End of line |
 | `w` `b` `e` | Next word start / previous word start / word end |
+| `f{char}` / `F{char}` | Jump to next / previous occurrence of `{char}` on the line |
+| `t{char}` / `T{char}` | Jump just before / after `{char}` on the line |
+| `;` / `,` | Repeat the last find forwards / backwards |
+| `%` | Jump to the matching bracket |
 | `gg` | Top of buffer |
 | `G` | Bottom of buffer |
 
@@ -33,8 +37,15 @@ Most motions accept a count prefix (e.g. `5j`, `3w`).
 
 | Key | Action |
 |-----|--------|
-| `x` | Delete character under cursor |
-| `p` | Paste (system clipboard, falls back to register) |
+| `i` `a` | Insert before / append after the cursor |
+| `I` `A` | Insert at first non-blank / append at end of line |
+| `o` `O` | Open a new line below / above |
+| `x` / `X` | Delete character under / before the cursor |
+| `r{char}` | Replace the character under the cursor |
+| `~` | Toggle the case of the character under the cursor |
+| `D` / `C` | Delete / change to end of line |
+| `Y` / `S` | Yank / change the whole line |
+| `p` / `P` | Paste after / before the cursor (line-wise registers paste below / above) |
 | `u` | Undo |
 | `C-r` | Redo |
 | `.` | Repeat last change |
