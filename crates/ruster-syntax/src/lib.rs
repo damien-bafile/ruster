@@ -1,8 +1,10 @@
 pub mod highlighter;
+pub mod markup;
 pub mod theme;
 
 use streaming_iterator::StreamingIterator;
 use highlighter::Highlighter;
+use markup::MarkupLang;
 use ruster_render::{StyledLine, SyntaxStyle};
 
 #[derive(Debug)]
@@ -11,41 +13,78 @@ pub enum SyntaxError {
     QueryError(String),
 }
 
-pub struct SyntaxEngine {
+/// Tree-sitter-backed highlighting state.
+struct TreeBackend {
     language: tree_sitter::Language,
     tree: tree_sitter::Tree,
     highlighter: Highlighter,
     source: String,
     bracket_depths: Vec<Option<usize>>,
-    cached: Vec<StyledLine>,
     textobject_scm: &'static str,
+}
+
+/// The highlighting strategy for a buffer: a tree-sitter grammar, or the
+/// line-based markup rules for formats without a compatible grammar.
+enum Backend {
+    Tree(TreeBackend),
+    Markup(MarkupLang),
+}
+
+pub struct SyntaxEngine {
+    backend: Backend,
+    cached: Vec<StyledLine>,
 }
 
 impl SyntaxEngine {
     pub fn new(text: &str, file_ext: &str) -> Result<Self, SyntaxError> {
-        let language = language_for_ext(file_ext).ok_or(SyntaxError::UnsupportedLanguage)?;
-        let mut parser = tree_sitter::Parser::new();
-        parser.set_language(&language).map_err(|_| SyntaxError::QueryError("set_language".into()))?;
-        let tree = parser.parse(text, None).ok_or(SyntaxError::QueryError("parse".into()))?;
+        let key = lang_key(file_ext);
+        // Prefer a tree-sitter grammar; fall back to line-based markup.
+        if let Some(language) = language_for_ext(file_ext) {
+            let mut parser = tree_sitter::Parser::new();
+            parser.set_language(&language).map_err(|_| SyntaxError::QueryError("set_language".into()))?;
+            let tree = parser.parse(text, None).ok_or(SyntaxError::QueryError("parse".into()))?;
 
-        let (highlight_scm, textobject_scm) = query_files_for_lang(lang_key(file_ext));
-        let mut highlighter = Highlighter::new(language.clone(), highlight_scm)
-            .map_err(SyntaxError::QueryError)?;
+            let (highlight_scm, textobject_scm) = query_files_for_lang(key);
+            let mut highlighter = Highlighter::new(language.clone(), highlight_scm)
+                .map_err(SyntaxError::QueryError)?;
 
-        let bracket_depths = compute_bracket_depths(text);
-        let cached = highlighter.highlight_lines(&tree, text, &bracket_depths);
-
-        Ok(SyntaxEngine { language, tree, highlighter, source: text.to_string(), bracket_depths, cached, textobject_scm })
+            let bracket_depths = compute_bracket_depths(text);
+            let cached = highlighter.highlight_lines(&tree, text, &bracket_depths);
+            Ok(SyntaxEngine {
+                backend: Backend::Tree(TreeBackend {
+                    language,
+                    tree,
+                    highlighter,
+                    source: text.to_string(),
+                    bracket_depths,
+                    textobject_scm,
+                }),
+                cached,
+            })
+        } else if let Some(mlang) = markup::markup_lang(key) {
+            let cached = markup::highlight_markup(mlang, text);
+            Ok(SyntaxEngine { backend: Backend::Markup(mlang), cached })
+        } else {
+            Err(SyntaxError::UnsupportedLanguage)
+        }
     }
 
     pub fn reparse(&mut self, text: &str) {
-        let mut parser = tree_sitter::Parser::new();
-        let _ = parser.set_language(&self.language);
-        if let Some(tree) = parser.parse(text, None) {
-            self.tree = tree;
-            self.source = text.to_string();
-            self.bracket_depths = compute_bracket_depths(text);
-            self.cached = self.highlighter.highlight_lines(&self.tree, text, &self.bracket_depths);
+        match &mut self.backend {
+            Backend::Tree(tb) => {
+                let mut parser = tree_sitter::Parser::new();
+                let _ = parser.set_language(&tb.language);
+                if let Some(tree) = parser.parse(text, None) {
+                    tb.tree = tree;
+                    tb.source = text.to_string();
+                    tb.bracket_depths = compute_bracket_depths(text);
+                    self.cached =
+                        tb.highlighter.highlight_lines(&tb.tree, text, &tb.bracket_depths);
+                }
+            }
+            Backend::Markup(mlang) => {
+                self.cached = markup::highlight_markup(*mlang, text);
+            }
         }
     }
 
@@ -65,7 +104,12 @@ impl SyntaxEngine {
     }
 
     pub fn ts_textobject(&self, kind: char, target: char, cursor: usize) -> Option<(usize, usize)> {
-        if self.textobject_scm.is_empty() { return None; }
+        // Only tree-sitter buffers have structural text objects.
+        let tb = match &self.backend {
+            Backend::Tree(tb) => tb,
+            Backend::Markup(_) => return None,
+        };
+        if tb.textobject_scm.is_empty() { return None; }
         let query_name = match (kind, target) {
             ('i', 'f') => "function.inner",
             ('a', 'f') => "function.outer",
@@ -78,16 +122,16 @@ impl SyntaxEngine {
             _ => return None,
         };
 
-        let query = tree_sitter::Query::new(&self.language, self.textobject_scm).ok()?;
+        let query = tree_sitter::Query::new(&tb.language, tb.textobject_scm).ok()?;
         let mut cursor_q = tree_sitter::QueryCursor::new();
-        let mut matches = cursor_q.matches(&query, self.tree.root_node(), self.source.as_bytes());
+        let mut matches = cursor_q.matches(&query, tb.tree.root_node(), tb.source.as_bytes());
 
         while let Some(m) = matches.next() {
             for cap in m.captures {
                 let name = query.capture_names()[cap.index as usize];
                 if name == query_name {
-                    let start = byte_to_char_pos(&self.source, cap.node.byte_range().start);
-                    let end = byte_to_char_pos(&self.source, cap.node.byte_range().end);
+                    let start = byte_to_char_pos(&tb.source, cap.node.byte_range().start);
+                    let end = byte_to_char_pos(&tb.source, cap.node.byte_range().end);
                     if start <= cursor && cursor <= end {
                         return Some((start, end));
                     }
@@ -133,6 +177,8 @@ pub fn lang_key(ext: &str) -> &'static str {
         "lua" => "lua",
         "scm" | "ss" | "sld" | "sls" | "sch" | "scheme" => "scheme",
         "just" | "justfile" => "just",
+        "md" | "markdown" | "mdown" | "mkd" => "markdown",
+        "org" => "org",
         _ => "",
     }
 }
@@ -262,8 +308,33 @@ mod tests {
         assert_eq!(lang_key(&lang_ext_for_path(Path::new("src/main.rs"))), "rust");
         // *.just files work via the extension.
         assert_eq!(lang_key(&lang_ext_for_path(Path::new("tasks.just"))), "just");
-        // Unknown files resolve to nothing.
-        assert_eq!(lang_key(&lang_ext_for_path(Path::new("README.md"))), "");
+        // Markdown and Org resolve to their markup keys.
+        assert_eq!(lang_key(&lang_ext_for_path(Path::new("README.md"))), "markdown");
+        assert_eq!(lang_key(&lang_ext_for_path(Path::new("notes.org"))), "org");
+        // Truly unknown files resolve to nothing.
+        assert_eq!(lang_key(&lang_ext_for_path(Path::new("photo.xyz"))), "");
+    }
+
+    #[test]
+    fn markdown_and_org_highlight_via_the_markup_backend() {
+        for (ext, src) in [("md", "# Title\n**bold**\n"), ("org", "* Head\n/em/\n")] {
+            let engine = SyntaxEngine::new(src, ext).unwrap();
+            let styled = engine.styled_lines();
+            assert!(
+                styled.iter().any(|l| !l.highlights.is_empty()),
+                "{ext} should produce highlights"
+            );
+            // Markup buffers expose no structural text objects.
+            assert!(engine.ts_textobject('i', 'f', 0).is_none());
+        }
+    }
+
+    #[test]
+    fn markup_reparse_updates_highlights() {
+        let mut engine = SyntaxEngine::new("plain\n", "md").unwrap();
+        assert!(engine.styled_lines()[0].highlights.is_empty());
+        engine.reparse("# now a heading\n");
+        assert!(!engine.styled_lines()[0].highlights.is_empty());
     }
 
     #[test]
