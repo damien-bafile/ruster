@@ -71,18 +71,31 @@ impl RaylibRenderer {
             mods |= KeyModifiers::SUPER;
         }
 
-        while let Some(c) = self.rl.get_char_pressed() {
-            if mods.contains(KeyModifiers::CONTROL) && (1..=26).contains(&(c as u32)) {
-                let letter = char::from_u32((c as u32) + 96).unwrap_or('?');
-                self.event_buffer.push(KeyEvent::new(KeyCode::Char(letter), mods));
-            } else if let Some(ch) = char::from_u32(c as u32) {
-                self.event_buffer.push(KeyEvent::new(KeyCode::Char(ch), mods));
+        // With Ctrl or Alt held, the OS text layer can't be trusted to produce
+        // the base letter (it drops or composes modified keys), so Emacs/vim
+        // chords are reconstructed from the physical key. Otherwise, plain
+        // typing goes through the char queue for correct layout and casing.
+        if mods.contains(KeyModifiers::CONTROL) || mods.contains(KeyModifiers::ALT) {
+            // Discard the (absent or mangled) char events for this frame.
+            while self.rl.get_char_pressed().is_some() {}
+            let shift = mods.contains(KeyModifiers::SHIFT);
+            while let Some(k) = self.rl.get_key_pressed() {
+                if let Some(ch) = key::modified_char_for_key(k, shift) {
+                    self.event_buffer.push(KeyEvent::new(KeyCode::Char(ch), mods));
+                } else if let Some(event) = key::map_raylib_key(k) {
+                    self.event_buffer.push(KeyEvent::new(event.code, mods));
+                }
             }
-        }
-
-        while let Some(k) = self.rl.get_key_pressed() {
-            if let Some(event) = key::map_raylib_key(k) {
-                self.event_buffer.push(KeyEvent::new(event.code, mods));
+        } else {
+            while let Some(c) = self.rl.get_char_pressed() {
+                if let Some(ch) = char::from_u32(c as u32) {
+                    self.event_buffer.push(KeyEvent::new(KeyCode::Char(ch), mods));
+                }
+            }
+            while let Some(k) = self.rl.get_key_pressed() {
+                if let Some(event) = key::map_raylib_key(k) {
+                    self.event_buffer.push(KeyEvent::new(event.code, mods));
+                }
             }
         }
 
