@@ -20,6 +20,22 @@ pub struct RaylibRenderer {
 }
 
 impl RaylibRenderer {
+    /// Glyphs to bake into the font atlas. Raylib's default is only the 95
+    /// printable ASCII codepoints, so anything else (en/em dashes, curly
+    /// quotes, ellipsis, bullets, arrows, box-drawing) renders as `?`. We add
+    /// Latin-1 and the common Unicode punctuation the docs and UI actually use.
+    /// `load_font_ex` takes the character set as a string.
+    fn font_chars() -> String {
+        let mut s = String::new();
+        for c in (0x20u32..=0x7E).chain(0xA0..=0xFF) {
+            if let Some(ch) = char::from_u32(c) {
+                s.push(ch);
+            }
+        }
+        s.push_str("–—‘’“”•…←↑→↓─│✓✗");
+        s
+    }
+
     fn try_load_mono_font(rl: &mut RaylibHandle, thread: &RaylibThread) -> WeakFont {
         let home = std::env::var("HOME").unwrap_or_default();
         let candidates = [
@@ -27,8 +43,9 @@ impl RaylibRenderer {
             "/System/Library/Fonts/SFNSMono.ttf".to_string(),
             "/System/Library/Fonts/Supplemental/Andale Mono.ttf".to_string(),
         ];
+        let chars = Self::font_chars();
         for path in &candidates {
-            if let Ok(font) = rl.load_font_ex(thread, path, FONT_SIZE, None) {
+            if let Ok(font) = rl.load_font_ex(thread, path, FONT_SIZE, Some(&chars)) {
                 return font.make_weak();
             }
         }
