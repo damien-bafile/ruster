@@ -27,6 +27,35 @@ enum LastChange {
     DeleteChar,
 }
 
+/// The identifier word under the cursor, if any (used by `*` and `C-d`).
+fn word_under_cursor(editor: &dyn EditorView) -> Option<String> {
+    let head = editor.primary_head();
+    let buf = editor.buffer();
+    let line = char_to_line(editor, head);
+    let line_start = buf.line_start_char(line);
+    let line_end = buf.line_end_char(line);
+    let chars: Vec<char> = buf.slice_string(line_start, line_end).chars().collect();
+    let col = head - line_start;
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    if col >= chars.len() || !is_word(chars[col]) {
+        return None;
+    }
+    let mut start = col;
+    while start > 0 && is_word(chars[start - 1]) {
+        start -= 1;
+    }
+    let mut end = col;
+    while end + 1 < chars.len() && is_word(chars[end + 1]) {
+        end += 1;
+    }
+    let word: String = chars[start..=end].iter().collect();
+    if word.is_empty() {
+        None
+    } else {
+        Some(word)
+    }
+}
+
 fn next_word_occurrence(editor: &dyn EditorView) -> Option<usize> {
     let head = editor.primary_head();
     let buf = editor.buffer();
@@ -69,6 +98,8 @@ pub struct VimState {
     pending_find: Option<char>,
     /// The last find (command, target) so `;` and `,` can repeat it.
     last_find: Option<(char, char)>,
+    /// The last `/` or `?` search (pattern, searching forward) for `n` / `N`.
+    last_search: Option<(String, bool)>,
     last_change: Option<LastChange>,
     anchor: Option<usize>,
     cmdline_buffer: String,
@@ -89,6 +120,7 @@ impl VimState {
             pending_replace: false,
             pending_find: None,
             last_find: None,
+            last_search: None,
             last_change: None,
             anchor: None,
             cmdline_buffer: String::new(),
@@ -132,7 +164,14 @@ impl VimState {
                     KeyEvent::Enter => {
                         let cmd = std::mem::take(&mut self.cmdline_buffer);
                         self.mode = VimMode::Normal;
-                        out.push(Action::CmdlineResult(cmd));
+                        // `/pattern` and `?pattern` search instead of running a command.
+                        if let Some(pattern) = cmd.strip_prefix('/') {
+                            self.run_search(pattern.to_string(), true, editor, &mut out);
+                        } else if let Some(pattern) = cmd.strip_prefix('?') {
+                            self.run_search(pattern.to_string(), false, editor, &mut out);
+                        } else {
+                            out.push(Action::CmdlineResult(cmd));
+                        }
                     }
                     KeyEvent::Backspace => {
                         self.cmdline_buffer.pop();
@@ -373,6 +412,27 @@ impl VimState {
                 }
                 self.count = None;
             }
+            // `/` and `?` open the search prompt (reusing the cmdline).
+            KeyEvent::Char('/') | KeyEvent::Char('?') => {
+                self.mode = VimMode::Cmdline;
+                self.cmdline_buffer = if key == KeyEvent::Char('/') { "/".into() } else { "?".into() };
+                self.count = None;
+            }
+            // `n` / `N` repeat the last search forwards / backwards.
+            KeyEvent::Char('n') | KeyEvent::Char('N') => {
+                if let Some((pattern, forward)) = self.last_search.clone() {
+                    let dir = if key == KeyEvent::Char('n') { forward } else { !forward };
+                    self.jump_to_match(&pattern, dir, editor, out);
+                }
+                self.count = None;
+            }
+            // `*` searches forward for the word under the cursor.
+            KeyEvent::Char('*') => {
+                if let Some(word) = word_under_cursor(editor) {
+                    self.run_search(word, true, editor, out);
+                }
+                self.count = None;
+            }
             // `%` jumps to the matching bracket.
             KeyEvent::Char('%') => {
                 if let Some(pos) = matching_bracket(editor, editor.primary_head()) {
@@ -556,6 +616,55 @@ impl VimState {
                     out.push(Action::EndBatch);
                 }
             }
+        }
+    }
+
+    /// Run a search for `pattern`, remember it for `n`/`N`, and move to the match.
+    fn run_search(
+        &mut self,
+        pattern: String,
+        forward: bool,
+        editor: &dyn EditorView,
+        out: &mut Vec<Action>,
+    ) {
+        if pattern.is_empty() {
+            return;
+        }
+        self.last_search = Some((pattern.clone(), forward));
+        self.jump_to_match(&pattern, forward, editor, out);
+    }
+
+    /// Move to the next match of `pattern` from the cursor, wrapping around.
+    fn jump_to_match(
+        &self,
+        pattern: &str,
+        forward: bool,
+        editor: &dyn EditorView,
+        out: &mut Vec<Action>,
+    ) {
+        let text: Vec<char> = editor.buffer().to_string().chars().collect();
+        let pat: Vec<char> = pattern.chars().collect();
+        if pat.is_empty() || pat.len() > text.len() {
+            return;
+        }
+        let head = editor.primary_head();
+        let last = text.len() - pat.len();
+        let matches_at = |i: usize| text[i..i + pat.len()] == pat[..];
+
+        let found = if forward {
+            // After the cursor first, then wrap to the top.
+            (head + 1..=last)
+                .find(|&i| matches_at(i))
+                .or_else(|| (0..=last.min(head)).find(|&i| matches_at(i)))
+        } else {
+            // Before the cursor first, then wrap to the bottom.
+            (0..head)
+                .rev()
+                .find(|&i| matches_at(i))
+                .or_else(|| (0..=last).rev().find(|&i| matches_at(i)))
+        };
+        if let Some(pos) = found {
+            out.push(Action::Move(Motion::To(pos)));
         }
     }
 

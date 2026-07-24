@@ -13,6 +13,7 @@ All keys and commands work identically in the TUI and GUI backends.
 | `v` | Normal | Visual (character-wise) |
 | `V` | Normal | Visual (line-wise) |
 | `:` | Normal | Command-line |
+| `/` `?` | Normal | Search prompt (forwards / backwards) |
 | `Esc` | Insert / Visual / Cmdline | Back to Normal (also clears extra cursors) |
 
 ## Normal mode — motions
@@ -30,6 +31,9 @@ Most motions accept a count prefix (e.g. `5j`, `3w`).
 | `t{char}` / `T{char}` | Jump just before / after `{char}` on the line |
 | `;` / `,` | Repeat the last find forwards / backwards |
 | `%` | Jump to the matching bracket |
+| `/{pat}` / `?{pat}` | Search forwards / backwards (wraps around) |
+| `n` / `N` | Repeat the search in the same / opposite direction |
+| `*` | Search forwards for the word under the cursor |
 | `gg` | Top of buffer |
 | `G` | Bottom of buffer |
 

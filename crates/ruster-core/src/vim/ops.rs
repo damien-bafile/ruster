@@ -233,6 +233,61 @@ mod tests {
     }
 
     #[test]
+    fn slash_search_and_n_repeat() {
+        let mut e = Editor::from_str("alpha beta alpha gamma alpha");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        // Type "/alpha" then Enter.
+        for a in v.handle(KeyEvent::Char('/'), &e) { e.execute(a); }
+        for c in "alpha".chars() {
+            for a in v.handle(KeyEvent::Char(c), &e) { e.execute(a); }
+        }
+        for a in v.handle(KeyEvent::Enter, &e) { e.execute(a); }
+        assert_eq!(e.primary_head(), 11, "jumps to the second 'alpha'");
+        // `n` goes to the third.
+        for a in v.handle(KeyEvent::Char('n'), &e) { e.execute(a); }
+        assert_eq!(e.primary_head(), 23);
+        // `N` goes back.
+        for a in v.handle(KeyEvent::Char('N'), &e) { e.execute(a); }
+        assert_eq!(e.primary_head(), 11);
+    }
+
+    #[test]
+    fn search_wraps_around_the_buffer() {
+        let mut e = Editor::from_str("needle and more");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('/'), &e) { e.execute(a); }
+        for c in "needle".chars() {
+            for a in v.handle(KeyEvent::Char(c), &e) { e.execute(a); }
+        }
+        // Only match is at 0, behind the cursor — the search wraps to it.
+        for a in v.handle(KeyEvent::Enter, &e) { e.execute(a); }
+        assert_eq!(e.primary_head(), 0);
+    }
+
+    #[test]
+    fn star_searches_word_under_cursor() {
+        let mut e = Editor::from_str("foo bar foo");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('*'), &e) { e.execute(a); }
+        assert_eq!(e.primary_head(), 8, "jumps to the next 'foo'");
+    }
+
+    #[test]
+    fn escape_cancels_search_without_moving() {
+        let mut e = Editor::from_str("alpha beta");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('/'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('b'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Esc, &e) { e.execute(a); }
+        assert_eq!(e.primary_head(), 0);
+        assert_eq!(v.mode, crate::vim::VimMode::Normal);
+    }
+
+    #[test]
     fn percent_jumps_between_matching_brackets() {
         let mut e = Editor::from_str("foo(bar(baz))");
         let mut v = VimState::new();
