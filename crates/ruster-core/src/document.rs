@@ -31,6 +31,29 @@ pub enum DocKind {
 
 const DEFAULT_INDENT: &str = "    ";
 
+/// The line-ending convention a document was loaded with, so it can be
+/// preserved on save. The in-memory buffer is always normalized to `\n`;
+/// this only affects how bytes are written back to disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineEnding {
+    /// Unix `\n`.
+    Lf,
+    /// Windows `\r\n`.
+    Crlf,
+}
+
+impl LineEnding {
+    /// Detect the ending from raw file content. The first `\r\n` wins;
+    /// otherwise we assume LF (including empty and lone-`\r` content).
+    pub fn detect(content: &str) -> LineEnding {
+        if content.contains("\r\n") {
+            LineEnding::Crlf
+        } else {
+            LineEnding::Lf
+        }
+    }
+}
+
 /// A document is what vim calls a "buffer": the text plus its file identity
 /// and undo history. It deliberately does **not** own a cursor or scroll
 /// position — those are per-window (see [`crate::windows`]).
@@ -43,6 +66,9 @@ pub struct Document {
     pub kind: DocKind,
     /// Buffer-local indent string (spaces), seeded from config / EditorConfig.
     pub indent: String,
+    /// The on-disk line ending to preserve when saving. The buffer itself is
+    /// always LF-normalized.
+    pub line_ending: LineEnding,
 }
 
 impl Document {
@@ -54,14 +80,21 @@ impl Document {
             .and_then(|n| n.to_str())
             .map(str::to_string)
             .unwrap_or_else(|| path.to_string_lossy().into_owned());
+        let line_ending = LineEnding::detect(content);
+        // Keep the in-memory buffer LF-only regardless of the source encoding.
+        let normalized = match line_ending {
+            LineEnding::Crlf => content.replace("\r\n", "\n"),
+            LineEnding::Lf => content.to_string(),
+        };
         Document {
-            buffer: Buffer::from_str(content),
+            buffer: Buffer::from_str(&normalized),
             undo: UndoStack::new(),
             file_path: Some(path),
             name,
             modified: false,
             kind: DocKind::File,
             indent: DEFAULT_INDENT.to_string(),
+            line_ending,
         }
     }
 
@@ -75,6 +108,7 @@ impl Document {
             modified: false,
             kind: DocKind::Scratch,
             indent: DEFAULT_INDENT.to_string(),
+            line_ending: LineEnding::Lf,
         }
     }
 
@@ -88,12 +122,23 @@ impl Document {
             modified: false,
             kind: DocKind::Special(kind),
             indent: DEFAULT_INDENT.to_string(),
+            line_ending: LineEnding::Lf,
         }
     }
 
     /// Set the buffer-local indent to `n` spaces.
     pub fn set_indent_width(&mut self, n: u32) {
         self.indent = " ".repeat(n as usize);
+    }
+
+    /// The buffer's text encoded with this document's on-disk line ending,
+    /// ready to write to `file_path`. The buffer is LF-internally, so this
+    /// re-applies `\r\n` for CRLF documents.
+    pub fn encode_content(&self) -> String {
+        match self.line_ending {
+            LineEnding::Lf => self.buffer.to_string(),
+            LineEnding::Crlf => self.buffer.to_string().replace('\n', "\r\n"),
+        }
     }
 }
 
@@ -131,5 +176,33 @@ mod tests {
         let mut d = Document::scratch("s");
         d.set_indent_width(2);
         assert_eq!(d.indent, "  ");
+    }
+
+    #[test]
+    fn from_file_detects_lf_and_keeps_content() {
+        let d = Document::from_file(PathBuf::from("a.txt"), "a\nb\n");
+        assert_eq!(d.line_ending, LineEnding::Lf);
+        assert_eq!(d.buffer.to_string(), "a\nb\n");
+        assert_eq!(d.encode_content(), "a\nb\n");
+    }
+
+    #[test]
+    fn from_file_detects_crlf_and_normalizes_to_lf_in_buffer() {
+        let d = Document::from_file(PathBuf::from("a.txt"), "a\r\nb\r\n");
+        assert_eq!(d.line_ending, LineEnding::Crlf);
+        // In-memory buffer is always LF so editing/rendering logic stays simple.
+        assert_eq!(d.buffer.to_string(), "a\nb\n");
+    }
+
+    #[test]
+    fn crlf_document_round_trips_to_crlf_on_encode() {
+        let d = Document::from_file(PathBuf::from("a.txt"), "a\r\nb\r\n");
+        assert_eq!(d.encode_content(), "a\r\nb\r\n");
+    }
+
+    #[test]
+    fn scratch_defaults_to_lf() {
+        let d = Document::scratch("s");
+        assert_eq!(d.line_ending, LineEnding::Lf);
     }
 }

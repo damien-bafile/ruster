@@ -604,6 +604,11 @@ mod tests {
     fn paste_uses_register_fallback() {
         let mut e = Editor::from_str("ab");
         let mut v = VimState::new();
+        // Paste prefers the system clipboard; detach it so this test
+        // deterministically exercises the internal-register fallback rather than
+        // whatever happens to be on the host's clipboard.
+        *v.clipboard.borrow_mut() = None;
+        *v.clipboard_buf.borrow_mut() = None;
         v.set_register("X".to_string());
         let actions: Vec<Action> = v.handle(KeyEvent::Char('p'), &e);
         for a in actions { e.execute(a); }

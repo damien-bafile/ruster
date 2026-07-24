@@ -11,7 +11,7 @@ use ruster_core::vim::VimMode;
 use ruster_core::vim::VimState;
 use ruster_core::windows::{FocusDir, Rect as CoreRect, SplitDir};
 use ruster_core::workspace::Workspace;
-use crossterm::event::{KeyCode, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 use ruster_lua::{config::Config, LuaAction, LuaRuntime};
 use ruster_render::{
     CursorKind, FrameState, Rect as RRect, Renderer, StatuslineView, StyledLine, WhichKeyView,
@@ -19,9 +19,22 @@ use ruster_render::{
 };
 use ruster_syntax::SyntaxEngine;
 use std::cell::RefCell;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
+
+/// The TUI needs a real terminal on stdin (event source) and stdout (rendering).
+/// On Unix `enable_raw_mode` already fails without a tty, but on Windows it can
+/// succeed against piped stdio and then the event loop blocks forever, so guard
+/// explicitly and error out uniformly across platforms.
+fn require_terminal() -> Result<(), Box<dyn std::error::Error>> {
+    if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+        Ok(())
+    } else {
+        Err("ruster --tui requires an interactive terminal".into())
+    }
+}
 
 fn plain_lines(content: &str) -> Vec<StyledLine> {
     content
@@ -253,8 +266,13 @@ fn leader_whichkey(seq: &[char]) -> Option<(String, Vec<String>)> {
 }
 
 /// Parse one `rg --vimgrep` line (`file:line:col:text`) into its parts.
+///
+/// On Windows, `file` can carry a `C:\...` drive prefix whose colon would
+/// otherwise be mistaken for the `line` separator, so peel that prefix off
+/// before splitting and re-attach it to the parsed file path.
 fn parse_rg_line(line: &str) -> Option<(PathBuf, usize, usize, String)> {
-    let mut parts = line.splitn(4, ':');
+    let (drive, rest) = split_drive_prefix(line);
+    let mut parts = rest.splitn(4, ':');
     let file = parts.next()?;
     let ln: usize = parts.next()?.parse().ok()?;
     let col: usize = parts.next()?.parse().ok()?;
@@ -262,7 +280,23 @@ fn parse_rg_line(line: &str) -> Option<(PathBuf, usize, usize, String)> {
     if file.is_empty() {
         return None;
     }
-    Some((PathBuf::from(file), ln, col, text))
+    let full_file = format!("{drive}{file}");
+    Some((PathBuf::from(full_file), ln, col, text))
+}
+
+/// Split a leading Windows drive prefix (e.g. `C:\` or `C:/`) off the front of a
+/// `rg` line. Returns the prefix (`""` when absent) and the remainder.
+fn split_drive_prefix(line: &str) -> (&str, &str) {
+    let bytes = line.as_bytes();
+    if bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
+    {
+        line.split_at(2)
+    } else {
+        ("", line)
+    }
 }
 
 enum AppEvent {
@@ -318,18 +352,22 @@ impl App {
         let ext = file_path.extension()
             .and_then(|e| e.to_str())
             .unwrap_or("");
-        let syntax = SyntaxEngine::new(&content, ext).ok();
+        // Highlight the LF-normalized buffer text, not the raw file bytes, so
+        // CRLF files don't desync syntax spans from what's rendered.
+        let normalized = ws.borrow().buffer().to_string();
+        let syntax = SyntaxEngine::new(&normalized, ext).ok();
         let mut lua = LuaRuntime::new().unwrap_or_else(|e| {
             eprintln!("Lua init failed: {}", e);
             panic!("Lua init required");
         });
-        let config_path = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("~/.config"))
-            .join("ruster")
-            .join("init.lua");
-        if config_path.exists() {
-            if let Err(e) = lua.load_init(&config_path) {
-                eprintln!("Lua config: {}", e);
+        // `dirs::config_dir()` resolves %APPDATA% on Windows and ~/.config on
+        // Unix; if it can't be determined, just skip loading user config.
+        if let Some(config_dir) = dirs::config_dir() {
+            let config_path = config_dir.join("ruster").join("init.lua");
+            if config_path.exists() {
+                if let Err(e) = lua.load_init(&config_path) {
+                    eprintln!("Lua config: {}", e);
+                }
             }
         }
 
@@ -476,6 +514,12 @@ impl App {
     }
 
     pub fn handle_key(&mut self, ck: crossterm::event::KeyEvent) {
+        // Windows consoles report a Release (and Repeat) event for every key,
+        // where Unix only reports Press. Acting on Release double-processes each
+        // keystroke, so ignore anything that isn't a press/repeat.
+        if ck.kind == KeyEventKind::Release {
+            return;
+        }
         // An open picker captures all input until it is accepted or cancelled.
         if self.picker.is_some() {
             self.handle_picker_key(ck);
@@ -601,6 +645,7 @@ impl App {
     }
 
     pub fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        require_terminal()?;
         crossterm::terminal::enable_raw_mode()?;
         let mut stdout = std::io::stdout();
         crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen)?;
@@ -630,6 +675,7 @@ impl App {
     }
 
     pub fn run_async(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        require_terminal()?;
         crossterm::terminal::enable_raw_mode()?;
         crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen)?;
         self.renderer = Box::new(TuiRenderer::new()?);
@@ -1112,7 +1158,11 @@ impl App {
             let mut w = self.ws.borrow_mut();
             if let Some(doc) = w.buffers.get_mut(id) {
                 doc.buffer = Buffer::from_str(&text);
-                doc.name = path.to_string_lossy().into_owned();
+                doc.name = if ruster_core::dired::is_drives_view(&path) {
+                    "Drives".to_string()
+                } else {
+                    path.to_string_lossy().into_owned()
+                };
                 doc.modified = false;
             }
             if w.active_buffer() == id {
@@ -1278,6 +1328,11 @@ impl App {
             Some(e) => e.clone(),
             None => return,
         };
+        // `..` ascends (and, at a drive root, reaches the drive picker).
+        if entry.name == ".." {
+            self.dired_go_up();
+            return;
+        }
         let target = dir.join(&entry.name);
         let target = target.canonicalize().unwrap_or(target);
         if entry.is_dir {
@@ -1289,12 +1344,21 @@ impl App {
 
     fn dired_go_up(&mut self) {
         let id = self.ws.borrow().active_buffer();
-        if let Some(dir) = self.dired_dirs.get(&id) {
-            if let Some(parent) = dir.parent() {
-                let parent = parent.to_path_buf();
-                self.refresh_dired(id, parent);
-            }
+        let dir = match self.dired_dirs.get(&id) {
+            Some(d) => d.clone(),
+            None => return,
+        };
+        if ruster_core::dired::is_drives_view(&dir) {
+            return; // already at the top
         }
+        let target = match dir.parent() {
+            Some(parent) => parent.to_path_buf(),
+            // At a drive root (e.g. C:\, whose parent is None) on Windows,
+            // ascend to the drive picker instead of staying put.
+            None if cfg!(windows) => ruster_core::dired::drives_view(),
+            None => return,
+        };
+        self.refresh_dired(id, target);
     }
 
     /// Open the `:`-Tab command palette, pre-filtered by `seed`.
@@ -1508,7 +1572,8 @@ impl App {
         let (path, content) = {
             let w = self.ws.borrow();
             let doc = w.active_doc();
-            (doc.file_path.clone(), doc.buffer.to_string())
+            // Preserve the file's original line ending (LF/CRLF) on write.
+            (doc.file_path.clone(), doc.encode_content())
         };
         let path = match path {
             Some(p) => p,
@@ -1559,7 +1624,7 @@ impl App {
     }
 
     fn save_as(&mut self, path: &str) {
-        let content = self.ws.borrow().active_doc().buffer.to_string();
+        let content = self.ws.borrow().active_doc().encode_content();
         match std::fs::write(path, &content) {
             Ok(()) => {
                 {
@@ -1613,6 +1678,69 @@ mod tests {
     fn cmd_unknown_errors() {
         let a = App::new("content".into(), PathBuf::from("f.txt"));
         assert!(a.parse_cmdline(":xyz").is_err());
+    }
+
+    #[test]
+    fn release_key_events_are_ignored() {
+        use crossterm::event::{KeyCode as CtCode, KeyEvent as CtKey, KeyEventKind, KeyModifiers as CtMods};
+        let mut a = App::new("ab".into(), PathBuf::from("f.txt"));
+        // Windows emits a press *and* a release for each keystroke; only the
+        // press should act, otherwise every key is processed twice.
+        a.handle_key(CtKey::new_with_kind(CtCode::Char('x'), CtMods::NONE, KeyEventKind::Release));
+        assert_eq!(a.ws.borrow().buffer().to_string(), "ab", "release must be a no-op");
+        a.handle_key(CtKey::new_with_kind(CtCode::Char('x'), CtMods::NONE, KeyEventKind::Press));
+        assert_eq!(a.ws.borrow().buffer().to_string(), "b", "press deletes one char");
+    }
+
+    #[test]
+    fn save_preserves_crlf_line_endings() {
+        let mut path = std::env::temp_dir();
+        path.push(format!("ruster_crlf_{}.txt", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut a = App::new("a\r\nb\r\n".into(), path.clone());
+        a.save_file(false);
+        let written = std::fs::read(&path).unwrap();
+        assert_eq!(written, b"a\r\nb\r\n");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn save_keeps_lf_line_endings() {
+        let mut path = std::env::temp_dir();
+        path.push(format!("ruster_lf_{}.txt", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut a = App::new("a\nb\n".into(), path.clone());
+        a.save_file(false);
+        let written = std::fs::read(&path).unwrap();
+        assert_eq!(written, b"a\nb\n");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn parse_rg_line_posix() {
+        let (file, ln, col, text) = parse_rg_line("src/x.rs:1:1:hi").unwrap();
+        assert_eq!(file, PathBuf::from("src/x.rs"));
+        assert_eq!(ln, 1);
+        assert_eq!(col, 1);
+        assert_eq!(text, "hi");
+    }
+
+    #[test]
+    fn parse_rg_line_windows_drive() {
+        let (file, ln, col, text) = parse_rg_line(r"C:\a\b.rs:2:3:hi").unwrap();
+        assert_eq!(file, PathBuf::from(r"C:\a\b.rs"));
+        assert_eq!(ln, 2);
+        assert_eq!(col, 3);
+        assert_eq!(text, "hi");
+    }
+
+    #[test]
+    fn parse_rg_line_windows_drive_forward_slash() {
+        let (file, ln, col, text) = parse_rg_line("C:/a/b.rs:4:5:text:with:colons").unwrap();
+        assert_eq!(file, PathBuf::from("C:/a/b.rs"));
+        assert_eq!(ln, 4);
+        assert_eq!(col, 5);
+        assert_eq!(text, "text:with:colons");
     }
 
     #[test]
@@ -1730,6 +1858,28 @@ mod tests {
         assert!(name.ends_with("sub"), "descended into sub, got {name}");
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn dired_ascends_from_drive_root_to_drive_picker() {
+        let mut a = App::new(String::new(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::Dired(Some("C:\\".into())));
+        // Ascend above the drive root: land in the drives view.
+        a.dired_go_up();
+        let id = a.ws.borrow().active_buffer();
+        assert!(ruster_core::dired::is_drives_view(a.dired_dirs.get(&id).unwrap()));
+        assert_eq!(a.ws.borrow().active_doc().name, "Drives");
+        let content = a.ws.borrow().buffer().to_string();
+        assert!(content.contains("C:"), "drives view lists C:, got {content:?}");
+
+        // Selecting the C: entry descends back into that drive.
+        let c_line = content.lines().position(|l| l.starts_with("C:")).unwrap();
+        let start = a.ws.borrow().buffer().line_start_char(c_line);
+        a.ws.borrow_mut().execute(Action::Move(Motion::To(start)));
+        a.dired_open_at_cursor();
+        let id2 = a.ws.borrow().active_buffer();
+        assert!(!ruster_core::dired::is_drives_view(a.dired_dirs.get(&id2).unwrap()));
     }
 
     #[test]

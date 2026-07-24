@@ -4,7 +4,6 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use raylib::consts::KeyboardKey;
 use raylib::prelude::*;
 use ruster_render::{CursorKind, FrameState, Renderer};
-use std::path::PathBuf;
 
 const FONT_SIZE: i32 = 20;
 const LINE_H: i32 = 24;
@@ -19,16 +18,41 @@ pub struct RaylibRenderer {
     event_buffer: Vec<KeyEvent>,
 }
 
+/// Candidate monospaced font files to try, most-preferred first: a
+/// user-installed Nerd/JetBrains font (via the platform font dir), then per-OS
+/// system monospaced fonts. This lets the GUI render a real mono font on
+/// Windows, macOS, and Linux instead of raylib's low-resolution default.
+fn mono_font_candidates() -> Vec<String> {
+    let mut out = Vec::new();
+    // On macOS/Linux this resolves the user font dir (e.g. ~/Library/Fonts);
+    // it returns None on Windows, where the system paths below cover it.
+    if let Some(font_dir) = dirs::font_dir() {
+        for name in ["JetBrainsMonoNerdFont-Regular.ttf", "JetBrainsMono-Regular.ttf"] {
+            out.push(font_dir.join(name).to_string_lossy().into_owned());
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        out.push(r"C:\Windows\Fonts\consola.ttf".to_string()); // Consolas
+        out.push(r"C:\Windows\Fonts\lucon.ttf".to_string()); // Lucida Console
+    }
+    #[cfg(target_os = "macos")]
+    {
+        out.push("/System/Library/Fonts/SFNSMono.ttf".to_string());
+        out.push("/System/Library/Fonts/Supplemental/Andale Mono.ttf".to_string());
+    }
+    #[cfg(target_os = "linux")]
+    {
+        out.push("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf".to_string());
+        out.push("/usr/share/fonts/TTF/DejaVuSansMono.ttf".to_string());
+    }
+    out
+}
+
 impl RaylibRenderer {
     fn try_load_mono_font(rl: &mut RaylibHandle, thread: &RaylibThread) -> WeakFont {
-        let home = std::env::var("HOME").unwrap_or_default();
-        let candidates = [
-            PathBuf::from(&home).join("Library/Fonts/JetBrainsMonoNerdFont-Regular.ttf").to_string_lossy().to_string(),
-            "/System/Library/Fonts/SFNSMono.ttf".to_string(),
-            "/System/Library/Fonts/Supplemental/Andale Mono.ttf".to_string(),
-        ];
-        for path in &candidates {
-            if let Ok(font) = rl.load_font_ex(thread, path, FONT_SIZE, None) {
+        for path in mono_font_candidates() {
+            if let Ok(font) = rl.load_font_ex(thread, &path, FONT_SIZE, None) {
                 return font.make_weak();
             }
         }

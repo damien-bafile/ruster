@@ -11,11 +11,32 @@ env:
 
 jobs:
   build:
-
-    runs-on: ubuntu-latest
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
     - uses: actions/checkout@v4
+
+    # ripgrep backs the `:Rg` command; install it so its tests have `rg` on PATH.
+    # On Linux the raylib crate also builds from source and needs X11/GL headers.
+    - name: Install ripgrep + raylib build deps (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ripgrep \
+          libx11-dev libxrandr-dev libxi-dev libxcursor-dev \
+          libxinerama-dev libgl1-mesa-dev libwayland-dev libxkbcommon-dev
+    - name: Install ripgrep (macOS)
+      if: runner.os == 'macOS'
+      run: brew install ripgrep
+    - name: Install ripgrep (Windows)
+      if: runner.os == 'Windows'
+      run: choco install ripgrep -y
+
     - name: Build
       run: cargo build --verbose
     - name: Run tests

@@ -7,3 +7,4 @@ edition = "2021"
 ruster-render = { path = "../ruster-render" }
 raylib = "6.0"
 crossterm = "0.28"
+dirs = "5"
