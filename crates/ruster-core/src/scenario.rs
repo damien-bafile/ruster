@@ -38,6 +38,42 @@ mod tests {
     }
 
     #[test]
+    fn g_minus_recovers_a_branch_that_redo_cannot() {
+        // Delete a word, undo it, then delete a different one — that abandons
+        // the first deletion onto a side branch. `g-` walks back to it in time
+        // order, where `C-r` would only ever see the newest branch.
+        scenario(
+            "foo bar baz",
+            &[
+                KeyEvent::Char('g'), KeyEvent::Char('g'),
+                KeyEvent::Char('d'), KeyEvent::Char('w'), // -> "bar baz"
+                KeyEvent::Char('u'),                      // -> "foo bar baz"
+                KeyEvent::Char('w'),
+                KeyEvent::Char('d'), KeyEvent::Char('w'), // -> "foo baz"
+                KeyEvent::Char('g'), KeyEvent::Char('-'), // back to "bar baz"
+            ],
+            "bar baz", None,
+        );
+    }
+
+    #[test]
+    fn g_plus_returns_along_the_newer_branch() {
+        scenario(
+            "foo bar baz",
+            &[
+                KeyEvent::Char('g'), KeyEvent::Char('g'),
+                KeyEvent::Char('d'), KeyEvent::Char('w'),
+                KeyEvent::Char('u'),
+                KeyEvent::Char('w'),
+                KeyEvent::Char('d'), KeyEvent::Char('w'), // -> "foo baz"
+                KeyEvent::Char('g'), KeyEvent::Char('-'), // -> "bar baz"
+                KeyEvent::Char('g'), KeyEvent::Char('+'), // -> "foo baz" again
+            ],
+            "foo baz", None,
+        );
+    }
+
+    #[test]
     fn undo_lands_cursor_at_change_position_not_zero() {
         // After deleting text in the middle of the buffer, `u` should land
         // cursor at the position of the change, not hardcoded to offset 0.

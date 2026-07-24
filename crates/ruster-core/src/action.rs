@@ -26,6 +26,10 @@ pub enum Action {
     EndBatch,
     Undo,
     Redo,
+    /// Move through the undo tree in creation order rather than along the
+    /// current branch — `g-` (`false`) and `g+` (`true`). Reaches states that
+    /// were abandoned by branching, which plain redo cannot.
+    UndoTime(bool),
     /// Set the anchor (start) of the primary cursor's visual selection,
     /// keeping the current head. Used to extend a selection in visual mode.
     BeginVisual(usize),

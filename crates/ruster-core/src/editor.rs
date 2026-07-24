@@ -65,6 +65,11 @@ impl<'a> EditSession<'a> {
                     self.cursors.set_head(at, self.buffer);
                 }
             }
+            Action::UndoTime(forward) => {
+                if let Some((_n, at)) = self.undo.undo_time(self.buffer, forward) {
+                    self.cursors.set_head(at, self.buffer);
+                }
+            }
             Action::BeginVisual(anchor) => {
                 self.cursors.set_visual_anchor(anchor);
             }

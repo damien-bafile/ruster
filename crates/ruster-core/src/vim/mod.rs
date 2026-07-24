@@ -301,8 +301,12 @@ impl VimState {
 
         if self.pending_g {
             self.pending_g = false;
-            if key == KeyEvent::Char('g') {
-                out.push(Action::Move(Motion::To(0)));
+            match key {
+                KeyEvent::Char('g') => out.push(Action::Move(Motion::To(0))),
+                // Walk the undo tree by time rather than along the branch.
+                KeyEvent::Char('-') => out.push(Action::UndoTime(false)),
+                KeyEvent::Char('+') => out.push(Action::UndoTime(true)),
+                _ => {}
             }
             return;
         }
