@@ -34,8 +34,8 @@ edits text fields, and **`:w` saves** to `config.lua`. See
 ## Themes
 
 Colors come from a **theme**, not individual settings. Built-in themes (`default`,
-`gruvbox`, `tokyonight`, `nord`) are written to `~/.config/ruster/themes/<name>.lua` on
-first run; pick one with `general.theme = "gruvbox"`. Each theme file is a Lua chunk
+`gruvbox`, `tokyonight`, `nord`, `catppuccin-mocha`) are written to
+`~/.config/ruster/themes/<name>.lua` on first run; pick one with `general.theme = "gruvbox"`. Each theme file is a Lua chunk
 returning a palette you can edit or copy:
 
 ```lua

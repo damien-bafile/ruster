@@ -102,6 +102,18 @@ pub fn builtin_themes() -> Vec<(&'static str, ThemeColors)> {
                 accent: Rgb::new(136, 192, 208),
             },
         ),
+        (
+            "catppuccin-mocha",
+            ThemeColors {
+                bg: Rgb::new(30, 30, 46),      // base   #1e1e2e
+                fg: Rgb::new(205, 214, 244),   // text   #cdd6f4
+                gutter: Rgb::new(108, 112, 134), // overlay0 #6c7086
+                selection: Rgb::new(88, 91, 112), // surface2 #585b70
+                cursor: Rgb::new(245, 224, 220), // rosewater #f5e0dc
+                divider: Rgb::new(49, 50, 68),  // surface0 #313244
+                accent: Rgb::new(203, 166, 247), // mauve  #cba6f7
+            },
+        ),
     ]
 }
 
