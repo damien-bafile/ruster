@@ -47,6 +47,28 @@ ruster --tui path\to\file.rs
   system fonts (Consolas, Lucida Console), then to raylib's built-in font.
   Installing a Nerd font gives the best result.
 
+## Embedded terminal (`:term`)
+
+The embedded terminal uses Windows' **ConPTY** API, which requires **Windows 10
+version 1809 (October 2018) or newer** (Windows 11 and Server 2019+ included).
+The editor itself runs on older Windows; only `:term` needs ConPTY.
+
+- **Default shell.** `:term` launches `%COMSPEC%` (usually `cmd.exe`) unless you
+  override it. To use PowerShell, set it in `%APPDATA%\ruster\init.lua`:
+
+  ```lua
+  ruster.config.terminal_shell = "pwsh.exe"   -- or "powershell.exe"
+  ```
+
+  `terminal_shell` is the program only — no argument splitting.
+
+- **Line endings.** Programs in the terminal emit CRLF; that is terminal-grid
+  content handled by the VT parser and is unrelated to how ruster saves files
+  (below).
+- **Best experience.** The raylib GUI (the default frontend on Windows) is the
+  smoothest host for `:term`; the `--tui` frontend runs a terminal inside your
+  console, which works but is fiddlier for some Ctrl-chords.
+
 ## Line endings
 
 Files are opened preserving their existing line endings: a CRLF file stays CRLF

@@ -57,16 +57,23 @@ impl Renderer for TuiRenderer {
                 let buf_area = Rect::new(view.rect.x, view.rect.y, view.rect.width, buf_h);
                 let sl_area = Rect::new(view.rect.x, view.rect.y + buf_h, view.rect.width, 1);
 
-                let has_highlights = view.lines.iter().any(|l| !l.highlights.is_empty());
-                let buf_widget = crate::widgets::BufferWidget::new(view.lines.clone(), view.cursor)
-                    .with_syntax(has_highlights)
-                    .with_cursor_visible(view.cursor_visible)
-                    .with_cursor_kind(view.cursor_kind)
-                    .with_scroll(view.scroll_offset)
-                    .with_gutter(view.gutter.clone())
-                    .with_extra_cursors(view.extra_cursors.clone())
-                    .with_selection(view.selection);
-                frame.render_widget(buf_widget, buf_area);
+                if let Some(grid) = &view.terminal {
+                    // A terminal window draws its grid instead of buffer text.
+                    let term_widget = crate::widgets::TerminalWidget::new(grid.clone())
+                        .with_cursor_visible(view.cursor_visible && view.active);
+                    frame.render_widget(term_widget, buf_area);
+                } else {
+                    let has_highlights = view.lines.iter().any(|l| !l.highlights.is_empty());
+                    let buf_widget = crate::widgets::BufferWidget::new(view.lines.clone(), view.cursor)
+                        .with_syntax(has_highlights)
+                        .with_cursor_visible(view.cursor_visible)
+                        .with_cursor_kind(view.cursor_kind)
+                        .with_scroll(view.scroll_offset)
+                        .with_gutter(view.gutter.clone())
+                        .with_extra_cursors(view.extra_cursors.clone())
+                        .with_selection(view.selection);
+                    frame.render_widget(buf_widget, buf_area);
+                }
 
                 let sl = crate::widgets::StatuslineWidget::new(view.statusline.clone());
                 frame.render_widget(sl, sl_area);

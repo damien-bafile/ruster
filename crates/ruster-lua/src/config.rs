@@ -12,6 +12,11 @@ pub struct Config {
     pub timeoutlen: u32,
     /// Format the buffer via LSP before writing it on `:w`.
     pub format_on_save: bool,
+    /// Shell program for `:term` (`None` = platform default: `$SHELL`/`/bin/sh`
+    /// on Unix, `%COMSPEC%`/`cmd.exe` on Windows).
+    pub terminal_shell: Option<String>,
+    /// Lines of scrollback history an embedded terminal retains.
+    pub terminal_scrollback: u32,
 }
 
 impl Default for Config {
@@ -28,6 +33,8 @@ impl Default for Config {
             cursor_anim_speed: 12.0,
             timeoutlen: 300,
             format_on_save: false,
+            terminal_shell: None,
+            terminal_scrollback: 10000,
         }
     }
 }
