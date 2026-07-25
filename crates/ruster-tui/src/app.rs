@@ -333,6 +333,8 @@ enum CmdAction {
     SetOption(BoolOpt, SetVal),
     /// Open an embedded terminal (`:term` / `:terminal`).
     Terminal,
+    /// Show config load/validation errors (`:config-errors`).
+    ConfigErrors,
     /// `:s/pat/rep/[g]` — replace on the current line, or the whole buffer
     /// when `whole_buffer` (`:%s/...`). `all` is the `g` flag.
     Substitute {
@@ -407,6 +409,7 @@ const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("ls", "buffer list"),
     ("bd", "delete buffer"),
     ("term", "open an embedded terminal"),
+    ("config-errors", "show config load/validation errors"),
     ("Dired", "file explorer"),
     ("Files", "find files"),
     ("fmt", "format buffer"),
@@ -737,6 +740,9 @@ pub struct App {
     /// When true, keystrokes are forwarded to the active terminal's PTY rather
     /// than the editing layer. `Ctrl-\` defocuses; `i`/`a`/Enter re-focuses.
     terminal_focused: bool,
+    /// Config load/validation problems, shown to the user (non-fatal; invalid
+    /// values fall back to their defaults). Viewable via `:config-errors`.
+    config_errors: Vec<String>,
 }
 
 /// The active editing paradigm. Neovim is modal; Emacs is modeless.
@@ -770,12 +776,30 @@ impl App {
             panic!("Lua init required");
         });
         // `dirs::config_dir()` resolves %APPDATA% on Windows and ~/.config on
-        // Unix; if it can't be determined, just skip loading user config.
+        // Unix. On first run we generate a default `config.lua` (the declarative,
+        // Settings-page-managed file); `init.lua` is optional user scripting
+        // loaded *after* it, so it can override settings.
+        let mut config_errors: Vec<String> = Vec::new();
         if let Some(config_dir) = dirs::config_dir() {
-            let config_path = config_dir.join("ruster").join("init.lua");
+            let dir = config_dir.join("ruster");
+            let config_path = dir.join("config.lua");
+            let init_path = dir.join("init.lua");
+            if !config_path.exists() {
+                let _ = std::fs::create_dir_all(&dir);
+                if let Err(e) =
+                    std::fs::write(&config_path, ruster_lua::schema::generate_default_config())
+                {
+                    eprintln!("ruster: could not write {}: {}", config_path.display(), e);
+                }
+            }
             if config_path.exists() {
                 if let Err(e) = lua.load_init(&config_path) {
-                    eprintln!("Lua config: {}", e);
+                    config_errors.push(e);
+                }
+            }
+            if init_path.exists() {
+                if let Err(e) = lua.load_init(&init_path) {
+                    config_errors.push(e);
                 }
             }
         }
@@ -893,7 +917,10 @@ impl App {
         for (lang, cmd, args) in lua.lsp_servers() {
             lsp.set_server(&lang, ruster_lsp::ServerConfig { cmd, args });
         }
-        let mut config = lua.config();
+        let (mut config, verrs) = lua.config_validated();
+        for e in verrs {
+            config_errors.push(e.to_string());
+        }
         // Apply EditorConfig overrides
         let ec_props = ruster_core::editorconfig::parse(&file_path);
         if let Some(val) = ec_props.get("indent_style") {
@@ -912,9 +939,18 @@ impl App {
         ws.borrow_mut().set_active_indent_width(config.tabstop);
         let timer = FrameTimer::new();
         let cursor_anim = CursorAnim::new();
+        let startup_message = if config_errors.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "config: {} problem(s) — {} (:config-errors for all)",
+                config_errors.len(),
+                config_errors[0]
+            ))
+        };
         App {
             ws, vim, renderer,
-            should_quit: false, message: None, syntax, syntax_tried, lua, config, timer,
+            should_quit: false, message: startup_message, syntax, syntax_tried, lua, config, timer,
             has_smooth_cursor: false, cursor_anim, pending_ctrl_w: false, picker: None,
             leader_pending: None,
             pending_results: None,
@@ -956,6 +992,7 @@ impl App {
             emacs_isearch: None,
             terminals: std::collections::HashMap::new(),
             terminal_focused: false,
+            config_errors,
         }
     }
 
@@ -2420,6 +2457,7 @@ impl App {
             "fs" | "fullscreen" => Ok(CmdAction::Fullscreen),
             "ls" | "buffers" | "ibuffer" => Ok(CmdAction::Ibuffer),
             "term" | "terminal" => Ok(CmdAction::Terminal),
+            "config-errors" | "configerrors" => Ok(CmdAction::ConfigErrors),
             "bd" | "bdelete" => Ok(CmdAction::BufferDelete),
             "Dired" | "dired" | "Explore" | "Ex" => Ok(CmdAction::Dired(None)),
             "Files" | "files" => Ok(CmdAction::Files),
@@ -2512,6 +2550,7 @@ impl App {
             CmdAction::Fullscreen => self.ws.borrow_mut().windows.toggle_fullscreen(),
             CmdAction::Ibuffer => self.open_ibuffer(),
             CmdAction::Terminal => self.open_terminal(),
+            CmdAction::ConfigErrors => self.open_config_errors(),
             CmdAction::BufferDelete => self.delete_active_buffer(),
             CmdAction::Dired(arg) => self.open_dired(arg),
             CmdAction::Files => self.open_files_picker(),
@@ -2662,6 +2701,34 @@ impl App {
             Some(bid)
         } else {
             None
+        }
+    }
+
+    /// Open a read-only buffer listing config load/validation errors.
+    fn open_config_errors(&mut self) {
+        let text = if self.config_errors.is_empty() {
+            "No config errors — everything loaded cleanly.".to_string()
+        } else {
+            let mut s = format!("{} config problem(s):\n\n", self.config_errors.len());
+            for e in &self.config_errors {
+                s.push_str("  • ");
+                s.push_str(e);
+                s.push('\n');
+            }
+            s.push_str("\nInvalid values fall back to their defaults; edit config.lua or use :settings.");
+            s
+        };
+        let id = self
+            .ws
+            .borrow_mut()
+            .buffers
+            .create_special(SpecialKind::ConfigErrors, "*config-errors*");
+        {
+            let mut w = self.ws.borrow_mut();
+            if let Some(doc) = w.buffers.get_mut(id) {
+                doc.buffer = Buffer::from_str(&text);
+            }
+            w.set_active_buffer(id);
         }
     }
 

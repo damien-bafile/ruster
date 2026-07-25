@@ -1,4 +1,5 @@
 pub mod config;
+pub mod schema;
 mod api;
 pub mod event;
 pub mod keymap;

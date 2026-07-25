@@ -141,34 +141,65 @@ impl LuaRuntime {
         self.fire_event(name, &vals);
     }
 
+    /// The `ruster.config` table, if present.
+    fn config_table(&self) -> Option<mlua::Table> {
+        self.lua.globals().get::<mlua::Table>("ruster").ok()?.get::<mlua::Table>("config").ok()
+    }
+
+    /// The typed config (validation errors discarded — see `config_validated`).
     pub fn config(&self) -> Config {
+        self.config_validated().0
+    }
+
+    /// Read the typed config plus any validation errors. Grouped tables
+    /// (`ruster.config.general = {…}`) are validated against the schema; an old
+    /// flat `ruster.config = {…}` is read as before (no validation), so existing
+    /// configs keep working.
+    pub fn config_validated(&self) -> (Config, Vec<crate::schema::ConfigError>) {
         let defaults = Config::default();
-        let ruster = match self.lua.globals().get::<mlua::Table>("ruster") {
-            Ok(t) => t,
-            Err(_) => return defaults,
+        let cfg = match self.config_table() {
+            Some(t) => t,
+            None => return (defaults, Vec::new()),
         };
-        let cfg = match ruster.get::<mlua::Table>("config") {
-            Ok(t) => t,
-            Err(_) => return defaults,
-        };
-        Config {
-            tabstop: cfg.get("tabstop").unwrap_or(defaults.tabstop),
-            softtabstop: cfg.get("softtabstop").unwrap_or(defaults.softtabstop),
-            expandtab: cfg.get("expandtab").unwrap_or(defaults.expandtab),
-            shiftwidth: cfg.get("shiftwidth").unwrap_or(defaults.shiftwidth),
-            number: cfg.get("number").unwrap_or(defaults.number),
-            relativenumber: cfg.get("relativenumber").unwrap_or(defaults.relativenumber),
-            theme: cfg.get("theme").unwrap_or(defaults.theme),
-            gui_font: cfg.get("gui_font").unwrap_or(defaults.gui_font),
-            cursor_anim_enabled: cfg.get("cursor_anim_enabled").unwrap_or(defaults.cursor_anim_enabled),
-            cursor_anim_speed: cfg.get("cursor_anim_speed").unwrap_or(defaults.cursor_anim_speed),
-            timeoutlen: cfg.get("timeoutlen").unwrap_or(defaults.timeoutlen),
-            format_on_save: cfg.get("format_on_save").unwrap_or(defaults.format_on_save),
-            terminal_shell: cfg.get("terminal_shell").unwrap_or(defaults.terminal_shell),
-            terminal_scrollback: cfg
-                .get("terminal_scrollback")
-                .unwrap_or(defaults.terminal_scrollback),
+        let grouped = crate::schema::GROUPS
+            .iter()
+            .any(|(g, _)| cfg.get::<Option<mlua::Table>>(*g).ok().flatten().is_some());
+        if !grouped {
+            return (config_flat(&cfg, &defaults), Vec::new());
         }
+
+        // Validated grouped read: every schema value defaults, then override with
+        // valid entries; type/range failures are collected, not fatal.
+        let mut vals: std::collections::HashMap<(&'static str, &'static str), crate::schema::SettingValue> =
+            crate::schema::schema().iter().map(|s| ((s.group, s.key), s.default.clone())).collect();
+        let mut errors = Vec::new();
+        for spec in crate::schema::schema() {
+            let gt = match cfg.get::<Option<mlua::Table>>(spec.group).ok().flatten() {
+                Some(t) => t,
+                None => continue,
+            };
+            match read_setting(&gt, &spec) {
+                Ok(None) => {} // absent → keep default
+                Ok(Some(v)) => match spec.kind.check(&v) {
+                    Ok(()) => {
+                        vals.insert((spec.group, spec.key), v);
+                    }
+                    Err(_) => errors.push(crate::schema::ConfigError {
+                        group: spec.group.into(),
+                        key: spec.key.into(),
+                        expected: spec.kind.expected(),
+                        got: v.display(),
+                    }),
+                },
+                Err(got) => errors.push(crate::schema::ConfigError {
+                    group: spec.group.into(),
+                    key: spec.key.into(),
+                    expected: spec.kind.expected(),
+                    got,
+                }),
+            }
+        }
+        (config_from_grouped(&vals, &defaults), errors)
     }
 
     /// LSP server overrides from `ruster.lsp.servers[filetype] = { cmd, args }`.
@@ -219,5 +250,154 @@ impl LuaRuntime {
             }
         }
         false
+    }
+}
+
+// --- config reading helpers ---
+
+/// The legacy flat read: `ruster.config = { number = …, timeoutlen = … }`.
+fn config_flat(cfg: &mlua::Table, defaults: &Config) -> Config {
+    Config {
+        tabstop: cfg.get("tabstop").unwrap_or(defaults.tabstop),
+        softtabstop: cfg.get("softtabstop").unwrap_or(defaults.softtabstop),
+        expandtab: cfg.get("expandtab").unwrap_or(defaults.expandtab),
+        shiftwidth: cfg.get("shiftwidth").unwrap_or(defaults.shiftwidth),
+        number: cfg.get("number").unwrap_or(defaults.number),
+        relativenumber: cfg.get("relativenumber").unwrap_or(defaults.relativenumber),
+        theme: cfg.get("theme").unwrap_or_else(|_| defaults.theme.clone()),
+        gui_font: cfg.get("gui_font").unwrap_or_else(|_| defaults.gui_font.clone()),
+        cursor_anim_enabled: cfg.get("cursor_anim_enabled").unwrap_or(defaults.cursor_anim_enabled),
+        cursor_anim_speed: cfg.get("cursor_anim_speed").unwrap_or(defaults.cursor_anim_speed),
+        timeoutlen: cfg.get("timeoutlen").unwrap_or(defaults.timeoutlen),
+        format_on_save: cfg.get("format_on_save").unwrap_or(defaults.format_on_save),
+        terminal_shell: cfg.get("terminal_shell").unwrap_or_else(|_| defaults.terminal_shell.clone()),
+        terminal_scrollback: cfg.get("terminal_scrollback").unwrap_or(defaults.terminal_scrollback),
+    }
+}
+
+/// Map validated grouped values onto the typed `Config` (only the keys the app
+/// consumes today; other schema keys are validated but wired up separately).
+fn config_from_grouped(
+    vals: &std::collections::HashMap<(&'static str, &'static str), crate::schema::SettingValue>,
+    defaults: &Config,
+) -> Config {
+    use crate::schema::SettingValue as V;
+    let asb = |g, k, d: bool| match vals.get(&(g, k)) {
+        Some(V::Bool(b)) => *b,
+        _ => d,
+    };
+    let asu = |g, k, d: u32| match vals.get(&(g, k)) {
+        Some(V::Int(i)) => *i as u32,
+        _ => d,
+    };
+    let asf = |g, k, d: f32| match vals.get(&(g, k)) {
+        Some(V::Float(f)) => *f as f32,
+        _ => d,
+    };
+    let ass = |g, k| match vals.get(&(g, k)) {
+        Some(V::Text(s)) | Some(V::Enum(s)) | Some(V::Color(s)) => Some(s.clone()),
+        _ => None,
+    };
+    let opt_str = |g, k| ass(g, k).filter(|s| !s.is_empty());
+    Config {
+        tabstop: asu("general", "tabstop", defaults.tabstop),
+        softtabstop: asu("general", "softtabstop", defaults.softtabstop),
+        expandtab: asb("general", "expandtab", defaults.expandtab),
+        shiftwidth: asu("general", "shiftwidth", defaults.shiftwidth),
+        number: asb("gutter", "number", defaults.number),
+        relativenumber: asb("gutter", "relativenumber", defaults.relativenumber),
+        theme: ass("general", "theme").unwrap_or_else(|| defaults.theme.clone()),
+        gui_font: opt_str("gui", "font"),
+        cursor_anim_enabled: asb("gui", "cursor_anim", defaults.cursor_anim_enabled),
+        cursor_anim_speed: asf("gui", "cursor_anim_speed", defaults.cursor_anim_speed),
+        timeoutlen: asu("whichkey", "timeoutlen", defaults.timeoutlen),
+        format_on_save: asb("lsp", "format_on_save", defaults.format_on_save),
+        terminal_shell: opt_str("terminal", "shell"),
+        terminal_scrollback: asu("terminal", "scrollback", defaults.terminal_scrollback),
+    }
+}
+
+/// Read one setting from a group table by its kind. `Ok(None)` = absent (use
+/// default); `Err(got)` = present but wrong type, with a display of the value.
+fn read_setting(
+    tbl: &mlua::Table,
+    spec: &crate::schema::SettingSpec,
+) -> Result<Option<crate::schema::SettingValue>, String> {
+    use crate::schema::{SettingKind, SettingValue as V};
+    match &spec.kind {
+        SettingKind::Bool => Ok(get_opt::<bool>(tbl, spec.key)?.map(V::Bool)),
+        SettingKind::Int { .. } => Ok(get_opt::<i64>(tbl, spec.key)?.map(V::Int)),
+        SettingKind::Float { .. } => Ok(get_opt::<f64>(tbl, spec.key)?.map(V::Float)),
+        SettingKind::Text => Ok(get_opt::<String>(tbl, spec.key)?.map(V::Text)),
+        SettingKind::Enum(_) => Ok(get_opt::<String>(tbl, spec.key)?.map(V::Enum)),
+        SettingKind::Color => Ok(get_opt::<String>(tbl, spec.key)?.map(V::Color)),
+    }
+}
+
+fn get_opt<T: mlua::FromLua>(tbl: &mlua::Table, key: &str) -> Result<Option<T>, String> {
+    tbl.get::<Option<T>>(key).map_err(|_| raw_display(tbl, key))
+}
+
+fn raw_display(tbl: &mlua::Table, key: &str) -> String {
+    match tbl.get::<mlua::Value>(key) {
+        Ok(mlua::Value::Nil) => "nil".into(),
+        Ok(mlua::Value::String(s)) => format!("{:?}", s.to_str().map(|x| x.to_string()).unwrap_or_default()),
+        Ok(mlua::Value::Integer(i)) => i.to_string(),
+        Ok(mlua::Value::Number(n)) => n.to_string(),
+        Ok(mlua::Value::Boolean(b)) => b.to_string(),
+        Ok(other) => other.type_name().to_string(),
+        Err(_) => "?".into(),
+    }
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+
+    fn rt_with(src: &str) -> LuaRuntime {
+        let rt = LuaRuntime::new().unwrap();
+        rt.lua.load(src).exec().unwrap();
+        rt
+    }
+
+    #[test]
+    fn grouped_config_reads_typed_values() {
+        let rt = rt_with(
+            r#"
+            ruster.config.general = { tabstop = 2, expandtab = false }
+            ruster.config.gutter = { number = true }
+            ruster.config.whichkey = { timeoutlen = 500 }
+        "#,
+        );
+        let (cfg, errors) = rt.config_validated();
+        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(cfg.tabstop, 2);
+        assert!(!cfg.expandtab);
+        assert!(cfg.number);
+        assert_eq!(cfg.timeoutlen, 500);
+    }
+
+    #[test]
+    fn grouped_config_reports_bad_values_and_uses_default() {
+        let rt = rt_with(
+            r#"
+            ruster.config.gui = { font_size = "big" }
+            ruster.config.general = { tabstop = 999 }
+        "#,
+        );
+        let (cfg, errors) = rt.config_validated();
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        assert_eq!(cfg.tabstop, 4, "invalid tabstop falls back to default");
+        assert!(errors.iter().any(|e| e.key == "font_size" && e.group == "gui"));
+        assert!(errors.iter().any(|e| e.key == "tabstop" && e.group == "general"));
+    }
+
+    #[test]
+    fn legacy_flat_config_still_works() {
+        let rt = rt_with("ruster.config = { tabstop = 3, number = true }");
+        let (cfg, errors) = rt.config_validated();
+        assert!(errors.is_empty());
+        assert_eq!(cfg.tabstop, 3);
+        assert!(cfg.number);
     }
 }
