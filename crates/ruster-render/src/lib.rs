@@ -304,6 +304,43 @@ pub struct WhichKeyView {
     pub anim: f32,
 }
 
+/// The kind of control a settings row renders as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlKind {
+    Toggle,
+    Enum,
+    Number,
+    Text,
+}
+
+/// One row on the settings page: a label, its control, and current value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingRowView {
+    pub label: String,
+    pub kind: ControlKind,
+    /// The value as displayed (e.g. "on"/"off", "neovim", "20", "#1e1e1e").
+    pub value: String,
+    /// True while the user is typing into this field.
+    pub editing: bool,
+    pub selected: bool,
+    pub help: String,
+}
+
+/// A named group of settings rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingsGroup {
+    pub name: String,
+    pub rows: Vec<SettingRowView>,
+}
+
+/// The settings page: grouped rows, a dirty flag, and a footer hint line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingsView {
+    pub groups: Vec<SettingsGroup>,
+    pub dirty: bool,
+    pub footer: String,
+}
+
 /// A full frame: every visible window, the shared cmdline/message line, an
 /// optional centered picker overlay, and an optional bottom which-key panel.
 pub struct FrameState<'a> {
@@ -314,6 +351,8 @@ pub struct FrameState<'a> {
     pub whichkey: Option<WhichKeyView>,
     /// LSP hover popup lines (syntax-highlighted), in a floating box near the top.
     pub hover: Option<Vec<StyledLine>>,
+    /// The settings page overlay, when open.
+    pub settings: Option<SettingsView>,
 }
 
 pub trait Renderer {
@@ -419,6 +458,7 @@ mod tests {
             picker: None,
             whichkey: None,
             hover: None,
+            settings: None,
         };
         let mut r = TestRenderer;
         r.render_frame(&state);

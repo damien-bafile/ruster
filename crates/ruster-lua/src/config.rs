@@ -10,6 +10,9 @@ impl Rgb {
     pub const fn new(r: u8, g: u8, b: u8) -> Self {
         Rgb { r, g, b }
     }
+    pub fn to_hex(self) -> String {
+        format!("#{:02x}{:02x}{:02x}", self.r, self.g, self.b)
+    }
 }
 
 /// The configurable color palette (GUI). Defaults mirror the previously
@@ -37,6 +40,69 @@ impl Default for ThemeColors {
             accent: Rgb::new(243, 139, 168),
         }
     }
+}
+
+impl ThemeColors {
+    /// Serialize as a theme file: a Lua chunk returning a `{ bg = "#…", … }` table.
+    pub fn to_lua(&self) -> String {
+        format!(
+            "-- ruster theme. Edit the hex colors, or copy this file to make your own.\n\
+             return {{\n  \
+             bg = {:?},\n  fg = {:?},\n  gutter = {:?},\n  selection = {:?},\n  \
+             cursor = {:?},\n  divider = {:?},\n  accent = {:?},\n}}\n",
+            self.bg.to_hex(),
+            self.fg.to_hex(),
+            self.gutter.to_hex(),
+            self.selection.to_hex(),
+            self.cursor.to_hex(),
+            self.divider.to_hex(),
+            self.accent.to_hex(),
+        )
+    }
+}
+
+/// Built-in themes written to `themes/` on first run and selectable via
+/// `general.theme`.
+pub fn builtin_themes() -> Vec<(&'static str, ThemeColors)> {
+    vec![
+        ("default", ThemeColors::default()),
+        (
+            "gruvbox",
+            ThemeColors {
+                bg: Rgb::new(40, 40, 40),
+                fg: Rgb::new(235, 219, 178),
+                gutter: Rgb::new(124, 111, 100),
+                selection: Rgb::new(80, 73, 69),
+                cursor: Rgb::new(254, 128, 25),
+                divider: Rgb::new(60, 56, 54),
+                accent: Rgb::new(250, 189, 47),
+            },
+        ),
+        (
+            "tokyonight",
+            ThemeColors {
+                bg: Rgb::new(26, 27, 38),
+                fg: Rgb::new(192, 202, 245),
+                gutter: Rgb::new(86, 95, 137),
+                selection: Rgb::new(40, 52, 87),
+                cursor: Rgb::new(192, 202, 245),
+                divider: Rgb::new(65, 72, 104),
+                accent: Rgb::new(122, 162, 247),
+            },
+        ),
+        (
+            "nord",
+            ThemeColors {
+                bg: Rgb::new(46, 52, 64),
+                fg: Rgb::new(216, 222, 233),
+                gutter: Rgb::new(76, 86, 106),
+                selection: Rgb::new(67, 76, 94),
+                cursor: Rgb::new(136, 192, 208),
+                divider: Rgb::new(59, 66, 82),
+                accent: Rgb::new(136, 192, 208),
+            },
+        ),
+    ]
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +153,109 @@ pub struct Config {
     pub terminal_default_mode: String,
     /// Show dotfiles in dired by default.
     pub dired_show_hidden: bool,
+}
+
+/// The `(group, key)` address of a setting.
+pub type Addr = (&'static str, &'static str);
+
+impl Config {
+    /// The current value of every schema setting, for the Settings page and for
+    /// writing `config.lua`. Colors are excluded (they live in themes/).
+    pub fn to_settings(&self) -> Vec<(Addr, crate::schema::SettingValue)> {
+        use crate::schema::SettingValue::*;
+        vec![
+            (("general", "tabstop"), Int(self.tabstop as i64)),
+            (("general", "softtabstop"), Int(self.softtabstop as i64)),
+            (("general", "expandtab"), Bool(self.expandtab)),
+            (("general", "shiftwidth"), Int(self.shiftwidth as i64)),
+            (("general", "editmode"), Enum(self.editmode.clone())),
+            (("general", "editorconfig"), Bool(self.editorconfig)),
+            (("general", "line_ending"), Enum(self.line_ending.clone())),
+            (("general", "theme"), Text(self.theme.clone())),
+            (("gui", "font"), Text(self.gui_font.clone().unwrap_or_default())),
+            (("gui", "font_size"), Int(self.font_size as i64)),
+            (("gui", "line_height"), Int(self.line_height as i64)),
+            (("gui", "padding_x"), Int(self.padding_x as i64)),
+            (("gui", "padding_y"), Int(self.padding_y as i64)),
+            (("gui", "window_width"), Int(self.window_width as i64)),
+            (("gui", "window_height"), Int(self.window_height as i64)),
+            (("gui", "target_fps"), Int(self.target_fps as i64)),
+            (("gui", "cursor_kind"), Enum(self.cursor_kind.clone())),
+            (("gui", "cursor_anim"), Bool(self.cursor_anim_enabled)),
+            (("gui", "cursor_anim_speed"), Float(self.cursor_anim_speed as f64)),
+            (("gutter", "number"), Bool(self.number)),
+            (("gutter", "relativenumber"), Bool(self.relativenumber)),
+            (("whichkey", "enabled"), Bool(self.whichkey_enabled)),
+            (("whichkey", "timeoutlen"), Int(self.timeoutlen as i64)),
+            (("lsp", "format_on_save"), Bool(self.format_on_save)),
+            (("lsp", "diagnostics"), Bool(self.lsp_diagnostics)),
+            (("lsp", "hover"), Bool(self.lsp_hover)),
+            (("lsp", "autostart"), Bool(self.lsp_autostart)),
+            (("terminal", "shell"), Text(self.terminal_shell.clone().unwrap_or_default())),
+            (("terminal", "scrollback"), Int(self.terminal_scrollback as i64)),
+            (("terminal", "default_mode"), Enum(self.terminal_default_mode.clone())),
+            (("dired", "show_hidden"), Bool(self.dired_show_hidden)),
+        ]
+    }
+
+    /// Build a `Config` from settings values (defaults for anything absent).
+    /// Colors are left at their default and applied separately from the theme.
+    pub fn from_settings(vals: &[(Addr, crate::schema::SettingValue)]) -> Config {
+        use crate::schema::SettingValue as V;
+        let find = |g: &str, k: &str| vals.iter().find(|((a, b), _)| *a == g && *b == k).map(|(_, v)| v);
+        let d = Config::default();
+        let bl = |g, k, dv: bool| match find(g, k) {
+            Some(V::Bool(b)) => *b,
+            _ => dv,
+        };
+        let u = |g, k, dv: u32| match find(g, k) {
+            Some(V::Int(i)) => *i as u32,
+            _ => dv,
+        };
+        let fl = |g, k, dv: f32| match find(g, k) {
+            Some(V::Float(f)) => *f as f32,
+            _ => dv,
+        };
+        let st = |g, k| match find(g, k) {
+            Some(V::Text(s)) | Some(V::Enum(s)) | Some(V::Color(s)) => Some(s.clone()),
+            _ => None,
+        };
+        let ostr = |g, k| st(g, k).filter(|s| !s.is_empty());
+        Config {
+            tabstop: u("general", "tabstop", d.tabstop),
+            softtabstop: u("general", "softtabstop", d.softtabstop),
+            expandtab: bl("general", "expandtab", d.expandtab),
+            shiftwidth: u("general", "shiftwidth", d.shiftwidth),
+            editmode: st("general", "editmode").unwrap_or(d.editmode),
+            editorconfig: bl("general", "editorconfig", d.editorconfig),
+            line_ending: st("general", "line_ending").unwrap_or(d.line_ending),
+            number: bl("gutter", "number", d.number),
+            relativenumber: bl("gutter", "relativenumber", d.relativenumber),
+            theme: st("general", "theme").unwrap_or(d.theme),
+            gui_font: ostr("gui", "font"),
+            font_size: u("gui", "font_size", d.font_size),
+            line_height: u("gui", "line_height", d.line_height),
+            padding_x: u("gui", "padding_x", d.padding_x),
+            padding_y: u("gui", "padding_y", d.padding_y),
+            window_width: u("gui", "window_width", d.window_width),
+            window_height: u("gui", "window_height", d.window_height),
+            target_fps: u("gui", "target_fps", d.target_fps),
+            cursor_kind: st("gui", "cursor_kind").unwrap_or(d.cursor_kind),
+            cursor_anim_enabled: bl("gui", "cursor_anim", d.cursor_anim_enabled),
+            cursor_anim_speed: fl("gui", "cursor_anim_speed", d.cursor_anim_speed),
+            colors: d.colors,
+            timeoutlen: u("whichkey", "timeoutlen", d.timeoutlen),
+            whichkey_enabled: bl("whichkey", "enabled", d.whichkey_enabled),
+            format_on_save: bl("lsp", "format_on_save", d.format_on_save),
+            lsp_diagnostics: bl("lsp", "diagnostics", d.lsp_diagnostics),
+            lsp_hover: bl("lsp", "hover", d.lsp_hover),
+            lsp_autostart: bl("lsp", "autostart", d.lsp_autostart),
+            terminal_shell: ostr("terminal", "shell"),
+            terminal_scrollback: u("terminal", "scrollback", d.terminal_scrollback),
+            terminal_default_mode: st("terminal", "default_mode").unwrap_or(d.terminal_default_mode),
+            dired_show_hidden: bl("dired", "show_hidden", d.dired_show_hidden),
+        }
+    }
 }
 
 impl Default for Config {

@@ -1,38 +1,86 @@
 # Config Reference
 
-All configuration is done in `~/.config/ruster/init.lua` via the `ruster.config` table.
-Defaults are set by the editor; override only what you need.
+ruster uses two files in its config directory — `~/.config/ruster/` on Linux **and
+macOS** (or `$XDG_CONFIG_HOME/ruster/` if set), `%APPDATA%\ruster\` on Windows:
+
+- **`config.lua`** — declarative settings, **generated on first run** and managed by the
+  in-app Settings page (`:settings`, save with `:w`). Safe to hand-edit; regenerated on
+  save. Settings are grouped tables under `ruster.config`.
+- **`init.lua`** — *optional* advanced scripting (keymaps, plugins, arbitrary Lua). Never
+  rewritten by ruster; loaded **after** `config.lua`, so it can override any setting.
 
 ```lua
-ruster.config = {
-  tabstop = 4,
-  softtabstop = 4,
-  expandtab = true,
-  number = false,
-  relativenumber = false,
-  theme = "default",
-  -- terminal_shell = "/bin/bash",  -- default: $SHELL / %COMSPEC%
-  -- terminal_scrollback = 10000,
-}
+-- config.lua (generated; grouped by area)
+ruster.config.general  = { tabstop = 4, editmode = "neovim", theme = "default" }
+ruster.config.gui      = { font_size = 20, cursor_kind = "block" }
+ruster.config.gutter   = { number = false, relativenumber = false }
+ruster.config.whichkey = { enabled = true, timeoutlen = 300 }
+ruster.config.lsp      = { format_on_save = false }
+ruster.config.terminal = { shell = "", scrollback = 10000 }
+ruster.config.dired    = { show_hidden = false }
 ```
+
+Invalid values are reported (`:config-errors`) and fall back to their defaults — ruster
+never refuses to start over a bad config. A legacy flat `ruster.config = { … }` table is
+still read for backward compatibility.
+
+## Settings page
+
+`:settings` (or `:config`) opens an interactive, grouped editor. `j`/`k` move, `Tab`
+switches group, `Space`/`Enter` toggles or cycles, `h`/`l` adjust numbers/enums, `Enter`
+edits text fields, and **`:w` saves** to `config.lua`. See
+[keybindings.md](keybindings.md#settings-page).
+
+## Themes
+
+Colors come from a **theme**, not individual settings. Built-in themes (`default`,
+`gruvbox`, `tokyonight`, `nord`) are written to `~/.config/ruster/themes/<name>.lua` on
+first run; pick one with `general.theme = "gruvbox"`. Each theme file is a Lua chunk
+returning a palette you can edit or copy:
+
+```lua
+-- themes/mytheme.lua
+return { bg = "#1e1e1e", fg = "#cdd6f4", gutter = "#6c7086",
+         selection = "#585b70", cursor = "#f5e0dc", divider = "#45475a", accent = "#f38ba8" }
+```
+
+Theme changes apply to the GUI on restart.
 
 ## Settings
 
+Keys are addressed as `group.key`.
+
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
-| `tabstop` | integer | 4 | Number of spaces a tab character represents |
-| `softtabstop` | integer | 4 | Number of spaces inserted when pressing Tab |
-| `expandtab` | boolean | true | Use spaces instead of tab characters |
-| `number` | boolean | false | Show absolute line numbers in the gutter. Toggle live with `:set number` / `:set nonumber` / `:set number!` (abbrev. `nu`) |
-| `relativenumber` | boolean | false | Show relative line numbers (distance from cursor). With `number` also on, the gutter is hybrid: the cursor line shows its absolute number, other lines show the relative distance. Toggle live with `:set relativenumber` / `:set norelativenumber` / `:set relativenumber!` (abbrev. `rnu`) |
-| `theme` | string | "default" | Color theme name |
-| `gui_font` | string | _(auto)_ | GUI font: an absolute path, or a filename in your user font dir. Unset tries common Nerd/mono fonts. **A Nerd Font is required for icon glyphs** (else they show as `?`) — see [GUI font & icons](#gui-font--icons) |
-| `cursor_anim_enabled` | boolean | true | Enable smooth cursor animation |
-| `cursor_anim_speed` | float | 12.0 | Smooth-cursor easing speed |
-| `timeoutlen` | integer | 300 | Milliseconds before the which-key panel appears for a pending key prefix |
-| `format_on_save` | boolean | false | Format the buffer via LSP before writing on `:w` |
-| `terminal_shell` | string | _(platform default)_ | Program `:term` launches. Unset uses `$SHELL` (Unix) / `%COMSPEC%` (Windows), falling back to `/bin/sh` / `cmd.exe`. Program only — no argument splitting |
-| `terminal_scrollback` | integer | 10000 | Lines of scrollback history an embedded terminal retains |
+| `general.tabstop` | integer | 4 | Spaces a tab represents |
+| `general.softtabstop` | integer | 4 | Spaces inserted when pressing Tab |
+| `general.expandtab` | boolean | true | Insert spaces instead of tab characters |
+| `general.shiftwidth` | integer | 4 | Spaces per indent step |
+| `general.editmode` | enum | "neovim" | Editing paradigm: `neovim` (modal) or `emacs` (modeless) |
+| `general.editorconfig` | boolean | true | Honor project `.editorconfig` files |
+| `general.line_ending` | enum | "lf" | Default line ending for new files: `lf` or `crlf` |
+| `general.theme` | string | "default" | Theme name (see [Themes](#themes)) |
+| `gui.font` | string | _(auto)_ | GUI font: absolute path or a font-dir filename. Unset tries common Nerd/mono fonts. **A Nerd Font is required for icon glyphs** — see [GUI font & icons](#gui-font--icons) |
+| `gui.font_size` | integer | 20 | Glyph size in px |
+| `gui.line_height` | integer | 24 | Row height in px |
+| `gui.padding_x` / `padding_y` | integer | 8 / 4 | Window padding in px |
+| `gui.window_width` / `window_height` | integer | 800 / 600 | Initial window size |
+| `gui.target_fps` | integer | 60 | Render loop frame cap |
+| `gui.cursor_kind` | enum | "block" | Cursor shape: `block` or `bar` |
+| `gui.cursor_anim` | boolean | true | Smooth cursor animation |
+| `gui.cursor_anim_speed` | float | 12.0 | Smooth-cursor easing speed |
+| `gutter.number` | boolean | false | Show absolute line numbers. Toggle live with `:set number` / `:set nonumber` / `:set number!` (abbrev. `nu`) |
+| `gutter.relativenumber` | boolean | false | Show relative line numbers (hybrid with `number`). Toggle live with `:set relativenumber` / `:set norelativenumber` / `:set relativenumber!` (abbrev. `rnu`) |
+| `whichkey.enabled` | boolean | true | Show the which-key hint panel |
+| `whichkey.timeoutlen` | integer | 300 | Milliseconds before the panel appears |
+| `lsp.format_on_save` | boolean | false | Format via LSP before writing on `:w` |
+| `lsp.diagnostics` / `hover` / `autostart` | boolean | true | LSP feature toggles |
+| `terminal.shell` | string | _(platform)_ | `:term` program. Unset → `$SHELL` / `%COMSPEC%` (→ `/bin/sh` / `cmd.exe`) |
+| `terminal.scrollback` | integer | 10000 | Terminal scrollback lines |
+| `terminal.default_mode` | enum | "insert" | New terminal starts in `insert` or `normal` |
+| `dired.show_hidden` | boolean | false | Show dotfiles in the file explorer |
+
+> Colors are **not** listed here — they live in [themes](#themes).
 
 ## GUI font & icons
 
@@ -45,9 +93,9 @@ The GUI (raylib) needs a **Nerd Font** to show icon glyphs — file-type icons i
    preferring the `…Mono` variants for grid alignment). To force a specific font:
 
    ```lua
-   ruster.config.gui_font = "FiraCodeNerdFontMono-Regular.ttf"  -- filename in the font dir
+   ruster.config.gui.font = "FiraCodeNerdFontMono-Regular.ttf"  -- filename in the font dir
    -- or an absolute path:
-   -- ruster.config.gui_font = "/Users/me/Library/Fonts/HackNerdFontMono-Regular.ttf"
+   -- ruster.config.gui.font = "/Users/me/Library/Fonts/HackNerdFontMono-Regular.ttf"
    ```
 
 The atlas bakes the standard Nerd Font icon ranges (Seti-UI, Devicons, Font Awesome,

@@ -179,9 +179,6 @@ fn t(v: &str) -> SettingValue {
 fn e(v: &str) -> SettingValue {
     SettingValue::Enum(v.to_string())
 }
-fn c(v: &str) -> SettingValue {
-    SettingValue::Color(v.to_string())
-}
 
 /// The groups, in display order.
 pub const GROUPS: &[(&str, &str)] = &[
@@ -224,13 +221,7 @@ pub fn schema() -> Vec<SettingSpec> {
     add("gui", "cursor_kind", "Cursor shape", Enum(&["block", "bar"]), e("block"), "Block or bar cursor");
     add("gui", "cursor_anim", "Smooth cursor", Bool, b(true), "Animate cursor movement");
     add("gui", "cursor_anim_speed", "Cursor speed", Float { min: 1.0, max: 60.0 }, f(12.0), "Smooth-cursor easing speed");
-    add("gui", "color_bg", "Background", Color, c("#1e1e1e"), "Editor background");
-    add("gui", "color_fg", "Foreground", Color, c("#cdd6f4"), "Default text color");
-    add("gui", "color_gutter", "Gutter", Color, c("#6c7086"), "Line-number color");
-    add("gui", "color_selection", "Selection", Color, c("#585b70"), "Selection highlight");
-    add("gui", "color_cursor", "Cursor", Color, c("#f5e0dc"), "Cursor color");
-    add("gui", "color_divider", "Divider", Color, c("#45475a"), "Window/statusline divider");
-    add("gui", "color_accent", "Accent", Color, c("#f38ba8"), "Accent (titles, prompts)");
+    // Colors are theme-driven — see general.theme + the themes/ directory.
 
     // --- gutter ---
     add("gutter", "number", "Line numbers", Bool, b(false), "Show absolute line numbers");

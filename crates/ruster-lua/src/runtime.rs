@@ -226,6 +226,31 @@ impl LuaRuntime {
         out
     }
 
+    /// Evaluate a theme file (a Lua chunk returning `{ bg = "#…", … }`) into a
+    /// color palette. Missing/invalid entries fall back to the default palette.
+    pub fn load_theme_colors(&self, code: &str) -> Option<crate::config::ThemeColors> {
+        use crate::config::{Rgb, ThemeColors};
+        let t: mlua::Table = self.lua.load(code).eval().ok()?;
+        let d = ThemeColors::default();
+        let get = |k: &str, def: Rgb| -> Rgb {
+            t.get::<Option<String>>(k)
+                .ok()
+                .flatten()
+                .and_then(|s| crate::schema::parse_hex_color(&s))
+                .map(|(r, g, b)| Rgb::new(r, g, b))
+                .unwrap_or(def)
+        };
+        Some(ThemeColors {
+            bg: get("bg", d.bg),
+            fg: get("fg", d.fg),
+            gutter: get("gutter", d.gutter),
+            selection: get("selection", d.selection),
+            cursor: get("cursor", d.cursor),
+            divider: get("divider", d.divider),
+            accent: get("accent", d.accent),
+        })
+    }
+
     pub fn load_init(&mut self, path: &Path) -> Result<(), String> {
         let code = std::fs::read_to_string(path).map_err(|e| format!("Cannot read {}: {}", path.display(), e))?;
         self.lua.load(&code).exec().map_err(|e| format!("Lua error in {}: {}", path.display(), e))
@@ -280,77 +305,10 @@ fn config_flat(cfg: &mlua::Table, defaults: &Config) -> Config {
 /// consumes today; other schema keys are validated but wired up separately).
 fn config_from_grouped(
     vals: &std::collections::HashMap<(&'static str, &'static str), crate::schema::SettingValue>,
-    defaults: &Config,
+    _defaults: &Config,
 ) -> Config {
-    use crate::config::{Rgb, ThemeColors};
-    use crate::schema::SettingValue as V;
-    let asb = |g, k, d: bool| match vals.get(&(g, k)) {
-        Some(V::Bool(b)) => *b,
-        _ => d,
-    };
-    let asu = |g, k, d: u32| match vals.get(&(g, k)) {
-        Some(V::Int(i)) => *i as u32,
-        _ => d,
-    };
-    let asf = |g, k, d: f32| match vals.get(&(g, k)) {
-        Some(V::Float(f)) => *f as f32,
-        _ => d,
-    };
-    let ass = |g, k| match vals.get(&(g, k)) {
-        Some(V::Text(s)) | Some(V::Enum(s)) | Some(V::Color(s)) => Some(s.clone()),
-        _ => None,
-    };
-    let opt_str = |g, k| ass(g, k).filter(|s| !s.is_empty());
-    let asc = |g, k, d: Rgb| match vals.get(&(g, k)) {
-        Some(V::Color(s)) => crate::schema::parse_hex_color(s)
-            .map(|(r, gg, b)| Rgb::new(r, gg, b))
-            .unwrap_or(d),
-        _ => d,
-    };
-    let dc = defaults.colors;
-    Config {
-        tabstop: asu("general", "tabstop", defaults.tabstop),
-        softtabstop: asu("general", "softtabstop", defaults.softtabstop),
-        expandtab: asb("general", "expandtab", defaults.expandtab),
-        shiftwidth: asu("general", "shiftwidth", defaults.shiftwidth),
-        editmode: ass("general", "editmode").unwrap_or_else(|| defaults.editmode.clone()),
-        editorconfig: asb("general", "editorconfig", defaults.editorconfig),
-        line_ending: ass("general", "line_ending").unwrap_or_else(|| defaults.line_ending.clone()),
-        number: asb("gutter", "number", defaults.number),
-        relativenumber: asb("gutter", "relativenumber", defaults.relativenumber),
-        theme: ass("general", "theme").unwrap_or_else(|| defaults.theme.clone()),
-        gui_font: opt_str("gui", "font"),
-        font_size: asu("gui", "font_size", defaults.font_size),
-        line_height: asu("gui", "line_height", defaults.line_height),
-        padding_x: asu("gui", "padding_x", defaults.padding_x),
-        padding_y: asu("gui", "padding_y", defaults.padding_y),
-        window_width: asu("gui", "window_width", defaults.window_width),
-        window_height: asu("gui", "window_height", defaults.window_height),
-        target_fps: asu("gui", "target_fps", defaults.target_fps),
-        cursor_kind: ass("gui", "cursor_kind").unwrap_or_else(|| defaults.cursor_kind.clone()),
-        cursor_anim_enabled: asb("gui", "cursor_anim", defaults.cursor_anim_enabled),
-        cursor_anim_speed: asf("gui", "cursor_anim_speed", defaults.cursor_anim_speed),
-        colors: ThemeColors {
-            bg: asc("gui", "color_bg", dc.bg),
-            fg: asc("gui", "color_fg", dc.fg),
-            gutter: asc("gui", "color_gutter", dc.gutter),
-            selection: asc("gui", "color_selection", dc.selection),
-            cursor: asc("gui", "color_cursor", dc.cursor),
-            divider: asc("gui", "color_divider", dc.divider),
-            accent: asc("gui", "color_accent", dc.accent),
-        },
-        timeoutlen: asu("whichkey", "timeoutlen", defaults.timeoutlen),
-        whichkey_enabled: asb("whichkey", "enabled", defaults.whichkey_enabled),
-        format_on_save: asb("lsp", "format_on_save", defaults.format_on_save),
-        lsp_diagnostics: asb("lsp", "diagnostics", defaults.lsp_diagnostics),
-        lsp_hover: asb("lsp", "hover", defaults.lsp_hover),
-        lsp_autostart: asb("lsp", "autostart", defaults.lsp_autostart),
-        terminal_shell: opt_str("terminal", "shell"),
-        terminal_scrollback: asu("terminal", "scrollback", defaults.terminal_scrollback),
-        terminal_default_mode: ass("terminal", "default_mode")
-            .unwrap_or_else(|| defaults.terminal_default_mode.clone()),
-        dired_show_hidden: asb("dired", "show_hidden", defaults.dired_show_hidden),
-    }
+    let slice: Vec<_> = vals.iter().map(|((g, k), v)| ((*g, *k), v.clone())).collect();
+    Config::from_settings(&slice)
 }
 
 /// Read one setting from a group table by its kind. `Ok(None)` = absent (use

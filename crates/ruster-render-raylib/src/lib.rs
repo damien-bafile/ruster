@@ -3,7 +3,7 @@ mod key;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use raylib::consts::KeyboardKey;
 use raylib::prelude::*;
-use ruster_render::{CursorKind, FrameState, GuiConfig, Renderer};
+use ruster_render::{ControlKind, CursorKind, FrameState, GuiConfig, Renderer, SettingRowView};
 
 pub struct RaylibRenderer {
     rl: RaylibHandle,
@@ -148,6 +148,8 @@ impl RaylibRenderer {
         let (mut rl, thread) = raylib::init()
             .size(gui.window_width, gui.window_height)
             .title(title)
+            // Errors only — silence raylib's per-glyph font warnings and info logs.
+            .log_level(raylib::ffi::TraceLogLevel::LOG_ERROR)
             .resizable()
             .build();
         rl.set_target_fps(gui.target_fps as u32);
@@ -337,26 +339,32 @@ impl Renderer for RaylibRenderer {
                         s.draw_text_ex(font, &line.text, Vector2::new(text_x as f32, gy as f32), font_size as f32, 1.0, default_color);
                         continue;
                     }
-                    let mut char_colors: Vec<Color> = vec![default_color; n];
+                    // Color per *character* (highlight offsets are char offsets),
+                    // then draw same-color runs — safe for multibyte lines.
+                    let chars: Vec<char> = line.text.chars().collect();
+                    let nchars = chars.len();
+                    let mut char_colors: Vec<Color> = vec![default_color; nchars];
                     for &(offset, len, ref style) in &line.highlights {
                         let fg = match style.fg {
                             ruster_render::Color::Rgb(r, g, b) => Color::new(r, g, b, 255),
                             ruster_render::Color::Default => default_color,
                         };
-                        let end = (offset + len).min(n);
-                        char_colors[offset..end].fill(fg);
+                        let end = (offset + len).min(nchars);
+                        if offset < end {
+                            char_colors[offset..end].fill(fg);
+                        }
                     }
                     let mut x_offset = text_x as f32;
-                    let mut pos = 0;
-                    while pos < n {
-                        let c = char_colors[pos];
-                        let start = pos;
-                        while pos < n && char_colors[pos] == c {
-                            pos += 1;
+                    let mut i = 0;
+                    while i < nchars {
+                        let c = char_colors[i];
+                        let start = i;
+                        while i < nchars && char_colors[i] == c {
+                            i += 1;
                         }
-                        let seg = &line.text[start..pos];
-                        s.draw_text_ex(font, seg, Vector2::new(x_offset, gy as f32), font_size as f32, 1.0, c);
-                        x_offset += measure(seg);
+                        let seg: String = chars[start..i].iter().collect();
+                        s.draw_text_ex(font, &seg, Vector2::new(x_offset, gy as f32), font_size as f32, 1.0, c);
+                        x_offset += measure(&seg);
                     }
                 }
 
@@ -370,7 +378,14 @@ impl Renderer for RaylibRenderer {
                             .lines
                             .get(cline)
                             .map(|l| {
-                                let end = col.min(l.text.len());
+                                // `col` is a character column; find its byte offset
+                                // so multibyte lines don't slice mid-character.
+                                let end = l
+                                    .text
+                                    .char_indices()
+                                    .nth(col)
+                                    .map(|(i, _)| i)
+                                    .unwrap_or(l.text.len());
                                 &l.text[..end]
                             })
                             .unwrap_or("");
@@ -399,7 +414,14 @@ impl Renderer for RaylibRenderer {
                             .lines
                             .get(cl)
                             .map(|l| {
-                                let end = col.min(l.text.len());
+                                // `col` is a character column; find its byte offset
+                                // so multibyte lines don't slice mid-character.
+                                let end = l
+                                    .text
+                                    .char_indices()
+                                    .nth(col)
+                                    .map(|(i, _)| i)
+                                    .unwrap_or(l.text.len());
                                 &l.text[..end]
                             })
                             .unwrap_or("");
@@ -515,26 +537,30 @@ impl Renderer for RaylibRenderer {
                         s.draw_text_ex(font, &line.text, Vector2::new(px as f32, ly as f32), font_size as f32, 1.0, default_color);
                         continue;
                     }
-                    let mut char_colors: Vec<Color> = vec![default_color; n];
+                    let chars: Vec<char> = line.text.chars().collect();
+                    let nchars = chars.len();
+                    let mut char_colors: Vec<Color> = vec![default_color; nchars];
                     for &(offset, len, ref style) in &line.highlights {
                         let fg = match style.fg {
                             ruster_render::Color::Rgb(r, g, b) => Color::new(r, g, b, 255),
                             ruster_render::Color::Default => default_color,
                         };
-                        let end = (offset + len).min(n);
-                        char_colors[offset..end].fill(fg);
+                        let end = (offset + len).min(nchars);
+                        if offset < end {
+                            char_colors[offset..end].fill(fg);
+                        }
                     }
                     let mut x_off = px as f32;
-                    let mut pos = 0;
-                    while pos < n {
-                        let c = char_colors[pos];
-                        let start = pos;
-                        while pos < n && char_colors[pos] == c {
-                            pos += 1;
+                    let mut ci = 0;
+                    while ci < nchars {
+                        let c = char_colors[ci];
+                        let start = ci;
+                        while ci < nchars && char_colors[ci] == c {
+                            ci += 1;
                         }
-                        let seg = &line.text[start..pos];
-                        s.draw_text_ex(font, seg, Vector2::new(x_off, ly as f32), font_size as f32, 1.0, c);
-                        x_off += measure(seg);
+                        let seg: String = chars[start..ci].iter().collect();
+                        s.draw_text_ex(font, &seg, Vector2::new(x_off, ly as f32), font_size as f32, 1.0, c);
+                        x_off += measure(&seg);
                     }
                 }
             }
@@ -562,26 +588,30 @@ impl Renderer for RaylibRenderer {
                         s.draw_text_ex(font, &line.text, Vector2::new(box_x as f32 + 6.0, ly as f32), font_size as f32, 1.0, default_color);
                         continue;
                     }
-                    let mut char_colors: Vec<Color> = vec![default_color; n];
+                    let chars: Vec<char> = line.text.chars().collect();
+                    let nchars = chars.len();
+                    let mut char_colors: Vec<Color> = vec![default_color; nchars];
                     for &(offset, len, ref style) in &line.highlights {
                         let fg = match style.fg {
                             ruster_render::Color::Rgb(r, g, b) => Color::new(r, g, b, 255),
                             ruster_render::Color::Default => default_color,
                         };
-                        let end = (offset + len).min(n);
-                        char_colors[offset..end].fill(fg);
+                        let end = (offset + len).min(nchars);
+                        if offset < end {
+                            char_colors[offset..end].fill(fg);
+                        }
                     }
                     let mut x_off = box_x as f32 + 6.0;
-                    let mut pos = 0;
-                    while pos < n {
-                        let c = char_colors[pos];
-                        let start = pos;
-                        while pos < n && char_colors[pos] == c {
-                            pos += 1;
+                    let mut ci = 0;
+                    while ci < nchars {
+                        let c = char_colors[ci];
+                        let start = ci;
+                        while ci < nchars && char_colors[ci] == c {
+                            ci += 1;
                         }
-                        let seg = &line.text[start..pos];
-                        s.draw_text_ex(font, seg, Vector2::new(x_off, ly as f32), font_size as f32, 1.0, c);
-                        x_off += measure(seg);
+                        let seg: String = chars[start..ci].iter().collect();
+                        s.draw_text_ex(font, &seg, Vector2::new(x_off, ly as f32), font_size as f32, 1.0, c);
+                        x_off += measure(&seg);
                     }
                 }
             }
@@ -601,6 +631,70 @@ impl Renderer for RaylibRenderer {
                 let ry = panel_top + 4 + (i as i32 + 1) * line_h;
                 s.draw_text_ex(font, &format!("   {}", entry), Vector2::new(pad_x as f32, ry as f32), font_size as f32, 1.0, default_color);
             }
+        }
+
+        // Settings page — a large centered overlay.
+        if let Some(settings) = &state.settings {
+            let sbg = Color::new(30, 30, 46, 255);
+            let sel_bg = Color::new(69, 71, 90, 255);
+            let dim = Color::new(127, 132, 156, 255);
+            let bw = screen_w * 8 / 10;
+            let bh = screen_h * 9 / 10;
+            let bx = (screen_w - bw) / 2;
+            let by = (screen_h - bh) / 2;
+            let mut s = d.begin_scissor_mode(bx, by, bw, bh);
+            s.draw_rectangle(bx, by, bw, bh, sbg);
+            s.draw_rectangle(bx, by, bw, line_h, accent);
+            let title = format!(" Settings{} ", if settings.dirty { " [+]" } else { "" });
+            s.draw_text_ex(font, &title, Vector2::new((bx + 4) as f32, by as f32), font_size as f32, 1.0, Color::BLACK);
+
+            // Flatten groups into header/row lines.
+            let mut lines: Vec<(bool, String, Option<&SettingRowView>)> = Vec::new();
+            for g in &settings.groups {
+                lines.push((true, g.name.clone(), None));
+                for r in &g.rows {
+                    lines.push((false, r.label.clone(), Some(r)));
+                }
+            }
+            let selected = lines
+                .iter()
+                .position(|(_, _, r)| r.map(|x| x.selected).unwrap_or(false))
+                .unwrap_or(0);
+            let body_rows = ((bh - 2 * line_h) / line_h).max(1) as usize;
+            let scroll = selected.saturating_sub(body_rows.saturating_sub(1));
+            let value_x = (bx + (32.0 * char_w) as i32).min(bx + bw / 2);
+
+            for (i, (is_h, label, row)) in lines.iter().skip(scroll).take(body_rows).enumerate() {
+                let ry = by + line_h + i as i32 * line_h;
+                if *is_h {
+                    s.draw_text_ex(font, &format!("── {} ", label.to_uppercase()), Vector2::new((bx + 4) as f32, ry as f32), font_size as f32, 1.0, accent);
+                } else if let Some(r) = row {
+                    if r.selected {
+                        s.draw_rectangle(bx, ry, bw, line_h, sel_bg);
+                    }
+                    s.draw_text_ex(font, label, Vector2::new((bx + 8) as f32, ry as f32), font_size as f32, 1.0, default_color);
+                    let ctrl = match r.kind {
+                        ControlKind::Toggle => {
+                            if r.value == "on" { "[x] on".to_string() } else { "[ ] off".to_string() }
+                        }
+                        ControlKind::Enum => format!("‹ {} ›", r.value),
+                        ControlKind::Number | ControlKind::Text => {
+                            if r.editing { format!("{}▏", r.value) } else { r.value.clone() }
+                        }
+                    };
+                    let cc = if r.editing { accent } else { default_color };
+                    s.draw_text_ex(font, &ctrl, Vector2::new(value_x as f32, ry as f32), font_size as f32, 1.0, cc);
+                }
+            }
+
+            // Selected help + footer.
+            if let Some((_, _, Some(r))) = lines.get(selected) {
+                let hy = by + bh - 2 * line_h;
+                s.draw_text_ex(font, &r.help, Vector2::new((bx + 4) as f32, hy as f32), font_size as f32, 1.0, dim);
+            }
+            let fy = by + bh - line_h;
+            s.draw_rectangle(bx, fy, bw, line_h, Color::new(24, 24, 37, 255));
+            s.draw_text_ex(font, &settings.footer, Vector2::new((bx + 4) as f32, fy as f32), font_size as f32, 1.0, dim);
         }
     }
 

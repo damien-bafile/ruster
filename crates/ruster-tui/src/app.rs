@@ -1,6 +1,7 @@
 use crate::key::crossterm_to_ruster_key;
 use crate::picker::{PickerAction, PickerItem, PickerState};
 use crate::renderer::TuiRenderer;
+use crate::settings::SettingsState;
 use ruster_core::action::{Action, EditOp, Motion};
 use ruster_core::buffer::Buffer;
 use ruster_core::cursor::CursorSet;
@@ -185,6 +186,26 @@ fn word_before(content: &str, head: usize) -> String {
     chars[i..head].iter().collect()
 }
 
+/// The ruster config directory: `$XDG_CONFIG_HOME/ruster` when set, else
+/// `~/.config/ruster` on Unix (incl. macOS, matching nvim/helix conventions) and
+/// `%APPDATA%\ruster` on Windows. (`dirs::config_dir()` would give
+/// `~/Library/Application Support` on macOS, which CLI-editor users don't expect.)
+fn ruster_config_dir() -> Option<PathBuf> {
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+        if !xdg.is_empty() {
+            return Some(PathBuf::from(xdg).join("ruster"));
+        }
+    }
+    #[cfg(windows)]
+    {
+        dirs::config_dir().map(|d| d.join("ruster"))
+    }
+    #[cfg(not(windows))]
+    {
+        dirs::home_dir().map(|h| h.join(".config").join("ruster"))
+    }
+}
+
 fn plain_lines(content: &str) -> Vec<StyledLine> {
     content
         .split('\n')
@@ -335,6 +356,8 @@ enum CmdAction {
     Terminal,
     /// Show config load/validation errors (`:config-errors`).
     ConfigErrors,
+    /// Open the settings page (`:settings` / `:config`).
+    Settings,
     /// `:s/pat/rep/[g]` — replace on the current line, or the whole buffer
     /// when `whole_buffer` (`:%s/...`). `all` is the `g` flag.
     Substitute {
@@ -410,6 +433,7 @@ const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("bd", "delete buffer"),
     ("term", "open an embedded terminal"),
     ("config-errors", "show config load/validation errors"),
+    ("settings", "open the settings page"),
     ("Dired", "file explorer"),
     ("Files", "find files"),
     ("fmt", "format buffer"),
@@ -743,6 +767,8 @@ pub struct App {
     /// Config load/validation problems, shown to the user (non-fatal; invalid
     /// values fall back to their defaults). Viewable via `:config-errors`.
     config_errors: Vec<String>,
+    /// The Settings page (`:settings`), when open. Captures input like a picker.
+    settings: Option<SettingsState>,
 }
 
 /// The active editing paradigm. Neovim is modal; Emacs is modeless.
@@ -775,13 +801,14 @@ impl App {
             eprintln!("Lua init failed: {}", e);
             panic!("Lua init required");
         });
-        // `dirs::config_dir()` resolves %APPDATA% on Windows and ~/.config on
-        // Unix. On first run we generate a default `config.lua` (the declarative,
+        // On first run we generate a default `config.lua` (the declarative,
         // Settings-page-managed file); `init.lua` is optional user scripting
         // loaded *after* it, so it can override settings.
         let mut config_errors: Vec<String> = Vec::new();
-        if let Some(config_dir) = dirs::config_dir() {
-            let dir = config_dir.join("ruster");
+        // Skip all config-dir file IO under test so the suite never touches the
+        // user's real ~/.config/ruster.
+        if !cfg!(test) {
+        if let Some(dir) = ruster_config_dir() {
             let config_path = dir.join("config.lua");
             let init_path = dir.join("init.lua");
             if !config_path.exists() {
@@ -802,6 +829,7 @@ impl App {
                     config_errors.push(e);
                 }
             }
+        }
         }
 
         // Wire buffer callbacks to the active window/document.
@@ -921,6 +949,36 @@ impl App {
         for e in verrs {
             config_errors.push(e.to_string());
         }
+        // Generate built-in themes on first run, then apply the selected palette
+        // (`general.theme`) from themes/<name>.lua, falling back to a built-in.
+        if !cfg!(test) {
+        if let Some(dir) = ruster_config_dir() {
+            let themes_dir = dir.join("themes");
+            let _ = std::fs::create_dir_all(&themes_dir);
+            for (name, colors) in ruster_lua::config::builtin_themes() {
+                let path = themes_dir.join(format!("{name}.lua"));
+                if !path.exists() {
+                    let _ = std::fs::write(&path, colors.to_lua());
+                }
+            }
+            let theme_path = themes_dir.join(format!("{}.lua", config.theme));
+            if let Ok(code) = std::fs::read_to_string(&theme_path) {
+                if let Some(colors) = lua.load_theme_colors(&code) {
+                    config.colors = colors;
+                }
+            } else if let Some((_, colors)) = ruster_lua::config::builtin_themes()
+                .into_iter()
+                .find(|(n, _)| *n == config.theme)
+            {
+                config.colors = colors;
+            } else if !config.theme.is_empty() && config.theme != "default" {
+                config_errors.push(format!(
+                    "general.theme: unknown theme {:?} → using default",
+                    config.theme
+                ));
+            }
+        }
+        }
         // Apply EditorConfig overrides (unless disabled via general.editorconfig).
         if config.editorconfig {
             let ec_props = ruster_core::editorconfig::parse(&file_path);
@@ -939,6 +997,14 @@ impl App {
             }
         }
         ws.borrow_mut().set_active_indent_width(config.tabstop);
+        // A brand-new file adopts the configured default line ending.
+        if config.line_ending == "crlf" && !file_path.exists() {
+            let mut w = ws.borrow_mut();
+            let id = w.active_buffer();
+            if let Some(doc) = w.buffers.get_mut(id) {
+                doc.line_ending = ruster_core::document::LineEnding::Crlf;
+            }
+        }
         // Startup editing paradigm + dired default from config.
         let editmode = if config.editmode == "emacs" {
             lua.set_editmode("emacs");
@@ -985,8 +1051,8 @@ impl App {
             hover: None,
             snippets: {
                 let mut s = ruster_core::snippets::SnippetSet::builtin();
-                if let Some(dir) = dirs::config_dir() {
-                    s.load_dir(&dir.join("ruster").join("snippets"));
+                if let Some(dir) = ruster_config_dir() {
+                    s.load_dir(&dir.join("snippets"));
                 }
                 s
             },
@@ -1003,6 +1069,7 @@ impl App {
             terminals: std::collections::HashMap::new(),
             terminal_focused: false,
             config_errors,
+            settings: None,
         }
     }
 
@@ -1051,6 +1118,18 @@ impl App {
         if self.picker.is_some() {
             self.handle_picker_key(ck);
             return;
+        }
+
+        // The Settings page captures input, except ':' (opens the cmdline for
+        // :w/:q) when not mid-edit, and except while the cmdline is already open.
+        if self.settings.is_some() && self.vim.mode != VimMode::Cmdline {
+            let editing = self.settings.as_ref().is_some_and(|s| s.is_editing());
+            // ':' (when not mid-edit) falls through to open the cmdline for :w/:q.
+            let colon = matches!(ck.code, KeyCode::Char(':')) && !editing;
+            if !colon {
+                self.handle_settings_key(ck);
+                return;
+            }
         }
 
         // Any key dismisses an open hover popup (and still acts).
@@ -1707,6 +1786,10 @@ impl App {
     /// Sync the active buffer to its language server (didOpen/didChange) and
     /// drain incoming LSP messages, dispatching diagnostics and responses.
     fn update_lsp(&mut self) {
+        // `lsp.autostart = false` disables launching/using language servers.
+        if !self.config.lsp_autostart {
+            return;
+        }
         let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         // Register / update the active buffer if it's a supported file.
         let active = self.ws.borrow().active_buffer();
@@ -1816,6 +1899,9 @@ impl App {
 
     /// A one-line summary of a diagnostic on the cursor's line, if any.
     fn current_line_diagnostic(&self) -> Option<String> {
+        if !self.config.lsp_diagnostics {
+            return None;
+        }
         let active = self.ws.borrow().active_buffer();
         let diags = self.diagnostics.get(&active)?;
         let line = {
@@ -1879,6 +1965,9 @@ impl App {
     }
 
     fn lsp_hover(&mut self) {
+        if !self.config.lsp_hover {
+            return;
+        }
         if let Some((_, uri, pos)) = self.active_lsp_target() {
             let params = ruster_lsp::protocol::text_document_position(&uri, pos);
             self.lsp_request("textDocument/hover", params, LspAction::Hover);
@@ -2473,6 +2562,7 @@ impl App {
             picker: picker_view,
             whichkey,
             hover: self.hover.clone(),
+            settings: self.settings.as_ref().map(|s| s.view()),
         };
         self.renderer.render_frame(&state);
     }
@@ -2505,6 +2595,7 @@ impl App {
             "ls" | "buffers" | "ibuffer" => Ok(CmdAction::Ibuffer),
             "term" | "terminal" => Ok(CmdAction::Terminal),
             "config-errors" | "configerrors" => Ok(CmdAction::ConfigErrors),
+            "settings" | "config" => Ok(CmdAction::Settings),
             "bd" | "bdelete" => Ok(CmdAction::BufferDelete),
             "Dired" | "dired" | "Explore" | "Ex" => Ok(CmdAction::Dired(None)),
             "Files" | "files" => Ok(CmdAction::Files),
@@ -2563,6 +2654,20 @@ impl App {
     /// Apply a parsed cmdline action. `:q` closes the active window and only
     /// quits the app when it is the last window.
     fn apply_cmd(&mut self, action: CmdAction) {
+        // While the settings page is open, :w saves it and :q closes it.
+        if self.settings.is_some() {
+            match action {
+                CmdAction::Save(_) => self.save_settings(),
+                CmdAction::SaveAndQuit => {
+                    self.save_settings();
+                    self.settings = None;
+                }
+                CmdAction::Quit | CmdAction::ForceQuit => self.settings = None,
+                CmdAction::Settings => {}
+                _ => {}
+            }
+            return;
+        }
         match action {
             CmdAction::Save(force) => self.save_file(force),
             CmdAction::SaveAs(p) => self.save_as(&p),
@@ -2598,6 +2703,7 @@ impl App {
             CmdAction::Ibuffer => self.open_ibuffer(),
             CmdAction::Terminal => self.open_terminal(),
             CmdAction::ConfigErrors => self.open_config_errors(),
+            CmdAction::Settings => self.settings = Some(SettingsState::new(&self.config)),
             CmdAction::BufferDelete => self.delete_active_buffer(),
             CmdAction::Dired(arg) => self.open_dired(arg),
             CmdAction::Files => self.open_files_picker(),
@@ -2749,6 +2855,60 @@ impl App {
         } else {
             None
         }
+    }
+
+    /// Handle a key while the Settings page is open.
+    fn handle_settings_key(&mut self, ck: crossterm::event::KeyEvent) {
+        let Some(s) = self.settings.as_mut() else { return };
+        if s.is_editing() {
+            match ck.code {
+                KeyCode::Enter => s.edit_commit(),
+                KeyCode::Esc => s.edit_cancel(),
+                KeyCode::Backspace => s.edit_backspace(),
+                KeyCode::Char(c) => s.edit_push(c),
+                _ => {}
+            }
+            return;
+        }
+        match ck.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.settings = None,
+            KeyCode::Char('j') | KeyCode::Down => s.move_down(),
+            KeyCode::Char('k') | KeyCode::Up => s.move_up(),
+            KeyCode::Tab | KeyCode::Char(']') => s.next_group(),
+            KeyCode::BackTab | KeyCode::Char('[') => s.prev_group(),
+            KeyCode::Char(' ') | KeyCode::Enter => s.activate(),
+            KeyCode::Char('l') | KeyCode::Right => s.adjust(1),
+            KeyCode::Char('h') | KeyCode::Left => s.adjust(-1),
+            _ => {}
+        }
+    }
+
+    /// Serialize the settings page's values to `config.lua` and apply the ones
+    /// that can take effect live (GUI font/size/colors still need a restart).
+    fn save_settings(&mut self) {
+        let Some(s) = self.settings.as_ref() else { return };
+        let values = s.values();
+        let lua = ruster_lua::schema::generate_config(&values);
+        let mut wrote = false;
+        if let Some(dir) = ruster_config_dir() {
+            let _ = std::fs::create_dir_all(&dir);
+            if std::fs::write(dir.join("config.lua"), &lua).is_ok() {
+                wrote = true;
+            }
+        }
+        // Apply live where possible (keeps the current theme palette).
+        let colors = self.config.colors;
+        self.config = ruster_lua::config::Config::from_settings(&values);
+        self.config.colors = colors;
+        self.ws.borrow_mut().set_active_indent_width(self.config.tabstop);
+        if let Some(s) = self.settings.as_mut() {
+            s.dirty = false;
+        }
+        self.message = Some(if wrote {
+            "Saved config.lua (restart to apply GUI font/size/window)".to_string()
+        } else {
+            "Could not write config.lua".to_string()
+        });
     }
 
     /// Open a read-only buffer listing config load/validation errors.
@@ -4482,6 +4642,10 @@ mod tests {
         let msg = a.current_line_diagnostic().expect("diagnostic on line");
         assert!(msg.contains("unused"));
         assert!(msg.starts_with("[E]"));
+
+        // The lsp.diagnostics toggle suppresses the inline message.
+        a.config.lsp_diagnostics = false;
+        assert!(a.current_line_diagnostic().is_none(), "diagnostics off → no message");
     }
 
     #[test]
@@ -4607,6 +4771,26 @@ mod tests {
         anim.update(std::time::Duration::from_secs_f64(0.5), 5, 3, false, 12.0);
         assert_eq!(anim.cell_x, 5.0);
         assert_eq!(anim.cell_y, 3.0);
+    }
+
+    #[test]
+    fn settings_page_opens_and_captures_keys() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        assert_eq!(a.parse_cmdline(":settings"), Ok(CmdAction::Settings));
+        a.apply_cmd(CmdAction::Settings);
+        assert!(a.settings.is_some(), "settings page opened");
+
+        // Navigation is captured by the settings handler, not the buffer.
+        let before = a.ws.borrow().buffer().to_string();
+        a.handle_key(CtKey::new(KeyCode::Char('j'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('k'), none));
+        assert_eq!(a.ws.borrow().buffer().to_string(), before, "keys don't reach the buffer");
+
+        // q closes it.
+        a.handle_key(CtKey::new(KeyCode::Char('q'), none));
+        assert!(a.settings.is_none(), "q closes the settings page");
     }
 
     #[test]

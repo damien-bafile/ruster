@@ -3,7 +3,10 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier};
 use ratatui::widgets::Widget;
 use ruster_core::vim::VimMode;
-use ruster_render::{CursorKind, GutterView, StatuslineView, StyledLine, TermGridView, Color as RColor};
+use ruster_render::{
+    ControlKind, CursorKind, GutterView, SettingRowView, SettingsView, StatuslineView, StyledLine,
+    TermGridView, Color as RColor,
+};
 
 /// Convert a VimMode to a display string.
 pub fn mode_label(mode: &VimMode) -> &'static str {
@@ -368,6 +371,132 @@ pub struct PickerWidget {
 impl PickerWidget {
     pub fn new(view: ruster_render::PickerView) -> Self {
         PickerWidget { view }
+    }
+}
+
+/// Renders the label/value string for a settings control.
+pub fn control_display(row: &SettingRowView) -> String {
+    match row.kind {
+        ControlKind::Toggle => {
+            if row.value == "on" { "[x] on".to_string() } else { "[ ] off".to_string() }
+        }
+        ControlKind::Enum => format!("‹ {} ›", row.value),
+        ControlKind::Number | ControlKind::Text => {
+            if row.editing {
+                format!("{}▏", row.value)
+            } else {
+                row.value.clone()
+            }
+        }
+    }
+}
+
+/// One rendered line of the settings body: a group header or a setting row.
+enum SettingsLine<'a> {
+    Header(&'a str),
+    Row(&'a SettingRowView),
+}
+
+pub struct SettingsWidget {
+    view: SettingsView,
+}
+
+impl SettingsWidget {
+    pub fn new(view: SettingsView) -> Self {
+        SettingsWidget { view }
+    }
+}
+
+impl Widget for SettingsWidget {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let bg = Color::Rgb(30, 30, 46);
+        let accent = Color::Rgb(137, 180, 250);
+        let fg = Color::Rgb(205, 214, 244);
+        let dim = Color::Rgb(127, 132, 156);
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_char(' ');
+                    cell.set_bg(bg);
+                }
+            }
+        }
+        let put = |buf: &mut Buffer, x: u16, y: u16, ch: char, c_fg: Color, c_bg: Color| {
+            if x >= area.left() && x < area.right() && y >= area.top() && y < area.bottom() {
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_char(ch);
+                    cell.set_fg(c_fg);
+                    cell.set_bg(c_bg);
+                }
+            }
+        };
+        let text = |buf: &mut Buffer, x: u16, y: u16, s: &str, c_fg: Color, c_bg: Color| {
+            for (i, ch) in s.chars().enumerate() {
+                put(buf, x + i as u16, y, ch, c_fg, c_bg);
+            }
+        };
+
+        // Title row.
+        let title = format!(" Settings{} ", if self.view.dirty { " [+]" } else { "" });
+        for x in area.left()..area.right() {
+            put(buf, x, area.y, ' ', Color::Black, accent);
+        }
+        text(buf, area.x + 1, area.y, &title, Color::Black, accent);
+
+        // Flatten groups into header + row lines.
+        let mut lines: Vec<SettingsLine> = Vec::new();
+        for g in &self.view.groups {
+            lines.push(SettingsLine::Header(&g.name));
+            for r in &g.rows {
+                lines.push(SettingsLine::Row(r));
+            }
+        }
+        let selected = lines
+            .iter()
+            .position(|l| matches!(l, SettingsLine::Row(r) if r.selected))
+            .unwrap_or(0);
+
+        // Scroll so the selected line stays visible (body between title/footer).
+        let body_top = area.y + 1;
+        let body_h = area.height.saturating_sub(3) as usize; // title + footer + help
+        let scroll = selected.saturating_sub(body_h.saturating_sub(1)).min(lines.len());
+        let value_col = area.x + 32.min(area.width / 2);
+
+        for (i, line) in lines.iter().skip(scroll).take(body_h).enumerate() {
+            let y = body_top + i as u16;
+            match line {
+                SettingsLine::Header(name) => {
+                    text(buf, area.x + 1, y, &format!("── {} ", name.to_uppercase()), accent, bg);
+                }
+                SettingsLine::Row(r) => {
+                    let (row_fg, row_bg) = if r.selected {
+                        for x in area.left()..area.right() {
+                            put(buf, x, y, ' ', Color::Black, Color::Rgb(69, 71, 90));
+                        }
+                        (fg, Color::Rgb(69, 71, 90))
+                    } else {
+                        (fg, bg)
+                    };
+                    text(buf, area.x + 2, y, &r.label, row_fg, row_bg);
+                    let ctrl = control_display(r);
+                    let cfg = if r.editing { accent } else { row_fg };
+                    text(buf, value_col, y, &ctrl, cfg, row_bg);
+                }
+            }
+        }
+
+        // Help/footer at the bottom.
+        let fy = area.bottom().saturating_sub(1);
+        for x in area.left()..area.right() {
+            put(buf, x, fy, ' ', dim, Color::Rgb(24, 24, 37));
+        }
+        text(buf, area.x + 1, fy, &self.view.footer, dim, Color::Rgb(24, 24, 37));
+
+        // Selected row's help just above the footer.
+        if let Some(SettingsLine::Row(r)) = lines.get(selected) {
+            let hy = area.bottom().saturating_sub(2);
+            text(buf, area.x + 1, hy, &r.help, dim, bg);
+        }
     }
 }
 

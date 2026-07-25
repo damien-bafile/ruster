@@ -178,6 +178,8 @@ Press `SPC` in Normal mode; the which-key panel lists continuations.
 | `:ls` `:buffers` `:ibuffer` | Buffer list picker |
 | `:bd` `:bdelete` | Delete the active buffer |
 | `:term` `:terminal` | Open an embedded terminal |
+| `:settings` `:config` | Open the settings page |
+| `:config-errors` | Show config load/validation errors |
 
 ### Navigation
 | Command | Action |
@@ -299,10 +301,24 @@ cycle through the tabstops. Built-in triggers include `fn`/`pfn`/`impl`/`test`
 (Rust), `def`/`class` (Python), `fn` (Lua); add your own in
 `~/.config/ruster/snippets/<filetype>.snippets`.
 
+## Settings page
+
+`:settings` opens a grouped, interactive editor for `config.lua`.
+
+| Key | Action |
+|-----|--------|
+| `j` `k` / `↓` `↑` | Move between settings |
+| `Tab` / `[` `]` | Jump to the next / previous group |
+| `Space` `Enter` | Toggle a boolean, cycle an enum, or start editing a text/number field |
+| `h` `l` / `←` `→` | Adjust a number or cycle an enum |
+| _type_ then `Enter` | Commit a text/number edit (`Esc` cancels) |
+| `:w` | Save to `config.lua` |
+| `q` `Esc` | Close the page |
+
 ## Embedded terminal
 
-`:term` opens a shell in the current window (`terminal_shell` /
-`terminal_scrollback` config it — see [config-reference.md](config-reference.md)).
+`:term` opens a shell in the current window (`terminal.shell` /
+`terminal.scrollback` config it — see [config-reference.md](config-reference.md)).
 
 It has two modes, like Neovim's terminal:
 

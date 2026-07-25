@@ -125,6 +125,16 @@ impl Renderer for TuiRenderer {
                 let parea = Rect::new(px, py, pw, ph);
                 frame.render_widget(crate::widgets::PickerWidget::new(picker.clone()), parea);
             }
+
+            // Settings page, a large centered overlay.
+            if let Some(settings) = &state.settings {
+                let sw = (area.width * 8 / 10).clamp(30, area.width.saturating_sub(2));
+                let sh = (area.height * 9 / 10).clamp(6, area.height.saturating_sub(1));
+                let sx = area.x + (area.width.saturating_sub(sw)) / 2;
+                let sy = area.y + (area.height.saturating_sub(sh)) / 2;
+                let sarea = Rect::new(sx, sy, sw, sh);
+                frame.render_widget(crate::widgets::SettingsWidget::new(settings.clone()), sarea);
+            }
         });
     }
 }
