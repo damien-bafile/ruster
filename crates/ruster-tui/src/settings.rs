@@ -235,7 +235,7 @@ impl SettingsState {
                 if d.is_empty() && self.dyn_opts.contains_key(&i) {
                     "auto".to_string()
                 } else {
-                    d
+                    decorate_value(spec.group, spec.key, d)
                 }
             };
             let row = SettingRowView {
@@ -258,6 +258,19 @@ impl SettingsState {
         };
         SettingsView { groups, dirty: self.dirty, footer }
     }
+}
+
+/// Add a friendly suffix to certain enum values for display only (the stored
+/// value stays the raw token, so cycling and saving are unaffected).
+fn decorate_value(group: &str, key: &str, value: String) -> String {
+    if group == "general" && key == "line_ending" {
+        return match value.as_str() {
+            "lf" => "lf (unix)".to_string(),
+            "crlf" => "crlf (windows)".to_string(),
+            _ => value,
+        };
+    }
+    value
 }
 
 fn parse_value(kind: &SettingKind, s: &str) -> Option<SettingValue> {
