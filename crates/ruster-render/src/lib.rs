@@ -131,7 +131,10 @@ pub fn gutter_view(
     }
     let digits = line_count.max(1).to_string().len();
     let num_w = digits.max(3);
-    let width = (num_w + 1) as u16;
+    // Hybrid (both on) gets an extra column of padding so the absolute number on
+    // the cursor line and the relative numbers elsewhere are easier to tell apart.
+    let pad = if number && relativenumber { 2 } else { 1 };
+    let width = (num_w + pad) as u16;
 
     let mut rows = Vec::new();
     for row in 0..height {
@@ -148,7 +151,7 @@ pub fn gutter_view(
         } else {
             line.abs_diff(cursor_line)
         };
-        rows.push(format!("{:>width$} ", value, width = num_w));
+        rows.push(format!("{:>num_w$}{}", value, " ".repeat(pad)));
     }
     GutterView { width, rows }
 }
@@ -496,6 +499,13 @@ mod tests {
         let vals: Vec<&str> = g.rows.iter().map(|s| s.trim()).collect();
         // line0 -> rel 1, line1 -> abs 2, line2 -> rel 1, line3 -> rel 2
         assert_eq!(vals, vec!["1", "2", "1", "2"]);
+    }
+
+    #[test]
+    fn gutter_hybrid_is_wider_than_single() {
+        let single = gutter_view(0, 100, 0, true, false, 3).width;
+        let hybrid = gutter_view(0, 100, 0, true, true, 3).width;
+        assert!(hybrid > single, "hybrid gutter is wider: {hybrid} vs {single}");
     }
 
     #[test]

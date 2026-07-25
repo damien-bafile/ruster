@@ -677,7 +677,7 @@ impl Renderer for RaylibRenderer {
                         ControlKind::Toggle => {
                             if r.value == "on" { "[x] on".to_string() } else { "[ ] off".to_string() }
                         }
-                        ControlKind::Enum => format!("‹ {} ›", r.value),
+                        ControlKind::Enum => format!("< {} >", r.value),
                         ControlKind::Number | ControlKind::Text => {
                             if r.editing { format!("{}▏", r.value) } else { r.value.clone() }
                         }

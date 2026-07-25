@@ -380,7 +380,7 @@ pub fn control_display(row: &SettingRowView) -> String {
         ControlKind::Toggle => {
             if row.value == "on" { "[x] on".to_string() } else { "[ ] off".to_string() }
         }
-        ControlKind::Enum => format!("‹ {} ›", row.value),
+        ControlKind::Enum => format!("< {} >", row.value),
         ControlKind::Number | ControlKind::Text => {
             if row.editing {
                 format!("{}▏", row.value)

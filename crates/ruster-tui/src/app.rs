@@ -2703,7 +2703,11 @@ impl App {
             CmdAction::Ibuffer => self.open_ibuffer(),
             CmdAction::Terminal => self.open_terminal(),
             CmdAction::ConfigErrors => self.open_config_errors(),
-            CmdAction::Settings => self.settings = Some(SettingsState::new(&self.config)),
+            CmdAction::Settings => {
+                let themes = self.available_themes();
+                let fonts = self.available_fonts();
+                self.settings = Some(SettingsState::new(&self.config, themes, fonts));
+            }
             CmdAction::BufferDelete => self.delete_active_buffer(),
             CmdAction::Dired(arg) => self.open_dired(arg),
             CmdAction::Files => self.open_files_picker(),
@@ -2909,6 +2913,73 @@ impl App {
         } else {
             "Could not write config.lua".to_string()
         });
+    }
+
+    /// Theme names available in the picker: built-ins plus any `themes/*.lua`.
+    fn available_themes(&self) -> Vec<String> {
+        let mut names: Vec<String> =
+            ruster_lua::config::builtin_themes().iter().map(|(n, _)| n.to_string()).collect();
+        if let Some(dir) = ruster_config_dir() {
+            if let Ok(rd) = std::fs::read_dir(dir.join("themes")) {
+                for entry in rd.flatten() {
+                    let path = entry.path();
+                    if path.extension().is_some_and(|x| x == "lua") {
+                        if let Some(stem) = path.file_stem() {
+                            let s = stem.to_string_lossy().into_owned();
+                            if !names.contains(&s) {
+                                names.push(s);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        names
+    }
+
+    /// Installed font filenames (`.ttf`/`.otf`) for the font picker.
+    fn available_fonts(&self) -> Vec<String> {
+        let mut dirs_list: Vec<PathBuf> = Vec::new();
+        if let Some(d) = dirs::font_dir() {
+            dirs_list.push(d);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            dirs_list.push(PathBuf::from("/Library/Fonts"));
+            dirs_list.push(PathBuf::from("/System/Library/Fonts"));
+        }
+        #[cfg(target_os = "linux")]
+        {
+            dirs_list.push(PathBuf::from("/usr/share/fonts"));
+        }
+        #[cfg(windows)]
+        {
+            dirs_list.push(PathBuf::from(r"C:\Windows\Fonts"));
+        }
+        let mut names: Vec<String> = Vec::new();
+        for dir in dirs_list {
+            if let Ok(rd) = std::fs::read_dir(&dir) {
+                for entry in rd.flatten() {
+                    let p = entry.path();
+                    let ext_ok = p.extension().is_some_and(|x| x == "ttf" || x == "otf");
+                    if ext_ok {
+                        if let Some(f) = p.file_name() {
+                            let s = f.to_string_lossy().into_owned();
+                            if !names.contains(&s) {
+                                names.push(s);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        names.sort();
+        names
+    }
+
+    /// Open dired at `path` (used when ruster is launched with a directory).
+    pub fn open_dir(&mut self, path: &std::path::Path) {
+        self.open_dired(Some(path.to_string_lossy().into_owned()));
     }
 
     /// Open a read-only buffer listing config load/validation errors.

@@ -10,7 +10,9 @@ fn main() {
         .map(PathBuf::from)
         .unwrap_or_default();
 
-    let content = if path.exists() {
+    // A directory argument opens ruster in dired at that location.
+    let is_dir = path.is_dir();
+    let content = if path.is_file() {
         match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(e) => {
@@ -23,13 +25,19 @@ fn main() {
     };
 
     if tui {
-        let mut app = App::new(content, path);
+        let mut app = App::new(content, path.clone());
+        if is_dir {
+            app.open_dir(&path);
+        }
         if let Err(e) = app.run_async() {
             eprintln!("Error: {}", e);
             std::process::exit(1);
         }
     } else {
-        let mut app = App::new(content, path);
+        let mut app = App::new(content, path.clone());
+        if is_dir {
+            app.open_dir(&path);
+        }
         let font = app.gui_font();
         let gui = app.gui_config();
         let renderer: Box<dyn Renderer> =

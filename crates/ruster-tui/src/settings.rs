@@ -13,12 +13,29 @@ pub struct SettingsState {
     selected: usize,
     /// In-edit text buffer for Text/Number fields (`None` = not editing).
     editing: Option<String>,
+    /// Runtime-discovered cyclable options for specific rows (theme names, font
+    /// filenames) keyed by row index. Turns those Text fields into pickers.
+    dyn_opts: std::collections::HashMap<usize, Vec<String>>,
     pub dirty: bool,
 }
 
 impl SettingsState {
-    pub fn new(config: &Config) -> Self {
+    pub fn new(config: &Config, themes: Vec<String>, fonts: Vec<String>) -> Self {
         let specs = schema::schema();
+        let mut dyn_opts = std::collections::HashMap::new();
+        if let Some(i) = specs.iter().position(|s| s.group == "general" && s.key == "theme") {
+            if !themes.is_empty() {
+                dyn_opts.insert(i, themes);
+            }
+        }
+        if let Some(i) = specs.iter().position(|s| s.group == "gui" && s.key == "font") {
+            if !fonts.is_empty() {
+                // "auto" (empty value) plus the discovered font filenames.
+                let mut o = vec!["auto".to_string()];
+                o.extend(fonts);
+                dyn_opts.insert(i, o);
+            }
+        }
         let current = config.to_settings();
         let values = specs
             .iter()
@@ -30,7 +47,19 @@ impl SettingsState {
                     .unwrap_or_else(|| s.default.clone())
             })
             .collect();
-        SettingsState { specs, values, selected: 0, editing: None, dirty: false }
+        SettingsState { specs, values, selected: 0, editing: None, dyn_opts, dirty: false }
+    }
+
+    /// The selectable options for a row: an enum's variants, or the discovered
+    /// theme/font list. `None` for free text/number/toggle rows.
+    fn options_for(&self, idx: usize) -> Option<Vec<String>> {
+        if let Some(opts) = self.dyn_opts.get(&idx) {
+            return Some(opts.clone());
+        }
+        if let SettingKind::Enum(opts) = self.specs[idx].kind {
+            return Some(opts.iter().map(|s| s.to_string()).collect());
+        }
+        None
     }
 
     pub fn is_editing(&self) -> bool {
@@ -76,21 +105,26 @@ impl SettingsState {
 
     // --- activation / adjustment ---
 
-    /// Space/Enter: toggle a bool, cycle an enum, else begin editing.
+    /// Space/Enter: toggle a bool, cycle an enum/theme, else begin editing.
     pub fn activate(&mut self) {
-        match &self.specs[self.selected].kind {
-            SettingKind::Bool => self.flip(),
-            SettingKind::Enum(_) => self.cycle(1),
+        if matches!(self.specs[self.selected].kind, SettingKind::Bool) {
+            self.flip();
+        } else if self.options_for(self.selected).is_some() {
+            self.cycle(1);
+        } else {
             // Text/Number fields edit from an empty buffer (type the new value).
-            _ => self.editing = Some(String::new()),
+            self.editing = Some(String::new());
         }
     }
 
-    /// h/l or Left/Right: cycle enum, step number, or flip bool.
+    /// h/l or Left/Right: cycle enum/theme, step number, or flip bool.
     pub fn adjust(&mut self, delta: i64) {
+        if self.options_for(self.selected).is_some() {
+            self.cycle(delta);
+            return;
+        }
         let spec = self.specs[self.selected].clone();
         match spec.kind {
-            SettingKind::Enum(_) => self.cycle(delta),
             SettingKind::Bool => self.flip(),
             SettingKind::Int { min, max } => {
                 if let SettingValue::Int(i) = self.values[self.selected] {
@@ -115,13 +149,27 @@ impl SettingsState {
     }
 
     fn cycle(&mut self, delta: i64) {
-        if let SettingKind::Enum(opts) = self.specs[self.selected].kind {
-            let cur = self.values[self.selected].display();
-            let idx = opts.iter().position(|o| *o == cur).unwrap_or(0) as i64;
-            let n = opts.len() as i64;
-            let next = ((idx + delta) % n + n) % n;
-            self.set(SettingValue::Enum(opts[next as usize].to_string()));
+        let Some(opts) = self.options_for(self.selected) else { return };
+        if opts.is_empty() {
+            return;
         }
+        let cur_display = self.values[self.selected].display();
+        // Empty text (e.g. an unset font) matches the "auto" sentinel.
+        let cur = if cur_display.is_empty() { "auto".to_string() } else { cur_display };
+        let idx = opts.iter().position(|o| *o == cur).unwrap_or(0) as i64;
+        let n = opts.len() as i64;
+        let next = (((idx + delta) % n) + n) % n;
+        let chosen = opts[next as usize].clone();
+        // Enum rows carry an Enum value; dynamic Text rows (theme/font) stay Text,
+        // and the "auto" sentinel maps back to an empty value.
+        let v = if matches!(self.specs[self.selected].kind, SettingKind::Enum(_)) {
+            SettingValue::Enum(chosen)
+        } else if chosen == "auto" {
+            SettingValue::Text(String::new())
+        } else {
+            SettingValue::Text(chosen)
+        };
+        self.set(v);
     }
 
     fn set(&mut self, v: SettingValue) {
@@ -169,13 +217,26 @@ impl SettingsState {
                 SettingKind::Bool => ControlKind::Toggle,
                 SettingKind::Enum(_) => ControlKind::Enum,
                 SettingKind::Int { .. } | SettingKind::Float { .. } => ControlKind::Number,
-                SettingKind::Text | SettingKind::Color => ControlKind::Text,
+                // The theme field is a cyclable list; render it like an enum.
+                SettingKind::Text | SettingKind::Color => {
+                    if self.options_for(i).is_some() {
+                        ControlKind::Enum
+                    } else {
+                        ControlKind::Text
+                    }
+                }
             };
             let editing = self.selected == i && self.editing.is_some();
             let value = if editing {
                 self.editing.clone().unwrap_or_default()
             } else {
-                self.values[i].display()
+                let d = self.values[i].display();
+                // Dynamic Text rows (font) show "auto" when unset.
+                if d.is_empty() && self.dyn_opts.contains_key(&i) {
+                    "auto".to_string()
+                } else {
+                    d
+                }
             };
             let row = SettingRowView {
                 label: spec.label.to_string(),
@@ -235,7 +296,7 @@ mod tests {
 
     #[test]
     fn edits_mutate_working_values_and_mark_dirty() {
-        let mut s = SettingsState::new(&Config::default());
+        let mut s = SettingsState::new(&Config::default(), vec!["default".into(), "gruvbox".into()], vec![]);
         assert!(!s.dirty);
         // First row is general.tabstop (Int 1..16); +2 → 6.
         s.adjust(2);
@@ -246,7 +307,7 @@ mod tests {
 
     #[test]
     fn enum_cycles_through_options() {
-        let mut s = SettingsState::new(&Config::default());
+        let mut s = SettingsState::new(&Config::default(), vec!["default".into(), "gruvbox".into()], vec![]);
         let idx = schema::schema().iter().position(|sp| sp.key == "editmode").unwrap();
         for _ in 0..idx {
             s.move_down();
@@ -258,8 +319,28 @@ mod tests {
     }
 
     #[test]
+    fn theme_row_cycles_through_discovered_themes() {
+        let mut s = SettingsState::new(
+            &Config::default(),
+            vec!["default".into(), "gruvbox".into(), "nord".into()],
+            vec![],
+        );
+        let idx = schema::schema().iter().position(|sp| sp.key == "theme").unwrap();
+        for _ in 0..idx {
+            s.move_down();
+        }
+        // Starts at "default"; cycling advances through the discovered list.
+        s.activate();
+        assert_eq!(s.values()[idx].1, SettingValue::Text("gruvbox".into()));
+        s.adjust(1);
+        assert_eq!(s.values()[idx].1, SettingValue::Text("nord".into()));
+        s.adjust(-1);
+        assert_eq!(s.values()[idx].1, SettingValue::Text("gruvbox".into()));
+    }
+
+    #[test]
     fn text_edit_commit_validates() {
-        let mut s = SettingsState::new(&Config::default());
+        let mut s = SettingsState::new(&Config::default(), vec!["default".into(), "gruvbox".into()], vec![]);
         let idx = schema::schema().iter().position(|sp| sp.key == "font_size").unwrap();
         for _ in 0..idx {
             s.move_down();
