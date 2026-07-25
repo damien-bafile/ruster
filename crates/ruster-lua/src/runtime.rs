@@ -159,6 +159,7 @@ impl LuaRuntime {
             number: cfg.get("number").unwrap_or(defaults.number),
             relativenumber: cfg.get("relativenumber").unwrap_or(defaults.relativenumber),
             theme: cfg.get("theme").unwrap_or(defaults.theme),
+            gui_font: cfg.get("gui_font").unwrap_or(defaults.gui_font),
             cursor_anim_enabled: cfg.get("cursor_anim_enabled").unwrap_or(defaults.cursor_anim_enabled),
             cursor_anim_speed: cfg.get("cursor_anim_speed").unwrap_or(defaults.cursor_anim_speed),
             timeoutlen: cfg.get("timeoutlen").unwrap_or(defaults.timeoutlen),

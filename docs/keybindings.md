@@ -304,11 +304,24 @@ cycle through the tabstops. Built-in triggers include `fn`/`pfn`/`impl`/`test`
 `:term` opens a shell in the current window (`terminal_shell` /
 `terminal_scrollback` config it — see [config-reference.md](config-reference.md)).
 
+It has two modes, like Neovim's terminal:
+
+**Terminal-Insert** (`-- TERMINAL --`) — keys go to the shell.
+
 | Key | Action |
 |-----|--------|
-| `i` `a` `Enter` | Enter the terminal (forward keys to the shell) |
-| _any key_ | While focused, forwarded to the shell (`Ctrl-C`, arrows, …) |
-| `Ctrl-\` | Leave the terminal — editor keys, `:` commands, window nav resume |
+| _any key_ | Forwarded to the shell (`Ctrl-C`, arrows, Tab-completion, …) |
+| `Ctrl-\` | Switch to Terminal-Normal |
+
+**Terminal-Normal** — the visible output is mirrored into a read-only buffer, so the
+normal editor keys work over it:
+
+| Key | Action |
+|-----|--------|
+| `h j k l` `w` `b` `gg` `G` … | Move over the terminal output |
+| `v` / `V` then `y` | Visually select and yank terminal output |
+| `:` commands, `Ctrl-w` nav | Run commands / switch windows |
+| `i` `a` `Enter` | Resume Terminal-Insert (back to the shell) |
 
 The terminal resizes to its window automatically and is closed when ruster quits.
 On Windows it needs ConPTY (Windows 10 1809+); see [windows.md](windows.md).

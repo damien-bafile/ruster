@@ -18,16 +18,40 @@ pub struct RaylibRenderer {
     event_buffer: Vec<KeyEvent>,
 }
 
-/// Candidate monospaced font files to try, most-preferred first: a
-/// user-installed Nerd/JetBrains font (via the platform font dir), then per-OS
-/// system monospaced fonts. This lets the GUI render a real mono font on
-/// Windows, macOS, and Linux instead of raylib's low-resolution default.
-fn mono_font_candidates() -> Vec<String> {
+/// Candidate monospaced font files to try, most-preferred first: an explicit
+/// `gui_font` override, then a user-installed Nerd font (via the platform font
+/// dir), then per-OS system monospaced fonts. This lets the GUI render a real
+/// mono font — and, with a Nerd font, icon glyphs — on Windows, macOS, and Linux
+/// instead of raylib's low-resolution default.
+fn mono_font_candidates(font_override: Option<&str>) -> Vec<String> {
     let mut out = Vec::new();
+    // An explicit override wins: absolute/relative path used as-is, a bare
+    // filename resolved against the user font dir.
+    if let Some(f) = font_override.filter(|s| !s.is_empty()) {
+        if std::path::Path::new(f).is_absolute() || f.contains(std::path::MAIN_SEPARATOR) {
+            out.push(f.to_string());
+        } else if let Some(dir) = dirs::font_dir() {
+            out.push(dir.join(f).to_string_lossy().into_owned());
+        }
+    }
     // On macOS/Linux this resolves the user font dir (e.g. ~/Library/Fonts);
     // it returns None on Windows, where the system paths below cover it.
     if let Some(font_dir) = dirs::font_dir() {
-        for name in ["JetBrainsMonoNerdFont-Regular.ttf", "JetBrainsMono-Regular.ttf"] {
+        // Common Nerd font filenames, so icons work out of the box if any of
+        // these are installed (Homebrew casks / nerdfonts.com use these names).
+        // Prefer the "Mono" Nerd font variants: their icons are single-cell
+        // width, which keeps the fixed-width grid aligned.
+        for name in [
+            "JetBrainsMonoNerdFontMono-Regular.ttf",
+            "FiraCodeNerdFontMono-Regular.ttf",
+            "CaskaydiaCoveNerdFontMono-Regular.ttf",
+            "HackNerdFontMono-Regular.ttf",
+            "MesloLGSNerdFontMono-Regular.ttf",
+            "JetBrainsMonoNerdFont-Regular.ttf",
+            "FiraCodeNerdFont-Regular.ttf",
+            "CascadiaCodeNF.ttf",
+            "JetBrainsMono-Regular.ttf",
+        ] {
             out.push(font_dir.join(name).to_string_lossy().into_owned());
         }
     }
@@ -53,22 +77,49 @@ impl RaylibRenderer {
     /// Glyphs to bake into the font atlas. Raylib's default is only the 95
     /// printable ASCII codepoints, so anything else (en/em dashes, curly
     /// quotes, ellipsis, bullets, arrows, box-drawing) renders as `?`. We add
-    /// Latin-1 and the common Unicode punctuation the docs and UI actually use.
-    /// `load_font_ex` takes the character set as a string.
+    /// Latin-1, the common Unicode punctuation the docs and UI use, and — for
+    /// terminal output — box-drawing plus the Nerd Font icon ranges (Private Use
+    /// Area). Codepoints a font lacks fall back to a blank; a non-Nerd font
+    /// simply won't have the icon glyphs. `load_font_ex` takes the set as a
+    /// string. The plane-1 Material Design range is intentionally omitted to
+    /// keep the atlas small.
     fn font_chars() -> String {
         let mut s = String::new();
-        for c in (0x20u32..=0x7E).chain(0xA0..=0xFF) {
-            if let Some(ch) = char::from_u32(c) {
-                s.push(ch);
+        // Ranges of codepoints to bake, as inclusive (start, end) pairs.
+        const RANGES: &[(u32, u32)] = &[
+            (0x20, 0x7E),     // printable ASCII
+            (0xA0, 0xFF),     // Latin-1 supplement
+            (0x2500, 0x259F), // box drawing + block elements
+            (0x2600, 0x26FF), // misc symbols (⚡ etc.)
+            (0xE000, 0xE00D), // Pomicons
+            (0xE0A0, 0xE0D7), // Powerline + extras
+            (0xE200, 0xE2A9), // Font Awesome extension
+            (0xE300, 0xE3E3), // Weather
+            (0xE5FA, 0xE6B7), // Seti-UI + custom
+            (0xE700, 0xE7C5), // Devicons
+            (0xEA60, 0xEC1E), // Codicons
+            (0xF000, 0xF2FF), // Font Awesome
+            (0xF300, 0xF375), // Font Logos
+            (0xF400, 0xF533), // Octicons
+        ];
+        for &(start, end) in RANGES {
+            for c in start..=end {
+                if let Some(ch) = char::from_u32(c) {
+                    s.push(ch);
+                }
             }
         }
-        s.push_str("–—‘’“”•…←↑→↓─│✓✗");
+        s.push_str("–—‘’“”•…←↑→↓✓✗");
         s
     }
 
-    fn try_load_mono_font(rl: &mut RaylibHandle, thread: &RaylibThread) -> WeakFont {
+    fn try_load_mono_font(
+        rl: &mut RaylibHandle,
+        thread: &RaylibThread,
+        font_override: Option<&str>,
+    ) -> WeakFont {
         let chars = Self::font_chars();
-        for path in mono_font_candidates() {
+        for path in mono_font_candidates(font_override) {
             if let Ok(font) = rl.load_font_ex(thread, &path, FONT_SIZE, Some(&chars)) {
                 return font.make_weak();
             }
@@ -76,7 +127,7 @@ impl RaylibRenderer {
         rl.get_font_default()
     }
 
-    pub fn new(width: i32, height: i32, title: &str) -> Self {
+    pub fn new(width: i32, height: i32, title: &str, font_override: Option<&str>) -> Self {
         let (mut rl, thread) = raylib::init()
             .size(width, height)
             .title(title)
@@ -84,7 +135,7 @@ impl RaylibRenderer {
             .build();
         rl.set_target_fps(60);
         rl.set_exit_key(None);
-        let font = Self::try_load_mono_font(&mut rl, &thread);
+        let font = Self::try_load_mono_font(&mut rl, &thread, font_override);
         let char_w = font.measure_text("m", FONT_SIZE as f32, 1.0).x;
         RaylibRenderer { rl, thread, font, char_w, event_buffer: Vec::new() }
     }

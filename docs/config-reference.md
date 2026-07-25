@@ -26,6 +26,7 @@ ruster.config = {
 | `number` | boolean | false | Show absolute line numbers in the gutter. Toggle live with `:set number` / `:set nonumber` / `:set number!` (abbrev. `nu`) |
 | `relativenumber` | boolean | false | Show relative line numbers (distance from cursor). With `number` also on, the gutter is hybrid: the cursor line shows its absolute number, other lines show the relative distance. Toggle live with `:set relativenumber` / `:set norelativenumber` / `:set relativenumber!` (abbrev. `rnu`) |
 | `theme` | string | "default" | Color theme name |
+| `gui_font` | string | _(auto)_ | GUI font: an absolute path, or a filename in your user font dir. Unset tries common Nerd/mono fonts. **A Nerd Font is required for icon glyphs** (else they show as `?`) — see [GUI font & icons](#gui-font--icons) |
 | `cursor_anim_enabled` | boolean | true | Enable smooth cursor animation |
 | `cursor_anim_speed` | float | 12.0 | Smooth-cursor easing speed |
 | `timeoutlen` | integer | 300 | Milliseconds before the which-key panel appears for a pending key prefix |
@@ -33,13 +34,35 @@ ruster.config = {
 | `terminal_shell` | string | _(platform default)_ | Program `:term` launches. Unset uses `$SHELL` (Unix) / `%COMSPEC%` (Windows), falling back to `/bin/sh` / `cmd.exe`. Program only — no argument splitting |
 | `terminal_scrollback` | integer | 10000 | Lines of scrollback history an embedded terminal retains |
 
+## GUI font & icons
+
+The GUI (raylib) needs a **Nerd Font** to show icon glyphs — file-type icons in `ls`/
+`eza`, Powerline segments, etc. Without one they render as `?`.
+
+1. Install a Nerd Font (e.g. `brew install --cask font-jetbrains-mono-nerd-font`, or any
+   from [nerdfonts.com](https://www.nerdfonts.com)).
+2. ruster auto-detects common ones (JetBrains Mono, FiraCode, Cascadia, Hack, Meslo —
+   preferring the `…Mono` variants for grid alignment). To force a specific font:
+
+   ```lua
+   ruster.config.gui_font = "FiraCodeNerdFontMono-Regular.ttf"  -- filename in the font dir
+   -- or an absolute path:
+   -- ruster.config.gui_font = "/Users/me/Library/Fonts/HackNerdFontMono-Regular.ttf"
+   ```
+
+The atlas bakes the standard Nerd Font icon ranges (Seti-UI, Devicons, Font Awesome,
+Octicons, Codicons, Powerline, box-drawing). In `--tui` mode, icons come from your
+terminal emulator's font instead, not this setting.
+
 ## Embedded terminal
 
-`:term` (or `:terminal`) opens a shell in the current window. Keys are forwarded to the
-shell while the terminal is **focused**; press `Ctrl-\` to return to editor keys (window
-navigation, `:` commands), and `i` / `a` / `Enter` to re-enter it. The terminal resizes
-to its window automatically and is torn down on quit. See
-[windows.md](windows.md) for the Windows/ConPTY requirements.
+`:term` (or `:terminal`) opens a shell in the current window. It has two modes like
+Neovim's terminal: **Terminal-Insert** (keys go to the shell) and **Terminal-Normal**
+(`Ctrl-\`), where the output is mirrored into a read-only buffer so vim motions, visual
+selection and yank work over it; `i` / `a` / `Enter` resume the shell. The terminal
+resizes to its window automatically and is torn down on quit. See
+[keybindings.md](keybindings.md) for the full key list and [windows.md](windows.md) for
+the Windows/ConPTY requirements.
 
 > **Keys & commands:** all keybindings and `:` commands live in the
 > [Commands & Keybindings reference](keybindings.md). This page covers only the

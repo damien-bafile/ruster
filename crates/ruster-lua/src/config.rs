@@ -6,6 +6,10 @@ pub struct Config {
     pub number: bool,
     pub relativenumber: bool,
     pub theme: String,
+    /// Font for the GUI: an absolute path, or a filename looked up in the user
+    /// font dir. `None` tries a list of common Nerd/mono fonts. A Nerd Font is
+    /// needed for icon glyphs (otherwise they render as `?`).
+    pub gui_font: Option<String>,
     pub cursor_anim_enabled: bool,
     pub cursor_anim_speed: f32,
     /// Milliseconds to wait for a mapped key sequence before showing which-key.
@@ -29,6 +33,7 @@ impl Default for Config {
             number: false,
             relativenumber: false,
             theme: "default".into(),
+            gui_font: None,
             cursor_anim_enabled: true,
             cursor_anim_speed: 12.0,
             timeoutlen: 300,

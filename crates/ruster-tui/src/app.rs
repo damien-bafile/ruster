@@ -959,6 +959,11 @@ impl App {
         }
     }
 
+    /// The configured GUI font (`gui_font`), for the renderer to load.
+    pub fn gui_font(&self) -> Option<String> {
+        self.config.gui_font.clone()
+    }
+
     pub fn handle_key(&mut self, ck: crossterm::event::KeyEvent) {
         // Windows consoles report a Release (and Repeat) event for every key,
         // where Unix only reports Press. Acting on Release double-processes each
@@ -2261,7 +2266,17 @@ impl App {
                     },
                 };
                 let pct = ((cline + 1) * 100).checked_div(line_count).unwrap_or(100);
-                let mut left = if is_active { mode_lbl.clone() } else { String::new() };
+                // A focused terminal shows a dedicated mode label; in Terminal-
+                // Normal the underlying vim mode (NORMAL/VISUAL) shows through.
+                let focused_terminal =
+                    is_active && self.terminal_focused && self.terminals.contains_key(&buf_id);
+                let mut left = if focused_terminal {
+                    "-- TERMINAL --".to_string()
+                } else if is_active {
+                    mode_lbl.clone()
+                } else {
+                    String::new()
+                };
                 let mut center = name;
                 let mut right = format!("{}%  {},{}", pct, cline + 1, ccol + 1);
                 if is_active {
@@ -2290,8 +2305,12 @@ impl App {
                     buf_h,
                 );
                 // If this window hosts a terminal, resize its PTY to the window's
-                // text area and snapshot its grid for rendering.
-                let terminal = if let Some(session) = self.terminals.get_mut(&buf_id) {
+                // text area and snapshot its grid for rendering — unless it's the
+                // active terminal in Terminal-Normal mode, where the mirrored
+                // buffer text is drawn instead so vim motions/visual show through.
+                let in_terminal_normal = is_active && !self.terminal_focused;
+                let terminal = if self.terminals.contains_key(&buf_id) && !in_terminal_normal {
+                    let session = self.terminals.get_mut(&buf_id).expect("terminal exists");
                     let cols = rect.width.max(1);
                     let rows = rect.height.saturating_sub(1).max(1);
                     let _ = session.resize(cols, rows);
@@ -2671,11 +2690,12 @@ impl App {
         }
     }
 
-    /// Forward one key press to a focused terminal's PTY. `Ctrl-\` defocuses.
+    /// Forward one key press to a focused terminal's PTY. `Ctrl-\` switches to
+    /// Terminal-Normal mode (vim motions / visual / yank over the output).
     fn handle_terminal_key(&mut self, ck: crossterm::event::KeyEvent, bid: BufferId) {
         if ck.modifiers.contains(KeyModifiers::CONTROL) {
             if let KeyCode::Char('\\') = ck.code {
-                self.terminal_focused = false;
+                self.enter_terminal_normal(bid);
                 return;
             }
         }
@@ -2685,6 +2705,33 @@ impl App {
                 let _ = session.write_input(&bytes);
             }
         }
+    }
+
+    /// Leave terminal-insert for Terminal-Normal: snapshot the visible grid into
+    /// the (read-only) buffer so the vim layer's motions, visual selection and
+    /// yank operate over the terminal's output. `i`/`a`/Enter resume insert.
+    fn enter_terminal_normal(&mut self, bid: BufferId) {
+        if let Some(session) = self.terminals.get(&bid) {
+            let grid = session.snapshot();
+            let mut lines: Vec<String> =
+                (0..grid.rows).map(|r| grid.row_text(r).trim_end().to_string()).collect();
+            while lines.last().map(|l| l.is_empty()).unwrap_or(false) {
+                lines.pop();
+            }
+            let text = lines.join("\n");
+            let cursor_line = grid.cursor.0.min(lines.len().saturating_sub(1));
+            let mut w = self.ws.borrow_mut();
+            if let Some(doc) = w.buffers.get_mut(bid) {
+                doc.buffer = Buffer::from_str(&text);
+                let pos = doc.buffer.line_start_char(cursor_line);
+                if w.active_buffer() == bid {
+                    w.windows.active_window_mut().cursors = CursorSet::single(pos);
+                }
+            }
+        }
+        self.terminal_focused = false;
+        self.vim = VimState::new();
+        self.message = Some("terminal: NORMAL — motions/visual/y to yank, i to resume".to_string());
     }
 
     /// Handle a key in a dired buffer. Returns true if the key was consumed
@@ -4487,6 +4534,40 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(found, "typed text should be echoed into the terminal grid");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn ctrl_backslash_enters_terminal_normal_and_mirrors_output() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        let id = a.ws.borrow_mut().buffers.create_special(SpecialKind::Terminal, "*terminal*");
+        a.ws.borrow_mut().set_active_buffer(id);
+        a.terminals.insert(id, TerminalSession::spawn("cat", &[], 40, 6, 1000).expect("spawn"));
+        a.terminal_focused = true;
+
+        for c in "hello".chars() {
+            a.handle_key(CtKey::new(KeyCode::Char(c), none));
+        }
+        a.handle_key(CtKey::new(KeyCode::Enter, none));
+        for _ in 0..200 {
+            if a.terminals.get(&id).unwrap().snapshot().row_text(0).contains("hello") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        // Ctrl-\ enters Terminal-Normal: the grid is mirrored into the buffer.
+        a.handle_key(CtKey::new(KeyCode::Char('\\'), KeyModifiers::CONTROL));
+        assert!(!a.terminal_focused, "Ctrl-\\ leaves insert");
+        let buf = a.ws.borrow().buffers.get(id).unwrap().buffer.to_string();
+        assert!(buf.contains("hello"), "buffer mirrors terminal output: {buf:?}");
+
+        // Vim motions work over the mirror; `i` resumes insert.
+        a.handle_key(CtKey::new(KeyCode::Char('G'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('i'), none));
+        assert!(a.terminal_focused, "i resumes terminal-insert");
     }
 
     #[cfg(not(windows))]
