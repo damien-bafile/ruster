@@ -19,6 +19,7 @@ use ruster_render::{
 };
 use ruster_syntax::SyntaxEngine;
 use ruster_lsp::{LspManager, LspPosition, ServerMessage};
+use ruster_terminal::{encode_key, Key as TKey, Mods as TMods, TerminalSession};
 use std::cell::RefCell;
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -191,6 +192,58 @@ fn plain_lines(content: &str) -> Vec<StyledLine> {
         .collect()
 }
 
+/// Map a crossterm key event onto a terminal `Key`/`Mods` for PTY encoding.
+/// Returns `None` for keys with no terminal representation.
+fn term_key_from_crossterm(ck: crossterm::event::KeyEvent) -> Option<(TKey, TMods)> {
+    let m = ck.modifiers;
+    let mods = TMods {
+        ctrl: m.contains(KeyModifiers::CONTROL),
+        alt: m.contains(KeyModifiers::ALT),
+        shift: m.contains(KeyModifiers::SHIFT),
+    };
+    let key = match ck.code {
+        KeyCode::Char(c) => TKey::Char(c),
+        KeyCode::Enter => TKey::Enter,
+        KeyCode::Tab => TKey::Tab,
+        KeyCode::Backspace => TKey::Backspace,
+        KeyCode::Esc => TKey::Esc,
+        KeyCode::Up => TKey::Up,
+        KeyCode::Down => TKey::Down,
+        KeyCode::Left => TKey::Left,
+        KeyCode::Right => TKey::Right,
+        KeyCode::Home => TKey::Home,
+        KeyCode::End => TKey::End,
+        KeyCode::PageUp => TKey::PageUp,
+        KeyCode::PageDown => TKey::PageDown,
+        KeyCode::Delete => TKey::Delete,
+        KeyCode::Insert => TKey::Insert,
+        _ => return None,
+    };
+    Some((key, mods))
+}
+
+/// Convert a terminal-core grid snapshot into a renderer-neutral grid view.
+fn to_term_grid_view(grid: &ruster_terminal::TermGrid) -> ruster_render::TermGridView {
+    let conv = |c: ruster_terminal::TermColor| match c {
+        ruster_terminal::TermColor::Default => ruster_render::Color::Default,
+        ruster_terminal::TermColor::Rgb(r, g, b) => ruster_render::Color::Rgb(r, g, b),
+    };
+    let cells = grid
+        .cells
+        .iter()
+        .map(|c| ruster_render::TermCellView {
+            c: c.c,
+            fg: conv(c.fg),
+            bg: conv(c.bg),
+            bold: c.attrs.bold,
+            italic: c.attrs.italic,
+            underline: c.attrs.underline,
+            inverse: c.attrs.inverse,
+        })
+        .collect();
+    ruster_render::TermGridView { cols: grid.cols, rows: grid.rows, cells, cursor: grid.cursor }
+}
+
 struct FrameTimer {
     last: std::time::Instant,
 }
@@ -278,6 +331,8 @@ enum CmdAction {
     SetEditMode(EditMode),
     /// Toggle a boolean option (`:set number`, `:set nonumber`, `:set number!`).
     SetOption(BoolOpt, SetVal),
+    /// Open an embedded terminal (`:term` / `:terminal`).
+    Terminal,
     /// `:s/pat/rep/[g]` — replace on the current line, or the whole buffer
     /// when `whole_buffer` (`:%s/...`). `all` is the `g` flag.
     Substitute {
@@ -351,6 +406,7 @@ const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("fullscreen", "toggle fullscreen"),
     ("ls", "buffer list"),
     ("bd", "delete buffer"),
+    ("term", "open an embedded terminal"),
     ("Dired", "file explorer"),
     ("Files", "find files"),
     ("fmt", "format buffer"),
@@ -676,6 +732,11 @@ pub struct App {
     emacs_ctrl_x: bool,
     /// Active incremental search: (query, forward). Emacs `C-s`/`C-r`.
     emacs_isearch: Option<(String, bool)>,
+    /// Embedded terminals, keyed by their buffer id (Phase 4).
+    terminals: std::collections::HashMap<BufferId, TerminalSession>,
+    /// When true, keystrokes are forwarded to the active terminal's PTY rather
+    /// than the editing layer. `Ctrl-\` defocuses; `i`/`a`/Enter re-focuses.
+    terminal_focused: bool,
 }
 
 /// The active editing paradigm. Neovim is modal; Emacs is modeless.
@@ -893,6 +954,8 @@ impl App {
             emacs: ruster_core::emacs::EmacsState::new(),
             emacs_ctrl_x: false,
             emacs_isearch: None,
+            terminals: std::collections::HashMap::new(),
+            terminal_focused: false,
         }
     }
 
@@ -922,6 +985,19 @@ impl App {
         if self.leader_pending.is_some() {
             self.handle_leader_key(ck);
             return;
+        }
+
+        // A focused embedded terminal forwards keys to its PTY. When unfocused,
+        // `i`/`a`/Enter re-enter it; anything else falls through to normal
+        // handling so window nav and `:` commands still work.
+        if let Some(bid) = self.active_terminal_buffer() {
+            if self.terminal_focused {
+                self.handle_terminal_key(ck, bid);
+                return;
+            } else if matches!(ck.code, KeyCode::Char('i') | KeyCode::Char('a') | KeyCode::Enter) {
+                self.terminal_focused = true;
+                return;
+            }
         }
 
         // Dired claims its action keys, but only while at rest — never while a
@@ -1317,6 +1393,7 @@ impl App {
             self.handle_key(ck);
         }
 
+        self.terminals.clear();
         self.lsp.shutdown_all();
         crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen)?;
         crossterm::terminal::disable_raw_mode()?;
@@ -1338,6 +1415,7 @@ impl App {
         // Kill language servers, and detach the runtime without waiting for the
         // blocking stdin reader (which is parked in event::read()) — otherwise
         // dropping the runtime hangs on exit.
+        self.terminals.clear();
         self.lsp.shutdown_all();
         rt.shutdown_background();
 
@@ -1419,6 +1497,7 @@ impl App {
             if self.renderer.should_close() || self.should_quit { break; }
             std::thread::sleep(Duration::from_millis(16));
         }
+        self.terminals.clear();
         self.lsp.shutdown_all();
     }
 
@@ -2210,6 +2289,16 @@ impl App {
                     self.config.relativenumber,
                     buf_h,
                 );
+                // If this window hosts a terminal, resize its PTY to the window's
+                // text area and snapshot its grid for rendering.
+                let terminal = if let Some(session) = self.terminals.get_mut(&buf_id) {
+                    let cols = rect.width.max(1);
+                    let rows = rect.height.saturating_sub(1).max(1);
+                    let _ = session.resize(cols, rows);
+                    Some(to_term_grid_view(&session.snapshot()))
+                } else {
+                    None
+                };
                 views.push(WindowView {
                     rect: RRect::new(rect.x, rect.y, rect.width, rect.height),
                     lines,
@@ -2223,6 +2312,7 @@ impl App {
                     statusline,
                     active: is_active,
                     selection,
+                    terminal,
                 });
             }
         }
@@ -2310,6 +2400,7 @@ impl App {
             "on" | "only" => Ok(CmdAction::Only),
             "fs" | "fullscreen" => Ok(CmdAction::Fullscreen),
             "ls" | "buffers" | "ibuffer" => Ok(CmdAction::Ibuffer),
+            "term" | "terminal" => Ok(CmdAction::Terminal),
             "bd" | "bdelete" => Ok(CmdAction::BufferDelete),
             "Dired" | "dired" | "Explore" | "Ex" => Ok(CmdAction::Dired(None)),
             "Files" | "files" => Ok(CmdAction::Files),
@@ -2401,6 +2492,7 @@ impl App {
             CmdAction::Only => self.ws.borrow_mut().windows.only(),
             CmdAction::Fullscreen => self.ws.borrow_mut().windows.toggle_fullscreen(),
             CmdAction::Ibuffer => self.open_ibuffer(),
+            CmdAction::Terminal => self.open_terminal(),
             CmdAction::BufferDelete => self.delete_active_buffer(),
             CmdAction::Dired(arg) => self.open_dired(arg),
             CmdAction::Files => self.open_files_picker(),
@@ -2538,6 +2630,61 @@ impl App {
     fn active_is_dired(&self) -> bool {
         let w = self.ws.borrow();
         matches!(w.active_doc().kind, DocKind::Special(SpecialKind::Dired))
+    }
+
+    /// The active buffer id if it is a terminal with a live session.
+    fn active_terminal_buffer(&self) -> Option<BufferId> {
+        let bid = self.ws.borrow().active_buffer();
+        let is_term = matches!(
+            self.ws.borrow().buffers.get(bid).map(|d| d.kind),
+            Some(DocKind::Special(SpecialKind::Terminal))
+        );
+        if is_term && self.terminals.contains_key(&bid) {
+            Some(bid)
+        } else {
+            None
+        }
+    }
+
+    /// Open a new embedded terminal in the active window and focus it.
+    fn open_terminal(&mut self) {
+        // Config `terminal_shell` overrides the platform default when set.
+        let (shell, args) = match &self.config.terminal_shell {
+            Some(s) if !s.is_empty() => (s.clone(), Vec::new()),
+            _ => ruster_terminal::default_shell(),
+        };
+        let scrollback = self.config.terminal_scrollback as usize;
+        // Spawn at a default size; the first render resizes it to the window.
+        match TerminalSession::spawn(&shell, &args, 80, 24, scrollback) {
+            Ok(session) => {
+                let id = self
+                    .ws
+                    .borrow_mut()
+                    .buffers
+                    .create_special(SpecialKind::Terminal, "*terminal*");
+                self.ws.borrow_mut().set_active_buffer(id);
+                self.terminals.insert(id, session);
+                self.terminal_focused = true;
+                self.message = Some("terminal: Ctrl-\\ to leave, i to re-enter".to_string());
+            }
+            Err(e) => self.message = Some(format!("terminal: {e}")),
+        }
+    }
+
+    /// Forward one key press to a focused terminal's PTY. `Ctrl-\` defocuses.
+    fn handle_terminal_key(&mut self, ck: crossterm::event::KeyEvent, bid: BufferId) {
+        if ck.modifiers.contains(KeyModifiers::CONTROL) {
+            if let KeyCode::Char('\\') = ck.code {
+                self.terminal_focused = false;
+                return;
+            }
+        }
+        if let Some((key, mods)) = term_key_from_crossterm(ck) {
+            let bytes = encode_key(key, mods);
+            if let Some(session) = self.terminals.get(&bid) {
+                let _ = session.write_input(&bytes);
+            }
+        }
     }
 
     /// Handle a key in a dired buffer. Returns true if the key was consumed
@@ -4298,5 +4445,64 @@ mod tests {
         anim.update(std::time::Duration::from_secs_f64(0.5), 5, 3, false, 12.0);
         assert_eq!(anim.cell_x, 5.0);
         assert_eq!(anim.cell_y, 3.0);
+    }
+
+    #[test]
+    fn term_command_parses_and_opens_a_terminal() {
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        assert_eq!(a.parse_cmdline(":term"), Ok(CmdAction::Terminal));
+        assert_eq!(a.parse_cmdline(":terminal"), Ok(CmdAction::Terminal));
+        a.apply_cmd(CmdAction::Terminal);
+        assert!(a.active_terminal_buffer().is_some(), "active buffer is a terminal");
+        assert!(a.terminal_focused, "a fresh terminal is focused");
+    }
+
+    // `cat` echoes stdin → deterministic; not available on Windows.
+    #[cfg(not(windows))]
+    #[test]
+    fn keystrokes_reach_the_terminal_pty() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+
+        // Open a terminal backed by `cat`, which echoes what we type.
+        let id = a.ws.borrow_mut().buffers.create_special(SpecialKind::Terminal, "*terminal*");
+        a.ws.borrow_mut().set_active_buffer(id);
+        let session = TerminalSession::spawn("cat", &[], 40, 6, 1000).expect("spawn cat");
+        a.terminals.insert(id, session);
+        a.terminal_focused = true;
+
+        for c in "ping".chars() {
+            a.handle_key(CtKey::new(KeyCode::Char(c), none));
+        }
+        a.handle_key(CtKey::new(KeyCode::Enter, none));
+
+        let mut found = false;
+        for _ in 0..200 {
+            let snap = a.terminals.get(&id).unwrap().snapshot();
+            if (0..snap.rows).any(|r| snap.row_text(r).contains("ping")) {
+                found = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(found, "typed text should be echoed into the terminal grid");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn ctrl_backslash_defocuses_the_terminal() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        let id = a.ws.borrow_mut().buffers.create_special(SpecialKind::Terminal, "*terminal*");
+        a.ws.borrow_mut().set_active_buffer(id);
+        a.terminals.insert(id, TerminalSession::spawn("cat", &[], 40, 6, 1000).expect("spawn"));
+        a.terminal_focused = true;
+
+        a.handle_key(CtKey::new(KeyCode::Char('\\'), KeyModifiers::CONTROL));
+        assert!(!a.terminal_focused, "Ctrl-\\ leaves terminal focus");
+        // `i` re-enters.
+        a.handle_key(CtKey::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        assert!(a.terminal_focused, "i re-focuses the terminal");
     }
 }

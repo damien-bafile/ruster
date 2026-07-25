@@ -163,6 +163,10 @@ impl LuaRuntime {
             cursor_anim_speed: cfg.get("cursor_anim_speed").unwrap_or(defaults.cursor_anim_speed),
             timeoutlen: cfg.get("timeoutlen").unwrap_or(defaults.timeoutlen),
             format_on_save: cfg.get("format_on_save").unwrap_or(defaults.format_on_save),
+            terminal_shell: cfg.get("terminal_shell").unwrap_or(defaults.terminal_shell),
+            terminal_scrollback: cfg
+                .get("terminal_scrollback")
+                .unwrap_or(defaults.terminal_scrollback),
         }
     }
 

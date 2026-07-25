@@ -11,6 +11,8 @@ ruster.config = {
   number = false,
   relativenumber = false,
   theme = "default",
+  -- terminal_shell = "/bin/bash",  -- default: $SHELL / %COMSPEC%
+  -- terminal_scrollback = 10000,
 }
 ```
 
@@ -28,6 +30,16 @@ ruster.config = {
 | `cursor_anim_speed` | float | 12.0 | Smooth-cursor easing speed |
 | `timeoutlen` | integer | 300 | Milliseconds before the which-key panel appears for a pending key prefix |
 | `format_on_save` | boolean | false | Format the buffer via LSP before writing on `:w` |
+| `terminal_shell` | string | _(platform default)_ | Program `:term` launches. Unset uses `$SHELL` (Unix) / `%COMSPEC%` (Windows), falling back to `/bin/sh` / `cmd.exe`. Program only — no argument splitting |
+| `terminal_scrollback` | integer | 10000 | Lines of scrollback history an embedded terminal retains |
+
+## Embedded terminal
+
+`:term` (or `:terminal`) opens a shell in the current window. Keys are forwarded to the
+shell while the terminal is **focused**; press `Ctrl-\` to return to editor keys (window
+navigation, `:` commands), and `i` / `a` / `Enter` to re-enter it. The terminal resizes
+to its window automatically and is torn down on quit. See
+[windows.md](windows.md) for the Windows/ConPTY requirements.
 
 > **Keys & commands:** all keybindings and `:` commands live in the
 > [Commands & Keybindings reference](keybindings.md). This page covers only the

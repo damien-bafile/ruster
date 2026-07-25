@@ -1,9 +1,9 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
+use ratatui::style::{Color, Modifier};
 use ratatui::widgets::Widget;
 use ruster_core::vim::VimMode;
-use ruster_render::{CursorKind, GutterView, StatuslineView, StyledLine, Color as RColor};
+use ruster_render::{CursorKind, GutterView, StatuslineView, StyledLine, TermGridView, Color as RColor};
 
 /// Convert a VimMode to a display string.
 pub fn mode_label(mode: &VimMode) -> &'static str {
@@ -39,6 +39,65 @@ fn ruster_render_color_to_tui(c: &RColor) -> Color {
     match c {
         RColor::Default => Color::Reset,
         RColor::Rgb(r, g, b) => Color::Rgb(*r, *g, *b),
+    }
+}
+
+/// Draws an embedded terminal's grid (from `WindowView.terminal`) cell-by-cell,
+/// with per-cell colors/attributes and a block cursor.
+pub struct TerminalWidget {
+    grid: TermGridView,
+    cursor_visible: bool,
+}
+
+impl TerminalWidget {
+    pub fn new(grid: TermGridView) -> Self {
+        TerminalWidget { grid, cursor_visible: true }
+    }
+
+    pub fn with_cursor_visible(mut self, visible: bool) -> Self {
+        self.cursor_visible = visible;
+        self
+    }
+}
+
+impl Widget for TerminalWidget {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let rows = self.grid.rows.min(area.height as usize);
+        let cols = self.grid.cols.min(area.width as usize);
+        for r in 0..rows {
+            for c in 0..cols {
+                let tc = self.grid.cells[r * self.grid.cols + c];
+                let x = area.x + c as u16;
+                let y = area.y + r as u16;
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_char(tc.c);
+                    let mut fg = ruster_render_color_to_tui(&tc.fg);
+                    let mut bg = ruster_render_color_to_tui(&tc.bg);
+                    if tc.inverse {
+                        std::mem::swap(&mut fg, &mut bg);
+                    }
+                    cell.set_fg(fg);
+                    cell.set_bg(bg);
+                    if tc.bold {
+                        cell.modifier.insert(Modifier::BOLD);
+                    }
+                    if tc.italic {
+                        cell.modifier.insert(Modifier::ITALIC);
+                    }
+                    if tc.underline {
+                        cell.modifier.insert(Modifier::UNDERLINED);
+                    }
+                }
+            }
+        }
+        if self.cursor_visible {
+            let (cr, cc) = self.grid.cursor;
+            if cr < rows && cc < cols {
+                if let Some(cell) = buf.cell_mut((area.x + cc as u16, area.y + cr as u16)) {
+                    apply_cursor(cell, CursorKind::Block);
+                }
+            }
+        }
     }
 }
 
@@ -507,13 +566,36 @@ impl Widget for HoverWidget {
 
 #[cfg(test)]
 mod tests {
-    use super::BufferWidget;
+    use super::{BufferWidget, TerminalWidget};
     use crate::widgets::{cmdline_label, mode_label};
     use ratatui::buffer::Buffer as RBuffer;
     use ratatui::layout::Rect;
     use ratatui::widgets::Widget;
     use ruster_core::vim::VimMode;
-    use ruster_render::StyledLine;
+    use ruster_render::{Color as RColor, StyledLine, TermCellView, TermGridView};
+
+    #[test]
+    fn terminal_widget_draws_cells_colors_and_cursor() {
+        let grid = TermGridView {
+            cols: 3,
+            rows: 1,
+            cells: vec![
+                TermCellView { c: 'h', fg: RColor::Rgb(10, 20, 30), ..TermCellView::default() },
+                TermCellView { c: 'i', ..TermCellView::default() },
+                TermCellView { c: '!', ..TermCellView::default() },
+            ],
+            cursor: (0, 1),
+        };
+        let area = Rect::new(0, 0, 3, 1);
+        let mut buf = RBuffer::empty(area);
+        TerminalWidget::new(grid).render(area, &mut buf);
+
+        assert_eq!(buf.cell((0, 0)).unwrap().symbol(), "h");
+        assert_eq!(buf.cell((0, 0)).unwrap().fg, ratatui::style::Color::Rgb(10, 20, 30));
+        // The cursor cell (col 1) is painted as a block.
+        assert_ne!(buf.cell((1, 0)).unwrap().bg, ratatui::style::Color::Reset);
+        assert_eq!(buf.cell((2, 0)).unwrap().symbol(), "!");
+    }
 
     #[test]
     fn extra_cursors_paint_a_block_over_their_cell() {

@@ -177,6 +177,7 @@ Press `SPC` in Normal mode; the which-key panel lists continuations.
 | `:fullscreen` `:fs` | Toggle fullscreen |
 | `:ls` `:buffers` `:ibuffer` | Buffer list picker |
 | `:bd` `:bdelete` | Delete the active buffer |
+| `:term` `:terminal` | Open an embedded terminal |
 
 ### Navigation
 | Command | Action |
@@ -297,3 +298,17 @@ In Insert mode, type a trigger word and press `Tab` to expand it, then `Tab` to
 cycle through the tabstops. Built-in triggers include `fn`/`pfn`/`impl`/`test`
 (Rust), `def`/`class` (Python), `fn` (Lua); add your own in
 `~/.config/ruster/snippets/<filetype>.snippets`.
+
+## Embedded terminal
+
+`:term` opens a shell in the current window (`terminal_shell` /
+`terminal_scrollback` config it — see [config-reference.md](config-reference.md)).
+
+| Key | Action |
+|-----|--------|
+| `i` `a` `Enter` | Enter the terminal (forward keys to the shell) |
+| _any key_ | While focused, forwarded to the shell (`Ctrl-C`, arrows, …) |
+| `Ctrl-\` | Leave the terminal — editor keys, `:` commands, window nav resume |
+
+The terminal resizes to its window automatically and is closed when ruster quits.
+On Windows it needs ConPTY (Windows 10 1809+); see [windows.md](windows.md).
