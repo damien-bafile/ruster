@@ -158,6 +158,45 @@ impl SelectionView {
     }
 }
 
+/// One cell of a rendered terminal grid: a character plus its colors and
+/// attributes. `fg`/`bg` of `Color::Default` mean "use the theme default".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TermCellView {
+    pub c: char,
+    pub fg: Color,
+    pub bg: Color,
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub inverse: bool,
+}
+
+impl Default for TermCellView {
+    fn default() -> Self {
+        TermCellView {
+            c: ' ',
+            fg: Color::Default,
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+            underline: false,
+            inverse: false,
+        }
+    }
+}
+
+/// A terminal grid to draw in place of a window's styled text. Cells are stored
+/// row-major (`rows * cols`); `cursor` is `(row, col)` within the grid. When a
+/// `WindowView` carries one of these, renderers draw the grid and ignore
+/// `lines`/`gutter`/`selection`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TermGridView {
+    pub cols: usize,
+    pub rows: usize,
+    pub cells: Vec<TermCellView>,
+    pub cursor: (usize, usize),
+}
+
 /// Everything needed to draw a single window into its rectangle.
 pub struct WindowView {
     pub rect: Rect,
@@ -177,6 +216,8 @@ pub struct WindowView {
     pub active: bool,
     /// Visual-mode selection to highlight (active window only).
     pub selection: Option<SelectionView>,
+    /// When set, this window is a terminal: draw the grid instead of `lines`.
+    pub terminal: Option<TermGridView>,
 }
 
 /// One row of a floating picker overlay.
@@ -237,8 +278,8 @@ pub trait Renderer {
 #[cfg(test)]
 mod tests {
     use crate::{
-        CursorKind, FrameState, GutterView, Rect, Renderer, SelectionKind, SelectionView,
-        StatuslineView, StyledLine, WindowView,
+        Color, CursorKind, FrameState, GutterView, Rect, Renderer, SelectionKind, SelectionView,
+        StatuslineView, StyledLine, TermCellView, TermGridView, WindowView,
     };
 
     struct TestRenderer;
@@ -265,7 +306,25 @@ mod tests {
             },
             active: true,
             selection: None,
+            terminal: None,
         }
+    }
+
+    #[test]
+    fn terminal_grid_view_holds_cells() {
+        let grid = TermGridView {
+            cols: 2,
+            rows: 1,
+            cells: vec![
+                TermCellView { c: 'h', fg: Color::Rgb(1, 2, 3), ..TermCellView::default() },
+                TermCellView { c: 'i', ..TermCellView::default() },
+            ],
+            cursor: (0, 1),
+        };
+        let mut w = sample_window();
+        w.terminal = Some(grid.clone());
+        assert_eq!(w.terminal.as_ref().unwrap().cells[0].c, 'h');
+        assert_eq!(w.terminal.as_ref().unwrap().cursor, (0, 1));
     }
 
     #[test]

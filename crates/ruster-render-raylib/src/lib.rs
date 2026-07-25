@@ -185,6 +185,40 @@ impl Renderer for RaylibRenderer {
             {
                 let mut s = d.begin_scissor_mode(px, py, pw, win_h);
 
+                if let Some(grid) = &view.terminal {
+                    // An embedded terminal: a background quad per cell, then the
+                    // glyph, then a block cursor. No gutter/scroll/selection.
+                    for r in 0..grid.rows.min(buf_rows) {
+                        let gy = py + r as i32 * LINE_H;
+                        for c in 0..grid.cols {
+                            let tc = grid.cells[r * grid.cols + c];
+                            let cx = px + (c as f32 * char_w) as i32;
+                            let (mut fg, mut bg) = (tc.fg, tc.bg);
+                            if tc.inverse {
+                                std::mem::swap(&mut fg, &mut bg);
+                            }
+                            if let ruster_render::Color::Rgb(rr, gg, bb) = bg {
+                                s.draw_rectangle(cx, gy, char_w.ceil() as i32, LINE_H, Color::new(rr, gg, bb, 255));
+                            }
+                            if tc.c != ' ' && tc.c != '\0' {
+                                let color = match fg {
+                                    ruster_render::Color::Rgb(rr, gg, bb) => Color::new(rr, gg, bb, 255),
+                                    ruster_render::Color::Default => default_color,
+                                };
+                                let mut ch = [0u8; 4];
+                                s.draw_text_ex(font, tc.c.encode_utf8(&mut ch), Vector2::new(cx as f32, gy as f32), FONT_SIZE as f32, 1.0, color);
+                            }
+                        }
+                    }
+                    if view.cursor_visible && view.active {
+                        let (cr, cc) = grid.cursor;
+                        if cr < buf_rows && cc < grid.cols {
+                            let cx = px + (cc as f32 * char_w) as i32;
+                            let cy = py + cr as i32 * LINE_H;
+                            s.draw_rectangle(cx, cy, char_w as i32, LINE_H, Color::new(245, 224, 220, 160));
+                        }
+                    }
+                } else {
                 // Gutter column.
                 for (row, label) in view.gutter.rows.iter().take(buf_rows).enumerate() {
                     let gy = py + row as i32 * LINE_H;
@@ -290,6 +324,7 @@ impl Renderer for RaylibRenderer {
                         s.draw_rectangle(cx as i32, cy, char_w as i32, LINE_H, Color::new(245, 224, 220, 140));
                     }
                 }
+                } // end: buffer vs. terminal drawing
 
                 // Per-window statusline on its bottom row.
                 let sl_y = py + buf_rows as i32 * LINE_H;

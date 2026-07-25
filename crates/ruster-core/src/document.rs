@@ -16,6 +16,9 @@ pub enum SpecialKind {
     Ibuffer,
     Dired,
     Picker,
+    /// An embedded terminal. The buffer text is a placeholder; the live grid
+    /// lives in the app's `TerminalSession` keyed by this buffer's id.
+    Terminal,
 }
 
 /// What a document represents.
