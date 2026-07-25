@@ -373,6 +373,9 @@ pub trait Renderer {
     fn should_close(&self) -> bool {
         false
     }
+    /// Re-apply GUI metrics + theme (and reload the font) at runtime, for live
+    /// re-theming from the Settings page. Default no-op (e.g. the TUI backend).
+    fn set_gui_config(&mut self, _gui: &GuiConfig, _font: Option<&str>) {}
 }
 
 #[cfg(test)]

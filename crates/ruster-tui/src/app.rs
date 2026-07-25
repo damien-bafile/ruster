@@ -207,6 +207,41 @@ fn ruster_config_dir() -> Option<PathBuf> {
 }
 
 
+/// Resolve a theme's UI colors: the theme's role colors (user `themes/<name>.lua`
+/// first, then a built-in, then default) with the per-element overrides layered on.
+fn resolve_theme_colors(
+    lua: &LuaRuntime,
+    theme_name: &str,
+    ov: &ruster_lua::config::ColorOverrides,
+) -> ruster_lua::config::ThemeColors {
+    use ruster_lua::config::Rgb;
+    let mut colors = ruster_config_dir()
+        .map(|d| d.join("themes").join(format!("{theme_name}.lua")))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|code| lua.load_theme(&code))
+        .map(|t| t.roles)
+        .or_else(|| {
+            ruster_lua::config::builtin_themes()
+                .into_iter()
+                .find(|(n, _)| *n == theme_name)
+                .map(|(_, t)| t.roles)
+        })
+        .unwrap_or_default();
+    let set = |hex: &str, field: &mut Rgb| {
+        if let Some((r, g, b)) = ruster_lua::schema::parse_hex_color(hex) {
+            *field = Rgb::new(r, g, b);
+        }
+    };
+    set(&ov.bg, &mut colors.bg);
+    set(&ov.fg, &mut colors.fg);
+    set(&ov.gutter, &mut colors.gutter);
+    set(&ov.selection, &mut colors.selection);
+    set(&ov.cursor, &mut colors.cursor);
+    set(&ov.divider, &mut colors.divider);
+    set(&ov.accent, &mut colors.accent);
+    colors
+}
+
 /// Find an executable named `name` on `$PATH`, returning its full path.
 fn find_in_path(name: &str) -> Option<String> {
     let path = std::env::var_os("PATH")?;
@@ -1028,40 +1063,18 @@ impl App {
                     let _ = std::fs::write(&path, theme.to_lua());
                 }
             }
-            let theme_path = themes_dir.join(format!("{}.lua", config.theme));
-            if let Ok(code) = std::fs::read_to_string(&theme_path) {
-                if let Some(theme) = lua.load_theme(&code) {
-                    config.colors = theme.roles;
-                }
-            } else if let Some((_, theme)) = ruster_lua::config::builtin_themes()
-                .into_iter()
-                .find(|(n, _)| *n == config.theme)
-            {
-                config.colors = theme.roles;
-            } else if !config.theme.is_empty() && config.theme != "default" {
+            // Warn on an unknown theme name (resolve falls back to default).
+            let known = ruster_lua::config::builtin_themes().iter().any(|(n, _)| *n == config.theme)
+                || themes_dir.join(format!("{}.lua", config.theme)).exists();
+            if !known && !config.theme.is_empty() && config.theme != "default" {
                 config_errors.push(format!(
                     "general.theme: unknown theme {:?} → using default",
                     config.theme
                 ));
             }
+            // Resolve the theme roles and layer per-element color overrides.
+            config.colors = resolve_theme_colors(&lua, &config.theme, &config.color_overrides);
         }
-        }
-        // Layer per-element color overrides over the theme palette.
-        {
-            use ruster_lua::config::Rgb;
-            let ov = config.color_overrides.clone();
-            let set = |hex: &str, field: &mut Rgb| {
-                if let Some((r, g, b)) = ruster_lua::schema::parse_hex_color(hex) {
-                    *field = Rgb::new(r, g, b);
-                }
-            };
-            set(&ov.bg, &mut config.colors.bg);
-            set(&ov.fg, &mut config.colors.fg);
-            set(&ov.gutter, &mut config.colors.gutter);
-            set(&ov.selection, &mut config.colors.selection);
-            set(&ov.cursor, &mut config.colors.cursor);
-            set(&ov.divider, &mut config.colors.divider);
-            set(&ov.accent, &mut config.colors.accent);
         }
         // Apply EditorConfig overrides (unless disabled via general.editorconfig).
         if config.editorconfig {
@@ -3005,16 +3018,20 @@ impl App {
                 wrote = true;
             }
         }
-        // Apply live where possible (keeps the current theme palette).
-        let colors = self.config.colors;
+        // Rebuild the config from the edited values, re-resolve the theme colors
+        // (theme + overrides), and re-theme the GUI live.
         self.config = ruster_lua::config::Config::from_settings(&values);
-        self.config.colors = colors;
+        self.config.colors =
+            resolve_theme_colors(&self.lua, &self.config.theme, &self.config.color_overrides);
         self.ws.borrow_mut().set_active_indent_width(self.config.tabstop);
+        let gui = self.gui_config();
+        let font = self.gui_font();
+        self.renderer.set_gui_config(&gui, font.as_deref());
         if let Some(s) = self.settings.as_mut() {
             s.dirty = false;
         }
         self.message = Some(if wrote {
-            "Saved config.lua (restart to apply GUI font/size/window)".to_string()
+            "Saved config.lua".to_string()
         } else {
             "Could not write config.lua".to_string()
         });

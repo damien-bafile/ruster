@@ -726,4 +726,16 @@ impl Renderer for RaylibRenderer {
     fn should_close(&self) -> bool {
         self.rl.window_should_close()
     }
+
+    fn set_gui_config(&mut self, gui: &GuiConfig, font: Option<&str>) {
+        // Reload the font atlas (font/size may have changed) and update metrics.
+        self.font = Self::try_load_mono_font(&mut self.rl, &self.thread, font, gui.font_size);
+        self.char_w = self.font.measure_text("m", gui.font_size as f32, 1.0).x;
+        self.font_size = gui.font_size;
+        self.line_h = gui.line_height;
+        self.pad_x = gui.padding_x;
+        self.pad_y = gui.padding_y;
+        self.theme = gui.theme;
+        self.rl.set_target_fps(gui.target_fps as u32);
+    }
 }
