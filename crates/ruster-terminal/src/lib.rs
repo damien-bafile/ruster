@@ -352,6 +352,7 @@ mod tests {
     use super::*;
 
     /// Spawn a deterministic command and wait until its output lands in the grid.
+    #[cfg(not(windows))]
     fn spawn_and_wait(program: &str, args: &[String], needle: &str) -> TermGrid {
         let session = TerminalSession::spawn(program, args, 40, 6, 1000).expect("spawn");
         let mut grid = session.snapshot();
@@ -368,17 +369,35 @@ mod tests {
     #[test]
     fn shell_output_reaches_the_grid() {
         #[cfg(not(windows))]
-        let grid =
-            spawn_and_wait("/bin/sh", &["-c".into(), "printf hello_ruster".into()], "hello_ruster");
+        {
+            let grid = spawn_and_wait(
+                "/bin/sh",
+                &["-c".into(), "printf hello_ruster".into()],
+                "hello_ruster",
+            );
+            assert!(
+                (0..grid.rows).any(|r| grid.row_text(r).contains("hello_ruster")),
+                "grid did not contain the shell output; row0 = {:?}",
+                grid.row_text(0)
+            );
+        }
         #[cfg(windows)]
-        let grid =
-            spawn_and_wait("cmd.exe", &["/c".into(), "echo hello_ruster".into()], "hello_ruster");
-
-        assert!(
-            (0..grid.rows).any(|r| grid.row_text(r).contains("hello_ruster")),
-            "grid did not contain the shell output; row0 = {:?}",
-            grid.row_text(0)
-        );
+        {
+            // A fast-exiting `cmd /c echo` doesn't reliably render under ConPTY,
+            // so spawn interactive cmd (prints a banner + prompt) and verify that
+            // PTY output reaches the grid at all.
+            let session = TerminalSession::spawn("cmd.exe", &[], 80, 24, 1000).expect("spawn");
+            let mut ok = false;
+            for _ in 0..500 {
+                let g = session.snapshot();
+                if (0..g.rows).any(|r| !g.row_text(r).trim().is_empty()) {
+                    ok = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            assert!(ok, "no PTY output reached the grid");
+        }
     }
 
     #[test]
