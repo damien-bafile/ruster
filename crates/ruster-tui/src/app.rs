@@ -2981,27 +2981,50 @@ impl App {
 
     /// Handle a key while the Settings page is open.
     fn handle_settings_key(&mut self, ck: crossterm::event::KeyEvent) {
-        let Some(s) = self.settings.as_mut() else { return };
-        if s.is_editing() {
-            match ck.code {
-                KeyCode::Enter => s.edit_commit(),
-                KeyCode::Esc => s.edit_cancel(),
-                KeyCode::Backspace => s.edit_backspace(),
-                KeyCode::Char(c) => s.edit_push(c),
-                _ => {}
+        // `changed` tracks value edits so we can live-apply (preview) after.
+        let mut changed = false;
+        let mut close = false;
+        {
+            let Some(s) = self.settings.as_mut() else { return };
+            if s.is_editing() {
+                match ck.code {
+                    KeyCode::Enter => {
+                        s.edit_commit();
+                        changed = true;
+                    }
+                    KeyCode::Esc => s.edit_cancel(),
+                    KeyCode::Backspace => s.edit_backspace(),
+                    KeyCode::Char(c) => s.edit_push(c),
+                    _ => {}
+                }
+            } else {
+                match ck.code {
+                    KeyCode::Esc | KeyCode::Char('q') => close = true,
+                    KeyCode::Char('j') | KeyCode::Down => s.move_down(),
+                    KeyCode::Char('k') | KeyCode::Up => s.move_up(),
+                    KeyCode::Tab | KeyCode::Char(']') => s.next_group(),
+                    KeyCode::BackTab | KeyCode::Char('[') => s.prev_group(),
+                    KeyCode::Char(' ') | KeyCode::Enter => {
+                        s.activate();
+                        changed = true;
+                    }
+                    KeyCode::Char('l') | KeyCode::Right => {
+                        s.adjust(1);
+                        changed = true;
+                    }
+                    KeyCode::Char('h') | KeyCode::Left => {
+                        s.adjust(-1);
+                        changed = true;
+                    }
+                    _ => {}
+                }
             }
-            return;
         }
-        match ck.code {
-            KeyCode::Esc | KeyCode::Char('q') => self.settings = None,
-            KeyCode::Char('j') | KeyCode::Down => s.move_down(),
-            KeyCode::Char('k') | KeyCode::Up => s.move_up(),
-            KeyCode::Tab | KeyCode::Char(']') => s.next_group(),
-            KeyCode::BackTab | KeyCode::Char('[') => s.prev_group(),
-            KeyCode::Char(' ') | KeyCode::Enter => s.activate(),
-            KeyCode::Char('l') | KeyCode::Right => s.adjust(1),
-            KeyCode::Char('h') | KeyCode::Left => s.adjust(-1),
-            _ => {}
+        if close {
+            self.settings = None;
+        } else if changed {
+            // Live preview: apply the edit immediately (persist only on :w).
+            self.apply_settings_live();
         }
     }
 
@@ -3018,15 +3041,8 @@ impl App {
                 wrote = true;
             }
         }
-        // Rebuild the config from the edited values, re-resolve the theme colors
-        // (theme + overrides), and re-theme the GUI live.
-        self.config = ruster_lua::config::Config::from_settings(&values);
-        self.config.colors =
-            resolve_theme_colors(&self.lua, &self.config.theme, &self.config.color_overrides);
-        self.ws.borrow_mut().set_active_indent_width(self.config.tabstop);
-        let gui = self.gui_config();
-        let font = self.gui_font();
-        self.renderer.set_gui_config(&gui, font.as_deref());
+        // Apply the edited values (config + live GUI re-theme).
+        self.apply_settings_live();
         if let Some(s) = self.settings.as_mut() {
             s.dirty = false;
         }
@@ -3035,6 +3051,23 @@ impl App {
         } else {
             "Could not write config.lua".to_string()
         });
+    }
+
+    /// Rebuild the config from the Settings page's current values, re-resolve the
+    /// theme colors, and re-theme the GUI live — used for both on-change preview
+    /// and `:w` save.
+    fn apply_settings_live(&mut self) {
+        let values = match self.settings.as_ref() {
+            Some(s) => s.values(),
+            None => return,
+        };
+        self.config = ruster_lua::config::Config::from_settings(&values);
+        self.config.colors =
+            resolve_theme_colors(&self.lua, &self.config.theme, &self.config.color_overrides);
+        self.ws.borrow_mut().set_active_indent_width(self.config.tabstop);
+        let gui = self.gui_config();
+        let font = self.gui_font();
+        self.renderer.set_gui_config(&gui, font.as_deref());
     }
 
     /// Theme names available in the picker: built-ins plus any `themes/*.lua`.

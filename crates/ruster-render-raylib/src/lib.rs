@@ -15,6 +15,9 @@ pub struct RaylibRenderer {
     pad_x: i32,
     pad_y: i32,
     theme: ruster_render::Theme,
+    /// The loaded font's (path, size) so live re-theming only reloads the atlas
+    /// when the font actually changed (color-only tweaks skip the reload).
+    font_sig: (Option<String>, i32),
     event_buffer: Vec<KeyEvent>,
 }
 
@@ -178,6 +181,7 @@ impl RaylibRenderer {
             pad_x: gui.padding_x,
             pad_y: gui.padding_y,
             theme: gui.theme,
+            font_sig: (font_override.map(str::to_string), gui.font_size),
             event_buffer: Vec::new(),
         }
     }
@@ -728,9 +732,14 @@ impl Renderer for RaylibRenderer {
     }
 
     fn set_gui_config(&mut self, gui: &GuiConfig, font: Option<&str>) {
-        // Reload the font atlas (font/size may have changed) and update metrics.
-        self.font = Self::try_load_mono_font(&mut self.rl, &self.thread, font, gui.font_size);
-        self.char_w = self.font.measure_text("m", gui.font_size as f32, 1.0).x;
+        // Only reload the font atlas when the font/size actually changed — so a
+        // color-only live preview (per keystroke) stays cheap.
+        let sig = (font.map(str::to_string), gui.font_size);
+        if sig != self.font_sig {
+            self.font = Self::try_load_mono_font(&mut self.rl, &self.thread, font, gui.font_size);
+            self.char_w = self.font.measure_text("m", gui.font_size as f32, 1.0).x;
+            self.font_sig = sig;
+        }
         self.font_size = gui.font_size;
         self.line_h = gui.line_height;
         self.pad_x = gui.padding_x;
