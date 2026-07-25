@@ -921,22 +921,32 @@ impl App {
         for e in verrs {
             config_errors.push(e.to_string());
         }
-        // Apply EditorConfig overrides
-        let ec_props = ruster_core::editorconfig::parse(&file_path);
-        if let Some(val) = ec_props.get("indent_style") {
-            config.expandtab = *val != "tab";
-        }
-        if let Some(val) = ec_props.get("indent_size") {
-            if let Ok(n) = val.parse::<u32>() {
-                config.tabstop = n;
+        // Apply EditorConfig overrides (unless disabled via general.editorconfig).
+        if config.editorconfig {
+            let ec_props = ruster_core::editorconfig::parse(&file_path);
+            if let Some(val) = ec_props.get("indent_style") {
+                config.expandtab = *val != "tab";
             }
-        }
-        if let Some(val) = ec_props.get("tab_width") {
-            if let Ok(n) = val.parse::<u32>() {
-                config.tabstop = n;
+            if let Some(val) = ec_props.get("indent_size") {
+                if let Ok(n) = val.parse::<u32>() {
+                    config.tabstop = n;
+                }
+            }
+            if let Some(val) = ec_props.get("tab_width") {
+                if let Ok(n) = val.parse::<u32>() {
+                    config.tabstop = n;
+                }
             }
         }
         ws.borrow_mut().set_active_indent_width(config.tabstop);
+        // Startup editing paradigm + dired default from config.
+        let editmode = if config.editmode == "emacs" {
+            lua.set_editmode("emacs");
+            EditMode::Emacs
+        } else {
+            EditMode::Neovim
+        };
+        let dired_show_hidden = config.dired_show_hidden;
         let timer = FrameTimer::new();
         let cursor_anim = CursorAnim::new();
         let startup_message = if config_errors.is_empty() {
@@ -962,7 +972,7 @@ impl App {
             dired_dirs: std::collections::HashMap::new(),
             dired_styled: std::collections::HashMap::new(),
             dired_entries: std::collections::HashMap::new(),
-            dired_show_hidden: false,
+            dired_show_hidden,
             dired_prompt: None,
             dired_clipboard: None,
             dired_pending_y: false,
@@ -986,7 +996,7 @@ impl App {
             macro_recording: None,
             pending_macro: None,
             replaying: false,
-            editmode: EditMode::Neovim,
+            editmode,
             emacs: ruster_core::emacs::EmacsState::new(),
             emacs_ctrl_x: false,
             emacs_isearch: None,
@@ -999,6 +1009,35 @@ impl App {
     /// The configured GUI font (`gui_font`), for the renderer to load.
     pub fn gui_font(&self) -> Option<String> {
         self.config.gui_font.clone()
+    }
+
+    /// GUI metrics + theme built from config, for the raylib renderer.
+    pub fn gui_config(&self) -> ruster_render::GuiConfig {
+        let c = &self.config;
+        let col = |rgb: ruster_lua::config::Rgb| ruster_render::Color::Rgb(rgb.r, rgb.g, rgb.b);
+        ruster_render::GuiConfig {
+            font_size: c.font_size as i32,
+            line_height: c.line_height as i32,
+            padding_x: c.padding_x as i32,
+            padding_y: c.padding_y as i32,
+            window_width: c.window_width as i32,
+            window_height: c.window_height as i32,
+            target_fps: c.target_fps as i32,
+            cursor_kind: if c.cursor_kind == "bar" {
+                ruster_render::CursorKind::Bar
+            } else {
+                ruster_render::CursorKind::Block
+            },
+            theme: ruster_render::Theme {
+                bg: col(c.colors.bg),
+                fg: col(c.colors.fg),
+                gutter: col(c.colors.gutter),
+                selection: col(c.colors.selection),
+                cursor: col(c.colors.cursor),
+                divider: col(c.colors.divider),
+                accent: col(c.colors.accent),
+            },
+        }
     }
 
     pub fn handle_key(&mut self, ck: crossterm::event::KeyEvent) {
@@ -2174,12 +2213,18 @@ impl App {
             EditMode::Emacs => ("-- EMACS --".to_string(), true),
             EditMode::Neovim => (crate::widgets::mode_label(&mode).to_string(), false),
         };
+        // Non-insert cursor uses the configured shape (gui.cursor_kind).
+        let rest_cursor = if self.config.cursor_kind == "bar" {
+            CursorKind::Bar
+        } else {
+            CursorKind::Block
+        };
         let cursor_kind = if emacs {
             CursorKind::Bar
         } else {
             match mode {
                 VimMode::Insert | VimMode::Cmdline => CursorKind::Bar,
-                _ => CursorKind::Block,
+                _ => rest_cursor,
             }
         };
         let smooth = self.has_smooth_cursor;
@@ -2403,7 +2448,9 @@ impl App {
         let past_timeout = self
             .leader_since
             .is_some_and(|t| now.duration_since(t).as_millis() as u32 >= self.config.timeoutlen);
-        let show = self.leader_pending.is_some() && (self.whichkey_anim > 0.01 || past_timeout);
+        let show = self.config.whichkey_enabled
+            && self.leader_pending.is_some()
+            && (self.whichkey_anim > 0.01 || past_timeout);
         let target = if show { 1.0 } else { 0.0 };
         self.whichkey_anim += (target - self.whichkey_anim) * (1.0 - (-18.0 * dt).exp());
         if self.whichkey_anim < 0.002 {
@@ -2750,7 +2797,8 @@ impl App {
                     .create_special(SpecialKind::Terminal, "*terminal*");
                 self.ws.borrow_mut().set_active_buffer(id);
                 self.terminals.insert(id, session);
-                self.terminal_focused = true;
+                // Honor terminal.default_mode ("insert" focuses the shell).
+                self.terminal_focused = self.config.terminal_default_mode != "normal";
                 self.message = Some("terminal: Ctrl-\\ to leave, i to re-enter".to_string());
             }
             Err(e) => self.message = Some(format!("terminal: {e}")),

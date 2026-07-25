@@ -3,19 +3,35 @@ mod key;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use raylib::consts::KeyboardKey;
 use raylib::prelude::*;
-use ruster_render::{CursorKind, FrameState, Renderer};
-
-const FONT_SIZE: i32 = 20;
-const LINE_H: i32 = 24;
-const PAD_X: i32 = 8;
-const PAD_Y: i32 = 4;
+use ruster_render::{CursorKind, FrameState, GuiConfig, Renderer};
 
 pub struct RaylibRenderer {
     rl: RaylibHandle,
     thread: RaylibThread,
     font: WeakFont,
     char_w: f32,
+    font_size: i32,
+    line_h: i32,
+    pad_x: i32,
+    pad_y: i32,
+    theme: ruster_render::Theme,
     event_buffer: Vec<KeyEvent>,
+}
+
+/// Map a render-neutral color to a raylib color, using `fallback` for `Default`.
+fn to_raylib(c: ruster_render::Color, fallback: Color) -> Color {
+    match c {
+        ruster_render::Color::Rgb(r, g, b) => Color::new(r, g, b, 255),
+        ruster_render::Color::Default => fallback,
+    }
+}
+
+/// The RGB channels of a render color, or `fallback` for `Default`.
+fn rgb_of(c: ruster_render::Color, fallback: (u8, u8, u8)) -> (u8, u8, u8) {
+    match c {
+        ruster_render::Color::Rgb(r, g, b) => (r, g, b),
+        ruster_render::Color::Default => fallback,
+    }
 }
 
 /// Candidate monospaced font files to try, most-preferred first: an explicit
@@ -117,27 +133,39 @@ impl RaylibRenderer {
         rl: &mut RaylibHandle,
         thread: &RaylibThread,
         font_override: Option<&str>,
+        font_size: i32,
     ) -> WeakFont {
         let chars = Self::font_chars();
         for path in mono_font_candidates(font_override) {
-            if let Ok(font) = rl.load_font_ex(thread, &path, FONT_SIZE, Some(&chars)) {
+            if let Ok(font) = rl.load_font_ex(thread, &path, font_size, Some(&chars)) {
                 return font.make_weak();
             }
         }
         rl.get_font_default()
     }
 
-    pub fn new(width: i32, height: i32, title: &str, font_override: Option<&str>) -> Self {
+    pub fn new(title: &str, gui: GuiConfig, font_override: Option<&str>) -> Self {
         let (mut rl, thread) = raylib::init()
-            .size(width, height)
+            .size(gui.window_width, gui.window_height)
             .title(title)
             .resizable()
             .build();
-        rl.set_target_fps(60);
+        rl.set_target_fps(gui.target_fps as u32);
         rl.set_exit_key(None);
-        let font = Self::try_load_mono_font(&mut rl, &thread, font_override);
-        let char_w = font.measure_text("m", FONT_SIZE as f32, 1.0).x;
-        RaylibRenderer { rl, thread, font, char_w, event_buffer: Vec::new() }
+        let font = Self::try_load_mono_font(&mut rl, &thread, font_override, gui.font_size);
+        let char_w = font.measure_text("m", gui.font_size as f32, 1.0).x;
+        RaylibRenderer {
+            rl,
+            thread,
+            font,
+            char_w,
+            font_size: gui.font_size,
+            line_h: gui.line_height,
+            pad_x: gui.padding_x,
+            pad_y: gui.padding_y,
+            theme: gui.theme,
+            event_buffer: Vec::new(),
+        }
     }
 
     fn drain_raylib(&mut self) {
@@ -197,8 +225,8 @@ impl RaylibRenderer {
 
 impl Renderer for RaylibRenderer {
     fn viewport_cells(&self) -> (u16, u16) {
-        let cols = ((self.rl.get_screen_width() as f32 - PAD_X as f32) / self.char_w).max(1.0);
-        let rows = ((self.rl.get_screen_height() - PAD_Y) / LINE_H).max(1);
+        let cols = ((self.rl.get_screen_width() as f32 - self.pad_x as f32) / self.char_w).max(1.0);
+        let rows = ((self.rl.get_screen_height() - self.pad_y) / self.line_h).max(1);
         (cols as u16, rows as u16)
     }
 
@@ -206,30 +234,36 @@ impl Renderer for RaylibRenderer {
         let screen_w = self.rl.get_screen_width();
         let screen_h = self.rl.get_screen_height();
         let char_w = self.char_w;
-        // Borrow font as a local so it stays disjoint from the &mut self.rl
-        // borrow held by the draw handle.
+        // Read the config-driven metrics + palette into locals so they stay
+        // disjoint from the &mut self.rl borrow the draw handle holds.
+        let (font_size, line_h, pad_x, pad_y) = (self.font_size, self.line_h, self.pad_x, self.pad_y);
+        let theme = self.theme;
         let font = &self.font;
-        let measure = |s: &str| font.measure_text(s, FONT_SIZE as f32, 1.0).x;
+        let measure = |s: &str| font.measure_text(s, font_size as f32, 1.0).x;
 
-        let default_color = Color::new(205, 214, 244, 255);
-        let gutter_color = Color::new(108, 112, 134, 255);
-        let divider = Color::new(69, 71, 90, 255);
+        let default_color = to_raylib(theme.fg, Color::new(205, 214, 244, 255));
+        let gutter_color = to_raylib(theme.gutter, Color::new(108, 112, 134, 255));
+        let divider = to_raylib(theme.divider, Color::new(69, 71, 90, 255));
+        let bg = to_raylib(theme.bg, Color::new(30, 30, 30, 255));
+        let selection_bg = to_raylib(theme.selection, Color::new(88, 91, 112, 255));
+        let (cur_r, cur_g, cur_b) = rgb_of(theme.cursor, (245, 224, 220));
+        let accent = to_raylib(theme.accent, Color::new(243, 139, 168, 255));
 
         let mut d = self.rl.begin_drawing(&self.thread);
-        d.clear_background(Color::new(30, 30, 30, 255));
+        d.clear_background(bg);
 
         for view in &state.windows {
             if view.rect.width == 0 || view.rect.height == 0 {
                 continue;
             }
-            let px = PAD_X + (view.rect.x as f32 * char_w) as i32;
-            let py = PAD_Y + view.rect.y as i32 * LINE_H;
+            let px = pad_x + (view.rect.x as f32 * char_w) as i32;
+            let py = pad_y + view.rect.y as i32 * line_h;
             let pw = (view.rect.width as f32 * char_w) as i32;
             // The window's last cell-row is its statusline.
             let buf_rows = view.rect.height.saturating_sub(1) as usize;
             let text_x = px + (view.gutter.width as f32 * char_w) as i32;
             let scroll = view.scroll_offset as usize;
-            let win_h = view.rect.height as i32 * LINE_H;
+            let win_h = view.rect.height as i32 * line_h;
 
             // Clip everything in this window to its own rect so text/statusline
             // can't bleed past the divider into a neighbouring pane.
@@ -240,7 +274,7 @@ impl Renderer for RaylibRenderer {
                     // An embedded terminal: a background quad per cell, then the
                     // glyph, then a block cursor. No gutter/scroll/selection.
                     for r in 0..grid.rows.min(buf_rows) {
-                        let gy = py + r as i32 * LINE_H;
+                        let gy = py + r as i32 * line_h;
                         for c in 0..grid.cols {
                             let tc = grid.cells[r * grid.cols + c];
                             let cx = px + (c as f32 * char_w) as i32;
@@ -249,7 +283,7 @@ impl Renderer for RaylibRenderer {
                                 std::mem::swap(&mut fg, &mut bg);
                             }
                             if let ruster_render::Color::Rgb(rr, gg, bb) = bg {
-                                s.draw_rectangle(cx, gy, char_w.ceil() as i32, LINE_H, Color::new(rr, gg, bb, 255));
+                                s.draw_rectangle(cx, gy, char_w.ceil() as i32, line_h, Color::new(rr, gg, bb, 255));
                             }
                             if tc.c != ' ' && tc.c != '\0' {
                                 let color = match fg {
@@ -257,7 +291,7 @@ impl Renderer for RaylibRenderer {
                                     ruster_render::Color::Default => default_color,
                                 };
                                 let mut ch = [0u8; 4];
-                                s.draw_text_ex(font, tc.c.encode_utf8(&mut ch), Vector2::new(cx as f32, gy as f32), FONT_SIZE as f32, 1.0, color);
+                                s.draw_text_ex(font, tc.c.encode_utf8(&mut ch), Vector2::new(cx as f32, gy as f32), font_size as f32, 1.0, color);
                             }
                         }
                     }
@@ -265,43 +299,42 @@ impl Renderer for RaylibRenderer {
                         let (cr, cc) = grid.cursor;
                         if cr < buf_rows && cc < grid.cols {
                             let cx = px + (cc as f32 * char_w) as i32;
-                            let cy = py + cr as i32 * LINE_H;
-                            s.draw_rectangle(cx, cy, char_w as i32, LINE_H, Color::new(245, 224, 220, 160));
+                            let cy = py + cr as i32 * line_h;
+                            s.draw_rectangle(cx, cy, char_w as i32, line_h, Color::new(cur_r, cur_g, cur_b, 160));
                         }
                     }
                 } else {
                 // Gutter column.
                 for (row, label) in view.gutter.rows.iter().take(buf_rows).enumerate() {
-                    let gy = py + row as i32 * LINE_H;
-                    s.draw_text_ex(font, label, Vector2::new(px as f32, gy as f32), FONT_SIZE as f32, 1.0, gutter_color);
+                    let gy = py + row as i32 * line_h;
+                    s.draw_text_ex(font, label, Vector2::new(px as f32, gy as f32), font_size as f32, 1.0, gutter_color);
                 }
 
                 // Visual-mode selection background, behind the text.
                 if let Some(sel) = view.selection {
-                    let selection_bg = Color::new(88, 91, 112, 255);
                     for (row, line) in view.lines.iter().skip(scroll).take(buf_rows).enumerate() {
                         let buffer_line = (row + scroll) as u16;
                         let line_len = line.text.chars().count() as u16;
                         if let Some((sel_start, sel_end)) = sel.span_on(buffer_line, line_len) {
-                            let gy = py + row as i32 * LINE_H;
+                            let gy = py + row as i32 * line_h;
                             let sx = text_x as f32 + sel_start as f32 * char_w;
                             // End is inclusive; empty lines still get a sliver.
                             let cols = sel_end.saturating_sub(sel_start) + 1;
                             let width = (cols as f32 * char_w).max(char_w / 2.0);
-                            s.draw_rectangle(sx as i32, gy, width as i32, LINE_H, selection_bg);
+                            s.draw_rectangle(sx as i32, gy, width as i32, line_h, selection_bg);
                         }
                     }
                 }
 
                 // Buffer text (this window's own scroll).
                 for (row, line) in view.lines.iter().skip(scroll).take(buf_rows).enumerate() {
-                    let gy = py + row as i32 * LINE_H;
+                    let gy = py + row as i32 * line_h;
                     let n = line.text.len();
                     if n == 0 {
                         continue;
                     }
                     if line.highlights.is_empty() {
-                        s.draw_text_ex(font, &line.text, Vector2::new(text_x as f32, gy as f32), FONT_SIZE as f32, 1.0, default_color);
+                        s.draw_text_ex(font, &line.text, Vector2::new(text_x as f32, gy as f32), font_size as f32, 1.0, default_color);
                         continue;
                     }
                     let mut char_colors: Vec<Color> = vec![default_color; n];
@@ -322,7 +355,7 @@ impl Renderer for RaylibRenderer {
                             pos += 1;
                         }
                         let seg = &line.text[start..pos];
-                        s.draw_text_ex(font, seg, Vector2::new(x_offset, gy as f32), FONT_SIZE as f32, 1.0, c);
+                        s.draw_text_ex(font, seg, Vector2::new(x_offset, gy as f32), font_size as f32, 1.0, c);
                         x_offset += measure(seg);
                     }
                 }
@@ -342,15 +375,15 @@ impl Renderer for RaylibRenderer {
                             })
                             .unwrap_or("");
                         let mut cx = text_x as f32 + measure(text_before);
-                        let mut cy = py + vis_row * LINE_H;
+                        let mut cy = py + vis_row * line_h;
                         if let Some((dcx, dcy)) = view.cursor_smooth {
                             cx += dcx * char_w;
-                            cy = (cy as f32 + dcy * LINE_H as f32) as i32;
+                            cy = (cy as f32 + dcy * line_h as f32) as i32;
                         }
                         let cx = cx as i32;
                         match view.cursor_kind {
-                            CursorKind::Block => s.draw_rectangle(cx, cy, char_w as i32, LINE_H, Color::new(245, 224, 220, 200)),
-                            CursorKind::Bar => s.draw_rectangle(cx, cy, 2, LINE_H, Color::new(245, 224, 220, 255)),
+                            CursorKind::Block => s.draw_rectangle(cx, cy, char_w as i32, line_h, Color::new(cur_r, cur_g, cur_b, 200)),
+                            CursorKind::Bar => s.draw_rectangle(cx, cy, 2, line_h, Color::new(cur_r, cur_g, cur_b, 255)),
                         }
                     }
 
@@ -371,25 +404,25 @@ impl Renderer for RaylibRenderer {
                             })
                             .unwrap_or("");
                         let cx = text_x as f32 + measure(text_before);
-                        let cy = py + vis_row * LINE_H;
-                        s.draw_rectangle(cx as i32, cy, char_w as i32, LINE_H, Color::new(245, 224, 220, 140));
+                        let cy = py + vis_row * line_h;
+                        s.draw_rectangle(cx as i32, cy, char_w as i32, line_h, Color::new(cur_r, cur_g, cur_b, 140));
                     }
                 }
                 } // end: buffer vs. terminal drawing
 
                 // Per-window statusline on its bottom row.
-                let sl_y = py + buf_rows as i32 * LINE_H;
+                let sl_y = py + buf_rows as i32 * line_h;
                 let (sl_bg, sl_fg) = if view.active {
-                    (Color::new(69, 71, 90, 255), Color::new(205, 214, 244, 255))
+                    (divider, default_color)
                 } else {
                     (Color::new(40, 40, 48, 255), Color::new(120, 120, 130, 255))
                 };
-                s.draw_rectangle(px, sl_y, pw, LINE_H, sl_bg);
+                s.draw_rectangle(px, sl_y, pw, line_h, sl_bg);
                 let left = format!(" {} ", view.statusline.left);
-                s.draw_text_ex(font, &left, Vector2::new(px as f32, sl_y as f32), FONT_SIZE as f32, 1.0, sl_fg);
+                s.draw_text_ex(font, &left, Vector2::new(px as f32, sl_y as f32), font_size as f32, 1.0, sl_fg);
                 let right = format!(" {} ", view.statusline.right);
                 let right_x = (px + pw) as f32 - measure(&right);
-                s.draw_text_ex(font, &right, Vector2::new(right_x, sl_y as f32), FONT_SIZE as f32, 1.0, sl_fg);
+                s.draw_text_ex(font, &right, Vector2::new(right_x, sl_y as f32), font_size as f32, 1.0, sl_fg);
                 if !view.statusline.center.is_empty() {
                     let center_w = measure(&view.statusline.center);
                     let center_x = px as f32 + (pw as f32 - center_w) / 2.0;
@@ -397,14 +430,14 @@ impl Renderer for RaylibRenderer {
                     let left_w = measure(&left);
                     let right_w = measure(&right);
                     if pw as f32 > left_w + right_w + center_w {
-                        s.draw_text_ex(font, &view.statusline.center, Vector2::new(center_x, sl_y as f32), FONT_SIZE as f32, 1.0, sl_fg);
+                        s.draw_text_ex(font, &view.statusline.center, Vector2::new(center_x, sl_y as f32), font_size as f32, 1.0, sl_fg);
                     }
                 }
             }
 
             // Divider on the right edge for side-by-side windows.
             if px + pw < screen_w - 2 {
-                d.draw_rectangle(px + pw, py, 1, view.rect.height as i32 * LINE_H, divider);
+                d.draw_rectangle(px + pw, py, 1, view.rect.height as i32 * line_h, divider);
             }
         }
 
@@ -413,22 +446,21 @@ impl Renderer for RaylibRenderer {
         // and only when present — otherwise it would overpaint the last window's
         // statusline, which now fills the bottom row itself.
         if let Some(cmd) = state.cmdline.or(state.message) {
-            let rows = ((screen_h - PAD_Y) / LINE_H).max(1);
-            let cmd_y = PAD_Y + (rows - 1) * LINE_H;
-            d.draw_rectangle(0, cmd_y, screen_w, screen_h - cmd_y, Color::new(30, 30, 30, 255));
-            d.draw_text_ex(font, cmd, Vector2::new(PAD_X as f32, cmd_y as f32), FONT_SIZE as f32, 1.0, default_color);
+            let rows = ((screen_h - pad_y) / line_h).max(1);
+            let cmd_y = pad_y + (rows - 1) * line_h;
+            d.draw_rectangle(0, cmd_y, screen_w, screen_h - cmd_y, bg);
+            d.draw_text_ex(font, cmd, Vector2::new(pad_x as f32, cmd_y as f32), font_size as f32, 1.0, default_color);
         }
 
         // Floating picker overlay, centered.
         if let Some(picker) = &state.picker {
-            let accent = Color::new(137, 180, 250, 255);
             let box_bg = Color::new(30, 30, 46, 255);
             let preview_bg = Color::new(24, 24, 37, 255);
             let has_preview = !picker.preview.is_empty();
             let frac = if has_preview { 9 } else { 6 };
             let box_w = (screen_w * frac / 10).clamp(240.min(screen_w), screen_w - 20);
             let n_rows = (picker.rows.len() as i32 + 2).max(picker.preview.len() as i32);
-            let box_h = (n_rows * LINE_H).clamp(3 * LINE_H, (screen_h - 40).max(3 * LINE_H));
+            let box_h = (n_rows * line_h).clamp(3 * line_h, (screen_h - 40).max(3 * line_h));
             let box_x = (screen_w - box_w) / 2;
             let box_y = ((screen_h - box_h) / 2).max(0);
             let list_w = if has_preview { box_w * 2 / 5 } else { box_w };
@@ -448,16 +480,16 @@ impl Renderer for RaylibRenderer {
                     (list_clip_w - 2).max(1),
                     box_h - 2,
                 );
-                s.draw_text_ex(font, &format!(" {} ", picker.title), Vector2::new(box_x as f32 + 4.0, box_y as f32), FONT_SIZE as f32, 1.0, accent);
-                s.draw_text_ex(font, &format!(" > {}", picker.query), Vector2::new(box_x as f32 + 4.0, (box_y + LINE_H) as f32), FONT_SIZE as f32, 1.0, default_color);
-                let max_visible = ((box_h - 2 * LINE_H) / LINE_H).max(0) as usize;
+                s.draw_text_ex(font, &format!(" {} ", picker.title), Vector2::new(box_x as f32 + 4.0, box_y as f32), font_size as f32, 1.0, accent);
+                s.draw_text_ex(font, &format!(" > {}", picker.query), Vector2::new(box_x as f32 + 4.0, (box_y + line_h) as f32), font_size as f32, 1.0, default_color);
+                let max_visible = ((box_h - 2 * line_h) / line_h).max(0) as usize;
                 for (i, row) in picker.rows.iter().take(max_visible).enumerate() {
-                    let ry = box_y + (2 + i as i32) * LINE_H;
+                    let ry = box_y + (2 + i as i32) * line_h;
                     if row.selected {
-                        s.draw_rectangle(box_x, ry, list_clip_w, LINE_H, accent);
-                        s.draw_text_ex(font, &format!(" {}", row.label), Vector2::new(box_x as f32 + 4.0, ry as f32), FONT_SIZE as f32, 1.0, box_bg);
+                        s.draw_rectangle(box_x, ry, list_clip_w, line_h, accent);
+                        s.draw_text_ex(font, &format!(" {}", row.label), Vector2::new(box_x as f32 + 4.0, ry as f32), font_size as f32, 1.0, box_bg);
                     } else {
-                        s.draw_text_ex(font, &format!(" {}", row.label), Vector2::new(box_x as f32 + 4.0, ry as f32), FONT_SIZE as f32, 1.0, default_color);
+                        s.draw_text_ex(font, &format!(" {}", row.label), Vector2::new(box_x as f32 + 4.0, ry as f32), font_size as f32, 1.0, default_color);
                     }
                 }
             }
@@ -471,7 +503,7 @@ impl Renderer for RaylibRenderer {
                 );
                 let px = box_x + list_w + 6;
                 for (i, line) in picker.preview.iter().enumerate() {
-                    let ly = box_y + i as i32 * LINE_H;
+                    let ly = box_y + i as i32 * line_h;
                     if ly > box_y + box_h {
                         break;
                     }
@@ -480,7 +512,7 @@ impl Renderer for RaylibRenderer {
                         continue;
                     }
                     if line.highlights.is_empty() {
-                        s.draw_text_ex(font, &line.text, Vector2::new(px as f32, ly as f32), FONT_SIZE as f32, 1.0, default_color);
+                        s.draw_text_ex(font, &line.text, Vector2::new(px as f32, ly as f32), font_size as f32, 1.0, default_color);
                         continue;
                     }
                     let mut char_colors: Vec<Color> = vec![default_color; n];
@@ -501,7 +533,7 @@ impl Renderer for RaylibRenderer {
                             pos += 1;
                         }
                         let seg = &line.text[start..pos];
-                        s.draw_text_ex(font, seg, Vector2::new(x_off, ly as f32), FONT_SIZE as f32, 1.0, c);
+                        s.draw_text_ex(font, seg, Vector2::new(x_off, ly as f32), font_size as f32, 1.0, c);
                         x_off += measure(seg);
                     }
                 }
@@ -511,24 +543,23 @@ impl Renderer for RaylibRenderer {
         // Hover popup, near the top-center (syntax-highlighted).
         if let Some(lines) = &state.hover {
             if !lines.is_empty() {
-                let accent = Color::new(137, 180, 250, 255);
                 let box_bg = Color::new(24, 24, 37, 255);
                 let longest = lines.iter().map(|l| l.text.chars().count()).max().unwrap_or(0);
                 let box_w = ((longest as f32 * char_w) as i32 + 16).min(screen_w - 20);
-                let box_h = (lines.len() as i32 * LINE_H + 8).min(screen_h - 20);
+                let box_h = (lines.len() as i32 * line_h + 8).min(screen_h - 20);
                 let box_x = (screen_w - box_w) / 2;
-                let box_y = LINE_H;
+                let box_y = line_h;
                 d.draw_rectangle(box_x, box_y, box_w, box_h, box_bg);
                 d.draw_rectangle_lines(box_x, box_y, box_w, box_h, accent);
                 let mut s = d.begin_scissor_mode(box_x + 1, box_y + 1, box_w - 2, box_h - 2);
                 for (i, line) in lines.iter().enumerate() {
-                    let ly = box_y + 4 + i as i32 * LINE_H;
+                    let ly = box_y + 4 + i as i32 * line_h;
                     let n = line.text.len();
                     if n == 0 {
                         continue;
                     }
                     if line.highlights.is_empty() {
-                        s.draw_text_ex(font, &line.text, Vector2::new(box_x as f32 + 6.0, ly as f32), FONT_SIZE as f32, 1.0, default_color);
+                        s.draw_text_ex(font, &line.text, Vector2::new(box_x as f32 + 6.0, ly as f32), font_size as f32, 1.0, default_color);
                         continue;
                     }
                     let mut char_colors: Vec<Color> = vec![default_color; n];
@@ -549,7 +580,7 @@ impl Renderer for RaylibRenderer {
                             pos += 1;
                         }
                         let seg = &line.text[start..pos];
-                        s.draw_text_ex(font, seg, Vector2::new(x_off, ly as f32), FONT_SIZE as f32, 1.0, c);
+                        s.draw_text_ex(font, seg, Vector2::new(x_off, ly as f32), font_size as f32, 1.0, c);
                         x_off += measure(seg);
                     }
                 }
@@ -558,18 +589,17 @@ impl Renderer for RaylibRenderer {
 
         // Bottom which-key panel, sliding up from the screen edge by `anim`.
         if let Some(wk) = &state.whichkey {
-            let accent = Color::new(137, 180, 250, 255);
             let box_bg = Color::new(30, 30, 46, 255);
-            let panel_h = (wk.rows.len() as i32 + 1) * LINE_H + 8;
+            let panel_h = (wk.rows.len() as i32 + 1) * line_h + 8;
             let panel_top = screen_h - (panel_h as f32 * wk.anim.clamp(0.0, 1.0)) as i32;
             // Clip to the visible (slid-in) region so nothing draws above it.
             let mut s = d.begin_scissor_mode(0, panel_top, screen_w, screen_h - panel_top);
             s.draw_rectangle(0, panel_top, screen_w, screen_h - panel_top, box_bg);
             s.draw_rectangle(0, panel_top, screen_w, 2, accent);
-            s.draw_text_ex(font, &format!(" {} ", wk.title), Vector2::new(PAD_X as f32, (panel_top + 4) as f32), FONT_SIZE as f32, 1.0, accent);
+            s.draw_text_ex(font, &format!(" {} ", wk.title), Vector2::new(pad_x as f32, (panel_top + 4) as f32), font_size as f32, 1.0, accent);
             for (i, entry) in wk.rows.iter().enumerate() {
-                let ry = panel_top + 4 + (i as i32 + 1) * LINE_H;
-                s.draw_text_ex(font, &format!("   {}", entry), Vector2::new(PAD_X as f32, ry as f32), FONT_SIZE as f32, 1.0, Color::new(205, 214, 244, 255));
+                let ry = panel_top + 4 + (i as i32 + 1) * line_h;
+                s.draw_text_ex(font, &format!("   {}", entry), Vector2::new(pad_x as f32, ry as f32), font_size as f32, 1.0, default_color);
             }
         }
     }

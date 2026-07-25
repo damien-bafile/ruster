@@ -4,6 +4,62 @@ pub enum Color {
     Rgb(u8, u8, u8),
 }
 
+/// The GUI color palette. Defaults mirror the previously hardcoded raylib values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Theme {
+    pub bg: Color,
+    pub fg: Color,
+    pub gutter: Color,
+    pub selection: Color,
+    pub cursor: Color,
+    pub divider: Color,
+    pub accent: Color,
+}
+
+impl Default for Theme {
+    fn default() -> Self {
+        Theme {
+            bg: Color::Rgb(30, 30, 30),
+            fg: Color::Rgb(205, 214, 244),
+            gutter: Color::Rgb(108, 112, 134),
+            selection: Color::Rgb(88, 91, 112),
+            cursor: Color::Rgb(245, 224, 220),
+            divider: Color::Rgb(69, 71, 90),
+            accent: Color::Rgb(243, 139, 168),
+        }
+    }
+}
+
+/// Config-driven GUI metrics + palette handed to the raylib renderer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GuiConfig {
+    pub font_size: i32,
+    pub line_height: i32,
+    pub padding_x: i32,
+    pub padding_y: i32,
+    pub window_width: i32,
+    pub window_height: i32,
+    pub target_fps: i32,
+    pub cursor_kind: CursorKind,
+    pub theme: Theme,
+}
+
+impl Default for GuiConfig {
+    fn default() -> Self {
+        GuiConfig {
+            font_size: 20,
+            line_height: 24,
+            padding_x: 8,
+            padding_y: 4,
+            window_width: 800,
+            window_height: 600,
+            target_fps: 60,
+            cursor_kind: CursorKind::Block,
+            theme: Theme::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SyntaxStyle {
     pub fg: Color,
@@ -24,7 +80,7 @@ pub struct StyledLine {
     pub highlights: Vec<(usize, usize, SyntaxStyle)>,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum CursorKind { Block, Bar }
 
 /// A rectangle in cell coordinates (origin top-left). Mirrors

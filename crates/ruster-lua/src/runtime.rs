@@ -256,23 +256,24 @@ impl LuaRuntime {
 // --- config reading helpers ---
 
 /// The legacy flat read: `ruster.config = { number = …, timeoutlen = … }`.
+/// Only the historically-flat keys are read; newer options keep their defaults.
 fn config_flat(cfg: &mlua::Table, defaults: &Config) -> Config {
-    Config {
-        tabstop: cfg.get("tabstop").unwrap_or(defaults.tabstop),
-        softtabstop: cfg.get("softtabstop").unwrap_or(defaults.softtabstop),
-        expandtab: cfg.get("expandtab").unwrap_or(defaults.expandtab),
-        shiftwidth: cfg.get("shiftwidth").unwrap_or(defaults.shiftwidth),
-        number: cfg.get("number").unwrap_or(defaults.number),
-        relativenumber: cfg.get("relativenumber").unwrap_or(defaults.relativenumber),
-        theme: cfg.get("theme").unwrap_or_else(|_| defaults.theme.clone()),
-        gui_font: cfg.get("gui_font").unwrap_or_else(|_| defaults.gui_font.clone()),
-        cursor_anim_enabled: cfg.get("cursor_anim_enabled").unwrap_or(defaults.cursor_anim_enabled),
-        cursor_anim_speed: cfg.get("cursor_anim_speed").unwrap_or(defaults.cursor_anim_speed),
-        timeoutlen: cfg.get("timeoutlen").unwrap_or(defaults.timeoutlen),
-        format_on_save: cfg.get("format_on_save").unwrap_or(defaults.format_on_save),
-        terminal_shell: cfg.get("terminal_shell").unwrap_or_else(|_| defaults.terminal_shell.clone()),
-        terminal_scrollback: cfg.get("terminal_scrollback").unwrap_or(defaults.terminal_scrollback),
-    }
+    let mut c = defaults.clone();
+    c.tabstop = cfg.get("tabstop").unwrap_or(defaults.tabstop);
+    c.softtabstop = cfg.get("softtabstop").unwrap_or(defaults.softtabstop);
+    c.expandtab = cfg.get("expandtab").unwrap_or(defaults.expandtab);
+    c.shiftwidth = cfg.get("shiftwidth").unwrap_or(defaults.shiftwidth);
+    c.number = cfg.get("number").unwrap_or(defaults.number);
+    c.relativenumber = cfg.get("relativenumber").unwrap_or(defaults.relativenumber);
+    c.theme = cfg.get("theme").unwrap_or_else(|_| defaults.theme.clone());
+    c.gui_font = cfg.get("gui_font").unwrap_or_else(|_| defaults.gui_font.clone());
+    c.cursor_anim_enabled = cfg.get("cursor_anim_enabled").unwrap_or(defaults.cursor_anim_enabled);
+    c.cursor_anim_speed = cfg.get("cursor_anim_speed").unwrap_or(defaults.cursor_anim_speed);
+    c.timeoutlen = cfg.get("timeoutlen").unwrap_or(defaults.timeoutlen);
+    c.format_on_save = cfg.get("format_on_save").unwrap_or(defaults.format_on_save);
+    c.terminal_shell = cfg.get("terminal_shell").unwrap_or_else(|_| defaults.terminal_shell.clone());
+    c.terminal_scrollback = cfg.get("terminal_scrollback").unwrap_or(defaults.terminal_scrollback);
+    c
 }
 
 /// Map validated grouped values onto the typed `Config` (only the keys the app
@@ -281,6 +282,7 @@ fn config_from_grouped(
     vals: &std::collections::HashMap<(&'static str, &'static str), crate::schema::SettingValue>,
     defaults: &Config,
 ) -> Config {
+    use crate::config::{Rgb, ThemeColors};
     use crate::schema::SettingValue as V;
     let asb = |g, k, d: bool| match vals.get(&(g, k)) {
         Some(V::Bool(b)) => *b,
@@ -299,21 +301,55 @@ fn config_from_grouped(
         _ => None,
     };
     let opt_str = |g, k| ass(g, k).filter(|s| !s.is_empty());
+    let asc = |g, k, d: Rgb| match vals.get(&(g, k)) {
+        Some(V::Color(s)) => crate::schema::parse_hex_color(s)
+            .map(|(r, gg, b)| Rgb::new(r, gg, b))
+            .unwrap_or(d),
+        _ => d,
+    };
+    let dc = defaults.colors;
     Config {
         tabstop: asu("general", "tabstop", defaults.tabstop),
         softtabstop: asu("general", "softtabstop", defaults.softtabstop),
         expandtab: asb("general", "expandtab", defaults.expandtab),
         shiftwidth: asu("general", "shiftwidth", defaults.shiftwidth),
+        editmode: ass("general", "editmode").unwrap_or_else(|| defaults.editmode.clone()),
+        editorconfig: asb("general", "editorconfig", defaults.editorconfig),
+        line_ending: ass("general", "line_ending").unwrap_or_else(|| defaults.line_ending.clone()),
         number: asb("gutter", "number", defaults.number),
         relativenumber: asb("gutter", "relativenumber", defaults.relativenumber),
         theme: ass("general", "theme").unwrap_or_else(|| defaults.theme.clone()),
         gui_font: opt_str("gui", "font"),
+        font_size: asu("gui", "font_size", defaults.font_size),
+        line_height: asu("gui", "line_height", defaults.line_height),
+        padding_x: asu("gui", "padding_x", defaults.padding_x),
+        padding_y: asu("gui", "padding_y", defaults.padding_y),
+        window_width: asu("gui", "window_width", defaults.window_width),
+        window_height: asu("gui", "window_height", defaults.window_height),
+        target_fps: asu("gui", "target_fps", defaults.target_fps),
+        cursor_kind: ass("gui", "cursor_kind").unwrap_or_else(|| defaults.cursor_kind.clone()),
         cursor_anim_enabled: asb("gui", "cursor_anim", defaults.cursor_anim_enabled),
         cursor_anim_speed: asf("gui", "cursor_anim_speed", defaults.cursor_anim_speed),
+        colors: ThemeColors {
+            bg: asc("gui", "color_bg", dc.bg),
+            fg: asc("gui", "color_fg", dc.fg),
+            gutter: asc("gui", "color_gutter", dc.gutter),
+            selection: asc("gui", "color_selection", dc.selection),
+            cursor: asc("gui", "color_cursor", dc.cursor),
+            divider: asc("gui", "color_divider", dc.divider),
+            accent: asc("gui", "color_accent", dc.accent),
+        },
         timeoutlen: asu("whichkey", "timeoutlen", defaults.timeoutlen),
+        whichkey_enabled: asb("whichkey", "enabled", defaults.whichkey_enabled),
         format_on_save: asb("lsp", "format_on_save", defaults.format_on_save),
+        lsp_diagnostics: asb("lsp", "diagnostics", defaults.lsp_diagnostics),
+        lsp_hover: asb("lsp", "hover", defaults.lsp_hover),
+        lsp_autostart: asb("lsp", "autostart", defaults.lsp_autostart),
         terminal_shell: opt_str("terminal", "shell"),
         terminal_scrollback: asu("terminal", "scrollback", defaults.terminal_scrollback),
+        terminal_default_mode: ass("terminal", "default_mode")
+            .unwrap_or_else(|| defaults.terminal_default_mode.clone()),
+        dired_show_hidden: asb("dired", "show_hidden", defaults.dired_show_hidden),
     }
 }
 
