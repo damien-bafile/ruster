@@ -246,13 +246,16 @@ impl TerminalSession {
 
 impl Drop for TerminalSession {
     fn drop(&mut self) {
-        // Kill the child so the PTY reaches EOF, then join the reader thread.
+        // Kill the child so the PTY reader hits EOF on its next read.
         if let Ok(mut c) = self.child.lock() {
             let _ = c.kill();
         }
-        if let Some(handle) = self.reader.take() {
-            let _ = handle.join();
-        }
+        // Detach — do NOT join — the reader thread. On Windows (ConPTY) `read()`
+        // does not always return promptly after the child is killed, so joining
+        // could block indefinitely (it hung CI for hours). Dropping the handle
+        // detaches the thread; it exits on its own when the PTY closes, and a
+        // detached thread never blocks process exit.
+        self.reader.take();
     }
 }
 
