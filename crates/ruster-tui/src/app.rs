@@ -206,6 +206,18 @@ fn ruster_config_dir() -> Option<PathBuf> {
     }
 }
 
+/// Find an executable named `name` on `$PATH`, returning its full path.
+fn find_in_path(name: &str) -> Option<String> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let full = dir.join(name);
+        if full.is_file() {
+            return Some(full.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
 fn plain_lines(content: &str) -> Vec<StyledLine> {
     content
         .split('\n')
@@ -2704,9 +2716,17 @@ impl App {
             CmdAction::Terminal => self.open_terminal(),
             CmdAction::ConfigErrors => self.open_config_errors(),
             CmdAction::Settings => {
-                let themes = self.available_themes();
-                let fonts = self.available_fonts();
-                self.settings = Some(SettingsState::new(&self.config, themes, fonts));
+                // theme = discovered palettes; font/shell = "auto" + detected.
+                let mut fonts = vec!["auto".to_string()];
+                fonts.extend(self.available_fonts());
+                let mut shells = vec!["auto".to_string()];
+                shells.extend(self.available_shells());
+                let dynamic = vec![
+                    ("general", "theme", self.available_themes()),
+                    ("gui", "font", fonts),
+                    ("terminal", "shell", shells),
+                ];
+                self.settings = Some(SettingsState::new(&self.config, dynamic));
             }
             CmdAction::BufferDelete => self.delete_active_buffer(),
             CmdAction::Dired(arg) => self.open_dired(arg),
@@ -2975,6 +2995,42 @@ impl App {
         }
         names.sort();
         names
+    }
+
+    /// Installed shells for the terminal-shell picker. Looks up the common
+    /// shells on `$PATH` (plus `/etc/shells` on Unix); full paths, deduped.
+    fn available_shells(&self) -> Vec<String> {
+        let mut found: Vec<String> = Vec::new();
+        let push = |p: String, v: &mut Vec<String>| {
+            if !v.contains(&p) {
+                v.push(p);
+            }
+        };
+        #[cfg(not(windows))]
+        {
+            for name in ["bash", "zsh", "ksh", "tcsh", "csh", "fish", "sh", "dash"] {
+                if let Some(p) = find_in_path(name) {
+                    push(p, &mut found);
+                }
+            }
+            if let Ok(text) = std::fs::read_to_string("/etc/shells") {
+                for line in text.lines() {
+                    let line = line.trim();
+                    if line.starts_with('/') && std::path::Path::new(line).is_file() {
+                        push(line.to_string(), &mut found);
+                    }
+                }
+            }
+        }
+        #[cfg(windows)]
+        {
+            for name in ["powershell.exe", "pwsh.exe", "cmd.exe"] {
+                if let Some(p) = find_in_path(name) {
+                    push(p, &mut found);
+                }
+            }
+        }
+        found
     }
 
     /// Open dired at `path` (used when ruster is launched with a directory).

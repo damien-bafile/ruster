@@ -20,20 +20,18 @@ pub struct SettingsState {
 }
 
 impl SettingsState {
-    pub fn new(config: &Config, themes: Vec<String>, fonts: Vec<String>) -> Self {
+    /// `dynamic` supplies runtime option lists for specific rows as
+    /// `(group, key, options)` — e.g. discovered themes, fonts, and shells —
+    /// turning those Text fields into pickers.
+    pub fn new(config: &Config, dynamic: Vec<(&'static str, &'static str, Vec<String>)>) -> Self {
         let specs = schema::schema();
         let mut dyn_opts = std::collections::HashMap::new();
-        if let Some(i) = specs.iter().position(|s| s.group == "general" && s.key == "theme") {
-            if !themes.is_empty() {
-                dyn_opts.insert(i, themes);
+        for (group, key, opts) in dynamic {
+            if opts.is_empty() {
+                continue;
             }
-        }
-        if let Some(i) = specs.iter().position(|s| s.group == "gui" && s.key == "font") {
-            if !fonts.is_empty() {
-                // "auto" (empty value) plus the discovered font filenames.
-                let mut o = vec!["auto".to_string()];
-                o.extend(fonts);
-                dyn_opts.insert(i, o);
+            if let Some(i) = specs.iter().position(|s| s.group == group && s.key == key) {
+                dyn_opts.insert(i, opts);
             }
         }
         let current = config.to_settings();
@@ -309,7 +307,7 @@ mod tests {
 
     #[test]
     fn edits_mutate_working_values_and_mark_dirty() {
-        let mut s = SettingsState::new(&Config::default(), vec!["default".into(), "gruvbox".into()], vec![]);
+        let mut s = SettingsState::new(&Config::default(), vec![("general", "theme", vec!["default".into(), "gruvbox".into()])]);
         assert!(!s.dirty);
         // First row is general.tabstop (Int 1..16); +2 → 6.
         s.adjust(2);
@@ -320,7 +318,7 @@ mod tests {
 
     #[test]
     fn enum_cycles_through_options() {
-        let mut s = SettingsState::new(&Config::default(), vec!["default".into(), "gruvbox".into()], vec![]);
+        let mut s = SettingsState::new(&Config::default(), vec![("general", "theme", vec!["default".into(), "gruvbox".into()])]);
         let idx = schema::schema().iter().position(|sp| sp.key == "editmode").unwrap();
         for _ in 0..idx {
             s.move_down();
@@ -335,8 +333,7 @@ mod tests {
     fn theme_row_cycles_through_discovered_themes() {
         let mut s = SettingsState::new(
             &Config::default(),
-            vec!["default".into(), "gruvbox".into(), "nord".into()],
-            vec![],
+            vec![("general", "theme", vec!["default".into(), "gruvbox".into(), "nord".into()])],
         );
         let idx = schema::schema().iter().position(|sp| sp.key == "theme").unwrap();
         for _ in 0..idx {
@@ -353,7 +350,7 @@ mod tests {
 
     #[test]
     fn text_edit_commit_validates() {
-        let mut s = SettingsState::new(&Config::default(), vec!["default".into(), "gruvbox".into()], vec![]);
+        let mut s = SettingsState::new(&Config::default(), vec![("general", "theme", vec!["default".into(), "gruvbox".into()])]);
         let idx = schema::schema().iter().position(|sp| sp.key == "font_size").unwrap();
         for _ in 0..idx {
             s.move_down();

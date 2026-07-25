@@ -28,8 +28,9 @@ still read for backward compatibility.
 
 `:settings` (or `:config`) opens an interactive, grouped editor. `j`/`k` move, `Tab`
 switches group, `Space`/`Enter` toggles or cycles, `h`/`l` adjust numbers/enums, `Enter`
-edits text fields, and **`:w` saves** to `config.lua`. The **theme** and **font** rows are
-pickers: they cycle through the themes in `themes/` and the fonts installed on your system.
+edits text fields, and **`:w` saves** to `config.lua`. The **theme**, **font**, and **shell**
+rows are pickers: they cycle through the themes in `themes/`, the fonts installed on your
+system, and the shells found on `$PATH` (bash, zsh, ksh, tcsh, fish, … / PowerShell, cmd).
 See [keybindings.md](keybindings.md#settings-page).
 
 Launching `ruster <directory>` opens the file explorer (dired) at that location.
