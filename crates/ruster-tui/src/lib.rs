@@ -2,6 +2,7 @@ pub mod app;
 pub mod key;
 pub mod picker;
 pub mod renderer;
+pub mod settings;
 pub mod widgets;
 
 #[cfg(test)]
@@ -33,7 +34,7 @@ mod tests {
             selection: None,
             terminal: None,
         };
-        let state = FrameState { windows: vec![view], cmdline: None, message: None, picker: None, whichkey: None, hover: None };
+        let state = FrameState { windows: vec![view], cmdline: None, message: None, picker: None, whichkey: None, hover: None, settings: None };
         // Dummy renderer has no terminal; this exercises the type wiring.
         r.render_frame(&state);
     }

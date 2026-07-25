@@ -49,6 +49,11 @@ pub fn create_table(runtime: &LuaRuntime) -> mlua::Result<Table> {
     let g = runtime.lua.create_table()?;
     t.set("g", g)?;
 
+    // ruster.config - pre-created so grouped `ruster.config.general = {…}`
+    // assignments in config.lua work without the user creating it first.
+    let config = runtime.lua.create_table()?;
+    t.set("config", config)?;
+
     // ruster.mode - read-only, set by App
     t.set("mode", "normal")?;
 

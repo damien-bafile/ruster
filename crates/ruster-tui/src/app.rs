@@ -1,6 +1,7 @@
 use crate::key::crossterm_to_ruster_key;
 use crate::picker::{PickerAction, PickerItem, PickerState};
 use crate::renderer::TuiRenderer;
+use crate::settings::SettingsState;
 use ruster_core::action::{Action, EditOp, Motion};
 use ruster_core::buffer::Buffer;
 use ruster_core::cursor::CursorSet;
@@ -185,6 +186,74 @@ fn word_before(content: &str, head: usize) -> String {
     chars[i..head].iter().collect()
 }
 
+/// The ruster config directory: `$XDG_CONFIG_HOME/ruster` when set, else
+/// `~/.config/ruster` on Unix (incl. macOS, matching nvim/helix conventions) and
+/// `%APPDATA%\ruster` on Windows. (`dirs::config_dir()` would give
+/// `~/Library/Application Support` on macOS, which CLI-editor users don't expect.)
+fn ruster_config_dir() -> Option<PathBuf> {
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+        if !xdg.is_empty() {
+            return Some(PathBuf::from(xdg).join("ruster"));
+        }
+    }
+    #[cfg(windows)]
+    {
+        dirs::config_dir().map(|d| d.join("ruster"))
+    }
+    #[cfg(not(windows))]
+    {
+        dirs::home_dir().map(|h| h.join(".config").join("ruster"))
+    }
+}
+
+
+/// Resolve a theme's UI colors: the theme's role colors (user `themes/<name>.lua`
+/// first, then a built-in, then default) with the per-element overrides layered on.
+fn resolve_theme_colors(
+    lua: &LuaRuntime,
+    theme_name: &str,
+    ov: &ruster_lua::config::ColorOverrides,
+) -> ruster_lua::config::ThemeColors {
+    use ruster_lua::config::Rgb;
+    let mut colors = ruster_config_dir()
+        .map(|d| d.join("themes").join(format!("{theme_name}.lua")))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|code| lua.load_theme(&code))
+        .map(|t| t.roles)
+        .or_else(|| {
+            ruster_lua::config::builtin_themes()
+                .into_iter()
+                .find(|(n, _)| *n == theme_name)
+                .map(|(_, t)| t.roles)
+        })
+        .unwrap_or_default();
+    let set = |hex: &str, field: &mut Rgb| {
+        if let Some((r, g, b)) = ruster_lua::schema::parse_hex_color(hex) {
+            *field = Rgb::new(r, g, b);
+        }
+    };
+    set(&ov.bg, &mut colors.bg);
+    set(&ov.fg, &mut colors.fg);
+    set(&ov.gutter, &mut colors.gutter);
+    set(&ov.selection, &mut colors.selection);
+    set(&ov.cursor, &mut colors.cursor);
+    set(&ov.divider, &mut colors.divider);
+    set(&ov.accent, &mut colors.accent);
+    colors
+}
+
+/// Find an executable named `name` on `$PATH`, returning its full path.
+fn find_in_path(name: &str) -> Option<String> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let full = dir.join(name);
+        if full.is_file() {
+            return Some(full.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
 fn plain_lines(content: &str) -> Vec<StyledLine> {
     content
         .split('\n')
@@ -333,6 +402,10 @@ enum CmdAction {
     SetOption(BoolOpt, SetVal),
     /// Open an embedded terminal (`:term` / `:terminal`).
     Terminal,
+    /// Show config load/validation errors (`:config-errors`).
+    ConfigErrors,
+    /// Open the settings page (`:settings` / `:config`).
+    Settings,
     /// `:s/pat/rep/[g]` — replace on the current line, or the whole buffer
     /// when `whole_buffer` (`:%s/...`). `all` is the `g` flag.
     Substitute {
@@ -407,6 +480,8 @@ const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("ls", "buffer list"),
     ("bd", "delete buffer"),
     ("term", "open an embedded terminal"),
+    ("config-errors", "show config load/validation errors"),
+    ("settings", "open the settings page"),
     ("Dired", "file explorer"),
     ("Files", "find files"),
     ("fmt", "format buffer"),
@@ -442,6 +517,12 @@ enum LeaderAction {
     Diagnostics,
     IncomingCalls,
     OutgoingCalls,
+    BufferDelete,
+    Terminal,
+    Settings,
+    ToggleNumber,
+    ToggleRelative,
+    Grep,
 }
 
 enum LeaderNode {
@@ -485,10 +566,37 @@ static CODE_GROUP: &[(char, LeaderNode)] = &[
     ('y', LeaderNode::Action("outgoing calls", LeaderAction::OutgoingCalls)),
 ];
 
+static BUFFER_GROUP: &[(char, LeaderNode)] = &[
+    ('b', LeaderNode::Action("buffers", LeaderAction::Buffers)),
+    ('d', LeaderNode::Action("delete buffer", LeaderAction::BufferDelete)),
+];
+
+static SEARCH_GROUP: &[(char, LeaderNode)] = &[
+    ('f', LeaderNode::Action("files", LeaderAction::Files)),
+    ('g', LeaderNode::Action("grep (ripgrep)", LeaderAction::Grep)),
+    ('s', LeaderNode::Action("document symbols", LeaderAction::DocumentSymbol)),
+    ('d', LeaderNode::Action("diagnostics", LeaderAction::Diagnostics)),
+];
+
+static OPEN_GROUP: &[(char, LeaderNode)] = &[
+    ('t', LeaderNode::Action("terminal", LeaderAction::Terminal)),
+    ('s', LeaderNode::Action("settings", LeaderAction::Settings)),
+    ('e', LeaderNode::Action("explorer (dired)", LeaderAction::Explorer)),
+];
+
+static UI_GROUP: &[(char, LeaderNode)] = &[
+    ('n', LeaderNode::Action("toggle line numbers", LeaderAction::ToggleNumber)),
+    ('r', LeaderNode::Action("toggle relative numbers", LeaderAction::ToggleRelative)),
+];
+
 static LEADER_ROOT: &[(char, LeaderNode)] = &[
     ('w', LeaderNode::Group("windows", WINDOW_GROUP)),
     ('f', LeaderNode::Group("find", FIND_GROUP)),
+    ('b', LeaderNode::Group("buffers", BUFFER_GROUP)),
+    ('s', LeaderNode::Group("search", SEARCH_GROUP)),
     ('c', LeaderNode::Group("code", CODE_GROUP)),
+    ('o', LeaderNode::Group("open", OPEN_GROUP)),
+    ('u', LeaderNode::Group("ui / toggle", UI_GROUP)),
     ('q', LeaderNode::Group("quit", QUIT_GROUP)),
 ];
 
@@ -604,6 +712,21 @@ fn leader_whichkey(seq: &[char]) -> Option<(String, Vec<String>)> {
         })
         .collect();
     Some((title, rows))
+}
+
+/// The which-key content for the `g` menu (LazyVim-style goto prefix).
+fn g_whichkey() -> (String, Vec<String>) {
+    (
+        "g".to_string(),
+        vec![
+            "d  go to definition".to_string(),
+            "r  references".to_string(),
+            "h  hover".to_string(),
+            "g  top of buffer".to_string(),
+            "-  older change (undo-tree time)".to_string(),
+            "+  newer change (undo-tree time)".to_string(),
+        ],
+    )
 }
 
 /// Parse one `rg --vimgrep` line (`file:line:col:text`) into its parts.
@@ -737,6 +860,17 @@ pub struct App {
     /// When true, keystrokes are forwarded to the active terminal's PTY rather
     /// than the editing layer. `Ctrl-\` defocuses; `i`/`a`/Enter re-focuses.
     terminal_focused: bool,
+    /// Config load/validation problems, shown to the user (non-fatal; invalid
+    /// values fall back to their defaults). Viewable via `:config-errors`.
+    config_errors: Vec<String>,
+    /// The Settings page (`:settings`), when open. Captures input like a picker.
+    settings: Option<SettingsState>,
+    /// When a bare `g` was pressed in idle Normal mode: the moment it started, so
+    /// the which-key `g` menu can appear after `timeoutlen`.
+    g_pending: Option<std::time::Instant>,
+    /// Guard so replaying `g`-motions into the vim layer doesn't re-trigger the
+    /// `g` menu.
+    g_replaying: bool,
 }
 
 /// The active editing paradigm. Neovim is modal; Emacs is modeless.
@@ -769,15 +903,35 @@ impl App {
             eprintln!("Lua init failed: {}", e);
             panic!("Lua init required");
         });
-        // `dirs::config_dir()` resolves %APPDATA% on Windows and ~/.config on
-        // Unix; if it can't be determined, just skip loading user config.
-        if let Some(config_dir) = dirs::config_dir() {
-            let config_path = config_dir.join("ruster").join("init.lua");
-            if config_path.exists() {
-                if let Err(e) = lua.load_init(&config_path) {
-                    eprintln!("Lua config: {}", e);
+        // On first run we generate a default `config.lua` (the declarative,
+        // Settings-page-managed file); `init.lua` is optional user scripting
+        // loaded *after* it, so it can override settings.
+        let mut config_errors: Vec<String> = Vec::new();
+        // Skip all config-dir file IO under test so the suite never touches the
+        // user's real ~/.config/ruster.
+        if !cfg!(test) {
+        if let Some(dir) = ruster_config_dir() {
+            let config_path = dir.join("config.lua");
+            let init_path = dir.join("init.lua");
+            if !config_path.exists() {
+                let _ = std::fs::create_dir_all(&dir);
+                if let Err(e) =
+                    std::fs::write(&config_path, ruster_lua::schema::generate_default_config())
+                {
+                    eprintln!("ruster: could not write {}: {}", config_path.display(), e);
                 }
             }
+            if config_path.exists() {
+                if let Err(e) = lua.load_init(&config_path) {
+                    config_errors.push(e);
+                }
+            }
+            if init_path.exists() {
+                if let Err(e) = lua.load_init(&init_path) {
+                    config_errors.push(e);
+                }
+            }
+        }
         }
 
         // Wire buffer callbacks to the active window/document.
@@ -893,28 +1047,83 @@ impl App {
         for (lang, cmd, args) in lua.lsp_servers() {
             lsp.set_server(&lang, ruster_lsp::ServerConfig { cmd, args });
         }
-        let mut config = lua.config();
-        // Apply EditorConfig overrides
-        let ec_props = ruster_core::editorconfig::parse(&file_path);
-        if let Some(val) = ec_props.get("indent_style") {
-            config.expandtab = *val != "tab";
+        let (mut config, verrs) = lua.config_validated();
+        for e in verrs {
+            config_errors.push(e.to_string());
         }
-        if let Some(val) = ec_props.get("indent_size") {
-            if let Ok(n) = val.parse::<u32>() {
-                config.tabstop = n;
+        // Generate built-in themes on first run, then apply the selected palette
+        // (`general.theme`) from themes/<name>.lua, falling back to a built-in.
+        if !cfg!(test) {
+        if let Some(dir) = ruster_config_dir() {
+            let themes_dir = dir.join("themes");
+            let _ = std::fs::create_dir_all(&themes_dir);
+            for (name, theme) in ruster_lua::config::builtin_themes() {
+                let path = themes_dir.join(format!("{name}.lua"));
+                if !path.exists() {
+                    let _ = std::fs::write(&path, theme.to_lua());
+                }
             }
+            // Warn on an unknown theme name (resolve falls back to default).
+            let known = ruster_lua::config::builtin_themes().iter().any(|(n, _)| *n == config.theme)
+                || themes_dir.join(format!("{}.lua", config.theme)).exists();
+            if !known && !config.theme.is_empty() && config.theme != "default" {
+                config_errors.push(format!(
+                    "general.theme: unknown theme {:?} → using default",
+                    config.theme
+                ));
+            }
+            // Resolve the theme roles and layer per-element color overrides.
+            config.colors = resolve_theme_colors(&lua, &config.theme, &config.color_overrides);
         }
-        if let Some(val) = ec_props.get("tab_width") {
-            if let Ok(n) = val.parse::<u32>() {
-                config.tabstop = n;
+        }
+        // Apply EditorConfig overrides (unless disabled via general.editorconfig).
+        if config.editorconfig {
+            let ec_props = ruster_core::editorconfig::parse(&file_path);
+            if let Some(val) = ec_props.get("indent_style") {
+                config.expandtab = *val != "tab";
+            }
+            if let Some(val) = ec_props.get("indent_size") {
+                if let Ok(n) = val.parse::<u32>() {
+                    config.tabstop = n;
+                }
+            }
+            if let Some(val) = ec_props.get("tab_width") {
+                if let Ok(n) = val.parse::<u32>() {
+                    config.tabstop = n;
+                }
             }
         }
         ws.borrow_mut().set_active_indent_width(config.tabstop);
+        // A brand-new file adopts the configured default line ending.
+        if config.line_ending == "crlf" && !file_path.exists() {
+            let mut w = ws.borrow_mut();
+            let id = w.active_buffer();
+            if let Some(doc) = w.buffers.get_mut(id) {
+                doc.line_ending = ruster_core::document::LineEnding::Crlf;
+            }
+        }
+        // Startup editing paradigm + dired default from config.
+        let editmode = if config.editmode == "emacs" {
+            lua.set_editmode("emacs");
+            EditMode::Emacs
+        } else {
+            EditMode::Neovim
+        };
+        let dired_show_hidden = config.dired_show_hidden;
         let timer = FrameTimer::new();
         let cursor_anim = CursorAnim::new();
+        let startup_message = if config_errors.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "config: {} problem(s) — {} (:config-errors for all)",
+                config_errors.len(),
+                config_errors[0]
+            ))
+        };
         App {
             ws, vim, renderer,
-            should_quit: false, message: None, syntax, syntax_tried, lua, config, timer,
+            should_quit: false, message: startup_message, syntax, syntax_tried, lua, config, timer,
             has_smooth_cursor: false, cursor_anim, pending_ctrl_w: false, picker: None,
             leader_pending: None,
             pending_results: None,
@@ -926,7 +1135,7 @@ impl App {
             dired_dirs: std::collections::HashMap::new(),
             dired_styled: std::collections::HashMap::new(),
             dired_entries: std::collections::HashMap::new(),
-            dired_show_hidden: false,
+            dired_show_hidden,
             dired_prompt: None,
             dired_clipboard: None,
             dired_pending_y: false,
@@ -939,8 +1148,8 @@ impl App {
             hover: None,
             snippets: {
                 let mut s = ruster_core::snippets::SnippetSet::builtin();
-                if let Some(dir) = dirs::config_dir() {
-                    s.load_dir(&dir.join("ruster").join("snippets"));
+                if let Some(dir) = ruster_config_dir() {
+                    s.load_dir(&dir.join("snippets"));
                 }
                 s
             },
@@ -950,12 +1159,50 @@ impl App {
             macro_recording: None,
             pending_macro: None,
             replaying: false,
-            editmode: EditMode::Neovim,
+            editmode,
             emacs: ruster_core::emacs::EmacsState::new(),
             emacs_ctrl_x: false,
             emacs_isearch: None,
             terminals: std::collections::HashMap::new(),
             terminal_focused: false,
+            config_errors,
+            settings: None,
+            g_pending: None,
+            g_replaying: false,
+        }
+    }
+
+    /// The configured GUI font (`gui_font`), for the renderer to load.
+    pub fn gui_font(&self) -> Option<String> {
+        self.config.gui_font.clone()
+    }
+
+    /// GUI metrics + theme built from config, for the raylib renderer.
+    pub fn gui_config(&self) -> ruster_render::GuiConfig {
+        let c = &self.config;
+        let col = |rgb: ruster_lua::config::Rgb| ruster_render::Color::Rgb(rgb.r, rgb.g, rgb.b);
+        ruster_render::GuiConfig {
+            font_size: c.font_size as i32,
+            line_height: c.line_height as i32,
+            padding_x: c.padding_x as i32,
+            padding_y: c.padding_y as i32,
+            window_width: c.window_width as i32,
+            window_height: c.window_height as i32,
+            target_fps: c.target_fps as i32,
+            cursor_kind: if c.cursor_kind == "bar" {
+                ruster_render::CursorKind::Bar
+            } else {
+                ruster_render::CursorKind::Block
+            },
+            theme: ruster_render::Theme {
+                bg: col(c.colors.bg),
+                fg: col(c.colors.fg),
+                gutter: col(c.colors.gutter),
+                selection: col(c.colors.selection),
+                cursor: col(c.colors.cursor),
+                divider: col(c.colors.divider),
+                accent: col(c.colors.accent),
+            },
         }
     }
 
@@ -972,6 +1219,18 @@ impl App {
             return;
         }
 
+        // The Settings page captures input, except ':' (opens the cmdline for
+        // :w/:q) when not mid-edit, and except while the cmdline is already open.
+        if self.settings.is_some() && self.vim.mode != VimMode::Cmdline {
+            let editing = self.settings.as_ref().is_some_and(|s| s.is_editing());
+            // ':' (when not mid-edit) falls through to open the cmdline for :w/:q.
+            let colon = matches!(ck.code, KeyCode::Char(':')) && !editing;
+            if !colon {
+                self.handle_settings_key(ck);
+                return;
+            }
+        }
+
         // Any key dismisses an open hover popup (and still acts).
         self.hover = None;
 
@@ -985,6 +1244,26 @@ impl App {
         if self.leader_pending.is_some() {
             self.handle_leader_key(ck);
             return;
+        }
+
+        // LazyVim-style `g` menu: intercept a bare `g` in idle Normal mode so the
+        // next key is a goto command (`gd`/`gr`/`gh`) or a replayed native
+        // g-motion (`gg`/`g-`/`g+`). Skipped while replaying, in dired/terminal,
+        // in Emacs mode, or mid vim sequence.
+        if !self.g_replaying
+            && self.editmode == EditMode::Neovim
+            && self.vim.is_normal_idle()
+            && !self.active_is_dired()
+            && self.active_terminal_buffer().is_none()
+        {
+            if self.g_pending.take().is_some() {
+                self.handle_g_key(ck);
+                return;
+            }
+            if matches!(ck.code, KeyCode::Char('g')) {
+                self.g_pending = Some(std::time::Instant::now());
+                return;
+            }
         }
 
         // A focused embedded terminal forwards keys to its PTY. When unfocused,
@@ -1626,6 +1905,10 @@ impl App {
     /// Sync the active buffer to its language server (didOpen/didChange) and
     /// drain incoming LSP messages, dispatching diagnostics and responses.
     fn update_lsp(&mut self) {
+        // `lsp.autostart = false` disables launching/using language servers.
+        if !self.config.lsp_autostart {
+            return;
+        }
         let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         // Register / update the active buffer if it's a supported file.
         let active = self.ws.borrow().active_buffer();
@@ -1735,6 +2018,9 @@ impl App {
 
     /// A one-line summary of a diagnostic on the cursor's line, if any.
     fn current_line_diagnostic(&self) -> Option<String> {
+        if !self.config.lsp_diagnostics {
+            return None;
+        }
         let active = self.ws.borrow().active_buffer();
         let diags = self.diagnostics.get(&active)?;
         let line = {
@@ -1798,6 +2084,9 @@ impl App {
     }
 
     fn lsp_hover(&mut self) {
+        if !self.config.lsp_hover {
+            return;
+        }
         if let Some((_, uri, pos)) = self.active_lsp_target() {
             let params = ruster_lsp::protocol::text_document_position(&uri, pos);
             self.lsp_request("textDocument/hover", params, LspAction::Hover);
@@ -2132,12 +2421,18 @@ impl App {
             EditMode::Emacs => ("-- EMACS --".to_string(), true),
             EditMode::Neovim => (crate::widgets::mode_label(&mode).to_string(), false),
         };
+        // Non-insert cursor uses the configured shape (gui.cursor_kind).
+        let rest_cursor = if self.config.cursor_kind == "bar" {
+            CursorKind::Bar
+        } else {
+            CursorKind::Block
+        };
         let cursor_kind = if emacs {
             CursorKind::Bar
         } else {
             match mode {
                 VimMode::Insert | VimMode::Cmdline => CursorKind::Bar,
-                _ => CursorKind::Block,
+                _ => rest_cursor,
             }
         };
         let smooth = self.has_smooth_cursor;
@@ -2261,7 +2556,17 @@ impl App {
                     },
                 };
                 let pct = ((cline + 1) * 100).checked_div(line_count).unwrap_or(100);
-                let mut left = if is_active { mode_lbl.clone() } else { String::new() };
+                // A focused terminal shows a dedicated mode label; in Terminal-
+                // Normal the underlying vim mode (NORMAL/VISUAL) shows through.
+                let focused_terminal =
+                    is_active && self.terminal_focused && self.terminals.contains_key(&buf_id);
+                let mut left = if focused_terminal {
+                    "-- TERMINAL --".to_string()
+                } else if is_active {
+                    mode_lbl.clone()
+                } else {
+                    String::new()
+                };
                 let mut center = name;
                 let mut right = format!("{}%  {},{}", pct, cline + 1, ccol + 1);
                 if is_active {
@@ -2290,8 +2595,12 @@ impl App {
                     buf_h,
                 );
                 // If this window hosts a terminal, resize its PTY to the window's
-                // text area and snapshot its grid for rendering.
-                let terminal = if let Some(session) = self.terminals.get_mut(&buf_id) {
+                // text area and snapshot its grid for rendering — unless it's the
+                // active terminal in Terminal-Normal mode, where the mirrored
+                // buffer text is drawn instead so vim motions/visual show through.
+                let in_terminal_normal = is_active && !self.terminal_focused;
+                let terminal = if self.terminals.contains_key(&buf_id) && !in_terminal_normal {
+                    let session = self.terminals.get_mut(&buf_id).expect("terminal exists");
                     let cols = rect.width.max(1);
                     let rows = rect.height.saturating_sub(1).max(1);
                     let _ = session.resize(cols, rows);
@@ -2341,13 +2650,18 @@ impl App {
             if let Some(content) = leader_whichkey(seq) {
                 self.whichkey_cache = Some(content);
             }
+        } else if self.g_pending.is_some() {
+            self.whichkey_cache = Some(g_whichkey());
         }
-        // Show the panel only after timeoutlen from the leader start — but once
-        // it has begun appearing, keep it up until the sequence ends.
-        let past_timeout = self
-            .leader_since
+        // Show the panel only after timeoutlen from the prefix start — but once
+        // it has begun appearing, keep it up until the sequence ends. Both the
+        // Space leader and the `g` menu drive it.
+        let prefix_since = self.leader_since.or(self.g_pending);
+        let past_timeout = prefix_since
             .is_some_and(|t| now.duration_since(t).as_millis() as u32 >= self.config.timeoutlen);
-        let show = self.leader_pending.is_some() && (self.whichkey_anim > 0.01 || past_timeout);
+        let show = self.config.whichkey_enabled
+            && (self.leader_pending.is_some() || self.g_pending.is_some())
+            && (self.whichkey_anim > 0.01 || past_timeout);
         let target = if show { 1.0 } else { 0.0 };
         self.whichkey_anim += (target - self.whichkey_anim) * (1.0 - (-18.0 * dt).exp());
         if self.whichkey_anim < 0.002 {
@@ -2370,6 +2684,7 @@ impl App {
             picker: picker_view,
             whichkey,
             hover: self.hover.clone(),
+            settings: self.settings.as_ref().map(|s| s.view()),
         };
         self.renderer.render_frame(&state);
     }
@@ -2401,6 +2716,8 @@ impl App {
             "fs" | "fullscreen" => Ok(CmdAction::Fullscreen),
             "ls" | "buffers" | "ibuffer" => Ok(CmdAction::Ibuffer),
             "term" | "terminal" => Ok(CmdAction::Terminal),
+            "config-errors" | "configerrors" => Ok(CmdAction::ConfigErrors),
+            "settings" | "config" => Ok(CmdAction::Settings),
             "bd" | "bdelete" => Ok(CmdAction::BufferDelete),
             "Dired" | "dired" | "Explore" | "Ex" => Ok(CmdAction::Dired(None)),
             "Files" | "files" => Ok(CmdAction::Files),
@@ -2459,6 +2776,20 @@ impl App {
     /// Apply a parsed cmdline action. `:q` closes the active window and only
     /// quits the app when it is the last window.
     fn apply_cmd(&mut self, action: CmdAction) {
+        // While the settings page is open, :w saves it and :q closes it.
+        if self.settings.is_some() {
+            match action {
+                CmdAction::Save(_) => self.save_settings(),
+                CmdAction::SaveAndQuit => {
+                    self.save_settings();
+                    self.settings = None;
+                }
+                CmdAction::Quit | CmdAction::ForceQuit => self.settings = None,
+                CmdAction::Settings => {}
+                _ => {}
+            }
+            return;
+        }
         match action {
             CmdAction::Save(force) => self.save_file(force),
             CmdAction::SaveAs(p) => self.save_as(&p),
@@ -2493,6 +2824,8 @@ impl App {
             CmdAction::Fullscreen => self.ws.borrow_mut().windows.toggle_fullscreen(),
             CmdAction::Ibuffer => self.open_ibuffer(),
             CmdAction::Terminal => self.open_terminal(),
+            CmdAction::ConfigErrors => self.open_config_errors(),
+            CmdAction::Settings => self.open_settings(),
             CmdAction::BufferDelete => self.delete_active_buffer(),
             CmdAction::Dired(arg) => self.open_dired(arg),
             CmdAction::Files => self.open_files_picker(),
@@ -2646,6 +2979,225 @@ impl App {
         }
     }
 
+    /// Handle a key while the Settings page is open.
+    fn handle_settings_key(&mut self, ck: crossterm::event::KeyEvent) {
+        let Some(s) = self.settings.as_mut() else { return };
+        if s.is_editing() {
+            match ck.code {
+                KeyCode::Enter => s.edit_commit(),
+                KeyCode::Esc => s.edit_cancel(),
+                KeyCode::Backspace => s.edit_backspace(),
+                KeyCode::Char(c) => s.edit_push(c),
+                _ => {}
+            }
+            return;
+        }
+        match ck.code {
+            KeyCode::Esc | KeyCode::Char('q') => self.settings = None,
+            KeyCode::Char('j') | KeyCode::Down => s.move_down(),
+            KeyCode::Char('k') | KeyCode::Up => s.move_up(),
+            KeyCode::Tab | KeyCode::Char(']') => s.next_group(),
+            KeyCode::BackTab | KeyCode::Char('[') => s.prev_group(),
+            KeyCode::Char(' ') | KeyCode::Enter => s.activate(),
+            KeyCode::Char('l') | KeyCode::Right => s.adjust(1),
+            KeyCode::Char('h') | KeyCode::Left => s.adjust(-1),
+            _ => {}
+        }
+    }
+
+    /// Serialize the settings page's values to `config.lua` and apply the ones
+    /// that can take effect live (GUI font/size/colors still need a restart).
+    fn save_settings(&mut self) {
+        let Some(s) = self.settings.as_ref() else { return };
+        let values = s.values();
+        let lua = ruster_lua::schema::generate_config(&values);
+        let mut wrote = false;
+        if let Some(dir) = ruster_config_dir() {
+            let _ = std::fs::create_dir_all(&dir);
+            if std::fs::write(dir.join("config.lua"), &lua).is_ok() {
+                wrote = true;
+            }
+        }
+        // Rebuild the config from the edited values, re-resolve the theme colors
+        // (theme + overrides), and re-theme the GUI live.
+        self.config = ruster_lua::config::Config::from_settings(&values);
+        self.config.colors =
+            resolve_theme_colors(&self.lua, &self.config.theme, &self.config.color_overrides);
+        self.ws.borrow_mut().set_active_indent_width(self.config.tabstop);
+        let gui = self.gui_config();
+        let font = self.gui_font();
+        self.renderer.set_gui_config(&gui, font.as_deref());
+        if let Some(s) = self.settings.as_mut() {
+            s.dirty = false;
+        }
+        self.message = Some(if wrote {
+            "Saved config.lua".to_string()
+        } else {
+            "Could not write config.lua".to_string()
+        });
+    }
+
+    /// Theme names available in the picker: built-ins plus any `themes/*.lua`.
+    fn available_themes(&self) -> Vec<String> {
+        let mut names: Vec<String> =
+            ruster_lua::config::builtin_themes().iter().map(|(n, _)| n.to_string()).collect();
+        if let Some(dir) = ruster_config_dir() {
+            if let Ok(rd) = std::fs::read_dir(dir.join("themes")) {
+                for entry in rd.flatten() {
+                    let path = entry.path();
+                    if path.extension().is_some_and(|x| x == "lua") {
+                        if let Some(stem) = path.file_stem() {
+                            let s = stem.to_string_lossy().into_owned();
+                            if !names.contains(&s) {
+                                names.push(s);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        names
+    }
+
+    /// A theme's named palette as `(color_name, "#hex")` pairs — built-in themes
+    /// carry theirs directly; user themes are read from their `.lua` file.
+    fn theme_palette_for(&self, name: &str) -> Vec<(String, String)> {
+        if let Some((_, theme)) =
+            ruster_lua::config::builtin_themes().into_iter().find(|(n, _)| *n == name)
+        {
+            return theme.palette.iter().map(|(n, c)| (n.clone(), c.to_hex())).collect();
+        }
+        if let Some(dir) = ruster_config_dir() {
+            let path = dir.join("themes").join(format!("{name}.lua"));
+            if let Ok(code) = std::fs::read_to_string(&path) {
+                if let Some(theme) = self.lua.load_theme(&code) {
+                    return theme.palette.iter().map(|(n, c)| (n.clone(), c.to_hex())).collect();
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    /// Every available theme's palette, for the Settings color pickers.
+    fn all_theme_palettes(&self) -> Vec<(String, Vec<(String, String)>)> {
+        self.available_themes()
+            .into_iter()
+            .map(|name| {
+                let pal = self.theme_palette_for(&name);
+                (name, pal)
+            })
+            .collect()
+    }
+
+    /// Installed font filenames (`.ttf`/`.otf`) for the font picker.
+    fn available_fonts(&self) -> Vec<String> {
+        let mut dirs_list: Vec<PathBuf> = Vec::new();
+        if let Some(d) = dirs::font_dir() {
+            dirs_list.push(d);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            dirs_list.push(PathBuf::from("/Library/Fonts"));
+            dirs_list.push(PathBuf::from("/System/Library/Fonts"));
+        }
+        #[cfg(target_os = "linux")]
+        {
+            dirs_list.push(PathBuf::from("/usr/share/fonts"));
+        }
+        #[cfg(windows)]
+        {
+            dirs_list.push(PathBuf::from(r"C:\Windows\Fonts"));
+        }
+        let mut names: Vec<String> = Vec::new();
+        for dir in dirs_list {
+            if let Ok(rd) = std::fs::read_dir(&dir) {
+                for entry in rd.flatten() {
+                    let p = entry.path();
+                    let ext_ok = p.extension().is_some_and(|x| x == "ttf" || x == "otf");
+                    if ext_ok {
+                        if let Some(f) = p.file_name() {
+                            let s = f.to_string_lossy().into_owned();
+                            if !names.contains(&s) {
+                                names.push(s);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        names.sort();
+        names
+    }
+
+    /// Installed shells for the terminal-shell picker. Looks up the common
+    /// shells on `$PATH` (plus `/etc/shells` on Unix); full paths, deduped.
+    fn available_shells(&self) -> Vec<String> {
+        let mut found: Vec<String> = Vec::new();
+        let push = |p: String, v: &mut Vec<String>| {
+            if !v.contains(&p) {
+                v.push(p);
+            }
+        };
+        #[cfg(not(windows))]
+        {
+            for name in ["bash", "zsh", "ksh", "tcsh", "csh", "fish", "sh", "dash"] {
+                if let Some(p) = find_in_path(name) {
+                    push(p, &mut found);
+                }
+            }
+            if let Ok(text) = std::fs::read_to_string("/etc/shells") {
+                for line in text.lines() {
+                    let line = line.trim();
+                    if line.starts_with('/') && std::path::Path::new(line).is_file() {
+                        push(line.to_string(), &mut found);
+                    }
+                }
+            }
+        }
+        #[cfg(windows)]
+        {
+            for name in ["powershell.exe", "pwsh.exe", "cmd.exe"] {
+                if let Some(p) = find_in_path(name) {
+                    push(p, &mut found);
+                }
+            }
+        }
+        found
+    }
+
+    /// Open dired at `path` (used when ruster is launched with a directory).
+    pub fn open_dir(&mut self, path: &std::path::Path) {
+        self.open_dired(Some(path.to_string_lossy().into_owned()));
+    }
+
+    /// Open a read-only buffer listing config load/validation errors.
+    fn open_config_errors(&mut self) {
+        let text = if self.config_errors.is_empty() {
+            "No config errors — everything loaded cleanly.".to_string()
+        } else {
+            let mut s = format!("{} config problem(s):\n\n", self.config_errors.len());
+            for e in &self.config_errors {
+                s.push_str("  • ");
+                s.push_str(e);
+                s.push('\n');
+            }
+            s.push_str("\nInvalid values fall back to their defaults; edit config.lua or use :settings.");
+            s
+        };
+        let id = self
+            .ws
+            .borrow_mut()
+            .buffers
+            .create_special(SpecialKind::ConfigErrors, "*config-errors*");
+        {
+            let mut w = self.ws.borrow_mut();
+            if let Some(doc) = w.buffers.get_mut(id) {
+                doc.buffer = Buffer::from_str(&text);
+            }
+            w.set_active_buffer(id);
+        }
+    }
+
     /// Open a new embedded terminal in the active window and focus it.
     fn open_terminal(&mut self) {
         // Config `terminal_shell` overrides the platform default when set.
@@ -2664,18 +3216,20 @@ impl App {
                     .create_special(SpecialKind::Terminal, "*terminal*");
                 self.ws.borrow_mut().set_active_buffer(id);
                 self.terminals.insert(id, session);
-                self.terminal_focused = true;
+                // Honor terminal.default_mode ("insert" focuses the shell).
+                self.terminal_focused = self.config.terminal_default_mode != "normal";
                 self.message = Some("terminal: Ctrl-\\ to leave, i to re-enter".to_string());
             }
             Err(e) => self.message = Some(format!("terminal: {e}")),
         }
     }
 
-    /// Forward one key press to a focused terminal's PTY. `Ctrl-\` defocuses.
+    /// Forward one key press to a focused terminal's PTY. `Ctrl-\` switches to
+    /// Terminal-Normal mode (vim motions / visual / yank over the output).
     fn handle_terminal_key(&mut self, ck: crossterm::event::KeyEvent, bid: BufferId) {
         if ck.modifiers.contains(KeyModifiers::CONTROL) {
             if let KeyCode::Char('\\') = ck.code {
-                self.terminal_focused = false;
+                self.enter_terminal_normal(bid);
                 return;
             }
         }
@@ -2685,6 +3239,33 @@ impl App {
                 let _ = session.write_input(&bytes);
             }
         }
+    }
+
+    /// Leave terminal-insert for Terminal-Normal: snapshot the visible grid into
+    /// the (read-only) buffer so the vim layer's motions, visual selection and
+    /// yank operate over the terminal's output. `i`/`a`/Enter resume insert.
+    fn enter_terminal_normal(&mut self, bid: BufferId) {
+        if let Some(session) = self.terminals.get(&bid) {
+            let grid = session.snapshot();
+            let mut lines: Vec<String> =
+                (0..grid.rows).map(|r| grid.row_text(r).trim_end().to_string()).collect();
+            while lines.last().map(|l| l.is_empty()).unwrap_or(false) {
+                lines.pop();
+            }
+            let text = lines.join("\n");
+            let cursor_line = grid.cursor.0.min(lines.len().saturating_sub(1));
+            let mut w = self.ws.borrow_mut();
+            if let Some(doc) = w.buffers.get_mut(bid) {
+                doc.buffer = Buffer::from_str(&text);
+                let pos = doc.buffer.line_start_char(cursor_line);
+                if w.active_buffer() == bid {
+                    w.windows.active_window_mut().cursors = CursorSet::single(pos);
+                }
+            }
+        }
+        self.terminal_focused = false;
+        self.vim = VimState::new();
+        self.message = Some("terminal: NORMAL — motions/visual/y to yank, i to resume".to_string());
     }
 
     /// Handle a key in a dired buffer. Returns true if the key was consumed
@@ -3209,6 +3790,29 @@ impl App {
     }
 
     /// Advance the pending Space-leader sequence with the next key.
+    /// Second key of a `g` sequence: LSP goto commands, or replay a native
+    /// g-motion (`gg`/`g-`/`g+`/…) into the vim layer.
+    fn handle_g_key(&mut self, ck: crossterm::event::KeyEvent) {
+        match ck.code {
+            KeyCode::Char('d') => self.lsp_definition(),
+            KeyCode::Char('r') => self.lsp_references(),
+            KeyCode::Char('h') => self.lsp_hover(),
+            KeyCode::Esc => {} // cancel
+            other => {
+                self.feed_key_to_vim(KeyCode::Char('g'));
+                self.feed_key_to_vim(other);
+            }
+        }
+    }
+
+    /// Re-inject a key into the normal vim path (used to replay native g-motions
+    /// after the `g` menu decided not to handle the sequence itself).
+    fn feed_key_to_vim(&mut self, code: KeyCode) {
+        self.g_replaying = true;
+        self.handle_key(crossterm::event::KeyEvent::new(code, KeyModifiers::NONE));
+        self.g_replaying = false;
+    }
+
     fn handle_leader_key(&mut self, ck: crossterm::event::KeyEvent) {
         let c = match ck.code {
             KeyCode::Char(c) => c,
@@ -3266,7 +3870,44 @@ impl App {
             LeaderAction::Diagnostics => self.open_diagnostics_picker(),
             LeaderAction::IncomingCalls => self.lsp_call_hierarchy(true),
             LeaderAction::OutgoingCalls => self.lsp_call_hierarchy(false),
+            LeaderAction::BufferDelete => self.delete_active_buffer(),
+            LeaderAction::Terminal => self.open_terminal(),
+            LeaderAction::Settings => self.open_settings(),
+            LeaderAction::ToggleNumber => {
+                self.config.number = !self.config.number;
+                self.message = Some(format!("number: {}", self.config.number));
+            }
+            LeaderAction::ToggleRelative => {
+                self.config.relativenumber = !self.config.relativenumber;
+                self.message = Some(format!("relativenumber: {}", self.config.relativenumber));
+            }
+            LeaderAction::Grep => {
+                // Seed the cmdline for a ripgrep pattern.
+                self.vim.set_cmdline(":Rg ");
+                self.message = Some("Type a pattern and press Enter".to_string());
+            }
         }
+    }
+
+    /// Open the Settings page (shared by `:settings` and the leader binding).
+    fn open_settings(&mut self) {
+        // Picker options as (label, stored value) pairs. For theme/font/shell the
+        // two are the same (plus a sentinel); color rows are built by SettingsState
+        // from the selected theme's palette.
+        let pairs = |vals: Vec<String>| -> Vec<(String, String)> {
+            vals.into_iter().map(|v| (v.clone(), v)).collect()
+        };
+        let mut fonts = vec!["auto".to_string()];
+        fonts.extend(self.available_fonts());
+        let mut shells = vec!["auto".to_string()];
+        shells.extend(self.available_shells());
+        let dynamic = vec![
+            ("general", "theme", pairs(self.available_themes())),
+            ("gui", "font", pairs(fonts)),
+            ("terminal", "shell", pairs(shells)),
+        ];
+        let palettes = self.all_theme_palettes();
+        self.settings = Some(SettingsState::new(&self.config, dynamic, palettes));
     }
 
     /// Show the active buffer's diagnostics in a picker; Enter jumps to one.
@@ -4320,6 +4961,10 @@ mod tests {
         let msg = a.current_line_diagnostic().expect("diagnostic on line");
         assert!(msg.contains("unused"));
         assert!(msg.starts_with("[E]"));
+
+        // The lsp.diagnostics toggle suppresses the inline message.
+        a.config.lsp_diagnostics = false;
+        assert!(a.current_line_diagnostic().is_none(), "diagnostics off → no message");
     }
 
     #[test]
@@ -4341,6 +4986,39 @@ mod tests {
         ));
         assert!(matches!(leader_resolve(&['z']), LeaderResolve::Unknown));
         assert!(matches!(leader_resolve(&['w', 'x']), LeaderResolve::Unknown));
+        // Expanded groups.
+        assert!(matches!(
+            leader_resolve(&['o', 't']),
+            LeaderResolve::Action(LeaderAction::Terminal)
+        ));
+        assert!(matches!(
+            leader_resolve(&['u', 'n']),
+            LeaderResolve::Action(LeaderAction::ToggleNumber)
+        ));
+        assert!(matches!(
+            leader_resolve(&['b', 'd']),
+            LeaderResolve::Action(LeaderAction::BufferDelete)
+        ));
+        assert!(matches!(
+            leader_resolve(&['s', 's']),
+            LeaderResolve::Action(LeaderAction::DocumentSymbol)
+        ));
+    }
+
+    #[test]
+    fn g_menu_starts_and_gg_goes_to_top() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("aaa\nbbb\nccc\n".into(), PathBuf::from("f.txt"));
+        // Move off the top.
+        a.handle_key(CtKey::new(KeyCode::Char('G'), none));
+        assert!(a.ws.borrow().primary_head() > 0);
+        // `g` opens the menu (pending); a second `g` replays gg → top of buffer.
+        a.handle_key(CtKey::new(KeyCode::Char('g'), none));
+        assert!(a.g_pending.is_some(), "g starts the menu");
+        a.handle_key(CtKey::new(KeyCode::Char('g'), none));
+        assert!(a.g_pending.is_none(), "second key resolves the menu");
+        assert_eq!(a.ws.borrow().primary_head(), 0, "gg went to the top");
     }
 
     #[test]
@@ -4448,6 +5126,26 @@ mod tests {
     }
 
     #[test]
+    fn settings_page_opens_and_captures_keys() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        assert_eq!(a.parse_cmdline(":settings"), Ok(CmdAction::Settings));
+        a.apply_cmd(CmdAction::Settings);
+        assert!(a.settings.is_some(), "settings page opened");
+
+        // Navigation is captured by the settings handler, not the buffer.
+        let before = a.ws.borrow().buffer().to_string();
+        a.handle_key(CtKey::new(KeyCode::Char('j'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('k'), none));
+        assert_eq!(a.ws.borrow().buffer().to_string(), before, "keys don't reach the buffer");
+
+        // q closes it.
+        a.handle_key(CtKey::new(KeyCode::Char('q'), none));
+        assert!(a.settings.is_none(), "q closes the settings page");
+    }
+
+    #[test]
     fn term_command_parses_and_opens_a_terminal() {
         let mut a = App::new("x".into(), PathBuf::from("f.txt"));
         assert_eq!(a.parse_cmdline(":term"), Ok(CmdAction::Terminal));
@@ -4487,6 +5185,40 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(found, "typed text should be echoed into the terminal grid");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn ctrl_backslash_enters_terminal_normal_and_mirrors_output() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        let id = a.ws.borrow_mut().buffers.create_special(SpecialKind::Terminal, "*terminal*");
+        a.ws.borrow_mut().set_active_buffer(id);
+        a.terminals.insert(id, TerminalSession::spawn("cat", &[], 40, 6, 1000).expect("spawn"));
+        a.terminal_focused = true;
+
+        for c in "hello".chars() {
+            a.handle_key(CtKey::new(KeyCode::Char(c), none));
+        }
+        a.handle_key(CtKey::new(KeyCode::Enter, none));
+        for _ in 0..200 {
+            if a.terminals.get(&id).unwrap().snapshot().row_text(0).contains("hello") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        // Ctrl-\ enters Terminal-Normal: the grid is mirrored into the buffer.
+        a.handle_key(CtKey::new(KeyCode::Char('\\'), KeyModifiers::CONTROL));
+        assert!(!a.terminal_focused, "Ctrl-\\ leaves insert");
+        let buf = a.ws.borrow().buffers.get(id).unwrap().buffer.to_string();
+        assert!(buf.contains("hello"), "buffer mirrors terminal output: {buf:?}");
+
+        // Vim motions work over the mirror; `i` resumes insert.
+        a.handle_key(CtKey::new(KeyCode::Char('G'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('i'), none));
+        assert!(a.terminal_focused, "i resumes terminal-insert");
     }
 
     #[cfg(not(windows))]

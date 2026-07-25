@@ -4,6 +4,62 @@ pub enum Color {
     Rgb(u8, u8, u8),
 }
 
+/// The GUI color palette. Defaults mirror the previously hardcoded raylib values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Theme {
+    pub bg: Color,
+    pub fg: Color,
+    pub gutter: Color,
+    pub selection: Color,
+    pub cursor: Color,
+    pub divider: Color,
+    pub accent: Color,
+}
+
+impl Default for Theme {
+    fn default() -> Self {
+        Theme {
+            bg: Color::Rgb(30, 30, 30),
+            fg: Color::Rgb(205, 214, 244),
+            gutter: Color::Rgb(108, 112, 134),
+            selection: Color::Rgb(88, 91, 112),
+            cursor: Color::Rgb(245, 224, 220),
+            divider: Color::Rgb(69, 71, 90),
+            accent: Color::Rgb(243, 139, 168),
+        }
+    }
+}
+
+/// Config-driven GUI metrics + palette handed to the raylib renderer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GuiConfig {
+    pub font_size: i32,
+    pub line_height: i32,
+    pub padding_x: i32,
+    pub padding_y: i32,
+    pub window_width: i32,
+    pub window_height: i32,
+    pub target_fps: i32,
+    pub cursor_kind: CursorKind,
+    pub theme: Theme,
+}
+
+impl Default for GuiConfig {
+    fn default() -> Self {
+        GuiConfig {
+            font_size: 20,
+            line_height: 24,
+            padding_x: 8,
+            padding_y: 4,
+            window_width: 800,
+            window_height: 600,
+            target_fps: 60,
+            cursor_kind: CursorKind::Block,
+            theme: Theme::default(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SyntaxStyle {
     pub fg: Color,
@@ -24,7 +80,7 @@ pub struct StyledLine {
     pub highlights: Vec<(usize, usize, SyntaxStyle)>,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum CursorKind { Block, Bar }
 
 /// A rectangle in cell coordinates (origin top-left). Mirrors
@@ -75,7 +131,10 @@ pub fn gutter_view(
     }
     let digits = line_count.max(1).to_string().len();
     let num_w = digits.max(3);
-    let width = (num_w + 1) as u16;
+    // Hybrid (both on) gets an extra column of padding so the absolute number on
+    // the cursor line and the relative numbers elsewhere are easier to tell apart.
+    let pad = if number && relativenumber { 2 } else { 1 };
+    let width = (num_w + pad) as u16;
 
     let mut rows = Vec::new();
     for row in 0..height {
@@ -92,7 +151,7 @@ pub fn gutter_view(
         } else {
             line.abs_diff(cursor_line)
         };
-        rows.push(format!("{:>width$} ", value, width = num_w));
+        rows.push(format!("{:>num_w$}{}", value, " ".repeat(pad)));
     }
     GutterView { width, rows }
 }
@@ -248,6 +307,45 @@ pub struct WhichKeyView {
     pub anim: f32,
 }
 
+/// The kind of control a settings row renders as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlKind {
+    Toggle,
+    Enum,
+    Number,
+    Text,
+}
+
+/// One row on the settings page: a label, its control, and current value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingRowView {
+    pub label: String,
+    pub kind: ControlKind,
+    /// The value as displayed (e.g. "on"/"off", "neovim", "20", "#1e1e1e").
+    pub value: String,
+    /// True while the user is typing into this field.
+    pub editing: bool,
+    pub selected: bool,
+    pub help: String,
+    /// A `#RRGGBB` color to draw as a swatch beside the value (color rows).
+    pub swatch: Option<String>,
+}
+
+/// A named group of settings rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingsGroup {
+    pub name: String,
+    pub rows: Vec<SettingRowView>,
+}
+
+/// The settings page: grouped rows, a dirty flag, and a footer hint line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettingsView {
+    pub groups: Vec<SettingsGroup>,
+    pub dirty: bool,
+    pub footer: String,
+}
+
 /// A full frame: every visible window, the shared cmdline/message line, an
 /// optional centered picker overlay, and an optional bottom which-key panel.
 pub struct FrameState<'a> {
@@ -258,6 +356,8 @@ pub struct FrameState<'a> {
     pub whichkey: Option<WhichKeyView>,
     /// LSP hover popup lines (syntax-highlighted), in a floating box near the top.
     pub hover: Option<Vec<StyledLine>>,
+    /// The settings page overlay, when open.
+    pub settings: Option<SettingsView>,
 }
 
 pub trait Renderer {
@@ -273,6 +373,9 @@ pub trait Renderer {
     fn should_close(&self) -> bool {
         false
     }
+    /// Re-apply GUI metrics + theme (and reload the font) at runtime, for live
+    /// re-theming from the Settings page. Default no-op (e.g. the TUI backend).
+    fn set_gui_config(&mut self, _gui: &GuiConfig, _font: Option<&str>) {}
 }
 
 #[cfg(test)]
@@ -363,6 +466,7 @@ mod tests {
             picker: None,
             whichkey: None,
             hover: None,
+            settings: None,
         };
         let mut r = TestRenderer;
         r.render_frame(&state);
@@ -400,6 +504,13 @@ mod tests {
         let vals: Vec<&str> = g.rows.iter().map(|s| s.trim()).collect();
         // line0 -> rel 1, line1 -> abs 2, line2 -> rel 1, line3 -> rel 2
         assert_eq!(vals, vec!["1", "2", "1", "2"]);
+    }
+
+    #[test]
+    fn gutter_hybrid_is_wider_than_single() {
+        let single = gutter_view(0, 100, 0, true, false, 3).width;
+        let hybrid = gutter_view(0, 100, 0, true, true, 3).width;
+        assert!(hybrid > single, "hybrid gutter is wider: {hybrid} vs {single}");
     }
 
     #[test]

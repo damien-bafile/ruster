@@ -154,8 +154,25 @@ Press `SPC` in Normal mode; the which-key panel lists continuations.
 | `SPC c d` | Diagnostics list |
 | `SPC c i` | Incoming calls (`:callers`) |
 | `SPC c y` | Outgoing calls (`:callees`) |
+| `SPC b b` / `SPC b d` | Buffer list / delete buffer |
+| `SPC s f` / `SPC s g` | Search files / grep (ripgrep) |
+| `SPC s s` / `SPC s d` | Document symbols / diagnostics |
+| `SPC o t` / `SPC o s` / `SPC o e` | Open terminal / settings / explorer |
+| `SPC u n` / `SPC u r` | Toggle line / relative numbers |
 | `SPC q q` | Quit |
 | `SPC q w` | Save and quit |
+
+## `g` menu (goto)
+
+Press `g` in Normal mode; the which-key panel lists the goto commands (LazyVim-style).
+
+| Sequence | Action |
+|----------|--------|
+| `g d` | Go to definition (LSP) |
+| `g r` | References (LSP) |
+| `g h` | Hover (LSP) |
+| `g g` | Top of buffer |
+| `g -` / `g +` | Older / newer change (undo-tree, by time) |
 
 ## `:` commands
 
@@ -178,6 +195,8 @@ Press `SPC` in Normal mode; the which-key panel lists continuations.
 | `:ls` `:buffers` `:ibuffer` | Buffer list picker |
 | `:bd` `:bdelete` | Delete the active buffer |
 | `:term` `:terminal` | Open an embedded terminal |
+| `:settings` `:config` | Open the settings page |
+| `:config-errors` | Show config load/validation errors |
 
 ### Navigation
 | Command | Action |
@@ -299,16 +318,43 @@ cycle through the tabstops. Built-in triggers include `fn`/`pfn`/`impl`/`test`
 (Rust), `def`/`class` (Python), `fn` (Lua); add your own in
 `~/.config/ruster/snippets/<filetype>.snippets`.
 
-## Embedded terminal
+## Settings page
 
-`:term` opens a shell in the current window (`terminal_shell` /
-`terminal_scrollback` config it — see [config-reference.md](config-reference.md)).
+`:settings` opens a grouped, interactive editor for `config.lua`.
 
 | Key | Action |
 |-----|--------|
-| `i` `a` `Enter` | Enter the terminal (forward keys to the shell) |
-| _any key_ | While focused, forwarded to the shell (`Ctrl-C`, arrows, …) |
-| `Ctrl-\` | Leave the terminal — editor keys, `:` commands, window nav resume |
+| `j` `k` / `↓` `↑` | Move between settings |
+| `Tab` / `[` `]` | Jump to the next / previous group |
+| `Space` `Enter` | Toggle a boolean, cycle an enum, or start editing a text/number field |
+| `h` `l` / `←` `→` | Adjust a number or cycle an enum |
+| _type_ then `Enter` | Commit a text/number edit (`Esc` cancels) |
+| `:w` | Save to `config.lua` |
+| `q` `Esc` | Close the page |
+
+## Embedded terminal
+
+`:term` opens a shell in the current window (`terminal.shell` /
+`terminal.scrollback` config it — see [config-reference.md](config-reference.md)).
+
+It has two modes, like Neovim's terminal:
+
+**Terminal-Insert** (`-- TERMINAL --`) — keys go to the shell.
+
+| Key | Action |
+|-----|--------|
+| _any key_ | Forwarded to the shell (`Ctrl-C`, arrows, Tab-completion, …) |
+| `Ctrl-\` | Switch to Terminal-Normal |
+
+**Terminal-Normal** — the visible output is mirrored into a read-only buffer, so the
+normal editor keys work over it:
+
+| Key | Action |
+|-----|--------|
+| `h j k l` `w` `b` `gg` `G` … | Move over the terminal output |
+| `v` / `V` then `y` | Visually select and yank terminal output |
+| `:` commands, `Ctrl-w` nav | Run commands / switch windows |
+| `i` `a` `Enter` | Resume Terminal-Insert (back to the shell) |
 
 The terminal resizes to its window automatically and is closed when ruster quits.
 On Windows it needs ConPTY (Windows 10 1809+); see [windows.md](windows.md).
