@@ -154,8 +154,25 @@ Press `SPC` in Normal mode; the which-key panel lists continuations.
 | `SPC c d` | Diagnostics list |
 | `SPC c i` | Incoming calls (`:callers`) |
 | `SPC c y` | Outgoing calls (`:callees`) |
+| `SPC b b` / `SPC b d` | Buffer list / delete buffer |
+| `SPC s f` / `SPC s g` | Search files / grep (ripgrep) |
+| `SPC s s` / `SPC s d` | Document symbols / diagnostics |
+| `SPC o t` / `SPC o s` / `SPC o e` | Open terminal / settings / explorer |
+| `SPC u n` / `SPC u r` | Toggle line / relative numbers |
 | `SPC q q` | Quit |
 | `SPC q w` | Save and quit |
+
+## `g` menu (goto)
+
+Press `g` in Normal mode; the which-key panel lists the goto commands (LazyVim-style).
+
+| Sequence | Action |
+|----------|--------|
+| `g d` | Go to definition (LSP) |
+| `g r` | References (LSP) |
+| `g h` | Hover (LSP) |
+| `g g` | Top of buffer |
+| `g -` / `g +` | Older / newer change (undo-tree, by time) |
 
 ## `:` commands
 

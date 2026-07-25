@@ -119,6 +119,27 @@ impl Default for VimState {
 }
 
 impl VimState {
+    /// Enter Cmdline mode seeded with `text` (e.g. `":Rg "`).
+    pub fn set_cmdline(&mut self, text: &str) {
+        self.mode = VimMode::Cmdline;
+        self.cmdline_buffer = text.to_string();
+        self.count = None;
+    }
+
+    /// True when in Normal mode with no operator/count/prefix pending — safe for
+    /// the app to intercept a bare key (e.g. the `g` menu) without stealing part
+    /// of a multi-key vim sequence.
+    pub fn is_normal_idle(&self) -> bool {
+        self.mode == VimMode::Normal
+            && self.count.is_none()
+            && !self.pending_g
+            && matches!(self.pending, OpState::Idle)
+            && self.pending_textobj.is_none()
+            && !self.pending_replace
+            && self.pending_find.is_none()
+            && self.anchor.is_none()
+    }
+
     pub fn new() -> Self {
         VimState {
             mode: VimMode::Normal,

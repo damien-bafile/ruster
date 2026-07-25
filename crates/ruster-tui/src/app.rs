@@ -481,6 +481,12 @@ enum LeaderAction {
     Diagnostics,
     IncomingCalls,
     OutgoingCalls,
+    BufferDelete,
+    Terminal,
+    Settings,
+    ToggleNumber,
+    ToggleRelative,
+    Grep,
 }
 
 enum LeaderNode {
@@ -524,10 +530,37 @@ static CODE_GROUP: &[(char, LeaderNode)] = &[
     ('y', LeaderNode::Action("outgoing calls", LeaderAction::OutgoingCalls)),
 ];
 
+static BUFFER_GROUP: &[(char, LeaderNode)] = &[
+    ('b', LeaderNode::Action("buffers", LeaderAction::Buffers)),
+    ('d', LeaderNode::Action("delete buffer", LeaderAction::BufferDelete)),
+];
+
+static SEARCH_GROUP: &[(char, LeaderNode)] = &[
+    ('f', LeaderNode::Action("files", LeaderAction::Files)),
+    ('g', LeaderNode::Action("grep (ripgrep)", LeaderAction::Grep)),
+    ('s', LeaderNode::Action("document symbols", LeaderAction::DocumentSymbol)),
+    ('d', LeaderNode::Action("diagnostics", LeaderAction::Diagnostics)),
+];
+
+static OPEN_GROUP: &[(char, LeaderNode)] = &[
+    ('t', LeaderNode::Action("terminal", LeaderAction::Terminal)),
+    ('s', LeaderNode::Action("settings", LeaderAction::Settings)),
+    ('e', LeaderNode::Action("explorer (dired)", LeaderAction::Explorer)),
+];
+
+static UI_GROUP: &[(char, LeaderNode)] = &[
+    ('n', LeaderNode::Action("toggle line numbers", LeaderAction::ToggleNumber)),
+    ('r', LeaderNode::Action("toggle relative numbers", LeaderAction::ToggleRelative)),
+];
+
 static LEADER_ROOT: &[(char, LeaderNode)] = &[
     ('w', LeaderNode::Group("windows", WINDOW_GROUP)),
     ('f', LeaderNode::Group("find", FIND_GROUP)),
+    ('b', LeaderNode::Group("buffers", BUFFER_GROUP)),
+    ('s', LeaderNode::Group("search", SEARCH_GROUP)),
     ('c', LeaderNode::Group("code", CODE_GROUP)),
+    ('o', LeaderNode::Group("open", OPEN_GROUP)),
+    ('u', LeaderNode::Group("ui / toggle", UI_GROUP)),
     ('q', LeaderNode::Group("quit", QUIT_GROUP)),
 ];
 
@@ -643,6 +676,21 @@ fn leader_whichkey(seq: &[char]) -> Option<(String, Vec<String>)> {
         })
         .collect();
     Some((title, rows))
+}
+
+/// The which-key content for the `g` menu (LazyVim-style goto prefix).
+fn g_whichkey() -> (String, Vec<String>) {
+    (
+        "g".to_string(),
+        vec![
+            "d  go to definition".to_string(),
+            "r  references".to_string(),
+            "h  hover".to_string(),
+            "g  top of buffer".to_string(),
+            "-  older change (undo-tree time)".to_string(),
+            "+  newer change (undo-tree time)".to_string(),
+        ],
+    )
 }
 
 /// Parse one `rg --vimgrep` line (`file:line:col:text`) into its parts.
@@ -781,6 +829,12 @@ pub struct App {
     config_errors: Vec<String>,
     /// The Settings page (`:settings`), when open. Captures input like a picker.
     settings: Option<SettingsState>,
+    /// When a bare `g` was pressed in idle Normal mode: the moment it started, so
+    /// the which-key `g` menu can appear after `timeoutlen`.
+    g_pending: Option<std::time::Instant>,
+    /// Guard so replaying `g`-motions into the vim layer doesn't re-trigger the
+    /// `g` menu.
+    g_replaying: bool,
 }
 
 /// The active editing paradigm. Neovim is modal; Emacs is modeless.
@@ -1082,6 +1136,8 @@ impl App {
             terminal_focused: false,
             config_errors,
             settings: None,
+            g_pending: None,
+            g_replaying: false,
         }
     }
 
@@ -1157,6 +1213,26 @@ impl App {
         if self.leader_pending.is_some() {
             self.handle_leader_key(ck);
             return;
+        }
+
+        // LazyVim-style `g` menu: intercept a bare `g` in idle Normal mode so the
+        // next key is a goto command (`gd`/`gr`/`gh`) or a replayed native
+        // g-motion (`gg`/`g-`/`g+`). Skipped while replaying, in dired/terminal,
+        // in Emacs mode, or mid vim sequence.
+        if !self.g_replaying
+            && self.editmode == EditMode::Neovim
+            && self.vim.is_normal_idle()
+            && !self.active_is_dired()
+            && self.active_terminal_buffer().is_none()
+        {
+            if self.g_pending.take().is_some() {
+                self.handle_g_key(ck);
+                return;
+            }
+            if matches!(ck.code, KeyCode::Char('g')) {
+                self.g_pending = Some(std::time::Instant::now());
+                return;
+            }
         }
 
         // A focused embedded terminal forwards keys to its PTY. When unfocused,
@@ -2543,14 +2619,17 @@ impl App {
             if let Some(content) = leader_whichkey(seq) {
                 self.whichkey_cache = Some(content);
             }
+        } else if self.g_pending.is_some() {
+            self.whichkey_cache = Some(g_whichkey());
         }
-        // Show the panel only after timeoutlen from the leader start — but once
-        // it has begun appearing, keep it up until the sequence ends.
-        let past_timeout = self
-            .leader_since
+        // Show the panel only after timeoutlen from the prefix start — but once
+        // it has begun appearing, keep it up until the sequence ends. Both the
+        // Space leader and the `g` menu drive it.
+        let prefix_since = self.leader_since.or(self.g_pending);
+        let past_timeout = prefix_since
             .is_some_and(|t| now.duration_since(t).as_millis() as u32 >= self.config.timeoutlen);
         let show = self.config.whichkey_enabled
-            && self.leader_pending.is_some()
+            && (self.leader_pending.is_some() || self.g_pending.is_some())
             && (self.whichkey_anim > 0.01 || past_timeout);
         let target = if show { 1.0 } else { 0.0 };
         self.whichkey_anim += (target - self.whichkey_anim) * (1.0 - (-18.0 * dt).exp());
@@ -2715,19 +2794,7 @@ impl App {
             CmdAction::Ibuffer => self.open_ibuffer(),
             CmdAction::Terminal => self.open_terminal(),
             CmdAction::ConfigErrors => self.open_config_errors(),
-            CmdAction::Settings => {
-                // theme = discovered palettes; font/shell = "auto" + detected.
-                let mut fonts = vec!["auto".to_string()];
-                fonts.extend(self.available_fonts());
-                let mut shells = vec!["auto".to_string()];
-                shells.extend(self.available_shells());
-                let dynamic = vec![
-                    ("general", "theme", self.available_themes()),
-                    ("gui", "font", fonts),
-                    ("terminal", "shell", shells),
-                ];
-                self.settings = Some(SettingsState::new(&self.config, dynamic));
-            }
+            CmdAction::Settings => self.open_settings(),
             CmdAction::BufferDelete => self.delete_active_buffer(),
             CmdAction::Dired(arg) => self.open_dired(arg),
             CmdAction::Files => self.open_files_picker(),
@@ -3658,6 +3725,29 @@ impl App {
     }
 
     /// Advance the pending Space-leader sequence with the next key.
+    /// Second key of a `g` sequence: LSP goto commands, or replay a native
+    /// g-motion (`gg`/`g-`/`g+`/…) into the vim layer.
+    fn handle_g_key(&mut self, ck: crossterm::event::KeyEvent) {
+        match ck.code {
+            KeyCode::Char('d') => self.lsp_definition(),
+            KeyCode::Char('r') => self.lsp_references(),
+            KeyCode::Char('h') => self.lsp_hover(),
+            KeyCode::Esc => {} // cancel
+            other => {
+                self.feed_key_to_vim(KeyCode::Char('g'));
+                self.feed_key_to_vim(other);
+            }
+        }
+    }
+
+    /// Re-inject a key into the normal vim path (used to replay native g-motions
+    /// after the `g` menu decided not to handle the sequence itself).
+    fn feed_key_to_vim(&mut self, code: KeyCode) {
+        self.g_replaying = true;
+        self.handle_key(crossterm::event::KeyEvent::new(code, KeyModifiers::NONE));
+        self.g_replaying = false;
+    }
+
     fn handle_leader_key(&mut self, ck: crossterm::event::KeyEvent) {
         let c = match ck.code {
             KeyCode::Char(c) => c,
@@ -3715,7 +3805,37 @@ impl App {
             LeaderAction::Diagnostics => self.open_diagnostics_picker(),
             LeaderAction::IncomingCalls => self.lsp_call_hierarchy(true),
             LeaderAction::OutgoingCalls => self.lsp_call_hierarchy(false),
+            LeaderAction::BufferDelete => self.delete_active_buffer(),
+            LeaderAction::Terminal => self.open_terminal(),
+            LeaderAction::Settings => self.open_settings(),
+            LeaderAction::ToggleNumber => {
+                self.config.number = !self.config.number;
+                self.message = Some(format!("number: {}", self.config.number));
+            }
+            LeaderAction::ToggleRelative => {
+                self.config.relativenumber = !self.config.relativenumber;
+                self.message = Some(format!("relativenumber: {}", self.config.relativenumber));
+            }
+            LeaderAction::Grep => {
+                // Seed the cmdline for a ripgrep pattern.
+                self.vim.set_cmdline(":Rg ");
+                self.message = Some("Type a pattern and press Enter".to_string());
+            }
         }
+    }
+
+    /// Open the Settings page (shared by `:settings` and the leader binding).
+    fn open_settings(&mut self) {
+        let mut fonts = vec!["auto".to_string()];
+        fonts.extend(self.available_fonts());
+        let mut shells = vec!["auto".to_string()];
+        shells.extend(self.available_shells());
+        let dynamic = vec![
+            ("general", "theme", self.available_themes()),
+            ("gui", "font", fonts),
+            ("terminal", "shell", shells),
+        ];
+        self.settings = Some(SettingsState::new(&self.config, dynamic));
     }
 
     /// Show the active buffer's diagnostics in a picker; Enter jumps to one.
@@ -4794,6 +4914,39 @@ mod tests {
         ));
         assert!(matches!(leader_resolve(&['z']), LeaderResolve::Unknown));
         assert!(matches!(leader_resolve(&['w', 'x']), LeaderResolve::Unknown));
+        // Expanded groups.
+        assert!(matches!(
+            leader_resolve(&['o', 't']),
+            LeaderResolve::Action(LeaderAction::Terminal)
+        ));
+        assert!(matches!(
+            leader_resolve(&['u', 'n']),
+            LeaderResolve::Action(LeaderAction::ToggleNumber)
+        ));
+        assert!(matches!(
+            leader_resolve(&['b', 'd']),
+            LeaderResolve::Action(LeaderAction::BufferDelete)
+        ));
+        assert!(matches!(
+            leader_resolve(&['s', 's']),
+            LeaderResolve::Action(LeaderAction::DocumentSymbol)
+        ));
+    }
+
+    #[test]
+    fn g_menu_starts_and_gg_goes_to_top() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("aaa\nbbb\nccc\n".into(), PathBuf::from("f.txt"));
+        // Move off the top.
+        a.handle_key(CtKey::new(KeyCode::Char('G'), none));
+        assert!(a.ws.borrow().primary_head() > 0);
+        // `g` opens the menu (pending); a second `g` replays gg → top of buffer.
+        a.handle_key(CtKey::new(KeyCode::Char('g'), none));
+        assert!(a.g_pending.is_some(), "g starts the menu");
+        a.handle_key(CtKey::new(KeyCode::Char('g'), none));
+        assert!(a.g_pending.is_none(), "second key resolves the menu");
+        assert_eq!(a.ws.borrow().primary_head(), 0, "gg went to the top");
     }
 
     #[test]
