@@ -291,6 +291,21 @@ impl CursorAnim {
     }
 }
 
+/// A boolean editor option toggleable from the command line (`:set …`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BoolOpt {
+    Number,
+    RelativeNumber,
+}
+
+/// How a `:set` invocation changes a boolean option.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SetVal {
+    On,
+    Off,
+    Toggle,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CmdAction {
     Save(bool),
@@ -314,6 +329,8 @@ enum CmdAction {
     CallHierarchy(bool),
     /// Switch editing paradigm (`:set editmode neovim|emacs`).
     SetEditMode(EditMode),
+    /// Toggle a boolean option (`:set number`, `:set nonumber`, `:set number!`).
+    SetOption(BoolOpt, SetVal),
     /// Open an embedded terminal (`:term` / `:terminal`).
     Terminal,
     /// `:s/pat/rep/[g]` — replace on the current line, or the whole buffer
@@ -324,6 +341,31 @@ enum CmdAction {
         all: bool,
         whole_buffer: bool,
     },
+}
+
+/// Parse the argument of `:set <opt>` for a boolean option. Accepts `number`
+/// (and the `nu`/`rnu` abbreviations), the `no…` prefix to unset, and the `…!`
+/// suffix or `inv…` prefix to toggle. Returns a usage/unknown error otherwise.
+fn parse_set_option(arg: &str) -> Result<CmdAction, String> {
+    let tok = arg.trim();
+    if tok.is_empty() {
+        return Err("Usage: :set number|relativenumber (no… to unset, …! to toggle)".to_string());
+    }
+    let (val, base) = if let Some(rest) = tok.strip_prefix("inv") {
+        (SetVal::Toggle, rest)
+    } else if let Some(rest) = tok.strip_suffix('!') {
+        (SetVal::Toggle, rest)
+    } else if let Some(rest) = tok.strip_prefix("no") {
+        (SetVal::Off, rest)
+    } else {
+        (SetVal::On, tok)
+    };
+    let opt = match base {
+        "number" | "nu" => BoolOpt::Number,
+        "relativenumber" | "rnu" => BoolOpt::RelativeNumber,
+        _ => return Err(format!("Unknown option: {base}")),
+    };
+    Ok(CmdAction::SetOption(opt, val))
 }
 
 /// Parse `s/pat/rep/flags` or `%s/pat/rep/flags` into a substitute action.
@@ -372,6 +414,8 @@ const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("callees", "outgoing calls (call hierarchy)"),
     ("set editmode emacs", "switch to Emacs (modeless) editing"),
     ("set editmode neovim", "switch to Neovim (modal) editing"),
+    ("set number", "show absolute line numbers"),
+    ("set relativenumber", "show relative line numbers"),
 ];
 
 /// The which-key continuations shown after a `Ctrl-w` prefix.
@@ -1150,6 +1194,26 @@ impl App {
         };
         self.lua.set_editmode(name);
         self.message = Some(format!("editmode: {}", name));
+    }
+
+    /// Apply a `:set number`/`:set relativenumber` toggle. The gutter rebuilds
+    /// from these config flags every frame, so the change takes effect at once.
+    fn set_bool_option(&mut self, opt: BoolOpt, val: SetVal) {
+        let field = match opt {
+            BoolOpt::Number => &mut self.config.number,
+            BoolOpt::RelativeNumber => &mut self.config.relativenumber,
+        };
+        let new = match val {
+            SetVal::On => true,
+            SetVal::Off => false,
+            SetVal::Toggle => !*field,
+        };
+        *field = new;
+        let name = match opt {
+            BoolOpt::Number => "number",
+            BoolOpt::RelativeNumber => "relativenumber",
+        };
+        self.message = Some(format!("{}{}", if new { "" } else { "no" }, name));
     }
 
     /// Handle a key in Emacs (modeless) mode. App-level chords — the `C-x`
@@ -2382,6 +2446,9 @@ impl App {
                     _ => Err("Usage: :set editmode neovim|emacs".to_string()),
                 }
             }
+            _ if trimmed.starts_with("set ") => {
+                parse_set_option(trimmed.strip_prefix("set ").unwrap_or(""))
+            }
             _ if parse_substitute(trimmed).is_some() => {
                 Ok(parse_substitute(trimmed).expect("checked above"))
             }
@@ -2437,6 +2504,7 @@ impl App {
             CmdAction::WorkspaceSymbol(q) => self.lsp_workspace_symbols(&q),
             CmdAction::CallHierarchy(incoming) => self.lsp_call_hierarchy(incoming),
             CmdAction::SetEditMode(mode) => self.set_editmode(mode),
+            CmdAction::SetOption(opt, val) => self.set_bool_option(opt, val),
             CmdAction::Substitute { pattern, replacement, all, whole_buffer } => {
                 self.substitute(&pattern, &replacement, all, whole_buffer)
             }
@@ -3652,6 +3720,29 @@ mod tests {
         assert_eq!(a.parse_cmdline(":only"), Ok(CmdAction::Only));
         assert_eq!(a.parse_cmdline(":close"), Ok(CmdAction::CloseWindow));
         assert_eq!(a.parse_cmdline(":fullscreen"), Ok(CmdAction::Fullscreen));
+    }
+
+    #[test]
+    fn parse_set_option_variants() {
+        let a = App::new("x".into(), PathBuf::from("f.txt"));
+        assert_eq!(a.parse_cmdline(":set number"), Ok(CmdAction::SetOption(BoolOpt::Number, SetVal::On)));
+        assert_eq!(a.parse_cmdline(":set nu"), Ok(CmdAction::SetOption(BoolOpt::Number, SetVal::On)));
+        assert_eq!(a.parse_cmdline(":set nonumber"), Ok(CmdAction::SetOption(BoolOpt::Number, SetVal::Off)));
+        assert_eq!(a.parse_cmdline(":set number!"), Ok(CmdAction::SetOption(BoolOpt::Number, SetVal::Toggle)));
+        assert_eq!(a.parse_cmdline(":set invnumber"), Ok(CmdAction::SetOption(BoolOpt::Number, SetVal::Toggle)));
+        assert_eq!(a.parse_cmdline(":set relativenumber"), Ok(CmdAction::SetOption(BoolOpt::RelativeNumber, SetVal::On)));
+        assert_eq!(a.parse_cmdline(":set rnu"), Ok(CmdAction::SetOption(BoolOpt::RelativeNumber, SetVal::On)));
+        assert!(a.parse_cmdline(":set bogus").is_err());
+    }
+
+    #[test]
+    fn set_number_toggles_config_live() {
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        assert!(!a.config.number);
+        a.apply_cmd(CmdAction::SetOption(BoolOpt::Number, SetVal::On));
+        assert!(a.config.number);
+        a.apply_cmd(CmdAction::SetOption(BoolOpt::Number, SetVal::Toggle));
+        assert!(!a.config.number);
     }
 
     #[test]
