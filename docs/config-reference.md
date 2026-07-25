@@ -52,12 +52,16 @@ Theme changes apply to the GUI on restart.
 
 ### Recoloring individual elements
 
-The **Colors** group in the Settings page overrides individual UI colors
-(background, foreground, gutter, selection, cursor, **bars/divider**, accent) on top
-of the theme. Each is a picker that cycles through every color used by the built-in
-themes, with a swatch shown beside the value; `theme` means "leave at the theme's
-color". These map to `ruster.config.colors.*` in `config.lua`. GUI color changes apply
-on restart.
+Pick a theme, then recolor individual UI elements **from that theme's palette**. The
+**Colors** group in the Settings page has a row per element (background, foreground,
+gutter, selection, cursor, **bars/divider**, accent); each is a picker that cycles the
+**selected theme's named palette** (e.g. Catppuccin Mocha's `mauve`, `blue`, `surface0`,
+…), shown by name with a swatch. `theme` means "leave at the theme's default". Changing
+the Theme row updates the color pickers live. These map to `ruster.config.colors.*`
+(stored as hex). GUI color changes apply on restart.
+
+Each `themes/<name>.lua` file carries both the 7 UI `roles` and a `palette` of named
+colors to choose from.
 
 ## Settings
 

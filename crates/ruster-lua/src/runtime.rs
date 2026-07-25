@@ -228,8 +228,8 @@ impl LuaRuntime {
 
     /// Evaluate a theme file (a Lua chunk returning `{ bg = "#…", … }`) into a
     /// color palette. Missing/invalid entries fall back to the default palette.
-    pub fn load_theme_colors(&self, code: &str) -> Option<crate::config::ThemeColors> {
-        use crate::config::{Rgb, ThemeColors};
+    pub fn load_theme(&self, code: &str) -> Option<crate::config::Theme> {
+        use crate::config::{Rgb, Theme, ThemeColors};
         let t: mlua::Table = self.lua.load(code).eval().ok()?;
         let d = ThemeColors::default();
         let get = |k: &str, def: Rgb| -> Rgb {
@@ -240,7 +240,7 @@ impl LuaRuntime {
                 .map(|(r, g, b)| Rgb::new(r, g, b))
                 .unwrap_or(def)
         };
-        Some(ThemeColors {
+        let roles = ThemeColors {
             bg: get("bg", d.bg),
             fg: get("fg", d.fg),
             gutter: get("gutter", d.gutter),
@@ -248,7 +248,30 @@ impl LuaRuntime {
             cursor: get("cursor", d.cursor),
             divider: get("divider", d.divider),
             accent: get("accent", d.accent),
-        })
+        };
+        // A `palette` sub-table of named colors, or (for older files) the roles.
+        let palette = match t.get::<Option<mlua::Table>>("palette").ok().flatten() {
+            Some(pt) => {
+                let mut v = Vec::new();
+                for (name, hex) in pt.pairs::<String, String>().flatten() {
+                    if let Some((r, g, b)) = crate::schema::parse_hex_color(&hex) {
+                        v.push((name, Rgb::new(r, g, b)));
+                    }
+                }
+                v.sort_by(|a, b| a.0.cmp(&b.0)); // Lua pairs() order is unspecified
+                v
+            }
+            None => vec![
+                ("bg".into(), roles.bg),
+                ("fg".into(), roles.fg),
+                ("gutter".into(), roles.gutter),
+                ("selection".into(), roles.selection),
+                ("cursor".into(), roles.cursor),
+                ("divider".into(), roles.divider),
+                ("accent".into(), roles.accent),
+            ],
+        };
+        Some(Theme { palette, roles })
     }
 
     pub fn load_init(&mut self, path: &Path) -> Result<(), String> {

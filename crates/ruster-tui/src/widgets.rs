@@ -494,7 +494,7 @@ impl Widget for SettingsWidget {
                     let cfg = if r.editing { accent } else { row_fg };
                     text(buf, value_col, y, &ctrl, cfg, row_bg);
                     // A swatch after a hex color value.
-                    if let Some((cr, cg, cb)) = hex_rgb(&r.value) {
+                    if let Some((cr, cg, cb)) = r.swatch.as_deref().and_then(hex_rgb) {
                         let sx = value_col + ctrl.chars().count() as u16 + 1;
                         for dx in 0..2 {
                             put(buf, sx + dx, y, ' ', row_fg, Color::Rgb(cr, cg, cb));

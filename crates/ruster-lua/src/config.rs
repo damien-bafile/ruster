@@ -42,76 +42,137 @@ impl Default for ThemeColors {
     }
 }
 
-impl ThemeColors {
-    /// Serialize as a theme file: a Lua chunk returning a `{ bg = "#…", … }` table.
+/// A theme: an ordered named palette plus the 7 UI role colors (the defaults
+/// applied to the editor). The Settings page lets the user assign any palette
+/// color to each UI element.
+#[derive(Debug, Clone)]
+pub struct Theme {
+    pub palette: Vec<(String, Rgb)>,
+    pub roles: ThemeColors,
+}
+
+impl Theme {
+    /// Serialize as a theme file: a Lua chunk returning the roles + palette.
     pub fn to_lua(&self) -> String {
-        format!(
-            "-- ruster theme. Edit the hex colors, or copy this file to make your own.\n\
-             return {{\n  \
-             bg = {:?},\n  fg = {:?},\n  gutter = {:?},\n  selection = {:?},\n  \
-             cursor = {:?},\n  divider = {:?},\n  accent = {:?},\n}}\n",
-            self.bg.to_hex(),
-            self.fg.to_hex(),
-            self.gutter.to_hex(),
-            self.selection.to_hex(),
-            self.cursor.to_hex(),
-            self.divider.to_hex(),
-            self.accent.to_hex(),
-        )
+        let r = &self.roles;
+        let mut s = String::from(
+            "-- ruster theme. `roles` colour the UI; `palette` are the named colours\n\
+             -- the Settings page assigns to each element. Edit or copy freely.\n\
+             return {\n",
+        );
+        s.push_str(&format!(
+            "  bg = {:?}, fg = {:?}, gutter = {:?}, selection = {:?},\n  cursor = {:?}, divider = {:?}, accent = {:?},\n",
+            r.bg.to_hex(), r.fg.to_hex(), r.gutter.to_hex(), r.selection.to_hex(),
+            r.cursor.to_hex(), r.divider.to_hex(), r.accent.to_hex(),
+        ));
+        s.push_str("  palette = {\n");
+        for (name, c) in &self.palette {
+            s.push_str(&format!("    {} = {:?},\n", name, c.to_hex()));
+        }
+        s.push_str("  },\n}\n");
+        s
     }
 }
 
+fn hex_to_rgb(hex: &str) -> Rgb {
+    if hex.len() == 7 && hex.as_bytes()[0] == b'#' {
+        if let (Ok(r), Ok(g), Ok(b)) = (
+            u8::from_str_radix(&hex[1..3], 16),
+            u8::from_str_radix(&hex[3..5], 16),
+            u8::from_str_radix(&hex[5..7], 16),
+        ) {
+            return Rgb::new(r, g, b);
+        }
+    }
+    Rgb::new(0, 0, 0)
+}
+
+/// Build a named palette from `(name, "#hex")` entries.
+pub fn palette(entries: &[(&str, &str)]) -> Vec<(String, Rgb)> {
+    entries.iter().map(|(n, h)| (n.to_string(), hex_to_rgb(h))).collect()
+}
+
+/// The Catppuccin Mocha palette (also used as the `default` theme's palette).
+const MOCHA: &[(&str, &str)] = &[
+    ("rosewater", "#f5e0dc"), ("flamingo", "#f2cdcd"), ("pink", "#f5c2e7"), ("mauve", "#cba6f7"),
+    ("red", "#f38ba8"), ("maroon", "#eba0ac"), ("peach", "#fab387"), ("yellow", "#f9e2af"),
+    ("green", "#a6e3a1"), ("teal", "#94e2d5"), ("sky", "#89dceb"), ("sapphire", "#74c7ec"),
+    ("blue", "#89b4fa"), ("lavender", "#b4befe"), ("text", "#cdd6f4"), ("subtext1", "#bac2de"),
+    ("subtext0", "#a6adc8"), ("overlay2", "#9399b2"), ("overlay1", "#7f849c"), ("overlay0", "#6c7086"),
+    ("surface2", "#585b70"), ("surface1", "#45475a"), ("surface0", "#313244"), ("base", "#1e1e2e"),
+    ("mantle", "#181825"), ("crust", "#11111b"),
+];
+
 /// Built-in themes written to `themes/` on first run and selectable via
 /// `general.theme`.
-pub fn builtin_themes() -> Vec<(&'static str, ThemeColors)> {
+pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
     vec![
-        ("default", ThemeColors::default()),
+        (
+            "default",
+            Theme { palette: palette(MOCHA), roles: ThemeColors::default() },
+        ),
         (
             "gruvbox",
-            ThemeColors {
-                bg: Rgb::new(40, 40, 40),
-                fg: Rgb::new(235, 219, 178),
-                gutter: Rgb::new(124, 111, 100),
-                selection: Rgb::new(80, 73, 69),
-                cursor: Rgb::new(254, 128, 25),
-                divider: Rgb::new(60, 56, 54),
-                accent: Rgb::new(250, 189, 47),
+            Theme {
+                palette: palette(&[
+                    ("bg", "#282828"), ("bg1", "#3c3836"), ("bg2", "#504945"), ("bg3", "#665c54"),
+                    ("bg4", "#7c6f64"), ("fg", "#ebdbb2"), ("fg2", "#d5c4a1"), ("gray", "#928374"),
+                    ("red", "#fb4934"), ("green", "#b8bb26"), ("yellow", "#fabd2f"), ("blue", "#83a598"),
+                    ("purple", "#d3869b"), ("aqua", "#8ec07c"), ("orange", "#fe8019"),
+                ]),
+                roles: ThemeColors {
+                    bg: Rgb::new(40, 40, 40), fg: Rgb::new(235, 219, 178),
+                    gutter: Rgb::new(124, 111, 100), selection: Rgb::new(80, 73, 69),
+                    cursor: Rgb::new(254, 128, 25), divider: Rgb::new(60, 56, 54),
+                    accent: Rgb::new(250, 189, 47),
+                },
             },
         ),
         (
             "tokyonight",
-            ThemeColors {
-                bg: Rgb::new(26, 27, 38),
-                fg: Rgb::new(192, 202, 245),
-                gutter: Rgb::new(86, 95, 137),
-                selection: Rgb::new(40, 52, 87),
-                cursor: Rgb::new(192, 202, 245),
-                divider: Rgb::new(65, 72, 104),
-                accent: Rgb::new(122, 162, 247),
+            Theme {
+                palette: palette(&[
+                    ("bg", "#1a1b26"), ("bg_dark", "#16161e"), ("bg_highlight", "#292e42"),
+                    ("terminal_black", "#414868"), ("fg", "#c0caf5"), ("fg_dark", "#a9b1d6"),
+                    ("comment", "#565f89"), ("blue", "#7aa2f7"), ("cyan", "#7dcfff"), ("blue1", "#2ac3de"),
+                    ("green", "#9ece6a"), ("teal", "#1abc9c"), ("red", "#f7768e"), ("orange", "#ff9e64"),
+                    ("yellow", "#e0af68"), ("magenta", "#bb9af7"), ("purple", "#9d7cd8"),
+                ]),
+                roles: ThemeColors {
+                    bg: Rgb::new(26, 27, 38), fg: Rgb::new(192, 202, 245),
+                    gutter: Rgb::new(86, 95, 137), selection: Rgb::new(40, 52, 87),
+                    cursor: Rgb::new(192, 202, 245), divider: Rgb::new(65, 72, 104),
+                    accent: Rgb::new(122, 162, 247),
+                },
             },
         ),
         (
             "nord",
-            ThemeColors {
-                bg: Rgb::new(46, 52, 64),
-                fg: Rgb::new(216, 222, 233),
-                gutter: Rgb::new(76, 86, 106),
-                selection: Rgb::new(67, 76, 94),
-                cursor: Rgb::new(136, 192, 208),
-                divider: Rgb::new(59, 66, 82),
-                accent: Rgb::new(136, 192, 208),
+            Theme {
+                palette: palette(&[
+                    ("nord0", "#2e3440"), ("nord1", "#3b4252"), ("nord2", "#434c5e"), ("nord3", "#4c566a"),
+                    ("nord4", "#d8dee9"), ("nord5", "#e5e9f0"), ("nord6", "#eceff4"), ("nord7", "#8fbcbb"),
+                    ("nord8", "#88c0d0"), ("nord9", "#81a1c1"), ("nord10", "#5e81ac"), ("nord11", "#bf616a"),
+                    ("nord12", "#d08770"), ("nord13", "#ebcb8b"), ("nord14", "#a3be8c"), ("nord15", "#b48ead"),
+                ]),
+                roles: ThemeColors {
+                    bg: Rgb::new(46, 52, 64), fg: Rgb::new(216, 222, 233),
+                    gutter: Rgb::new(76, 86, 106), selection: Rgb::new(67, 76, 94),
+                    cursor: Rgb::new(136, 192, 208), divider: Rgb::new(59, 66, 82),
+                    accent: Rgb::new(136, 192, 208),
+                },
             },
         ),
         (
             "catppuccin-mocha",
-            ThemeColors {
-                bg: Rgb::new(30, 30, 46),      // base   #1e1e2e
-                fg: Rgb::new(205, 214, 244),   // text   #cdd6f4
-                gutter: Rgb::new(108, 112, 134), // overlay0 #6c7086
-                selection: Rgb::new(88, 91, 112), // surface2 #585b70
-                cursor: Rgb::new(245, 224, 220), // rosewater #f5e0dc
-                divider: Rgb::new(49, 50, 68),  // surface0 #313244
-                accent: Rgb::new(203, 166, 247), // mauve  #cba6f7
+            Theme {
+                palette: palette(MOCHA),
+                roles: ThemeColors {
+                    bg: Rgb::new(30, 30, 46), fg: Rgb::new(205, 214, 244),
+                    gutter: Rgb::new(108, 112, 134), selection: Rgb::new(88, 91, 112),
+                    cursor: Rgb::new(245, 224, 220), divider: Rgb::new(49, 50, 68),
+                    accent: Rgb::new(203, 166, 247),
+                },
             },
         ),
     ]

@@ -206,27 +206,6 @@ fn ruster_config_dir() -> Option<PathBuf> {
     }
 }
 
-/// The cyclable color palette for the color-override pickers: "theme" (unset)
-/// plus every distinct color used across the built-in themes.
-fn theme_palette() -> Vec<String> {
-    let mut out = vec!["theme".to_string()];
-    for (_, c) in ruster_lua::config::builtin_themes() {
-        for hex in [
-            c.bg.to_hex(),
-            c.fg.to_hex(),
-            c.gutter.to_hex(),
-            c.selection.to_hex(),
-            c.cursor.to_hex(),
-            c.divider.to_hex(),
-            c.accent.to_hex(),
-        ] {
-            if !out.contains(&hex) {
-                out.push(hex);
-            }
-        }
-    }
-    out
-}
 
 /// Find an executable named `name` on `$PATH`, returning its full path.
 fn find_in_path(name: &str) -> Option<String> {
@@ -1043,22 +1022,22 @@ impl App {
         if let Some(dir) = ruster_config_dir() {
             let themes_dir = dir.join("themes");
             let _ = std::fs::create_dir_all(&themes_dir);
-            for (name, colors) in ruster_lua::config::builtin_themes() {
+            for (name, theme) in ruster_lua::config::builtin_themes() {
                 let path = themes_dir.join(format!("{name}.lua"));
                 if !path.exists() {
-                    let _ = std::fs::write(&path, colors.to_lua());
+                    let _ = std::fs::write(&path, theme.to_lua());
                 }
             }
             let theme_path = themes_dir.join(format!("{}.lua", config.theme));
             if let Ok(code) = std::fs::read_to_string(&theme_path) {
-                if let Some(colors) = lua.load_theme_colors(&code) {
-                    config.colors = colors;
+                if let Some(theme) = lua.load_theme(&code) {
+                    config.colors = theme.roles;
                 }
-            } else if let Some((_, colors)) = ruster_lua::config::builtin_themes()
+            } else if let Some((_, theme)) = ruster_lua::config::builtin_themes()
                 .into_iter()
                 .find(|(n, _)| *n == config.theme)
             {
-                config.colors = colors;
+                config.colors = theme.roles;
             } else if !config.theme.is_empty() && config.theme != "default" {
                 config_errors.push(format!(
                     "general.theme: unknown theme {:?} → using default",
@@ -3063,6 +3042,36 @@ impl App {
         names
     }
 
+    /// A theme's named palette as `(color_name, "#hex")` pairs — built-in themes
+    /// carry theirs directly; user themes are read from their `.lua` file.
+    fn theme_palette_for(&self, name: &str) -> Vec<(String, String)> {
+        if let Some((_, theme)) =
+            ruster_lua::config::builtin_themes().into_iter().find(|(n, _)| *n == name)
+        {
+            return theme.palette.iter().map(|(n, c)| (n.clone(), c.to_hex())).collect();
+        }
+        if let Some(dir) = ruster_config_dir() {
+            let path = dir.join("themes").join(format!("{name}.lua"));
+            if let Ok(code) = std::fs::read_to_string(&path) {
+                if let Some(theme) = self.lua.load_theme(&code) {
+                    return theme.palette.iter().map(|(n, c)| (n.clone(), c.to_hex())).collect();
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    /// Every available theme's palette, for the Settings color pickers.
+    fn all_theme_palettes(&self) -> Vec<(String, Vec<(String, String)>)> {
+        self.available_themes()
+            .into_iter()
+            .map(|name| {
+                let pal = self.theme_palette_for(&name);
+                (name, pal)
+            })
+            .collect()
+    }
+
     /// Installed font filenames (`.ttf`/`.otf`) for the font picker.
     fn available_fonts(&self) -> Vec<String> {
         let mut dirs_list: Vec<PathBuf> = Vec::new();
@@ -3865,21 +3874,23 @@ impl App {
 
     /// Open the Settings page (shared by `:settings` and the leader binding).
     fn open_settings(&mut self) {
+        // Picker options as (label, stored value) pairs. For theme/font/shell the
+        // two are the same (plus a sentinel); color rows are built by SettingsState
+        // from the selected theme's palette.
+        let pairs = |vals: Vec<String>| -> Vec<(String, String)> {
+            vals.into_iter().map(|v| (v.clone(), v)).collect()
+        };
         let mut fonts = vec!["auto".to_string()];
         fonts.extend(self.available_fonts());
         let mut shells = vec!["auto".to_string()];
         shells.extend(self.available_shells());
-        let mut dynamic = vec![
-            ("general", "theme", self.available_themes()),
-            ("gui", "font", fonts),
-            ("terminal", "shell", shells),
+        let dynamic = vec![
+            ("general", "theme", pairs(self.available_themes())),
+            ("gui", "font", pairs(fonts)),
+            ("terminal", "shell", pairs(shells)),
         ];
-        // Color overrides cycle through the palette of every theme.
-        let palette = theme_palette();
-        for role in ["bg", "fg", "gutter", "selection", "cursor", "divider", "accent"] {
-            dynamic.push(("colors", role, palette.clone()));
-        }
-        self.settings = Some(SettingsState::new(&self.config, dynamic));
+        let palettes = self.all_theme_palettes();
+        self.settings = Some(SettingsState::new(&self.config, dynamic, palettes));
     }
 
     /// Show the active buffer's diagnostics in a picker; Enter jumps to one.

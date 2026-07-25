@@ -697,7 +697,7 @@ impl Renderer for RaylibRenderer {
                     let cc = if r.editing { accent } else { default_color };
                     s.draw_text_ex(font, &ctrl, Vector2::new(value_x as f32, ry as f32), font_size as f32, 1.0, cc);
                     // A swatch after a hex color value, so the picker shows it.
-                    if let Some((cr, cg, cb)) = hex_rgb(&r.value) {
+                    if let Some((cr, cg, cb)) = r.swatch.as_deref().and_then(hex_rgb) {
                         let sw = font_size;
                         let swx = value_x + (ctrl.chars().count() as f32 * char_w) as i32 + 6;
                         s.draw_rectangle(swx, ry + 2, sw, sw - 2, Color::new(cr, cg, cb, 255));

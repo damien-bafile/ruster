@@ -327,6 +327,8 @@ pub struct SettingRowView {
     pub editing: bool,
     pub selected: bool,
     pub help: String,
+    /// A `#RRGGBB` color to draw as a swatch beside the value (color rows).
+    pub swatch: Option<String>,
 }
 
 /// A named group of settings rows.
