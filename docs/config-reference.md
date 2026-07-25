@@ -50,6 +50,15 @@ return { bg = "#1e1e1e", fg = "#cdd6f4", gutter = "#6c7086",
 
 Theme changes apply to the GUI on restart.
 
+### Recoloring individual elements
+
+The **Colors** group in the Settings page overrides individual UI colors
+(background, foreground, gutter, selection, cursor, **bars/divider**, accent) on top
+of the theme. Each is a picker that cycles through every color used by the built-in
+themes, with a swatch shown beside the value; `theme` means "leave at the theme's
+color". These map to `ruster.config.colors.*` in `config.lua`. GUI color changes apply
+on restart.
+
 ## Settings
 
 Keys are addressed as `group.key`.

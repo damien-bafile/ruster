@@ -189,6 +189,7 @@ pub const GROUPS: &[(&str, &str)] = &[
     ("lsp", "Language server features"),
     ("terminal", "Embedded terminal"),
     ("dired", "File explorer"),
+    ("colors", "Per-element color overrides (empty = theme)"),
 ];
 
 /// The full option catalog — the single source of truth.
@@ -244,6 +245,15 @@ pub fn schema() -> Vec<SettingSpec> {
 
     // --- dired ---
     add("dired", "show_hidden", "Show hidden files", Bool, b(false), "Show dotfiles in the file explorer");
+
+    // --- colors (overrides; empty = use the theme's color) ---
+    add("colors", "bg", "Background", Text, t(""), "Override editor background");
+    add("colors", "fg", "Foreground", Text, t(""), "Override default text color");
+    add("colors", "gutter", "Gutter", Text, t(""), "Override line-number color");
+    add("colors", "selection", "Selection", Text, t(""), "Override selection highlight");
+    add("colors", "cursor", "Cursor", Text, t(""), "Override cursor color");
+    add("colors", "divider", "Bars / divider", Text, t(""), "Override statusline bar + window divider");
+    add("colors", "accent", "Accent", Text, t(""), "Override accent (titles, prompts)");
 
     s
 }

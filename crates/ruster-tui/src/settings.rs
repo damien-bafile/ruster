@@ -151,23 +151,34 @@ impl SettingsState {
         if opts.is_empty() {
             return;
         }
+        let sentinel = self.unset_sentinel(self.selected);
         let cur_display = self.values[self.selected].display();
-        // Empty text (e.g. an unset font) matches the "auto" sentinel.
-        let cur = if cur_display.is_empty() { "auto".to_string() } else { cur_display };
+        // Empty text (unset font/shell/color) matches the sentinel option.
+        let cur = if cur_display.is_empty() { sentinel.to_string() } else { cur_display };
         let idx = opts.iter().position(|o| *o == cur).unwrap_or(0) as i64;
         let n = opts.len() as i64;
         let next = (((idx + delta) % n) + n) % n;
         let chosen = opts[next as usize].clone();
-        // Enum rows carry an Enum value; dynamic Text rows (theme/font) stay Text,
-        // and the "auto" sentinel maps back to an empty value.
+        // Enum rows carry an Enum value; dynamic Text rows (theme/font/color) stay
+        // Text, and the "unset" sentinel maps back to an empty value.
         let v = if matches!(self.specs[self.selected].kind, SettingKind::Enum(_)) {
             SettingValue::Enum(chosen)
-        } else if chosen == "auto" {
+        } else if chosen == sentinel {
             SettingValue::Text(String::new())
         } else {
             SettingValue::Text(chosen)
         };
         self.set(v);
+    }
+
+    /// The word a dynamic Text row shows/uses for an empty (default) value:
+    /// "theme" for color overrides, "auto" otherwise.
+    fn unset_sentinel(&self, idx: usize) -> &'static str {
+        if self.specs[idx].group == "colors" {
+            "theme"
+        } else {
+            "auto"
+        }
     }
 
     fn set(&mut self, v: SettingValue) {
@@ -229,9 +240,9 @@ impl SettingsState {
                 self.editing.clone().unwrap_or_default()
             } else {
                 let d = self.values[i].display();
-                // Dynamic Text rows (font) show "auto" when unset.
+                // Dynamic Text rows show their unset sentinel ("auto"/"theme").
                 if d.is_empty() && self.dyn_opts.contains_key(&i) {
-                    "auto".to_string()
+                    self.unset_sentinel(i).to_string()
                 } else {
                     decorate_value(spec.group, spec.key, d)
                 }

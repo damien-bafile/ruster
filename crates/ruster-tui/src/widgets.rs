@@ -374,6 +374,18 @@ impl PickerWidget {
     }
 }
 
+/// Parse a `#RRGGBB` value into RGB, for the color-setting swatch.
+fn hex_rgb(s: &str) -> Option<(u8, u8, u8)> {
+    let b = s.as_bytes();
+    if b.len() != 7 || b[0] != b'#' {
+        return None;
+    }
+    let r = u8::from_str_radix(&s[1..3], 16).ok()?;
+    let g = u8::from_str_radix(&s[3..5], 16).ok()?;
+    let bl = u8::from_str_radix(&s[5..7], 16).ok()?;
+    Some((r, g, bl))
+}
+
 /// Renders the label/value string for a settings control.
 pub fn control_display(row: &SettingRowView) -> String {
     match row.kind {
@@ -481,6 +493,13 @@ impl Widget for SettingsWidget {
                     let ctrl = control_display(r);
                     let cfg = if r.editing { accent } else { row_fg };
                     text(buf, value_col, y, &ctrl, cfg, row_bg);
+                    // A swatch after a hex color value.
+                    if let Some((cr, cg, cb)) = hex_rgb(&r.value) {
+                        let sx = value_col + ctrl.chars().count() as u16 + 1;
+                        for dx in 0..2 {
+                            put(buf, sx + dx, y, ' ', row_fg, Color::Rgb(cr, cg, cb));
+                        }
+                    }
                 }
             }
         }

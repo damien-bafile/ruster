@@ -206,6 +206,28 @@ fn ruster_config_dir() -> Option<PathBuf> {
     }
 }
 
+/// The cyclable color palette for the color-override pickers: "theme" (unset)
+/// plus every distinct color used across the built-in themes.
+fn theme_palette() -> Vec<String> {
+    let mut out = vec!["theme".to_string()];
+    for (_, c) in ruster_lua::config::builtin_themes() {
+        for hex in [
+            c.bg.to_hex(),
+            c.fg.to_hex(),
+            c.gutter.to_hex(),
+            c.selection.to_hex(),
+            c.cursor.to_hex(),
+            c.divider.to_hex(),
+            c.accent.to_hex(),
+        ] {
+            if !out.contains(&hex) {
+                out.push(hex);
+            }
+        }
+    }
+    out
+}
+
 /// Find an executable named `name` on `$PATH`, returning its full path.
 fn find_in_path(name: &str) -> Option<String> {
     let path = std::env::var_os("PATH")?;
@@ -1044,6 +1066,23 @@ impl App {
                 ));
             }
         }
+        }
+        // Layer per-element color overrides over the theme palette.
+        {
+            use ruster_lua::config::Rgb;
+            let ov = config.color_overrides.clone();
+            let set = |hex: &str, field: &mut Rgb| {
+                if let Some((r, g, b)) = ruster_lua::schema::parse_hex_color(hex) {
+                    *field = Rgb::new(r, g, b);
+                }
+            };
+            set(&ov.bg, &mut config.colors.bg);
+            set(&ov.fg, &mut config.colors.fg);
+            set(&ov.gutter, &mut config.colors.gutter);
+            set(&ov.selection, &mut config.colors.selection);
+            set(&ov.cursor, &mut config.colors.cursor);
+            set(&ov.divider, &mut config.colors.divider);
+            set(&ov.accent, &mut config.colors.accent);
         }
         // Apply EditorConfig overrides (unless disabled via general.editorconfig).
         if config.editorconfig {
@@ -3830,11 +3869,16 @@ impl App {
         fonts.extend(self.available_fonts());
         let mut shells = vec!["auto".to_string()];
         shells.extend(self.available_shells());
-        let dynamic = vec![
+        let mut dynamic = vec![
             ("general", "theme", self.available_themes()),
             ("gui", "font", fonts),
             ("terminal", "shell", shells),
         ];
+        // Color overrides cycle through the palette of every theme.
+        let palette = theme_palette();
+        for role in ["bg", "fg", "gutter", "selection", "cursor", "divider", "accent"] {
+            dynamic.push(("colors", role, palette.clone()));
+        }
         self.settings = Some(SettingsState::new(&self.config, dynamic));
     }
 

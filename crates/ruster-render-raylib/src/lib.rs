@@ -26,6 +26,18 @@ fn to_raylib(c: ruster_render::Color, fallback: Color) -> Color {
     }
 }
 
+/// Parse a `#RRGGBB` string into RGB, for drawing color-setting swatches.
+fn hex_rgb(s: &str) -> Option<(u8, u8, u8)> {
+    let b = s.as_bytes();
+    if b.len() != 7 || b[0] != b'#' {
+        return None;
+    }
+    let r = u8::from_str_radix(&s[1..3], 16).ok()?;
+    let g = u8::from_str_radix(&s[3..5], 16).ok()?;
+    let bl = u8::from_str_radix(&s[5..7], 16).ok()?;
+    Some((r, g, bl))
+}
+
 /// The RGB channels of a render color, or `fallback` for `Default`.
 fn rgb_of(c: ruster_render::Color, fallback: (u8, u8, u8)) -> (u8, u8, u8) {
     match c {
@@ -684,6 +696,12 @@ impl Renderer for RaylibRenderer {
                     };
                     let cc = if r.editing { accent } else { default_color };
                     s.draw_text_ex(font, &ctrl, Vector2::new(value_x as f32, ry as f32), font_size as f32, 1.0, cc);
+                    // A swatch after a hex color value, so the picker shows it.
+                    if let Some((cr, cg, cb)) = hex_rgb(&r.value) {
+                        let sw = font_size;
+                        let swx = value_x + (ctrl.chars().count() as f32 * char_w) as i32 + 6;
+                        s.draw_rectangle(swx, ry + 2, sw, sw - 2, Color::new(cr, cg, cb, 255));
+                    }
                 }
             }
 

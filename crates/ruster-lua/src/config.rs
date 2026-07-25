@@ -117,6 +117,20 @@ pub fn builtin_themes() -> Vec<(&'static str, ThemeColors)> {
     ]
 }
 
+/// Per-element color overrides (hex, or empty = use the theme's color). Applied
+/// on top of the selected theme. Lets the user recolor individual UI elements by
+/// cycling the theme palette in the Settings page.
+#[derive(Debug, Clone, Default)]
+pub struct ColorOverrides {
+    pub bg: String,
+    pub fg: String,
+    pub gutter: String,
+    pub selection: String,
+    pub cursor: String,
+    pub divider: String,
+    pub accent: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub tabstop: u32,
@@ -148,6 +162,8 @@ pub struct Config {
     pub cursor_anim_enabled: bool,
     pub cursor_anim_speed: f32,
     pub colors: ThemeColors,
+    /// Per-element color overrides layered over `colors` (the theme palette).
+    pub color_overrides: ColorOverrides,
     /// Milliseconds to wait for a mapped key sequence before showing which-key.
     pub timeoutlen: u32,
     pub whichkey_enabled: bool,
@@ -207,6 +223,13 @@ impl Config {
             (("terminal", "scrollback"), Int(self.terminal_scrollback as i64)),
             (("terminal", "default_mode"), Enum(self.terminal_default_mode.clone())),
             (("dired", "show_hidden"), Bool(self.dired_show_hidden)),
+            (("colors", "bg"), Text(self.color_overrides.bg.clone())),
+            (("colors", "fg"), Text(self.color_overrides.fg.clone())),
+            (("colors", "gutter"), Text(self.color_overrides.gutter.clone())),
+            (("colors", "selection"), Text(self.color_overrides.selection.clone())),
+            (("colors", "cursor"), Text(self.color_overrides.cursor.clone())),
+            (("colors", "divider"), Text(self.color_overrides.divider.clone())),
+            (("colors", "accent"), Text(self.color_overrides.accent.clone())),
         ]
     }
 
@@ -266,6 +289,15 @@ impl Config {
             terminal_scrollback: u("terminal", "scrollback", d.terminal_scrollback),
             terminal_default_mode: st("terminal", "default_mode").unwrap_or(d.terminal_default_mode),
             dired_show_hidden: bl("dired", "show_hidden", d.dired_show_hidden),
+            color_overrides: ColorOverrides {
+                bg: st("colors", "bg").unwrap_or_default(),
+                fg: st("colors", "fg").unwrap_or_default(),
+                gutter: st("colors", "gutter").unwrap_or_default(),
+                selection: st("colors", "selection").unwrap_or_default(),
+                cursor: st("colors", "cursor").unwrap_or_default(),
+                divider: st("colors", "divider").unwrap_or_default(),
+                accent: st("colors", "accent").unwrap_or_default(),
+            },
         }
     }
 }
@@ -295,6 +327,7 @@ impl Default for Config {
             cursor_anim_enabled: true,
             cursor_anim_speed: 12.0,
             colors: ThemeColors::default(),
+            color_overrides: ColorOverrides::default(),
             timeoutlen: 300,
             whichkey_enabled: true,
             format_on_save: false,
