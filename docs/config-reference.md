@@ -21,8 +21,8 @@ ruster.config = {
 | `tabstop` | integer | 4 | Number of spaces a tab character represents |
 | `softtabstop` | integer | 4 | Number of spaces inserted when pressing Tab |
 | `expandtab` | boolean | true | Use spaces instead of tab characters |
-| `number` | boolean | false | Show absolute line numbers in the gutter |
-| `relativenumber` | boolean | false | Show relative line numbers (distance from cursor). With `number` also on, the gutter is hybrid: the cursor line shows its absolute number, other lines show the relative distance |
+| `number` | boolean | false | Show absolute line numbers in the gutter. Toggle live with `:set number` / `:set nonumber` / `:set number!` (abbrev. `nu`) |
+| `relativenumber` | boolean | false | Show relative line numbers (distance from cursor). With `number` also on, the gutter is hybrid: the cursor line shows its absolute number, other lines show the relative distance. Toggle live with `:set relativenumber` / `:set norelativenumber` / `:set relativenumber!` (abbrev. `rnu`) |
 | `theme` | string | "default" | Color theme name |
 | `cursor_anim_enabled` | boolean | true | Enable smooth cursor animation |
 | `cursor_anim_speed` | float | 12.0 | Smooth-cursor easing speed |
