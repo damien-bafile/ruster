@@ -22,14 +22,14 @@ gutter, dired, and LSP-style threads+channels. No tokio.
 Runners first (fast, visible, build on the Phase-4 terminal), then sidebar/workspaces,
 then DAP (largest, isolated). Ordered so each task is independently shippable.
 
-### Task 1: Project root + `ruster.toml` — new `ruster-project` crate
+### Task 1: Project root + `ruster.toml` — new `ruster-project` crate ✅
 
-- [ ] Detect the project root by walking up for markers (`.git`, `ruster.toml`,
+- [x] Detect the project root by walking up for markers (`.git`, `ruster.toml`,
   `Cargo.toml`, `package.json`); expose `project_root(from)`.
-- [ ] Parse optional `ruster.toml` (`[tasks.<name>] cmd/cwd/use_terminal`, `[build] command`,
+- [x] Parse optional `ruster.toml` (`[tasks.<name>] cmd/cwd/use_terminal`, `[build] command`,
   `[test] command`) with the `toml` crate into typed structs.
-- [ ] Track recent projects (persist under the config dir).
-- [ ] Tests: marker walk on a temp dir; `ruster.toml` parse of a fixture string.
+- [x] Track recent projects (persist under the config dir).
+- [x] Tests: marker walk on a temp dir; `ruster.toml` parse of a fixture string.
 
 ### Task 2: Shared quickfix list + gutter sign column
 
