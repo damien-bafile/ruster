@@ -725,10 +725,13 @@ impl Renderer for RaylibRenderer {
                 if *is_h {
                     s.draw_text_ex(font, &format!("── {} ", label.to_uppercase()), Vector2::new((bx + 4) as f32, ry as f32), font_size as f32, 1.0, accent);
                 } else if let Some(r) = row {
+                    // The selected row sits on the selection bar, so its text
+                    // uses the selection-text colour.
+                    let row_fg = if r.selected { selection_fg } else { default_color };
                     if r.selected {
                         s.draw_rectangle(bx, ry, bw, line_h, sel_bg);
                     }
-                    s.draw_text_ex(font, label, Vector2::new((bx + 8) as f32, ry as f32), font_size as f32, 1.0, default_color);
+                    s.draw_text_ex(font, label, Vector2::new((bx + 8) as f32, ry as f32), font_size as f32, 1.0, row_fg);
                     let ctrl = match r.kind {
                         ControlKind::Toggle => {
                             if r.value == "on" { "[x] on".to_string() } else { "[ ] off".to_string() }
@@ -738,7 +741,7 @@ impl Renderer for RaylibRenderer {
                             if r.editing { format!("{}▏", r.value) } else { r.value.clone() }
                         }
                     };
-                    let cc = if r.editing { accent } else { default_color };
+                    let cc = if r.editing { accent } else { row_fg };
                     s.draw_text_ex(font, &ctrl, Vector2::new(value_x as f32, ry as f32), font_size as f32, 1.0, cc);
                     // A swatch after a hex color value, so the picker shows it.
                     if let Some((cr, cg, cb)) = r.swatch.as_deref().and_then(hex_rgb) {
@@ -756,7 +759,8 @@ impl Renderer for RaylibRenderer {
             }
             let fy = by + bh - line_h;
             s.draw_rectangle(bx, fy, bw, line_h, bar_bg);
-            s.draw_text_ex(font, &settings.footer, Vector2::new((bx + 4) as f32, fy as f32), font_size as f32, 1.0, default_color);
+            // The footer is a bar, so its text uses the bar/divider text colour.
+            s.draw_text_ex(font, &settings.footer, Vector2::new((bx + 4) as f32, fy as f32), font_size as f32, 1.0, statusline_fg);
         }
     }
 
