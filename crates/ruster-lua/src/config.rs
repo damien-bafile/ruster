@@ -25,9 +25,17 @@ pub struct ThemeColors {
     /// Gutter background. Defaults to `bg` when a theme doesn't set it.
     pub gutter_bg: Rgb,
     pub selection: Rgb,
+    /// Text drawn over the selection highlight. Defaults to `fg`.
+    pub selection_fg: Rgb,
     pub cursor: Rgb,
+    /// Glyph under the block cursor. Defaults to `bg` (a solid block).
+    pub cursor_fg: Rgb,
     pub divider: Rgb,
+    /// Statusline / bar text. Defaults to `fg`.
+    pub statusline_fg: Rgb,
     pub accent: Rgb,
+    /// Text drawn on accent-colored bars. Defaults to `bg`.
+    pub accent_fg: Rgb,
 }
 
 impl Default for ThemeColors {
@@ -38,9 +46,13 @@ impl Default for ThemeColors {
             gutter: Rgb::new(108, 112, 134),
             gutter_bg: Rgb::new(30, 30, 30),
             selection: Rgb::new(88, 91, 112),
+            selection_fg: Rgb::new(205, 214, 244),
             cursor: Rgb::new(245, 224, 220),
+            cursor_fg: Rgb::new(30, 30, 30),
             divider: Rgb::new(69, 71, 90),
+            statusline_fg: Rgb::new(205, 214, 244),
             accent: Rgb::new(243, 139, 168),
+            accent_fg: Rgb::new(30, 30, 30),
         }
     }
 }
@@ -64,9 +76,12 @@ impl Theme {
              return {\n",
         );
         s.push_str(&format!(
-            "  bg = {:?}, fg = {:?}, gutter = {:?}, gutter_bg = {:?}, selection = {:?},\n  cursor = {:?}, divider = {:?}, accent = {:?},\n",
-            r.bg.to_hex(), r.fg.to_hex(), r.gutter.to_hex(), r.gutter_bg.to_hex(), r.selection.to_hex(),
-            r.cursor.to_hex(), r.divider.to_hex(), r.accent.to_hex(),
+            "  bg = {:?}, fg = {:?}, gutter = {:?}, gutter_bg = {:?},\n  \
+             selection = {:?}, selection_fg = {:?}, cursor = {:?}, cursor_fg = {:?},\n  \
+             divider = {:?}, statusline_fg = {:?}, accent = {:?}, accent_fg = {:?},\n",
+            r.bg.to_hex(), r.fg.to_hex(), r.gutter.to_hex(), r.gutter_bg.to_hex(),
+            r.selection.to_hex(), r.selection_fg.to_hex(), r.cursor.to_hex(), r.cursor_fg.to_hex(),
+            r.divider.to_hex(), r.statusline_fg.to_hex(), r.accent.to_hex(), r.accent_fg.to_hex(),
         ));
         s.push_str("  palette = {\n");
         for (name, c) in &self.palette {
@@ -126,9 +141,10 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                 roles: ThemeColors {
                     bg: Rgb::new(40, 40, 40), fg: Rgb::new(235, 219, 178),
                     gutter: Rgb::new(124, 111, 100), gutter_bg: Rgb::new(40, 40, 40),
-                    selection: Rgb::new(80, 73, 69),
-                    cursor: Rgb::new(254, 128, 25), divider: Rgb::new(60, 56, 54),
-                    accent: Rgb::new(250, 189, 47),
+                    selection: Rgb::new(80, 73, 69), selection_fg: Rgb::new(235, 219, 178),
+                    cursor: Rgb::new(254, 128, 25), cursor_fg: Rgb::new(40, 40, 40),
+                    divider: Rgb::new(60, 56, 54), statusline_fg: Rgb::new(235, 219, 178),
+                    accent: Rgb::new(250, 189, 47), accent_fg: Rgb::new(40, 40, 40),
                 },
             },
         ),
@@ -145,9 +161,10 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                 roles: ThemeColors {
                     bg: Rgb::new(26, 27, 38), fg: Rgb::new(192, 202, 245),
                     gutter: Rgb::new(86, 95, 137), gutter_bg: Rgb::new(26, 27, 38),
-                    selection: Rgb::new(40, 52, 87),
-                    cursor: Rgb::new(192, 202, 245), divider: Rgb::new(65, 72, 104),
-                    accent: Rgb::new(122, 162, 247),
+                    selection: Rgb::new(40, 52, 87), selection_fg: Rgb::new(192, 202, 245),
+                    cursor: Rgb::new(192, 202, 245), cursor_fg: Rgb::new(26, 27, 38),
+                    divider: Rgb::new(65, 72, 104), statusline_fg: Rgb::new(192, 202, 245),
+                    accent: Rgb::new(122, 162, 247), accent_fg: Rgb::new(26, 27, 38),
                 },
             },
         ),
@@ -163,9 +180,10 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                 roles: ThemeColors {
                     bg: Rgb::new(46, 52, 64), fg: Rgb::new(216, 222, 233),
                     gutter: Rgb::new(76, 86, 106), gutter_bg: Rgb::new(46, 52, 64),
-                    selection: Rgb::new(67, 76, 94),
-                    cursor: Rgb::new(136, 192, 208), divider: Rgb::new(59, 66, 82),
-                    accent: Rgb::new(136, 192, 208),
+                    selection: Rgb::new(67, 76, 94), selection_fg: Rgb::new(216, 222, 233),
+                    cursor: Rgb::new(136, 192, 208), cursor_fg: Rgb::new(46, 52, 64),
+                    divider: Rgb::new(59, 66, 82), statusline_fg: Rgb::new(216, 222, 233),
+                    accent: Rgb::new(136, 192, 208), accent_fg: Rgb::new(46, 52, 64),
                 },
             },
         ),
@@ -176,9 +194,10 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                 roles: ThemeColors {
                     bg: Rgb::new(30, 30, 46), fg: Rgb::new(205, 214, 244),
                     gutter: Rgb::new(108, 112, 134), gutter_bg: Rgb::new(30, 30, 46),
-                    selection: Rgb::new(88, 91, 112),
-                    cursor: Rgb::new(245, 224, 220), divider: Rgb::new(49, 50, 68),
-                    accent: Rgb::new(203, 166, 247),
+                    selection: Rgb::new(88, 91, 112), selection_fg: Rgb::new(205, 214, 244),
+                    cursor: Rgb::new(245, 224, 220), cursor_fg: Rgb::new(30, 30, 46),
+                    divider: Rgb::new(49, 50, 68), statusline_fg: Rgb::new(205, 214, 244),
+                    accent: Rgb::new(203, 166, 247), accent_fg: Rgb::new(30, 30, 46),
                 },
             },
         ),
@@ -195,9 +214,13 @@ pub struct ColorOverrides {
     pub gutter: String,
     pub gutter_bg: String,
     pub selection: String,
+    pub selection_fg: String,
     pub cursor: String,
+    pub cursor_fg: String,
     pub divider: String,
+    pub statusline_fg: String,
     pub accent: String,
+    pub accent_fg: String,
 }
 
 #[derive(Debug, Clone)]
@@ -250,6 +273,9 @@ pub struct Config {
     pub terminal_default_mode: String,
     /// Show dotfiles in dired by default.
     pub dired_show_hidden: bool,
+    /// Per-language syntax color overrides: `lang key -> (group -> hex)`. Carried
+    /// separately from the flat schema (edited via the Settings syntax editor).
+    pub syntax_overrides: std::collections::HashMap<String, std::collections::HashMap<String, String>>,
 }
 
 /// The `(group, key)` address of a setting.
@@ -297,9 +323,13 @@ impl Config {
             (("colors", "gutter"), Text(self.color_overrides.gutter.clone())),
             (("colors", "gutter_bg"), Text(self.color_overrides.gutter_bg.clone())),
             (("colors", "selection"), Text(self.color_overrides.selection.clone())),
+            (("colors", "selection_fg"), Text(self.color_overrides.selection_fg.clone())),
             (("colors", "cursor"), Text(self.color_overrides.cursor.clone())),
+            (("colors", "cursor_fg"), Text(self.color_overrides.cursor_fg.clone())),
             (("colors", "divider"), Text(self.color_overrides.divider.clone())),
+            (("colors", "statusline_fg"), Text(self.color_overrides.statusline_fg.clone())),
             (("colors", "accent"), Text(self.color_overrides.accent.clone())),
+            (("colors", "accent_fg"), Text(self.color_overrides.accent_fg.clone())),
         ]
     }
 
@@ -359,15 +389,22 @@ impl Config {
             terminal_scrollback: u("terminal", "scrollback", d.terminal_scrollback),
             terminal_default_mode: st("terminal", "default_mode").unwrap_or(d.terminal_default_mode),
             dired_show_hidden: bl("dired", "show_hidden", d.dired_show_hidden),
+            // Not part of the flat schema; carried separately and merged by the
+            // caller (runtime parse / Settings save).
+            syntax_overrides: std::collections::HashMap::new(),
             color_overrides: ColorOverrides {
                 bg: st("colors", "bg").unwrap_or_default(),
                 fg: st("colors", "fg").unwrap_or_default(),
                 gutter: st("colors", "gutter").unwrap_or_default(),
                 gutter_bg: st("colors", "gutter_bg").unwrap_or_default(),
                 selection: st("colors", "selection").unwrap_or_default(),
+                selection_fg: st("colors", "selection_fg").unwrap_or_default(),
                 cursor: st("colors", "cursor").unwrap_or_default(),
+                cursor_fg: st("colors", "cursor_fg").unwrap_or_default(),
                 divider: st("colors", "divider").unwrap_or_default(),
+                statusline_fg: st("colors", "statusline_fg").unwrap_or_default(),
                 accent: st("colors", "accent").unwrap_or_default(),
+                accent_fg: st("colors", "accent_fg").unwrap_or_default(),
             },
         }
     }
@@ -409,6 +446,35 @@ impl Default for Config {
             terminal_scrollback: 10000,
             terminal_default_mode: "insert".into(),
             dired_show_hidden: false,
+            syntax_overrides: std::collections::HashMap::new(),
         }
     }
+}
+
+/// Serialize the per-language syntax overrides as a `ruster.config.syntax` Lua
+/// table (sorted for stable output; only non-empty languages emitted). Appended
+/// to the generated `config.lua` beside the grouped tables.
+pub fn syntax_to_lua(
+    map: &std::collections::HashMap<String, std::collections::HashMap<String, String>>,
+) -> String {
+    let mut langs: Vec<_> = map.iter().filter(|(_, groups)| !groups.is_empty()).collect();
+    if langs.is_empty() {
+        return String::new();
+    }
+    langs.sort_by(|a, b| a.0.cmp(b.0));
+    let mut s = String::from("\n-- Per-language syntax highlight colours (Settings ▸ Syntax).\nruster.config.syntax = {\n");
+    for (lang, groups) in langs {
+        let mut items: Vec<_> = groups.iter().filter(|(_, hex)| !hex.is_empty()).collect();
+        items.sort_by(|a, b| a.0.cmp(b.0));
+        if items.is_empty() {
+            continue;
+        }
+        s.push_str(&format!("  {lang} = {{ "));
+        for (group, hex) in items {
+            s.push_str(&format!("{group} = {hex:?}, "));
+        }
+        s.push_str("},\n");
+    }
+    s.push_str("}\n");
+    s
 }

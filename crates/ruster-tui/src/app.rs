@@ -1,7 +1,7 @@
 use crate::key::crossterm_to_ruster_key;
 use crate::picker::{PickerAction, PickerItem, PickerState};
 use crate::renderer::TuiRenderer;
-use crate::settings::SettingsState;
+use crate::settings::{SettingsState, SyntaxSeed};
 use ruster_core::action::{Action, EditOp, Motion};
 use ruster_core::buffer::Buffer;
 use ruster_core::cursor::CursorSet;
@@ -237,10 +237,34 @@ fn resolve_theme_colors(
     set(&ov.gutter, &mut colors.gutter);
     set(&ov.gutter_bg, &mut colors.gutter_bg);
     set(&ov.selection, &mut colors.selection);
+    set(&ov.selection_fg, &mut colors.selection_fg);
     set(&ov.cursor, &mut colors.cursor);
+    set(&ov.cursor_fg, &mut colors.cursor_fg);
     set(&ov.divider, &mut colors.divider);
+    set(&ov.statusline_fg, &mut colors.statusline_fg);
     set(&ov.accent, &mut colors.accent);
+    set(&ov.accent_fg, &mut colors.accent_fg);
     colors
+}
+
+/// Convert the config's `lang -> group -> hex` syntax overrides into the color
+/// map the syntax highlighter consumes.
+fn syntax_overrides_to_colors(
+    map: &std::collections::HashMap<String, std::collections::HashMap<String, String>>,
+) -> ruster_syntax::SyntaxOverrides {
+    let mut out = ruster_syntax::SyntaxOverrides::new();
+    for (lang, groups) in map {
+        let mut m = std::collections::HashMap::new();
+        for (group, hex) in groups {
+            if let Some((r, g, b)) = ruster_lua::schema::parse_hex_color(hex) {
+                m.insert(group.clone(), ruster_render::Color::Rgb(r, g, b));
+            }
+        }
+        if !m.is_empty() {
+            out.insert(lang.clone(), m);
+        }
+    }
+    out
 }
 
 /// Find an executable named `name` on `$PATH`, returning its full path.
@@ -1094,6 +1118,15 @@ impl App {
                 }
             }
         }
+        // Install per-language syntax colours from config, then recolour the
+        // initial buffer's engine (built before the config was loaded).
+        ruster_syntax::set_syntax_overrides(syntax_overrides_to_colors(&config.syntax_overrides));
+        if !config.syntax_overrides.is_empty() {
+            let text = ws.borrow().buffer().to_string();
+            for engine in syntax.values_mut() {
+                engine.recolor(&text);
+            }
+        }
         ws.borrow_mut().set_active_indent_width(config.tabstop);
         // A brand-new file adopts the configured default line ending.
         if config.line_ending == "crlf" && !file_path.exists() {
@@ -1201,9 +1234,13 @@ impl App {
                 gutter: col(c.colors.gutter),
                 gutter_bg: col(c.colors.gutter_bg),
                 selection: col(c.colors.selection),
+                selection_fg: col(c.colors.selection_fg),
                 cursor: col(c.colors.cursor),
+                cursor_fg: col(c.colors.cursor_fg),
                 divider: col(c.colors.divider),
+                statusline_fg: col(c.colors.statusline_fg),
                 accent: col(c.colors.accent),
+                accent_fg: col(c.colors.accent_fg),
             },
         }
     }
@@ -3000,6 +3037,11 @@ impl App {
                     _ => {}
                 }
             } else {
+                // `dd` (two presses) or Delete resets the row to its default; any
+                // other key cancels a half-typed `dd`.
+                if !matches!(ck.code, KeyCode::Char('d')) {
+                    s.cancel_d();
+                }
                 match ck.code {
                     KeyCode::Esc | KeyCode::Char('q') => close = true,
                     KeyCode::Char('j') | KeyCode::Down => s.move_down(),
@@ -3018,6 +3060,8 @@ impl App {
                         s.adjust(-1);
                         changed = true;
                     }
+                    KeyCode::Char('d') => changed = s.press_d(),
+                    KeyCode::Delete => changed = s.reset_selected(),
                     _ => {}
                 }
             }
@@ -3035,7 +3079,10 @@ impl App {
     fn save_settings(&mut self) {
         let Some(s) = self.settings.as_ref() else { return };
         let values = s.values();
-        let lua = ruster_lua::schema::generate_config(&values);
+        // The syntax editor's overrides are carried outside the flat schema.
+        let syntax = s.syntax_overrides();
+        let mut lua = ruster_lua::schema::generate_config(&values);
+        lua.push_str(&ruster_lua::config::syntax_to_lua(&syntax));
         let mut wrote = false;
         if let Some(dir) = ruster_config_dir() {
             let _ = std::fs::create_dir_all(&dir);
@@ -3043,8 +3090,11 @@ impl App {
                 wrote = true;
             }
         }
-        // Apply the edited values (config + live GUI re-theme).
+        // Apply the edited values (config + live GUI re-theme), then install the
+        // syntax colours and recolour open buffers.
         self.apply_settings_live();
+        self.config.syntax_overrides = syntax;
+        self.install_and_recolor_syntax();
         if let Some(s) = self.settings.as_mut() {
             s.dirty = false;
         }
@@ -3053,6 +3103,19 @@ impl App {
         } else {
             "Could not write config.lua".to_string()
         });
+    }
+
+    /// Push the config's per-language syntax colours into the highlighter and
+    /// recompute every open buffer's cached highlights (no reparse).
+    fn install_and_recolor_syntax(&mut self) {
+        ruster_syntax::set_syntax_overrides(syntax_overrides_to_colors(&self.config.syntax_overrides));
+        let ws = self.ws.clone();
+        for (id, engine) in self.syntax.iter_mut() {
+            let text = ws.borrow().buffers.get(*id).map(|d| d.buffer.to_string());
+            if let Some(text) = text {
+                engine.recolor(&text);
+            }
+        }
     }
 
     /// Rebuild the config from the Settings page's current values, re-resolve the
@@ -3950,7 +4013,37 @@ impl App {
             ("terminal", "shell", shells),
         ];
         let palettes = self.all_theme_palettes();
-        self.settings = Some(SettingsState::new(&self.config, dynamic, palettes));
+        let syntax = self.syntax_editor_data();
+        self.settings = Some(SettingsState::new(&self.config, dynamic, palettes, syntax));
+    }
+
+    /// The Syntax section's data: each highlighted language, its groups, each
+    /// group's built-in default colour (hex) and the current override (or "").
+    fn syntax_editor_data(&self) -> SyntaxSeed {
+        let hex = |c: ruster_render::Color| match c {
+            ruster_render::Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+            ruster_render::Color::Default => String::new(),
+        };
+        ruster_syntax::highlighted_languages()
+            .iter()
+            .map(|&lang| {
+                let groups = ruster_syntax::groups_for_lang(lang)
+                    .iter()
+                    .map(|&g| {
+                        let default_hex = hex(ruster_syntax::default_fg_for(lang, g));
+                        let current = self
+                            .config
+                            .syntax_overrides
+                            .get(lang)
+                            .and_then(|m| m.get(g))
+                            .cloned()
+                            .unwrap_or_default();
+                        (g.to_string(), default_hex, current)
+                    })
+                    .collect();
+                (lang.to_string(), groups)
+            })
+            .collect()
     }
 
     /// Show the active buffer's diagnostics in a picker; Enter jumps to one.

@@ -1,17 +1,19 @@
 use streaming_iterator::StreamingIterator;
 use ruster_render::{Color, SyntaxStyle, StyledLine};
-use crate::theme::{style_for_capture, RAINBOW_PALETTE};
+use crate::theme::{set_current_lang, style_for_capture, RAINBOW_PALETTE};
 
 pub struct Highlighter {
     query: tree_sitter::Query,
     cursor: tree_sitter::QueryCursor,
+    /// Canonical language key, so per-language overrides resolve.
+    lang: String,
 }
 
 impl Highlighter {
-    pub fn new(language: tree_sitter::Language, query_source: &str) -> Result<Self, String> {
+    pub fn new(language: tree_sitter::Language, query_source: &str, lang: &str) -> Result<Self, String> {
         let query = tree_sitter::Query::new(&language, query_source)
             .map_err(|e| format!("query error: {}", e))?;
-        Ok(Highlighter { query, cursor: tree_sitter::QueryCursor::new() })
+        Ok(Highlighter { query, cursor: tree_sitter::QueryCursor::new(), lang: lang.to_string() })
     }
 
     pub fn highlight_lines(
@@ -20,6 +22,8 @@ impl Highlighter {
         source: &str,
         rainbow: &[Option<usize>],
     ) -> Vec<StyledLine> {
+        // Resolve this pass's per-language color overrides.
+        set_current_lang(&self.lang);
         let bytes = source.as_bytes();
         let mut line_starts: Vec<usize> = vec![0];
         for (i, ch) in source.char_indices() {

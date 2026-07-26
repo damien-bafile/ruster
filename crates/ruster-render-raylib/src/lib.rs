@@ -269,8 +269,12 @@ impl Renderer for RaylibRenderer {
         let bg = to_raylib(theme.bg, Color::new(30, 30, 30, 255));
         let gutter_bg = to_raylib(theme.gutter_bg, bg);
         let selection_bg = to_raylib(theme.selection, Color::new(88, 91, 112, 255));
+        let selection_fg = to_raylib(theme.selection_fg, default_color);
         let (cur_r, cur_g, cur_b) = rgb_of(theme.cursor, (245, 224, 220));
+        let cursor_fg = to_raylib(theme.cursor_fg, bg);
         let accent = to_raylib(theme.accent, Color::new(243, 139, 168, 255));
+        let accent_fg = to_raylib(theme.accent_fg, bg);
+        let statusline_fg = to_raylib(theme.statusline_fg, default_color);
 
         let mut d = self.rl.begin_drawing(&self.thread);
         d.clear_background(bg);
@@ -360,7 +364,13 @@ impl Renderer for RaylibRenderer {
                     if n == 0 {
                         continue;
                     }
-                    if line.highlights.is_empty() {
+                    // The selection span on this line, so selected glyphs take
+                    // the selection text color.
+                    let sel_span = view.selection.and_then(|sel| {
+                        let buffer_line = (row + scroll) as u16;
+                        sel.span_on(buffer_line, line.text.chars().count() as u16)
+                    });
+                    if line.highlights.is_empty() && sel_span.is_none() {
                         s.draw_text_ex(font, &line.text, Vector2::new(text_x as f32, gy as f32), font_size as f32, 1.0, default_color);
                         continue;
                     }
@@ -377,6 +387,12 @@ impl Renderer for RaylibRenderer {
                         let end = (offset + len).min(nchars);
                         if offset < end {
                             char_colors[offset..end].fill(fg);
+                        }
+                    }
+                    if let Some((ss, se)) = sel_span {
+                        let end = (se as usize + 1).min(nchars);
+                        if (ss as usize) < end {
+                            char_colors[ss as usize..end].fill(selection_fg);
                         }
                     }
                     let mut x_offset = text_x as f32;
@@ -422,7 +438,17 @@ impl Renderer for RaylibRenderer {
                         }
                         let cx = cx as i32;
                         match view.cursor_kind {
-                            CursorKind::Block => s.draw_rectangle(cx, cy, char_w as i32, line_h, Color::new(cur_r, cur_g, cur_b, 200)),
+                            CursorKind::Block => {
+                                // Solid block, then redraw the glyph under it in the
+                                // cursor text color (classic block-cursor look).
+                                s.draw_rectangle(cx, cy, char_w as i32, line_h, Color::new(cur_r, cur_g, cur_b, 255));
+                                if let Some(ch) = view.lines.get(cline).and_then(|l| l.text.chars().nth(col)) {
+                                    if ch != ' ' {
+                                        let mut buf = [0u8; 4];
+                                        s.draw_text_ex(font, ch.encode_utf8(&mut buf), Vector2::new(cx as f32, cy as f32), font_size as f32, 1.0, cursor_fg);
+                                    }
+                                }
+                            }
                             CursorKind::Bar => s.draw_rectangle(cx, cy, 2, line_h, Color::new(cur_r, cur_g, cur_b, 255)),
                         }
                     }
@@ -460,7 +486,7 @@ impl Renderer for RaylibRenderer {
                 // Per-window statusline on its bottom row.
                 let sl_y = py + buf_rows as i32 * line_h;
                 let (sl_bg, sl_fg) = if view.active {
-                    (divider, default_color)
+                    (divider, statusline_fg)
                 } else {
                     (Color::new(40, 40, 48, 255), Color::new(120, 120, 130, 255))
                 };
@@ -672,7 +698,7 @@ impl Renderer for RaylibRenderer {
             s.draw_rectangle(bx, by, bw, bh, sbg);
             s.draw_rectangle(bx, by, bw, line_h, accent);
             let title = format!(" Settings{} ", if settings.dirty { " [+]" } else { "" });
-            s.draw_text_ex(font, &title, Vector2::new((bx + 4) as f32, by as f32), font_size as f32, 1.0, sbg);
+            s.draw_text_ex(font, &title, Vector2::new((bx + 4) as f32, by as f32), font_size as f32, 1.0, accent_fg);
 
             // Flatten groups into header/row lines.
             let mut lines: Vec<(bool, String, Option<&SettingRowView>)> = Vec::new();
@@ -699,10 +725,13 @@ impl Renderer for RaylibRenderer {
                 if *is_h {
                     s.draw_text_ex(font, &format!("── {} ", label.to_uppercase()), Vector2::new((bx + 4) as f32, ry as f32), font_size as f32, 1.0, accent);
                 } else if let Some(r) = row {
+                    // The selected row sits on the selection bar, so its text
+                    // uses the selection-text colour.
+                    let row_fg = if r.selected { selection_fg } else { default_color };
                     if r.selected {
                         s.draw_rectangle(bx, ry, bw, line_h, sel_bg);
                     }
-                    s.draw_text_ex(font, label, Vector2::new((bx + 8) as f32, ry as f32), font_size as f32, 1.0, default_color);
+                    s.draw_text_ex(font, label, Vector2::new((bx + 8) as f32, ry as f32), font_size as f32, 1.0, row_fg);
                     let ctrl = match r.kind {
                         ControlKind::Toggle => {
                             if r.value == "on" { "[x] on".to_string() } else { "[ ] off".to_string() }
@@ -712,7 +741,7 @@ impl Renderer for RaylibRenderer {
                             if r.editing { format!("{}▏", r.value) } else { r.value.clone() }
                         }
                     };
-                    let cc = if r.editing { accent } else { default_color };
+                    let cc = if r.editing { accent } else { row_fg };
                     s.draw_text_ex(font, &ctrl, Vector2::new(value_x as f32, ry as f32), font_size as f32, 1.0, cc);
                     // A swatch after a hex color value, so the picker shows it.
                     if let Some((cr, cg, cb)) = r.swatch.as_deref().and_then(hex_rgb) {
@@ -730,7 +759,8 @@ impl Renderer for RaylibRenderer {
             }
             let fy = by + bh - line_h;
             s.draw_rectangle(bx, fy, bw, line_h, bar_bg);
-            s.draw_text_ex(font, &settings.footer, Vector2::new((bx + 4) as f32, fy as f32), font_size as f32, 1.0, default_color);
+            // The footer is a bar, so its text uses the bar/divider text colour.
+            s.draw_text_ex(font, &settings.footer, Vector2::new((bx + 4) as f32, fy as f32), font_size as f32, 1.0, statusline_fg);
         }
     }
 

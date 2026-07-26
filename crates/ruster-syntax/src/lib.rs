@@ -7,6 +7,21 @@ use highlighter::Highlighter;
 use markup::MarkupLang;
 use ruster_render::{StyledLine, SyntaxStyle};
 
+pub use theme::{
+    base_group, default_fg_for, groups_for_lang, set_syntax_overrides, SyntaxOverrides,
+};
+
+/// Canonical keys of the languages that have real syntax-group highlighting
+/// (a tree-sitter highlight query or the markup rules), in display order — the
+/// list shown in the Settings syntax editor. JS/TS parse but ship no highlight
+/// query yet, so they're omitted.
+pub fn highlighted_languages() -> &'static [&'static str] {
+    &[
+        "rust", "python", "c", "lua", "json", "toml", "yaml", "scheme", "just",
+        "markdown", "org",
+    ]
+}
+
 #[derive(Debug)]
 pub enum SyntaxError {
     UnsupportedLanguage,
@@ -26,7 +41,8 @@ struct TreeBackend {
 /// The highlighting strategy for a buffer: a tree-sitter grammar, or the
 /// line-based markup rules for formats without a compatible grammar.
 enum Backend {
-    Tree(TreeBackend),
+    // Boxed: `TreeBackend` is far larger than the markup variant.
+    Tree(Box<TreeBackend>),
     Markup(MarkupLang),
 }
 
@@ -45,20 +61,20 @@ impl SyntaxEngine {
             let tree = parser.parse(text, None).ok_or(SyntaxError::QueryError("parse".into()))?;
 
             let (highlight_scm, textobject_scm) = query_files_for_lang(key);
-            let mut highlighter = Highlighter::new(language.clone(), highlight_scm)
+            let mut highlighter = Highlighter::new(language.clone(), highlight_scm, key)
                 .map_err(SyntaxError::QueryError)?;
 
             let bracket_depths = compute_bracket_depths(text);
             let cached = highlighter.highlight_lines(&tree, text, &bracket_depths);
             Ok(SyntaxEngine {
-                backend: Backend::Tree(TreeBackend {
+                backend: Backend::Tree(Box::new(TreeBackend {
                     language,
                     tree,
                     highlighter,
                     source: text.to_string(),
                     bracket_depths,
                     textobject_scm,
-                }),
+                })),
                 cached,
             })
         } else if let Some(mlang) = markup::markup_lang(key) {
@@ -81,6 +97,22 @@ impl SyntaxEngine {
                     self.cached =
                         tb.highlighter.highlight_lines(&tb.tree, text, &tb.bracket_depths);
                 }
+            }
+            Backend::Markup(mlang) => {
+                self.cached = markup::highlight_markup(*mlang, text);
+            }
+        }
+    }
+
+    /// Recompute the cached highlights with the currently-installed
+    /// [`set_syntax_overrides`](crate::theme::set_syntax_overrides) — no reparse
+    /// for tree-sitter buffers (reuses the existing tree). Call after the syntax
+    /// colors change. `text` is only needed for the line-based markup backend.
+    pub fn recolor(&mut self, text: &str) {
+        match &mut self.backend {
+            Backend::Tree(tb) => {
+                self.cached =
+                    tb.highlighter.highlight_lines(&tb.tree, &tb.source, &tb.bracket_depths);
             }
             Backend::Markup(mlang) => {
                 self.cached = markup::highlight_markup(*mlang, text);
@@ -269,6 +301,40 @@ mod tests {
     fn json_highlights_without_error() {
         let engine = SyntaxEngine::new("{\"a\": 1, \"b\": true}", "json").unwrap();
         assert!(engine.styled_lines().iter().any(|l| !l.highlights.is_empty()));
+    }
+
+    #[test]
+    fn override_recolors_a_group_and_recolor_reapplies() {
+        use ruster_render::Color;
+        use std::collections::HashMap;
+
+        let magenta = Color::Rgb(255, 0, 255);
+        let mut map: SyntaxOverrides = HashMap::new();
+        let mut rust = HashMap::new();
+        rust.insert("keyword".to_string(), magenta);
+        map.insert("rust".to_string(), rust);
+        set_syntax_overrides(map);
+
+        // A freshly-built engine picks up the override…
+        let src = "fn main() {}";
+        let engine = SyntaxEngine::new(src, "rs").unwrap();
+        let has_magenta = |e: &SyntaxEngine| {
+            e.styled_lines().iter().any(|l| l.highlights.iter().any(|(_, _, s)| s.fg == magenta))
+        };
+        assert!(has_magenta(&engine), "override not applied to `fn` keyword");
+
+        // …and clearing + recolor() drops it without a reparse.
+        set_syntax_overrides(SyntaxOverrides::new());
+        let mut engine = engine;
+        engine.recolor(src);
+        assert!(!has_magenta(&engine), "recolor did not drop the override");
+    }
+
+    #[test]
+    fn groups_for_markup_vs_code() {
+        assert!(groups_for_lang("markdown").contains(&"heading"));
+        assert!(groups_for_lang("rust").contains(&"keyword"));
+        assert!(!groups_for_lang("rust").contains(&"heading"));
     }
 
     #[test]
