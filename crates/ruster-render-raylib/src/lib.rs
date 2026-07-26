@@ -288,7 +288,10 @@ impl Renderer for RaylibRenderer {
             let pw = (view.rect.width as f32 * char_w) as i32;
             // The window's last cell-row is its statusline.
             let buf_rows = view.rect.height.saturating_sub(1) as usize;
-            let text_x = px + (view.gutter.width as f32 * char_w) as i32;
+            // Layout left-to-right: sign column, then line-number gutter, then text.
+            let sign_x = px;
+            let gutter_x = px + (view.signs.width as f32 * char_w) as i32;
+            let text_x = gutter_x + (view.gutter.width as f32 * char_w) as i32;
             let scroll = view.scroll_offset as usize;
             let win_h = view.rect.height as i32 * line_h;
 
@@ -333,12 +336,24 @@ impl Renderer for RaylibRenderer {
                 } else {
                 // Gutter background (only when a gutter is shown).
                 if view.gutter.width > 0 && gutter_bg != bg {
-                    s.draw_rectangle(px, py, text_x - px, buf_rows as i32 * line_h, gutter_bg);
+                    s.draw_rectangle(gutter_x, py, text_x - gutter_x, buf_rows as i32 * line_h, gutter_bg);
+                }
+                // Sign column, left of the gutter.
+                if view.signs.width > 0 {
+                    for row in 0..buf_rows {
+                        let line = (row + scroll) as u16;
+                        if let Some((glyph, c)) = view.signs.at(line) {
+                            let gy = py + row as i32 * line_h;
+                            let color = to_raylib(c, default_color);
+                            let mut b = [0u8; 4];
+                            s.draw_text_ex(font, glyph.encode_utf8(&mut b), Vector2::new(sign_x as f32, gy as f32), font_size as f32, 1.0, color);
+                        }
+                    }
                 }
                 // Gutter column.
                 for (row, label) in view.gutter.rows.iter().take(buf_rows).enumerate() {
                     let gy = py + row as i32 * line_h;
-                    s.draw_text_ex(font, label, Vector2::new(px as f32, gy as f32), font_size as f32, 1.0, gutter_color);
+                    s.draw_text_ex(font, label, Vector2::new(gutter_x as f32, gy as f32), font_size as f32, 1.0, gutter_color);
                 }
 
                 // Visual-mode selection background, behind the text.

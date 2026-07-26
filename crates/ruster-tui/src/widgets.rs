@@ -118,6 +118,7 @@ pub struct BufferWidget {
     cursor_kind: CursorKind,
     scroll_offset: u16,
     gutter: GutterView,
+    signs: ruster_render::SignsView,
     selection: Option<ruster_render::SelectionView>,
 }
 
@@ -132,8 +133,14 @@ impl BufferWidget {
             cursor_kind: CursorKind::Block,
             scroll_offset: 0,
             gutter: GutterView::default(),
+            signs: ruster_render::SignsView::default(),
             selection: None,
         }
+    }
+
+    pub fn with_signs(mut self, signs: ruster_render::SignsView) -> Self {
+        self.signs = signs;
+        self
     }
 
     pub fn with_extra_cursors(mut self, extra: Vec<(u16, u16)>) -> Self {
@@ -174,9 +181,26 @@ impl BufferWidget {
 
 impl Widget for BufferWidget {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let gutter_w = self.gutter.width.min(area.width);
-        let text_x = area.x + gutter_w;
+        // Layout: sign column, then line-number gutter, then text.
+        let sign_w = self.signs.width.min(area.width);
+        let gutter_x = area.x + sign_w;
+        let gutter_w = self.gutter.width.min(area.width.saturating_sub(sign_w));
+        let text_x = gutter_x + gutter_w;
         let scroll = self.scroll_offset as usize;
+
+        // Sign column, left of the gutter.
+        if sign_w > 0 {
+            for row in 0..area.height {
+                let line = row + scroll as u16;
+                if let Some((glyph, c)) = self.signs.at(line) {
+                    let y = area.y + row;
+                    if let Some(cell) = buf.cell_mut((area.x, y)) {
+                        cell.set_char(glyph);
+                        cell.set_fg(ruster_render_color_to_tui(&c));
+                    }
+                }
+            }
+        }
 
         // Gutter column.
         for (row, label) in self.gutter.rows.iter().enumerate() {
@@ -185,7 +209,7 @@ impl Widget for BufferWidget {
             // Right-align within the gutter width (labels already padded to fit).
             let start = gutter_w.saturating_sub(label.chars().count() as u16);
             for (i, ch) in label.chars().enumerate() {
-                let x = area.x + start + i as u16;
+                let x = gutter_x + start + i as u16;
                 if x >= text_x { break; }
                 if let Some(cell) = buf.cell_mut((x, y)) {
                     cell.set_char(ch);

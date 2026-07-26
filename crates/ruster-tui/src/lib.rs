@@ -1,6 +1,7 @@
 pub mod app;
 pub mod key;
 pub mod picker;
+pub mod quickfix;
 pub mod renderer;
 pub mod settings;
 pub mod widgets;
@@ -24,6 +25,7 @@ mod tests {
             cursor_smooth: None,
             scroll_offset: 0,
             gutter: GutterView::default(),
+            signs: ruster_render::SignsView::default(),
             statusline: StatuslineView {
                 left: "INSERT".into(),
                 center: "f".into(),

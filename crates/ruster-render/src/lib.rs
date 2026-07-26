@@ -123,6 +123,24 @@ pub struct GutterView {
     pub rows: Vec<String>,
 }
 
+/// A sign column drawn to the **left of the line-number gutter** — one glyph per
+/// buffer line, used for diagnostics, test results and (later) DAP breakpoints.
+/// `width` is the reserved cell width (0 when there are no signs), and each sign
+/// is `(buffer_line, glyph, color)`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SignsView {
+    pub width: u16,
+    pub signs: Vec<(u16, char, Color)>,
+}
+
+impl SignsView {
+    /// The sign (glyph, color) for a buffer line, if any. Later signs win, so a
+    /// higher-severity sign pushed last overrides a lower one on the same line.
+    pub fn at(&self, line: u16) -> Option<(char, Color)> {
+        self.signs.iter().rev().find(|(l, _, _)| *l == line).map(|(_, g, c)| (*g, *c))
+    }
+}
+
 /// Build the line-number gutter for a window.
 ///
 /// - `number` only → absolute line numbers
@@ -286,6 +304,8 @@ pub struct WindowView {
     /// First visible buffer line (vertical scroll).
     pub scroll_offset: u16,
     pub gutter: GutterView,
+    /// Sign column drawn left of the gutter (diagnostics, test results, …).
+    pub signs: SignsView,
     pub statusline: StatuslineView,
     pub active: bool,
     /// Visual-mode selection to highlight (active window only).
@@ -413,7 +433,7 @@ pub trait Renderer {
 mod tests {
     use crate::{
         Color, CursorKind, FrameState, GutterView, Rect, Renderer, SelectionKind, SelectionView,
-        StatuslineView, StyledLine, TermCellView, TermGridView, WindowView,
+        SignsView, StatuslineView, StyledLine, TermCellView, TermGridView, WindowView,
     };
 
     struct TestRenderer;
@@ -450,6 +470,7 @@ mod tests {
             cursor_smooth: None,
             scroll_offset: 0,
             gutter: GutterView::default(),
+            signs: SignsView::default(),
             statusline: StatuslineView {
                 left: "NORMAL".into(),
                 center: "test.txt".into(),
