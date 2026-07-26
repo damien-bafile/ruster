@@ -1,5 +1,6 @@
 use crate::key::crossterm_to_ruster_key;
 use crate::picker::{PickerAction, PickerItem, PickerState};
+use crate::quickfix::{QuickfixItem, QuickfixList};
 use crate::renderer::TuiRenderer;
 use crate::settings::{SettingsState, SyntaxSeed};
 use ruster_core::action::{Action, EditOp, Motion};
@@ -267,6 +268,38 @@ fn syntax_overrides_to_colors(
     out
 }
 
+/// A diagnostic severity's sign glyph + color (1=error … 4=hint).
+fn severity_sign(severity: u8) -> (char, ruster_render::Color) {
+    use ruster_render::Color::Rgb;
+    match severity {
+        1 => ('E', Rgb(243, 139, 168)), // error  — red
+        2 => ('W', Rgb(249, 226, 175)), // warn   — yellow
+        3 => ('I', Rgb(137, 180, 250)), // info   — blue
+        _ => ('H', Rgb(148, 226, 213)), // hint   — teal
+    }
+}
+
+/// Build a sign column from a buffer's diagnostics: one glyph per line, the most
+/// severe (lowest severity number) winning when several land on the same line.
+fn diagnostics_to_signs(diags: &[ruster_lsp::Diagnostic]) -> ruster_render::SignsView {
+    let mut best: std::collections::HashMap<u16, u8> = std::collections::HashMap::new();
+    for d in diags {
+        let line = d.start.line as u16;
+        let e = best.entry(line).or_insert(u8::MAX);
+        *e = (*e).min(d.severity);
+    }
+    let mut signs: Vec<(u16, char, ruster_render::Color)> = best
+        .into_iter()
+        .map(|(line, sev)| {
+            let (g, c) = severity_sign(sev);
+            (line, g, c)
+        })
+        .collect();
+    signs.sort_by_key(|(l, _, _)| *l);
+    let width = if signs.is_empty() { 0 } else { 1 };
+    ruster_render::SignsView { width, signs }
+}
+
 /// Find an executable named `name` on `$PATH`, returning its full path.
 fn find_in_path(name: &str) -> Option<String> {
     let path = std::env::var_os("PATH")?;
@@ -431,6 +464,11 @@ enum CmdAction {
     ConfigErrors,
     /// Open the settings page (`:settings` / `:config`).
     Settings,
+    /// Open the quickfix list as a picker (`:copen`).
+    QuickfixOpen,
+    /// Step to the next/prev quickfix entry and jump (`:cnext`/`:cprev`).
+    QuickfixNext,
+    QuickfixPrev,
     /// `:s/pat/rep/[g]` — replace on the current line, or the whole buffer
     /// when `whole_buffer` (`:%s/...`). `all` is the `g` flag.
     Substitute {
@@ -896,6 +934,11 @@ pub struct App {
     /// Guard so replaying `g`-motions into the vim layer doesn't re-trigger the
     /// `g` menu.
     g_replaying: bool,
+    /// When `]` or `[` was pressed in idle Normal mode: the pending bracket, so
+    /// `]q`/`[q` step the quickfix list (any other key replays the motion).
+    bracket_pending: Option<char>,
+    /// The shared quickfix list (`:copen`/`:cnext`/`:cprev`, `]q`/`[q`).
+    quickfix: QuickfixList,
 }
 
 /// The active editing paradigm. Neovim is modal; Emacs is modeless.
@@ -1203,6 +1246,8 @@ impl App {
             settings: None,
             g_pending: None,
             g_replaying: false,
+            bracket_pending: None,
+            quickfix: QuickfixList::default(),
         }
     }
 
@@ -1301,6 +1346,23 @@ impl App {
             }
             if matches!(ck.code, KeyCode::Char('g')) {
                 self.g_pending = Some(std::time::Instant::now());
+                return;
+            }
+            // `]q`/`[q` step the quickfix list; any other key after `]`/`[`
+            // replays the native bracket motion into the vim layer.
+            if let Some(open) = self.bracket_pending.take() {
+                if matches!(ck.code, KeyCode::Char('q')) {
+                    if open == ']' { self.quickfix_next() } else { self.quickfix_prev() }
+                } else {
+                    self.feed_key_to_vim(KeyCode::Char(open));
+                    self.feed_key_to_vim(ck.code);
+                }
+                return;
+            }
+            if matches!(ck.code, KeyCode::Char(']') | KeyCode::Char('[')) {
+                if let KeyCode::Char(c) = ck.code {
+                    self.bracket_pending = Some(c);
+                }
                 return;
             }
         }
@@ -2647,6 +2709,12 @@ impl App {
                 } else {
                     None
                 };
+                // Diagnostics render as a sign column (not on terminals).
+                let signs = if terminal.is_some() {
+                    ruster_render::SignsView::default()
+                } else {
+                    self.diagnostics.get(&buf_id).map(|d| diagnostics_to_signs(d)).unwrap_or_default()
+                };
                 views.push(WindowView {
                     rect: RRect::new(rect.x, rect.y, rect.width, rect.height),
                     lines,
@@ -2657,6 +2725,7 @@ impl App {
                     cursor_smooth,
                     scroll_offset: scroll as u16,
                     gutter,
+                    signs,
                     statusline,
                     active: is_active,
                     selection,
@@ -2757,6 +2826,9 @@ impl App {
             "term" | "terminal" => Ok(CmdAction::Terminal),
             "config-errors" | "configerrors" => Ok(CmdAction::ConfigErrors),
             "settings" | "config" => Ok(CmdAction::Settings),
+            "copen" | "cope" | "cwindow" | "cw" => Ok(CmdAction::QuickfixOpen),
+            "cnext" | "cn" => Ok(CmdAction::QuickfixNext),
+            "cprev" | "cp" | "cN" | "cprevious" => Ok(CmdAction::QuickfixPrev),
             "bd" | "bdelete" => Ok(CmdAction::BufferDelete),
             "Dired" | "dired" | "Explore" | "Ex" => Ok(CmdAction::Dired(None)),
             "Files" | "files" => Ok(CmdAction::Files),
@@ -2865,6 +2937,9 @@ impl App {
             CmdAction::Terminal => self.open_terminal(),
             CmdAction::ConfigErrors => self.open_config_errors(),
             CmdAction::Settings => self.open_settings(),
+            CmdAction::QuickfixOpen => self.open_quickfix(),
+            CmdAction::QuickfixNext => self.quickfix_next(),
+            CmdAction::QuickfixPrev => self.quickfix_prev(),
             CmdAction::BufferDelete => self.delete_active_buffer(),
             CmdAction::Dired(arg) => self.open_dired(arg),
             CmdAction::Files => self.open_files_picker(),
@@ -4077,6 +4152,106 @@ impl App {
             })
             .collect();
         self.picker = Some(PickerState::new("Diagnostics", items));
+    }
+
+    /// Rebuild the quickfix list from all buffers' diagnostics (sorted by
+    /// path/line/col). Feeds `:copen`/`:cnext`/`:cprev` until build/test runners
+    /// (later tasks) populate it themselves.
+    fn rebuild_quickfix_from_diagnostics(&mut self) {
+        let mut items: Vec<QuickfixItem> = Vec::new();
+        {
+            let w = self.ws.borrow();
+            for (id, diags) in &self.diagnostics {
+                let path = match w.buffers.get(*id).and_then(|d| d.file_path.clone()) {
+                    Some(p) => p,
+                    None => continue,
+                };
+                for d in diags {
+                    items.push(QuickfixItem {
+                        path: path.clone(),
+                        line: d.start.line as usize + 1,
+                        col: d.start.character as usize + 1,
+                        message: d.message.replace('\n', " "),
+                        severity: d.severity, // already u8
+                    });
+                }
+            }
+        }
+        items.sort_by(|a, b| {
+            a.path.cmp(&b.path).then(a.line.cmp(&b.line)).then(a.col.cmp(&b.col))
+        });
+        self.quickfix = QuickfixList::new(items);
+    }
+
+    /// `:copen` — refresh the quickfix list from diagnostics and show it as a
+    /// picker; choosing an entry jumps to it.
+    fn open_quickfix(&mut self) {
+        self.rebuild_quickfix_from_diagnostics();
+        if self.quickfix.is_empty() {
+            self.message = Some("Quickfix list is empty".to_string());
+            return;
+        }
+        let items: Vec<PickerItem> = self
+            .quickfix
+            .items()
+            .iter()
+            .map(|q| {
+                let sev = match q.severity {
+                    1 => "E",
+                    2 => "W",
+                    3 => "I",
+                    _ => "H",
+                };
+                let name = q
+                    .path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| q.path.display().to_string());
+                PickerItem::new(
+                    format!("{} {}:{}:{}  {}", sev, name, q.line, q.col, q.message),
+                    PickerAction::OpenLocation(q.path.clone(), q.line, q.col),
+                )
+            })
+            .collect();
+        self.picker = Some(PickerState::new("Quickfix", items));
+    }
+
+    /// Jump to the current quickfix entry and report the position in the list.
+    fn quickfix_jump_current(&mut self) {
+        let (path, line, col, msg, pos, total) = match self.quickfix.current() {
+            Some(q) => (
+                q.path.clone(),
+                q.line,
+                q.col,
+                q.message.clone(),
+                self.quickfix.selected() + 1,
+                self.quickfix.len(),
+            ),
+            None => {
+                self.message = Some("Quickfix list is empty".to_string());
+                return;
+            }
+        };
+        self.open_path(&path, Some((line, col)));
+        self.message = Some(format!("({pos}/{total}) {msg}"));
+    }
+
+    /// `:cnext` / `]q` — advance the quickfix selection and jump.
+    fn quickfix_next(&mut self) {
+        if self.quickfix.is_empty() {
+            self.rebuild_quickfix_from_diagnostics();
+        }
+        self.quickfix.next();
+        self.quickfix_jump_current();
+    }
+
+    /// `:cprev` / `[q` — step back through the quickfix list and jump.
+    fn quickfix_prev(&mut self) {
+        if self.quickfix.is_empty() {
+            self.rebuild_quickfix_from_diagnostics();
+        }
+        self.quickfix.prev();
+        self.quickfix_jump_current();
     }
 
     /// Interpret the key following a `Ctrl-w` prefix.
@@ -5372,5 +5547,34 @@ mod tests {
         // `i` re-enters.
         a.handle_key(CtKey::new(KeyCode::Char('i'), KeyModifiers::NONE));
         assert!(a.terminal_focused, "i re-focuses the terminal");
+    }
+
+    #[test]
+    fn quickfix_commands_parse() {
+        let a = App::new("x".into(), PathBuf::from("f.txt"));
+        assert!(matches!(a.parse_cmdline("copen"), Ok(CmdAction::QuickfixOpen)));
+        assert!(matches!(a.parse_cmdline("cnext"), Ok(CmdAction::QuickfixNext)));
+        assert!(matches!(a.parse_cmdline("cn"), Ok(CmdAction::QuickfixNext)));
+        assert!(matches!(a.parse_cmdline("cprev"), Ok(CmdAction::QuickfixPrev)));
+        assert!(matches!(a.parse_cmdline("cp"), Ok(CmdAction::QuickfixPrev)));
+    }
+
+    #[test]
+    fn diagnostics_build_a_sign_column() {
+        use ruster_lsp::results::{Diagnostic, LspPositionEq};
+        let pos = |l: u32| LspPositionEq { line: l, character: 0 };
+        let diags = vec![
+            Diagnostic { start: pos(2), end: pos(2), severity: 2, message: "warn".into() },
+            // A second, more severe diagnostic on the same line wins.
+            Diagnostic { start: pos(2), end: pos(2), severity: 1, message: "err".into() },
+            Diagnostic { start: pos(5), end: pos(5), severity: 3, message: "info".into() },
+        ];
+        let signs = diagnostics_to_signs(&diags);
+        assert_eq!(signs.width, 1);
+        assert_eq!(signs.at(2).map(|(g, _)| g), Some('E'), "error outranks warning on line 2");
+        assert_eq!(signs.at(5).map(|(g, _)| g), Some('I'));
+        assert_eq!(signs.at(9), None);
+        // No diagnostics → no sign column.
+        assert_eq!(diagnostics_to_signs(&[]).width, 0);
     }
 }

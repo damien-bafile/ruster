@@ -214,6 +214,16 @@ Press `g` in Normal mode; the which-key panel lists the goto commands (LazyVim-s
 | `:callers` / `:incomingcalls` | Call hierarchy: who calls the symbol under the cursor |
 | `:callees` / `:outgoingcalls` | Call hierarchy: what the symbol under the cursor calls |
 
+### Quickfix
+Diagnostics render as a **sign column** left of the line-number gutter (`E`/`W`/`I`/`H`,
+colored by severity). The **quickfix list** collects them for navigation.
+
+| Command | Action |
+|---------|--------|
+| `:copen` (`:cwindow`) | Open the quickfix list as a picker; Enter jumps to an entry |
+| `:cnext` / `:cn` (or `]q`) | Jump to the next quickfix entry |
+| `:cprev` / `:cp` (or `[q`) | Jump to the previous quickfix entry |
+
 ### Editing
 | Command | Action |
 |---------|--------|

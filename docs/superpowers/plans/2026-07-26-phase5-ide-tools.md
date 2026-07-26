@@ -31,14 +31,14 @@ then DAP (largest, isolated). Ordered so each task is independently shippable.
 - [x] Track recent projects (persist under the config dir).
 - [x] Tests: marker walk on a temp dir; `ruster.toml` parse of a fixture string.
 
-### Task 2: Shared quickfix list + gutter sign column
+### Task 2: Shared quickfix list + gutter sign column ✅
 
-- [ ] `QuickfixList { items: Vec<(PathBuf, line, col, msg, severity)>, sel }` with
+- [x] `QuickfixList { items: Vec<(PathBuf, line, col, msg, severity)>, sel }` with
   next/prev/jump; render via `PickerState` (reuse `PickerAction::OpenLocation`).
-- [ ] Add a **sign column** to rendering: `ruster_render::SignsView { signs: Vec<(u16 line,
+- [x] Add a **sign column** to rendering: `ruster_render::SignsView { width, signs: Vec<(u16 line,
   char glyph, Color)> }` on `WindowView`, drawn left of the gutter in both TUI and GUI.
-- [ ] Route existing LSP diagnostics through the sign column too.
-- [ ] Commands: `:copen`/`:cnext`/`:cprev` (and `]q`/`[q`); tests for navigation + parsing glue.
+- [x] Route existing LSP diagnostics through the sign column too.
+- [x] Commands: `:copen`/`:cnext`/`:cprev` (and `]q`/`[q`); tests for navigation + parsing glue.
 
 ### Task 3: Build system runner
 
