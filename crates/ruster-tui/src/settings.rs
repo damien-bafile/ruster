@@ -65,6 +65,8 @@ pub struct SettingsState {
     color_rows: Vec<usize>,
     /// True after a lone `d`, so the next `d` completes a `dd` reset.
     d_pending: bool,
+    /// True after a lone `g`, so the next `g` completes a `gg` jump-to-top.
+    g_pending: bool,
     pub dirty: bool,
 }
 
@@ -126,6 +128,7 @@ impl SettingsState {
             theme_idx,
             color_rows,
             d_pending: false,
+            g_pending: false,
             dirty: false,
         };
         st.rebuild_color_opts();
@@ -238,6 +241,29 @@ impl SettingsState {
 
     pub fn move_up(&mut self) {
         self.selected = self.selected.saturating_sub(1);
+    }
+
+    /// `G` — jump to the last row.
+    pub fn move_to_bottom(&mut self) {
+        self.selected = self.rows.len().saturating_sub(1);
+    }
+
+    /// `gg` (two presses) jumps to the first row; the first `g` arms it.
+    /// Returns true when the jump actually fired.
+    pub fn press_g(&mut self) -> bool {
+        if self.g_pending {
+            self.g_pending = false;
+            self.selected = 0;
+            true
+        } else {
+            self.g_pending = true;
+            false
+        }
+    }
+
+    /// Clear a half-typed `gg` when any other key is pressed.
+    pub fn cancel_g(&mut self) {
+        self.g_pending = false;
     }
 
     pub fn next_group(&mut self) {
@@ -542,7 +568,7 @@ impl SettingsState {
         let footer = if self.editing.is_some() {
             "type value · Enter commit · Esc cancel".to_string()
         } else {
-            "j/k move · Tab group · Space toggle/cycle · h/l adjust · Enter edit/expand · dd reset · :w save · q close".to_string()
+            "j/k move · gg/G top/bottom · Tab group · Space toggle/cycle · h/l adjust · Enter edit/expand · dd reset · :w save · q close".to_string()
         };
         SettingsView { groups, dirty: self.dirty, footer }
     }
@@ -717,6 +743,25 @@ mod tests {
             .unwrap();
         assert_eq!(row.value, "mauve");
         assert_eq!(row.swatch.as_deref(), Some("#cba6f7"));
+    }
+
+    #[test]
+    fn gg_and_shift_g_jump_to_top_and_bottom() {
+        let mut s = state_with_syntax(rust_syntax());
+        let last = s.rows.len() - 1;
+        // G jumps to the last row.
+        s.move_to_bottom();
+        assert_eq!(s.selected, last);
+        // A single g only arms; a second g completes the jump to the top.
+        assert!(!s.press_g());
+        assert!(s.press_g());
+        assert_eq!(s.selected, 0);
+        // A non-g key cancels a half-typed gg.
+        s.move_to_bottom();
+        s.press_g(); // arm
+        s.cancel_g();
+        assert!(!s.press_g(), "fresh first-g must not jump");
+        assert_eq!(s.selected, last, "selection unchanged after cancelled gg");
     }
 
     #[test]

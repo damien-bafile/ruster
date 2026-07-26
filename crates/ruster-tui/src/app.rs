@@ -3112,15 +3112,22 @@ impl App {
                     _ => {}
                 }
             } else {
-                // `dd` (two presses) or Delete resets the row to its default; any
-                // other key cancels a half-typed `dd`.
+                // `dd`/`gg` are two-key prefixes; any other key cancels a
+                // half-typed one.
                 if !matches!(ck.code, KeyCode::Char('d')) {
                     s.cancel_d();
+                }
+                if !matches!(ck.code, KeyCode::Char('g')) {
+                    s.cancel_g();
                 }
                 match ck.code {
                     KeyCode::Esc | KeyCode::Char('q') => close = true,
                     KeyCode::Char('j') | KeyCode::Down => s.move_down(),
                     KeyCode::Char('k') | KeyCode::Up => s.move_up(),
+                    KeyCode::Char('g') => {
+                        s.press_g();
+                    }
+                    KeyCode::Char('G') => s.move_to_bottom(),
                     KeyCode::Tab | KeyCode::Char(']') => s.next_group(),
                     KeyCode::BackTab | KeyCode::Char('[') => s.prev_group(),
                     KeyCode::Char(' ') | KeyCode::Enter => {
