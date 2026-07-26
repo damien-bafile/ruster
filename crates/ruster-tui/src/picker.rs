@@ -42,6 +42,8 @@ pub struct PickerState {
     items: Vec<PickerItem>,
     pub filter: String,
     pub selected: usize,
+    /// Center (floating) or bottom (docked) placement.
+    pub placement: ruster_render::PickerPlacement,
     matcher: Matcher,
 }
 
@@ -52,6 +54,7 @@ impl PickerState {
             items,
             filter: String::new(),
             selected: 0,
+            placement: ruster_render::PickerPlacement::Center,
             matcher: Matcher::new(Config::DEFAULT),
         }
     }
@@ -148,6 +151,7 @@ impl PickerState {
             query: self.filter.clone(),
             rows,
             preview: Vec::new(), // filled in by the app
+            placement: self.placement,
         }
     }
 }

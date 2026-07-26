@@ -259,6 +259,8 @@ pub struct Config {
     /// Milliseconds to wait for a mapped key sequence before showing which-key.
     pub timeoutlen: u32,
     pub whichkey_enabled: bool,
+    /// Where the `:`-Tab command palette appears: "center" or "bottom".
+    pub command_palette: String,
     /// Format the buffer via LSP before writing it on `:w`.
     pub format_on_save: bool,
     pub lsp_diagnostics: bool,
@@ -310,6 +312,7 @@ impl Config {
             (("gutter", "relativenumber"), Bool(self.relativenumber)),
             (("whichkey", "enabled"), Bool(self.whichkey_enabled)),
             (("whichkey", "timeoutlen"), Int(self.timeoutlen as i64)),
+            (("whichkey", "command_palette"), Enum(self.command_palette.clone())),
             (("lsp", "format_on_save"), Bool(self.format_on_save)),
             (("lsp", "diagnostics"), Bool(self.lsp_diagnostics)),
             (("lsp", "hover"), Bool(self.lsp_hover)),
@@ -381,6 +384,7 @@ impl Config {
             colors: d.colors,
             timeoutlen: u("whichkey", "timeoutlen", d.timeoutlen),
             whichkey_enabled: bl("whichkey", "enabled", d.whichkey_enabled),
+            command_palette: st("whichkey", "command_palette").unwrap_or(d.command_palette),
             format_on_save: bl("lsp", "format_on_save", d.format_on_save),
             lsp_diagnostics: bl("lsp", "diagnostics", d.lsp_diagnostics),
             lsp_hover: bl("lsp", "hover", d.lsp_hover),
@@ -438,6 +442,7 @@ impl Default for Config {
             color_overrides: ColorOverrides::default(),
             timeoutlen: 300,
             whichkey_enabled: true,
+            command_palette: "center".to_string(),
             format_on_save: false,
             lsp_diagnostics: true,
             lsp_hover: true,

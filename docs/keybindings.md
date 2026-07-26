@@ -137,6 +137,7 @@ Press `SPC` in Normal mode; the which-key panel lists continuations.
 
 | Sequence | Action |
 |----------|--------|
+| `SPC ,` | Open settings (also `SPC o s`) |
 | `SPC w h/j/k/l` | Focus window left/down/up/right |
 | `SPC w s` / `SPC w v` | Split below / right |
 | `SPC w c` / `SPC w q` | Close window |
@@ -231,7 +232,9 @@ colored by severity). The **quickfix list** collects them for navigation.
 | `:s/pat/rep/g` | Replace every match on the current line |
 | `:%s/pat/rep/g` | Replace throughout the buffer |
 
-Then `:` + `Tab` opens a fuzzy **command palette** of these commands.
+Then `:` + `Tab` opens a fuzzy **command palette** of these commands. It appears as a
+centered box by default, or docked in the which-key area at the bottom — set
+`whichkey.command_palette = "bottom"` (or via `:settings`).
 
 ## Emacs mode
 

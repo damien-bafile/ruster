@@ -321,8 +321,18 @@ pub struct PickerRow {
     pub selected: bool,
 }
 
-/// A floating fuzzy-list overlay (buffer list, file finder, which-key, ...),
-/// drawn centered over the window frame.
+/// Where a picker overlay is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PickerPlacement {
+    /// A floating box centered over the window frame (the default).
+    #[default]
+    Center,
+    /// A full-width strip docked to the bottom, like the which-key panel — used
+    /// for the `:`-Tab command palette when configured.
+    Bottom,
+}
+
+/// A floating fuzzy-list overlay (buffer list, file finder, which-key, ...).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PickerView {
     pub title: String,
@@ -330,6 +340,8 @@ pub struct PickerView {
     pub rows: Vec<PickerRow>,
     /// Syntax-highlighted preview of the selected entry (empty = no preview pane).
     pub preview: Vec<StyledLine>,
+    /// Center (floating) or bottom (docked) placement.
+    pub placement: PickerPlacement,
 }
 
 /// A which-key hint panel that slides up from the bottom mini-buffer. `anim` is

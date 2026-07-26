@@ -540,17 +540,23 @@ impl Renderer for RaylibRenderer {
             d.draw_text_ex(font, cmd, Vector2::new(pad_x as f32, cmd_y as f32), font_size as f32, 1.0, default_color);
         }
 
-        // Floating picker overlay, centered.
+        // Picker overlay: centered floating box, or a full-width strip docked at
+        // the bottom (the command palette's "bottom" mode).
         if let Some(picker) = &state.picker {
             let box_bg = Color::new(30, 30, 46, 255);
             let preview_bg = Color::new(24, 24, 37, 255);
             let has_preview = !picker.preview.is_empty();
             let frac = if has_preview { 9 } else { 6 };
-            let box_w = (screen_w * frac / 10).clamp(240.min(screen_w), screen_w - 20);
             let n_rows = (picker.rows.len() as i32 + 2).max(picker.preview.len() as i32);
-            let box_h = (n_rows * line_h).clamp(3 * line_h, (screen_h - 40).max(3 * line_h));
-            let box_x = (screen_w - box_w) / 2;
-            let box_y = ((screen_h - box_h) / 2).max(0);
+            let bottom = matches!(picker.placement, ruster_render::PickerPlacement::Bottom);
+            let (box_x, box_y, box_w, box_h) = if bottom {
+                let h = (n_rows * line_h).clamp(3 * line_h, (screen_h / 2).max(3 * line_h));
+                (0, screen_h - h, screen_w, h)
+            } else {
+                let w = (screen_w * frac / 10).clamp(240.min(screen_w), screen_w - 20);
+                let h = (n_rows * line_h).clamp(3 * line_h, (screen_h - 40).max(3 * line_h));
+                ((screen_w - w) / 2, ((screen_h - h) / 2).max(0), w, h)
+            };
             let list_w = if has_preview { box_w * 2 / 5 } else { box_w };
             d.draw_rectangle(box_x, box_y, box_w, box_h, box_bg);
             if has_preview {
