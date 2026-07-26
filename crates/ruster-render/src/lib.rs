@@ -10,6 +10,8 @@ pub struct Theme {
     pub bg: Color,
     pub fg: Color,
     pub gutter: Color,
+    /// Gutter background (defaults to `bg` when a theme doesn't set it).
+    pub gutter_bg: Color,
     pub selection: Color,
     pub cursor: Color,
     pub divider: Color,
@@ -22,6 +24,7 @@ impl Default for Theme {
             bg: Color::Rgb(30, 30, 30),
             fg: Color::Rgb(205, 214, 244),
             gutter: Color::Rgb(108, 112, 134),
+            gutter_bg: Color::Rgb(30, 30, 30),
             selection: Color::Rgb(88, 91, 112),
             cursor: Color::Rgb(245, 224, 220),
             divider: Color::Rgb(69, 71, 90),
@@ -346,6 +349,22 @@ pub struct SettingsView {
     pub footer: String,
 }
 
+/// Scroll a list so `selected` stays visible **without recentering**: the view
+/// holds its position until the selection crosses an edge, then scrolls just
+/// enough to keep it on-screen — the behavior of a normal list widget. `prev`
+/// is the last frame's top line; returns the new top line.
+pub fn settings_scroll(prev: usize, selected: usize, viewport: usize, total: usize) -> usize {
+    let viewport = viewport.max(1);
+    let mut top = prev;
+    if selected < top {
+        top = selected;
+    } else if selected >= top + viewport {
+        top = selected + 1 - viewport;
+    }
+    let max = total.saturating_sub(viewport);
+    top.min(max)
+}
+
 /// A full frame: every visible window, the shared cmdline/message line, an
 /// optional centered picker overlay, and an optional bottom which-key panel.
 pub struct FrameState<'a> {
@@ -388,6 +407,24 @@ mod tests {
     struct TestRenderer;
     impl Renderer for TestRenderer {
         fn render_frame(&mut self, _state: &FrameState) {}
+    }
+
+    #[test]
+    fn settings_scroll_holds_until_edge_then_follows() {
+        use crate::settings_scroll;
+        // 20 items, viewport 5. Moving down within view doesn't scroll.
+        assert_eq!(settings_scroll(0, 3, 5, 20), 0);
+        // Crossing the bottom edge scrolls just enough to keep it visible.
+        assert_eq!(settings_scroll(0, 5, 5, 20), 1);
+        assert_eq!(settings_scroll(0, 6, 5, 20), 2);
+        // Moving back up while still on-screen holds position (no re-center).
+        assert_eq!(settings_scroll(2, 4, 5, 20), 2);
+        // Crossing the top edge scrolls up.
+        assert_eq!(settings_scroll(2, 1, 5, 20), 1);
+        // Never scrolls past the end (max top = total - viewport).
+        assert_eq!(settings_scroll(99, 19, 5, 20), 15);
+        // Fewer items than the viewport: no scroll.
+        assert_eq!(settings_scroll(3, 0, 5, 3), 0);
     }
 
     fn sample_window() -> WindowView {

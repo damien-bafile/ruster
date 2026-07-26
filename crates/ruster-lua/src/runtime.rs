@@ -240,10 +240,13 @@ impl LuaRuntime {
                 .map(|(r, g, b)| Rgb::new(r, g, b))
                 .unwrap_or(def)
         };
+        let bg = get("bg", d.bg);
         let roles = ThemeColors {
-            bg: get("bg", d.bg),
+            bg,
             fg: get("fg", d.fg),
             gutter: get("gutter", d.gutter),
+            // Older theme files have no gutter_bg; default it to the page bg.
+            gutter_bg: get("gutter_bg", bg),
             selection: get("selection", d.selection),
             cursor: get("cursor", d.cursor),
             divider: get("divider", d.divider),

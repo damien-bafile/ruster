@@ -250,6 +250,7 @@ pub fn schema() -> Vec<SettingSpec> {
     add("colors", "bg", "Background", Text, t(""), "Override editor background");
     add("colors", "fg", "Foreground", Text, t(""), "Override default text color");
     add("colors", "gutter", "Gutter", Text, t(""), "Override line-number color");
+    add("colors", "gutter_bg", "Gutter background", Text, t(""), "Override the gutter background");
     add("colors", "selection", "Selection", Text, t(""), "Override selection highlight");
     add("colors", "cursor", "Cursor", Text, t(""), "Override cursor color");
     add("colors", "divider", "Bars / divider", Text, t(""), "Override statusline bar + window divider");

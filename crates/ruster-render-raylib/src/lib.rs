@@ -15,6 +15,12 @@ pub struct RaylibRenderer {
     pad_x: i32,
     pad_y: i32,
     theme: ruster_render::Theme,
+    /// The loaded font's (path, size) so live re-theming only reloads the atlas
+    /// when the font actually changed (color-only tweaks skip the reload).
+    font_sig: (Option<String>, i32),
+    /// Top visible line of the Settings overlay, persisted across frames so the
+    /// list scrolls like a normal widget (holds until the selection hits an edge).
+    settings_scroll: usize,
     event_buffer: Vec<KeyEvent>,
 }
 
@@ -178,6 +184,8 @@ impl RaylibRenderer {
             pad_x: gui.padding_x,
             pad_y: gui.padding_y,
             theme: gui.theme,
+            font_sig: (font_override.map(str::to_string), gui.font_size),
+            settings_scroll: 0,
             event_buffer: Vec::new(),
         }
     }
@@ -259,6 +267,7 @@ impl Renderer for RaylibRenderer {
         let gutter_color = to_raylib(theme.gutter, Color::new(108, 112, 134, 255));
         let divider = to_raylib(theme.divider, Color::new(69, 71, 90, 255));
         let bg = to_raylib(theme.bg, Color::new(30, 30, 30, 255));
+        let gutter_bg = to_raylib(theme.gutter_bg, bg);
         let selection_bg = to_raylib(theme.selection, Color::new(88, 91, 112, 255));
         let (cur_r, cur_g, cur_b) = rgb_of(theme.cursor, (245, 224, 220));
         let accent = to_raylib(theme.accent, Color::new(243, 139, 168, 255));
@@ -318,6 +327,10 @@ impl Renderer for RaylibRenderer {
                         }
                     }
                 } else {
+                // Gutter background (only when a gutter is shown).
+                if view.gutter.width > 0 && gutter_bg != bg {
+                    s.draw_rectangle(px, py, text_x - px, buf_rows as i32 * line_h, gutter_bg);
+                }
                 // Gutter column.
                 for (row, label) in view.gutter.rows.iter().take(buf_rows).enumerate() {
                     let gy = py + row as i32 * line_h;
@@ -645,11 +658,12 @@ impl Renderer for RaylibRenderer {
             }
         }
 
-        // Settings page — a large centered overlay.
+        // Settings page — a large centered overlay, themed from the live palette.
         if let Some(settings) = &state.settings {
-            let sbg = Color::new(30, 30, 46, 255);
-            let sel_bg = Color::new(69, 71, 90, 255);
-            let dim = Color::new(127, 132, 156, 255);
+            let sbg = bg;
+            let sel_bg = selection_bg;
+            let dim = gutter_color;
+            let bar_bg = divider;
             let bw = screen_w * 8 / 10;
             let bh = screen_h * 9 / 10;
             let bx = (screen_w - bw) / 2;
@@ -658,7 +672,7 @@ impl Renderer for RaylibRenderer {
             s.draw_rectangle(bx, by, bw, bh, sbg);
             s.draw_rectangle(bx, by, bw, line_h, accent);
             let title = format!(" Settings{} ", if settings.dirty { " [+]" } else { "" });
-            s.draw_text_ex(font, &title, Vector2::new((bx + 4) as f32, by as f32), font_size as f32, 1.0, Color::BLACK);
+            s.draw_text_ex(font, &title, Vector2::new((bx + 4) as f32, by as f32), font_size as f32, 1.0, sbg);
 
             // Flatten groups into header/row lines.
             let mut lines: Vec<(bool, String, Option<&SettingRowView>)> = Vec::new();
@@ -672,8 +686,12 @@ impl Renderer for RaylibRenderer {
                 .iter()
                 .position(|(_, _, r)| r.map(|x| x.selected).unwrap_or(false))
                 .unwrap_or(0);
-            let body_rows = ((bh - 2 * line_h) / line_h).max(1) as usize;
-            let scroll = selected.saturating_sub(body_rows.saturating_sub(1));
+            // Reserve the title, help and footer rows so the last item can't
+            // overlap them; scroll like a normal list (hold until an edge).
+            let body_rows = ((bh - 3 * line_h) / line_h).max(1) as usize;
+            self.settings_scroll =
+                ruster_render::settings_scroll(self.settings_scroll, selected, body_rows, lines.len());
+            let scroll = self.settings_scroll;
             let value_x = (bx + (32.0 * char_w) as i32).min(bx + bw / 2);
 
             for (i, (is_h, label, row)) in lines.iter().skip(scroll).take(body_rows).enumerate() {
@@ -711,8 +729,8 @@ impl Renderer for RaylibRenderer {
                 s.draw_text_ex(font, &r.help, Vector2::new((bx + 4) as f32, hy as f32), font_size as f32, 1.0, dim);
             }
             let fy = by + bh - line_h;
-            s.draw_rectangle(bx, fy, bw, line_h, Color::new(24, 24, 37, 255));
-            s.draw_text_ex(font, &settings.footer, Vector2::new((bx + 4) as f32, fy as f32), font_size as f32, 1.0, dim);
+            s.draw_rectangle(bx, fy, bw, line_h, bar_bg);
+            s.draw_text_ex(font, &settings.footer, Vector2::new((bx + 4) as f32, fy as f32), font_size as f32, 1.0, default_color);
         }
     }
 
@@ -728,9 +746,14 @@ impl Renderer for RaylibRenderer {
     }
 
     fn set_gui_config(&mut self, gui: &GuiConfig, font: Option<&str>) {
-        // Reload the font atlas (font/size may have changed) and update metrics.
-        self.font = Self::try_load_mono_font(&mut self.rl, &self.thread, font, gui.font_size);
-        self.char_w = self.font.measure_text("m", gui.font_size as f32, 1.0).x;
+        // Only reload the font atlas when the font/size actually changed — so a
+        // color-only live preview (per keystroke) stays cheap.
+        let sig = (font.map(str::to_string), gui.font_size);
+        if sig != self.font_sig {
+            self.font = Self::try_load_mono_font(&mut self.rl, &self.thread, font, gui.font_size);
+            self.char_w = self.font.measure_text("m", gui.font_size as f32, 1.0).x;
+            self.font_sig = sig;
+        }
         self.font_size = gui.font_size;
         self.line_h = gui.line_height;
         self.pad_x = gui.padding_x;
