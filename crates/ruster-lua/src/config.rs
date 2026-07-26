@@ -22,6 +22,8 @@ pub struct ThemeColors {
     pub bg: Rgb,
     pub fg: Rgb,
     pub gutter: Rgb,
+    /// Gutter background. Defaults to `bg` when a theme doesn't set it.
+    pub gutter_bg: Rgb,
     pub selection: Rgb,
     pub cursor: Rgb,
     pub divider: Rgb,
@@ -34,6 +36,7 @@ impl Default for ThemeColors {
             bg: Rgb::new(30, 30, 30),
             fg: Rgb::new(205, 214, 244),
             gutter: Rgb::new(108, 112, 134),
+            gutter_bg: Rgb::new(30, 30, 30),
             selection: Rgb::new(88, 91, 112),
             cursor: Rgb::new(245, 224, 220),
             divider: Rgb::new(69, 71, 90),
@@ -42,7 +45,7 @@ impl Default for ThemeColors {
     }
 }
 
-/// A theme: an ordered named palette plus the 7 UI role colors (the defaults
+/// A theme: an ordered named palette plus the 8 UI role colors (the defaults
 /// applied to the editor). The Settings page lets the user assign any palette
 /// color to each UI element.
 #[derive(Debug, Clone)]
@@ -61,8 +64,8 @@ impl Theme {
              return {\n",
         );
         s.push_str(&format!(
-            "  bg = {:?}, fg = {:?}, gutter = {:?}, selection = {:?},\n  cursor = {:?}, divider = {:?}, accent = {:?},\n",
-            r.bg.to_hex(), r.fg.to_hex(), r.gutter.to_hex(), r.selection.to_hex(),
+            "  bg = {:?}, fg = {:?}, gutter = {:?}, gutter_bg = {:?}, selection = {:?},\n  cursor = {:?}, divider = {:?}, accent = {:?},\n",
+            r.bg.to_hex(), r.fg.to_hex(), r.gutter.to_hex(), r.gutter_bg.to_hex(), r.selection.to_hex(),
             r.cursor.to_hex(), r.divider.to_hex(), r.accent.to_hex(),
         ));
         s.push_str("  palette = {\n");
@@ -122,7 +125,8 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                 ]),
                 roles: ThemeColors {
                     bg: Rgb::new(40, 40, 40), fg: Rgb::new(235, 219, 178),
-                    gutter: Rgb::new(124, 111, 100), selection: Rgb::new(80, 73, 69),
+                    gutter: Rgb::new(124, 111, 100), gutter_bg: Rgb::new(40, 40, 40),
+                    selection: Rgb::new(80, 73, 69),
                     cursor: Rgb::new(254, 128, 25), divider: Rgb::new(60, 56, 54),
                     accent: Rgb::new(250, 189, 47),
                 },
@@ -140,7 +144,8 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                 ]),
                 roles: ThemeColors {
                     bg: Rgb::new(26, 27, 38), fg: Rgb::new(192, 202, 245),
-                    gutter: Rgb::new(86, 95, 137), selection: Rgb::new(40, 52, 87),
+                    gutter: Rgb::new(86, 95, 137), gutter_bg: Rgb::new(26, 27, 38),
+                    selection: Rgb::new(40, 52, 87),
                     cursor: Rgb::new(192, 202, 245), divider: Rgb::new(65, 72, 104),
                     accent: Rgb::new(122, 162, 247),
                 },
@@ -157,7 +162,8 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                 ]),
                 roles: ThemeColors {
                     bg: Rgb::new(46, 52, 64), fg: Rgb::new(216, 222, 233),
-                    gutter: Rgb::new(76, 86, 106), selection: Rgb::new(67, 76, 94),
+                    gutter: Rgb::new(76, 86, 106), gutter_bg: Rgb::new(46, 52, 64),
+                    selection: Rgb::new(67, 76, 94),
                     cursor: Rgb::new(136, 192, 208), divider: Rgb::new(59, 66, 82),
                     accent: Rgb::new(136, 192, 208),
                 },
@@ -169,7 +175,8 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                 palette: palette(MOCHA),
                 roles: ThemeColors {
                     bg: Rgb::new(30, 30, 46), fg: Rgb::new(205, 214, 244),
-                    gutter: Rgb::new(108, 112, 134), selection: Rgb::new(88, 91, 112),
+                    gutter: Rgb::new(108, 112, 134), gutter_bg: Rgb::new(30, 30, 46),
+                    selection: Rgb::new(88, 91, 112),
                     cursor: Rgb::new(245, 224, 220), divider: Rgb::new(49, 50, 68),
                     accent: Rgb::new(203, 166, 247),
                 },
@@ -186,6 +193,7 @@ pub struct ColorOverrides {
     pub bg: String,
     pub fg: String,
     pub gutter: String,
+    pub gutter_bg: String,
     pub selection: String,
     pub cursor: String,
     pub divider: String,
@@ -287,6 +295,7 @@ impl Config {
             (("colors", "bg"), Text(self.color_overrides.bg.clone())),
             (("colors", "fg"), Text(self.color_overrides.fg.clone())),
             (("colors", "gutter"), Text(self.color_overrides.gutter.clone())),
+            (("colors", "gutter_bg"), Text(self.color_overrides.gutter_bg.clone())),
             (("colors", "selection"), Text(self.color_overrides.selection.clone())),
             (("colors", "cursor"), Text(self.color_overrides.cursor.clone())),
             (("colors", "divider"), Text(self.color_overrides.divider.clone())),
@@ -354,6 +363,7 @@ impl Config {
                 bg: st("colors", "bg").unwrap_or_default(),
                 fg: st("colors", "fg").unwrap_or_default(),
                 gutter: st("colors", "gutter").unwrap_or_default(),
+                gutter_bg: st("colors", "gutter_bg").unwrap_or_default(),
                 selection: st("colors", "selection").unwrap_or_default(),
                 cursor: st("colors", "cursor").unwrap_or_default(),
                 divider: st("colors", "divider").unwrap_or_default(),

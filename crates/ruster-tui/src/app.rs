@@ -235,6 +235,7 @@ fn resolve_theme_colors(
     set(&ov.bg, &mut colors.bg);
     set(&ov.fg, &mut colors.fg);
     set(&ov.gutter, &mut colors.gutter);
+    set(&ov.gutter_bg, &mut colors.gutter_bg);
     set(&ov.selection, &mut colors.selection);
     set(&ov.cursor, &mut colors.cursor);
     set(&ov.divider, &mut colors.divider);
@@ -1198,6 +1199,7 @@ impl App {
                 bg: col(c.colors.bg),
                 fg: col(c.colors.fg),
                 gutter: col(c.colors.gutter),
+                gutter_bg: col(c.colors.gutter_bg),
                 selection: col(c.colors.selection),
                 cursor: col(c.colors.cursor),
                 divider: col(c.colors.divider),
@@ -3932,12 +3934,20 @@ impl App {
         };
         let mut fonts = vec!["auto".to_string()];
         fonts.extend(self.available_fonts());
-        let mut shells = vec!["auto".to_string()];
-        shells.extend(self.available_shells());
+        // The shell picker's default sentinel (empty value) shows the user's
+        // detected default shell, so it isn't a blank `< >`.
+        let default_shell = ruster_terminal::default_shell().0;
+        let default_name = std::path::Path::new(&default_shell)
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or(default_shell);
+        let mut shells: Vec<(String, String)> =
+            vec![(format!("{default_name} (default)"), String::new())];
+        shells.extend(pairs(self.available_shells()));
         let dynamic = vec![
             ("general", "theme", pairs(self.available_themes())),
             ("gui", "font", pairs(fonts)),
-            ("terminal", "shell", pairs(shells)),
+            ("terminal", "shell", shells),
         ];
         let palettes = self.all_theme_palettes();
         self.settings = Some(SettingsState::new(&self.config, dynamic, palettes));

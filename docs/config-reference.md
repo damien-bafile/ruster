@@ -44,7 +44,7 @@ returning a palette you can edit or copy:
 
 ```lua
 -- themes/mytheme.lua
-return { bg = "#1e1e1e", fg = "#cdd6f4", gutter = "#6c7086",
+return { bg = "#1e1e1e", fg = "#cdd6f4", gutter = "#6c7086", gutter_bg = "#1e1e1e",
          selection = "#585b70", cursor = "#f5e0dc", divider = "#45475a", accent = "#f38ba8" }
 ```
 
@@ -55,13 +55,13 @@ with `:w` — no restart needed.
 
 Pick a theme, then recolor individual UI elements **from that theme's palette**. The
 **Colors** group in the Settings page has a row per element (background, foreground,
-gutter, selection, cursor, **bars/divider**, accent); each is a picker that cycles the
+gutter, **gutter background**, selection, cursor, **bars/divider**, accent); each is a picker that cycles the
 **selected theme's named palette** (e.g. Catppuccin Mocha's `mauve`, `blue`, `surface0`,
 …), shown by name with a swatch. `theme` means "leave at the theme's default". Changing
 the Theme row updates the color pickers live. These map to `ruster.config.colors.*`
 (stored as hex), and apply to the GUI live on `:w`.
 
-Each `themes/<name>.lua` file carries both the 7 UI `roles` and a `palette` of named
+Each `themes/<name>.lua` file carries both the 8 UI `roles` and a `palette` of named
 colors to choose from.
 
 ## Settings

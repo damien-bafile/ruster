@@ -22,17 +22,19 @@ pub fn ruster_style_to_ratatui(s: &SyntaxStyle) -> ratatui::style::Style {
 
 pub struct TuiRenderer {
     terminal: Option<Terminal<CrosstermBackend<Stdout>>>,
+    /// Persistent top-line for the Settings overlay (see `SettingsWidget`).
+    settings_scroll: usize,
 }
 
 impl TuiRenderer {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let stdout = std::io::stdout();
         let terminal = Terminal::new(CrosstermBackend::new(stdout))?;
-        Ok(TuiRenderer { terminal: Some(terminal) })
+        Ok(TuiRenderer { terminal: Some(terminal), settings_scroll: 0 })
     }
 
     pub fn dummy() -> Self {
-        TuiRenderer { terminal: None }
+        TuiRenderer { terminal: None, settings_scroll: 0 }
     }
 }
 
@@ -42,6 +44,7 @@ impl Renderer for TuiRenderer {
     }
 
     fn render_frame(&mut self, state: &FrameState) {
+        let sscroll = &mut self.settings_scroll;
         let term = match &mut self.terminal {
             Some(t) => t,
             None => return,
@@ -133,7 +136,10 @@ impl Renderer for TuiRenderer {
                 let sx = area.x + (area.width.saturating_sub(sw)) / 2;
                 let sy = area.y + (area.height.saturating_sub(sh)) / 2;
                 let sarea = Rect::new(sx, sy, sw, sh);
-                frame.render_widget(crate::widgets::SettingsWidget::new(settings.clone()), sarea);
+                frame.render_widget(
+                    crate::widgets::SettingsWidget::new(settings.clone(), sscroll),
+                    sarea,
+                );
             }
         });
     }

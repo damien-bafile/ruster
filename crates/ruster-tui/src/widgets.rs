@@ -409,17 +409,20 @@ enum SettingsLine<'a> {
     Row(&'a SettingRowView),
 }
 
-pub struct SettingsWidget {
+pub struct SettingsWidget<'a> {
     view: SettingsView,
+    /// Persistent top-line, updated in place so the list scrolls like a normal
+    /// widget instead of pinning the selection to the bottom edge.
+    scroll: &'a mut usize,
 }
 
-impl SettingsWidget {
-    pub fn new(view: SettingsView) -> Self {
-        SettingsWidget { view }
+impl<'a> SettingsWidget<'a> {
+    pub fn new(view: SettingsView, scroll: &'a mut usize) -> Self {
+        SettingsWidget { view, scroll }
     }
 }
 
-impl Widget for SettingsWidget {
+impl Widget for SettingsWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let bg = Color::Rgb(30, 30, 46);
         let accent = Color::Rgb(137, 180, 250);
@@ -468,10 +471,13 @@ impl Widget for SettingsWidget {
             .position(|l| matches!(l, SettingsLine::Row(r) if r.selected))
             .unwrap_or(0);
 
-        // Scroll so the selected line stays visible (body between title/footer).
+        // Scroll so the selected line stays visible (body between title/footer),
+        // holding position until the selection crosses an edge.
         let body_top = area.y + 1;
         let body_h = area.height.saturating_sub(3) as usize; // title + footer + help
-        let scroll = selected.saturating_sub(body_h.saturating_sub(1)).min(lines.len());
+        *self.scroll =
+            ruster_render::settings_scroll(*self.scroll, selected, body_h, lines.len());
+        let scroll = *self.scroll;
         let value_col = area.x + 32.min(area.width / 2);
 
         for (i, line) in lines.iter().skip(scroll).take(body_h).enumerate() {
