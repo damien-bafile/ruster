@@ -1355,6 +1355,7 @@ dependencies = [
  "ruster-core",
  "ruster-lsp",
  "ruster-lua",
+ "ruster-project",
  "ruster-render",
  "ruster-syntax",
  "ruster-terminal",

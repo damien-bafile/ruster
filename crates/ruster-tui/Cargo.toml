@@ -13,6 +13,7 @@ ruster-syntax = { path = "../ruster-syntax" }
 ruster-lua = { path = "../ruster-lua" }
 ruster-lsp = { path = "../ruster-lsp" }
 ruster-terminal = { path = "../ruster-terminal" }
+ruster-project = { path = "../ruster-project" }
 serde_json = "1"
 ratatui = "0.28"
 crossterm = "0.28"

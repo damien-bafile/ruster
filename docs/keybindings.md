@@ -145,6 +145,7 @@ Press `SPC` in Normal mode; the which-key panel lists continuations.
 | `SPC f f` | Find files (`:Files`) |
 | `SPC f b` | Buffer list (`:ls`) |
 | `SPC f e` | File explorer (`:Dired`) |
+| `SPC c b` | Build the project (`:build`) |
 | `SPC c k` (or `K`) | LSP hover |
 | `SPC c g` | Go to definition |
 | `SPC c r` | Find references |
@@ -214,12 +215,13 @@ Press `g` in Normal mode; the which-key panel lists the goto commands (LazyVim-s
 | `:callers` / `:incomingcalls` | Call hierarchy: who calls the symbol under the cursor |
 | `:callees` / `:outgoingcalls` | Call hierarchy: what the symbol under the cursor calls |
 
-### Quickfix
+### Build & quickfix
 Diagnostics render as a **sign column** left of the line-number gutter (`E`/`W`/`I`/`H`,
 colored by severity). The **quickfix list** collects them for navigation.
 
 | Command | Action |
 |---------|--------|
+| `:build` / `:make` (or `SPC c b`) | Run the project's build command in the background; output streams to `*build*`, diagnostics feed the quickfix list |
 | `:copen` (`:cwindow`) | Open the quickfix list as a picker; Enter jumps to an entry |
 | `:cnext` / `:cn` (or `]q`) | Jump to the next quickfix entry |
 | `:cprev` / `:cp` (or `[q`) | Jump to the previous quickfix entry |
