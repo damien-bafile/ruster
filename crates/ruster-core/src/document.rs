@@ -21,6 +21,8 @@ pub enum SpecialKind {
     Terminal,
     /// A read-only listing of config load/validation errors.
     ConfigErrors,
+    /// A read-only results buffer for a build/test/task run.
+    Build,
 }
 
 /// What a document represents.

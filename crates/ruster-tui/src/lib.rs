@@ -2,6 +2,7 @@ pub mod app;
 pub mod key;
 pub mod picker;
 pub mod quickfix;
+pub mod runner;
 pub mod renderer;
 pub mod settings;
 pub mod widgets;

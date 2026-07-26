@@ -40,14 +40,14 @@ then DAP (largest, isolated). Ordered so each task is independently shippable.
 - [x] Route existing LSP diagnostics through the sign column too.
 - [x] Commands: `:copen`/`:cnext`/`:cprev` (and `]q`/`[q`); tests for navigation + parsing glue.
 
-### Task 3: Build system runner
+### Task 3: Build system runner ✅
 
-- [ ] `:build` (or `SPC c b`) runs `[build].command` (default per project type:
+- [x] `:build` (or `SPC c b`) runs `[build].command` (default per project type:
   `cargo build`, `make`, `npm run build`) on a background thread, streaming to a results
-  buffer/terminal.
-- [ ] Parse `rustc`/`cargo` diagnostics (and a generic `file:line:col: msg`) into the
+  buffer (`*build*`).
+- [x] Parse `rustc`/`cargo` diagnostics (and a generic `file:line:col: msg`) into the
   quickfix list; jump on select.
-- [ ] Tests: parse captured `cargo build` JSON/textual output → quickfix items.
+- [x] Tests: parse captured `cargo build` textual output → quickfix items.
 
 ### Task 4: Test runner
 

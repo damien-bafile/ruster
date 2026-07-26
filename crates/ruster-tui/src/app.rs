@@ -464,6 +464,8 @@ enum CmdAction {
     ConfigErrors,
     /// Open the settings page (`:settings` / `:config`).
     Settings,
+    /// Run the project's build command (`:build` / `:make`).
+    Build,
     /// Open the quickfix list as a picker (`:copen`).
     QuickfixOpen,
     /// Step to the next/prev quickfix entry and jump (`:cnext`/`:cprev`).
@@ -586,6 +588,7 @@ enum LeaderAction {
     ToggleNumber,
     ToggleRelative,
     Grep,
+    Build,
 }
 
 enum LeaderNode {
@@ -618,6 +621,7 @@ static QUIT_GROUP: &[(char, LeaderNode)] = &[
 ];
 
 static CODE_GROUP: &[(char, LeaderNode)] = &[
+    ('b', LeaderNode::Action("build", LeaderAction::Build)),
     ('k', LeaderNode::Action("hover", LeaderAction::Hover)),
     ('g', LeaderNode::Action("go to definition", LeaderAction::Definition)),
     ('r', LeaderNode::Action("references", LeaderAction::References)),
@@ -939,6 +943,14 @@ pub struct App {
     bracket_pending: Option<char>,
     /// The shared quickfix list (`:copen`/`:cnext`/`:cprev`, `]q`/`[q`).
     quickfix: QuickfixList,
+    /// A running build/test/task command's output stream, drained per frame.
+    build_rx: Option<std::sync::mpsc::Receiver<crate::runner::RunnerMsg>>,
+    /// The `*build*` results buffer the current run streams into.
+    build_buf: Option<BufferId>,
+    /// The project root the current run was launched from (to resolve diagnostic
+    /// paths) and the accumulated output for post-run parsing.
+    build_root: PathBuf,
+    build_output: String,
 }
 
 /// The active editing paradigm. Neovim is modal; Emacs is modeless.
@@ -1248,6 +1260,10 @@ impl App {
             g_replaying: false,
             bracket_pending: None,
             quickfix: QuickfixList::default(),
+            build_rx: None,
+            build_buf: None,
+            build_root: PathBuf::new(),
+            build_output: String::new(),
         }
     }
 
@@ -2502,6 +2518,7 @@ impl App {
 
     fn render(&mut self) {
         self.drain_pending_results();
+        self.drain_build_runner();
         self.update_lsp();
         let (cols, rows) = self.renderer.viewport_cells();
         // Reserve a bottom row for the cmdline/message only while one is shown,
@@ -2826,6 +2843,7 @@ impl App {
             "term" | "terminal" => Ok(CmdAction::Terminal),
             "config-errors" | "configerrors" => Ok(CmdAction::ConfigErrors),
             "settings" | "config" => Ok(CmdAction::Settings),
+            "build" | "make" => Ok(CmdAction::Build),
             "copen" | "cope" | "cwindow" | "cw" => Ok(CmdAction::QuickfixOpen),
             "cnext" | "cn" => Ok(CmdAction::QuickfixNext),
             "cprev" | "cp" | "cN" | "cprevious" => Ok(CmdAction::QuickfixPrev),
@@ -2937,6 +2955,7 @@ impl App {
             CmdAction::Terminal => self.open_terminal(),
             CmdAction::ConfigErrors => self.open_config_errors(),
             CmdAction::Settings => self.open_settings(),
+            CmdAction::Build => self.run_build(),
             CmdAction::QuickfixOpen => self.open_quickfix(),
             CmdAction::QuickfixNext => self.quickfix_next(),
             CmdAction::QuickfixPrev => self.quickfix_prev(),
@@ -4059,6 +4078,7 @@ impl App {
                 self.vim.set_cmdline(":Rg ");
                 self.message = Some("Type a pattern and press Enter".to_string());
             }
+            LeaderAction::Build => self.run_build(),
         }
     }
 
@@ -4252,6 +4272,104 @@ impl App {
         }
         self.quickfix.prev();
         self.quickfix_jump_current();
+    }
+
+    /// Ensure the `*build*` results buffer exists, returning its id.
+    fn ensure_build_buffer(&mut self) -> BufferId {
+        if let Some(id) = self.build_buf {
+            if self.ws.borrow().buffers.get(id).is_some() {
+                return id;
+            }
+        }
+        let id = self.ws.borrow_mut().buffers.create_special(SpecialKind::Build, "*build*");
+        self.build_buf = Some(id);
+        id
+    }
+
+    /// `:build` / `SPC c b` — run the project's build command on a background
+    /// thread, streaming output into `*build*`; diagnostics feed the quickfix
+    /// list when it finishes.
+    fn run_build(&mut self) {
+        if self.build_rx.is_some() {
+            self.message = Some("A build is already running".to_string());
+            return;
+        }
+        // Project root from the active file, falling back to the cwd.
+        let root = self
+            .ws
+            .borrow()
+            .active_doc()
+            .file_path
+            .clone()
+            .and_then(|p| ruster_project::project_root(&p))
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let cmd = ruster_project::ProjectConfig::load(&root).build_command(&root);
+        if cmd.is_empty() {
+            self.message = Some("No build command for this project (set [build].command in ruster.toml)".to_string());
+            return;
+        }
+        self.build_output = format!("$ {cmd}\n");
+        self.build_root = root.clone();
+        let id = self.ensure_build_buffer();
+        {
+            let mut w = self.ws.borrow_mut();
+            if let Some(doc) = w.buffers.get_mut(id) {
+                doc.buffer = Buffer::from_str(&self.build_output);
+            }
+            w.set_active_buffer(id);
+        }
+        self.build_rx = Some(crate::runner::spawn_shell_command(&cmd, &root));
+        self.message = Some(format!("build: {cmd}"));
+    }
+
+    /// Drain the running build's output into `*build*`; on completion, parse the
+    /// captured output into the quickfix list. Called once per frame.
+    fn drain_build_runner(&mut self) {
+        use crate::runner::RunnerMsg;
+        use std::sync::mpsc::TryRecvError;
+        let Some(rx) = self.build_rx.as_ref() else { return };
+        let mut appended = false;
+        let mut done: Option<Option<i32>> = None;
+        loop {
+            match rx.try_recv() {
+                Ok(RunnerMsg::Line(l)) => {
+                    self.build_output.push_str(&l);
+                    self.build_output.push('\n');
+                    appended = true;
+                }
+                Ok(RunnerMsg::Done(code)) => {
+                    done = Some(code);
+                    break;
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    done = Some(None);
+                    break;
+                }
+            }
+        }
+        if appended {
+            if let Some(id) = self.build_buf {
+                let mut w = self.ws.borrow_mut();
+                if let Some(doc) = w.buffers.get_mut(id) {
+                    doc.buffer = Buffer::from_str(&self.build_output);
+                }
+            }
+        }
+        if let Some(code) = done {
+            self.build_rx = None;
+            let items = crate::runner::parse_build_diagnostics(&self.build_output, &self.build_root);
+            let n = items.len();
+            self.quickfix = QuickfixList::new(items);
+            let status = match code {
+                Some(0) => "ok".to_string(),
+                Some(c) => format!("exit {c}"),
+                None => "failed to run".to_string(),
+            };
+            let hint = if n > 0 { "  (:copen)" } else { "" };
+            self.message = Some(format!("build {status} — {n} problem(s){hint}"));
+        }
     }
 
     /// Interpret the key following a `Ctrl-w` prefix.
@@ -5547,6 +5665,13 @@ mod tests {
         // `i` re-enters.
         a.handle_key(CtKey::new(KeyCode::Char('i'), KeyModifiers::NONE));
         assert!(a.terminal_focused, "i re-focuses the terminal");
+    }
+
+    #[test]
+    fn build_command_parses() {
+        let a = App::new("x".into(), PathBuf::from("f.txt"));
+        assert!(matches!(a.parse_cmdline("build"), Ok(CmdAction::Build)));
+        assert!(matches!(a.parse_cmdline("make"), Ok(CmdAction::Build)));
     }
 
     #[test]
