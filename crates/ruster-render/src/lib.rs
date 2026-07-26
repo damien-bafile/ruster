@@ -13,9 +13,17 @@ pub struct Theme {
     /// Gutter background (defaults to `bg` when a theme doesn't set it).
     pub gutter_bg: Color,
     pub selection: Color,
+    /// Text over the selection highlight (defaults to `fg`).
+    pub selection_fg: Color,
     pub cursor: Color,
+    /// Glyph under the block cursor (defaults to `bg`).
+    pub cursor_fg: Color,
     pub divider: Color,
+    /// Statusline / bar text (defaults to `fg`).
+    pub statusline_fg: Color,
     pub accent: Color,
+    /// Text on accent-colored bars (defaults to `bg`).
+    pub accent_fg: Color,
 }
 
 impl Default for Theme {
@@ -26,9 +34,13 @@ impl Default for Theme {
             gutter: Color::Rgb(108, 112, 134),
             gutter_bg: Color::Rgb(30, 30, 30),
             selection: Color::Rgb(88, 91, 112),
+            selection_fg: Color::Rgb(205, 214, 244),
             cursor: Color::Rgb(245, 224, 220),
+            cursor_fg: Color::Rgb(30, 30, 30),
             divider: Color::Rgb(69, 71, 90),
+            statusline_fg: Color::Rgb(205, 214, 244),
             accent: Color::Rgb(243, 139, 168),
+            accent_fg: Color::Rgb(30, 30, 30),
         }
     }
 }

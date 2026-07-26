@@ -252,9 +252,13 @@ pub fn schema() -> Vec<SettingSpec> {
     add("colors", "gutter", "Gutter", Text, t(""), "Override line-number color");
     add("colors", "gutter_bg", "Gutter background", Text, t(""), "Override the gutter background");
     add("colors", "selection", "Selection", Text, t(""), "Override selection highlight");
+    add("colors", "selection_fg", "Selection text", Text, t(""), "Override text drawn over the selection");
     add("colors", "cursor", "Cursor", Text, t(""), "Override cursor color");
+    add("colors", "cursor_fg", "Cursor text", Text, t(""), "Override the glyph under the block cursor");
     add("colors", "divider", "Bars / divider", Text, t(""), "Override statusline bar + window divider");
+    add("colors", "statusline_fg", "Bar / divider text", Text, t(""), "Override statusline text color");
     add("colors", "accent", "Accent", Text, t(""), "Override accent (titles, prompts)");
+    add("colors", "accent_fg", "Accent text", Text, t(""), "Override text drawn on accent bars");
 
     s
 }

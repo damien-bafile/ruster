@@ -27,6 +27,8 @@ pub struct SettingsState {
     theme_palettes: HashMap<String, Vec<Opt>>,
     theme_idx: Option<usize>,
     color_rows: Vec<usize>,
+    /// True after a lone `d`, so the next `d` completes a `dd` reset.
+    d_pending: bool,
     pub dirty: bool,
 }
 
@@ -71,6 +73,7 @@ impl SettingsState {
             theme_palettes: theme_palettes.into_iter().collect(),
             theme_idx,
             color_rows,
+            d_pending: false,
             dirty: false,
         };
         st.rebuild_color_opts();
@@ -210,6 +213,32 @@ impl SettingsState {
         }
     }
 
+    /// Reset the selected row to its schema default (for color rows, `""` =
+    /// "use the theme"). Returns true if anything changed.
+    pub fn reset_selected(&mut self) -> bool {
+        let def = self.specs[self.selected].default.clone();
+        let changed = self.values[self.selected] != def;
+        self.set(def);
+        changed
+    }
+
+    /// `d` in the (non-editing) list: the first arms a `dd`, the second resets.
+    /// Returns true when a reset actually fired.
+    pub fn press_d(&mut self) -> bool {
+        if self.d_pending {
+            self.d_pending = false;
+            self.reset_selected()
+        } else {
+            self.d_pending = true;
+            false
+        }
+    }
+
+    /// Clear a half-typed `dd` when any other key is pressed.
+    pub fn cancel_d(&mut self) {
+        self.d_pending = false;
+    }
+
     // --- text editing ---
 
     pub fn edit_push(&mut self, c: char) {
@@ -289,7 +318,7 @@ impl SettingsState {
         let footer = if self.editing.is_some() {
             "type value · Enter commit · Esc cancel".to_string()
         } else {
-            "j/k move · Tab group · Space toggle/cycle · h/l adjust · Enter edit · :w save · q close".to_string()
+            "j/k move · Tab group · Space toggle/cycle · h/l adjust · Enter edit · dd reset · :w save · q close".to_string()
         };
         SettingsView { groups, dirty: self.dirty, footer }
     }
@@ -399,6 +428,43 @@ mod tests {
             s.values().iter().find(|((g, k), _)| *g == "colors" && *k == "accent").unwrap().1,
             SettingValue::Text("#fe8019".into())
         );
+    }
+
+    #[test]
+    fn dd_resets_a_color_row_to_theme_default() {
+        let mut s = state();
+        goto(&mut s, "colors", "accent");
+        s.activate(); // pick a palette color (non-default)
+        let val = |s: &SettingsState| {
+            s.values().into_iter().find(|((g, k), _)| *g == "colors" && *k == "accent").unwrap().1
+        };
+        assert_ne!(val(&s), SettingValue::Text(String::new()));
+        // First `d` arms, second `d` resets to the default ("" = use the theme).
+        assert!(!s.press_d());
+        assert!(s.press_d());
+        assert_eq!(val(&s), SettingValue::Text(String::new()));
+    }
+
+    #[test]
+    fn other_key_cancels_pending_dd() {
+        let mut s = state();
+        goto(&mut s, "general", "tabstop");
+        let before = s.values();
+        s.press_d(); // arm
+        s.cancel_d(); // a non-d key arrives
+        assert!(!s.press_d()); // this is a fresh first-d, must not reset
+        assert_eq!(s.values(), before);
+    }
+
+    #[test]
+    fn reset_selected_restores_int_default() {
+        let mut s = state();
+        goto(&mut s, "general", "tabstop");
+        let def = s.values().into_iter().find(|((g, k), _)| *g == "general" && *k == "tabstop").unwrap().1;
+        s.adjust(3); // change it
+        assert!(s.reset_selected());
+        let now = s.values().into_iter().find(|((g, k), _)| *g == "general" && *k == "tabstop").unwrap().1;
+        assert_eq!(now, def);
     }
 
     #[test]

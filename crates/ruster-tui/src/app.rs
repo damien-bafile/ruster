@@ -237,9 +237,13 @@ fn resolve_theme_colors(
     set(&ov.gutter, &mut colors.gutter);
     set(&ov.gutter_bg, &mut colors.gutter_bg);
     set(&ov.selection, &mut colors.selection);
+    set(&ov.selection_fg, &mut colors.selection_fg);
     set(&ov.cursor, &mut colors.cursor);
+    set(&ov.cursor_fg, &mut colors.cursor_fg);
     set(&ov.divider, &mut colors.divider);
+    set(&ov.statusline_fg, &mut colors.statusline_fg);
     set(&ov.accent, &mut colors.accent);
+    set(&ov.accent_fg, &mut colors.accent_fg);
     colors
 }
 
@@ -1201,9 +1205,13 @@ impl App {
                 gutter: col(c.colors.gutter),
                 gutter_bg: col(c.colors.gutter_bg),
                 selection: col(c.colors.selection),
+                selection_fg: col(c.colors.selection_fg),
                 cursor: col(c.colors.cursor),
+                cursor_fg: col(c.colors.cursor_fg),
                 divider: col(c.colors.divider),
+                statusline_fg: col(c.colors.statusline_fg),
                 accent: col(c.colors.accent),
+                accent_fg: col(c.colors.accent_fg),
             },
         }
     }
@@ -3000,6 +3008,11 @@ impl App {
                     _ => {}
                 }
             } else {
+                // `dd` (two presses) or Delete resets the row to its default; any
+                // other key cancels a half-typed `dd`.
+                if !matches!(ck.code, KeyCode::Char('d')) {
+                    s.cancel_d();
+                }
                 match ck.code {
                     KeyCode::Esc | KeyCode::Char('q') => close = true,
                     KeyCode::Char('j') | KeyCode::Down => s.move_down(),
@@ -3018,6 +3031,8 @@ impl App {
                         s.adjust(-1);
                         changed = true;
                     }
+                    KeyCode::Char('d') => changed = s.press_d(),
+                    KeyCode::Delete => changed = s.reset_selected(),
                     _ => {}
                 }
             }

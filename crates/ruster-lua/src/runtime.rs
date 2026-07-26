@@ -241,16 +241,21 @@ impl LuaRuntime {
                 .unwrap_or(def)
         };
         let bg = get("bg", d.bg);
+        let fg = get("fg", d.fg);
         let roles = ThemeColors {
             bg,
-            fg: get("fg", d.fg),
+            fg,
             gutter: get("gutter", d.gutter),
-            // Older theme files have no gutter_bg; default it to the page bg.
+            // Older theme files omit these; default fg-companions to fg/bg.
             gutter_bg: get("gutter_bg", bg),
             selection: get("selection", d.selection),
+            selection_fg: get("selection_fg", fg),
             cursor: get("cursor", d.cursor),
+            cursor_fg: get("cursor_fg", bg),
             divider: get("divider", d.divider),
+            statusline_fg: get("statusline_fg", fg),
             accent: get("accent", d.accent),
+            accent_fg: get("accent_fg", bg),
         };
         // A `palette` sub-table of named colors, or (for older files) the roles.
         let palette = match t.get::<Option<mlua::Table>>("palette").ok().flatten() {

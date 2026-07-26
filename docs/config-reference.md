@@ -28,7 +28,8 @@ still read for backward compatibility.
 
 `:settings` (or `:config`) opens an interactive, grouped editor. `j`/`k` move, `Tab`
 switches group, `Space`/`Enter` toggles or cycles, `h`/`l` adjust numbers/enums, `Enter`
-edits text fields, and **`:w` saves** to `config.lua`. The **theme**, **font**, and **shell**
+edits text fields, `dd`/`Delete` resets a row to its default, and **`:w` saves** to
+`config.lua`. The **theme**, **font**, and **shell**
 rows are pickers: they cycle through the themes in `themes/`, the fonts installed on your
 system, and the shells found on `$PATH` (bash, zsh, ksh, tcsh, fish, … / PowerShell, cmd).
 See [keybindings.md](keybindings.md#settings-page).
@@ -45,7 +46,10 @@ returning a palette you can edit or copy:
 ```lua
 -- themes/mytheme.lua
 return { bg = "#1e1e1e", fg = "#cdd6f4", gutter = "#6c7086", gutter_bg = "#1e1e1e",
-         selection = "#585b70", cursor = "#f5e0dc", divider = "#45475a", accent = "#f38ba8" }
+         selection = "#585b70", selection_fg = "#cdd6f4",
+         cursor = "#f5e0dc", cursor_fg = "#1e1e1e",
+         divider = "#45475a", statusline_fg = "#cdd6f4",
+         accent = "#f38ba8", accent_fg = "#1e1e1e" }
 ```
 
 GUI theme, colors, font, and size changes apply **live** when you save the Settings page
@@ -54,14 +58,20 @@ with `:w` — no restart needed.
 ### Recoloring individual elements
 
 Pick a theme, then recolor individual UI elements **from that theme's palette**. The
-**Colors** group in the Settings page has a row per element (background, foreground,
-gutter, **gutter background**, selection, cursor, **bars/divider**, accent); each is a picker that cycles the
-**selected theme's named palette** (e.g. Catppuccin Mocha's `mauve`, `blue`, `surface0`,
-…), shown by name with a swatch. `theme` means "leave at the theme's default". Changing
-the Theme row updates the color pickers live. These map to `ruster.config.colors.*`
-(stored as hex), and apply to the GUI live on `:w`.
+**Colors** group in the Settings page has a row per element — background, foreground,
+gutter, **gutter background**, selection + **selection text**, cursor + **cursor text**,
+**bars/divider** + **bar/divider text**, and accent + **accent text** (the `*_fg`
+companions color the glyphs drawn *over* each element: text on the selection, the glyph
+under the block cursor, the statusline text, and text on accent bars). Each is a picker
+that cycles the **selected theme's named palette** (e.g. Catppuccin Mocha's `mauve`,
+`blue`, `surface0`, …), shown by name with a swatch. `theme` means "leave at the theme's
+default". Changing the Theme row updates the color pickers live. These map to
+`ruster.config.colors.*` (stored as hex), and apply to the GUI live.
 
-Each `themes/<name>.lua` file carries both the 8 UI `roles` and a `palette` of named
+Press **`dd`** (or **`Delete`**) on any Settings row to reset it to its default; for color
+rows that means "use the theme's color".
+
+Each `themes/<name>.lua` file carries both the 12 UI `roles` and a `palette` of named
 colors to choose from.
 
 ## Settings
