@@ -9,7 +9,7 @@
 
 use ruster_render::{StyledLine, SyntaxStyle};
 
-use crate::theme::markup_style;
+use crate::theme::{markup_style, set_current_lang};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MarkupLang {
@@ -32,6 +32,11 @@ type Span = (usize, usize, SyntaxStyle);
 /// Highlight a whole document, one [`StyledLine`] per line (including a trailing
 /// empty line when the text ends in a newline, matching the tree-sitter path).
 pub fn highlight_markup(lang: MarkupLang, source: &str) -> Vec<StyledLine> {
+    // Resolve this pass's per-language color overrides.
+    set_current_lang(match lang {
+        MarkupLang::Markdown => "markdown",
+        MarkupLang::Org => "org",
+    });
     let mut in_code = false;
     source
         .split('\n')

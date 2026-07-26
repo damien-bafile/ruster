@@ -273,6 +273,9 @@ pub struct Config {
     pub terminal_default_mode: String,
     /// Show dotfiles in dired by default.
     pub dired_show_hidden: bool,
+    /// Per-language syntax color overrides: `lang key -> (group -> hex)`. Carried
+    /// separately from the flat schema (edited via the Settings syntax editor).
+    pub syntax_overrides: std::collections::HashMap<String, std::collections::HashMap<String, String>>,
 }
 
 /// The `(group, key)` address of a setting.
@@ -386,6 +389,9 @@ impl Config {
             terminal_scrollback: u("terminal", "scrollback", d.terminal_scrollback),
             terminal_default_mode: st("terminal", "default_mode").unwrap_or(d.terminal_default_mode),
             dired_show_hidden: bl("dired", "show_hidden", d.dired_show_hidden),
+            // Not part of the flat schema; carried separately and merged by the
+            // caller (runtime parse / Settings save).
+            syntax_overrides: std::collections::HashMap::new(),
             color_overrides: ColorOverrides {
                 bg: st("colors", "bg").unwrap_or_default(),
                 fg: st("colors", "fg").unwrap_or_default(),
@@ -440,6 +446,35 @@ impl Default for Config {
             terminal_scrollback: 10000,
             terminal_default_mode: "insert".into(),
             dired_show_hidden: false,
+            syntax_overrides: std::collections::HashMap::new(),
         }
     }
+}
+
+/// Serialize the per-language syntax overrides as a `ruster.config.syntax` Lua
+/// table (sorted for stable output; only non-empty languages emitted). Appended
+/// to the generated `config.lua` beside the grouped tables.
+pub fn syntax_to_lua(
+    map: &std::collections::HashMap<String, std::collections::HashMap<String, String>>,
+) -> String {
+    let mut langs: Vec<_> = map.iter().filter(|(_, groups)| !groups.is_empty()).collect();
+    if langs.is_empty() {
+        return String::new();
+    }
+    langs.sort_by(|a, b| a.0.cmp(b.0));
+    let mut s = String::from("\n-- Per-language syntax highlight colours (Settings ▸ Syntax).\nruster.config.syntax = {\n");
+    for (lang, groups) in langs {
+        let mut items: Vec<_> = groups.iter().filter(|(_, hex)| !hex.is_empty()).collect();
+        items.sort_by(|a, b| a.0.cmp(b.0));
+        if items.is_empty() {
+            continue;
+        }
+        s.push_str(&format!("  {lang} = {{ "));
+        for (group, hex) in items {
+            s.push_str(&format!("{group} = {hex:?}, "));
+        }
+        s.push_str("},\n");
+    }
+    s.push_str("}\n");
+    s
 }

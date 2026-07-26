@@ -74,6 +74,27 @@ rows that means "use the theme's color".
 Each `themes/<name>.lua` file carries both the 12 UI `roles` and a `palette` of named
 colors to choose from.
 
+### Syntax colors (per language)
+
+Below the **Colors** group, the Settings page has a **Syntax** section listing every
+language with syntax highlighting (rust, python, c, lua, json, toml, yaml, scheme, just,
+markdown, org). Press **Enter** on a language to expand it into a color picker per syntax
+group — code languages expose `keyword, string, comment, function, type, variable,
+constant, number, operator, builtin`; markup (markdown/org) exposes `heading, strong,
+emphasis, code, link, url, marker, quote, keyword, block, todo, done`. Each group row
+cycles the **selected theme's palette** (same picker as the Colors group) and shows
+`default` when left at the built-in color; `dd`/`Delete` resets a group. Overrides are
+**per language** and apply to open buffers on `:w` (no restart).
+
+They persist to a `ruster.config.syntax` table:
+
+```lua
+ruster.config.syntax = {
+  rust   = { keyword = "#cba6f7", string = "#a6e3a1" },
+  python = { comment = "#6c7086" },
+}
+```
+
 ## Settings
 
 Keys are addressed as `group.key`.

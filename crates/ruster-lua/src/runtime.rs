@@ -161,11 +161,14 @@ impl LuaRuntime {
             Some(t) => t,
             None => return (defaults, Vec::new()),
         };
+        let syntax = read_syntax_overrides(&cfg);
         let grouped = crate::schema::GROUPS
             .iter()
             .any(|(g, _)| cfg.get::<Option<mlua::Table>>(*g).ok().flatten().is_some());
         if !grouped {
-            return (config_flat(&cfg, &defaults), Vec::new());
+            let mut c = config_flat(&cfg, &defaults);
+            c.syntax_overrides = syntax;
+            return (c, Vec::new());
         }
 
         // Validated grouped read: every schema value defaults, then override with
@@ -199,7 +202,9 @@ impl LuaRuntime {
                 }),
             }
         }
-        (config_from_grouped(&vals, &defaults), errors)
+        let mut c = config_from_grouped(&vals, &defaults);
+        c.syntax_overrides = syntax;
+        (c, errors)
     }
 
     /// LSP server overrides from `ruster.lsp.servers[filetype] = { cmd, args }`.
@@ -342,6 +347,29 @@ fn config_from_grouped(
     Config::from_settings(&slice)
 }
 
+/// Read `ruster.config.syntax = { lang = { group = "#hex", … }, … }` into the
+/// `lang -> group -> hex` map. Only `#RRGGBB` string values are kept.
+fn read_syntax_overrides(
+    cfg: &mlua::Table,
+) -> std::collections::HashMap<String, std::collections::HashMap<String, String>> {
+    let mut out = std::collections::HashMap::new();
+    let Some(syntax) = cfg.get::<Option<mlua::Table>>("syntax").ok().flatten() else {
+        return out;
+    };
+    for (lang, groups) in syntax.pairs::<String, mlua::Table>().flatten() {
+        let mut m = std::collections::HashMap::new();
+        for (group, hex) in groups.pairs::<String, String>().flatten() {
+            if crate::schema::parse_hex_color(&hex).is_some() {
+                m.insert(group, hex);
+            }
+        }
+        if !m.is_empty() {
+            out.insert(lang, m);
+        }
+    }
+    out
+}
+
 /// Read one setting from a group table by its kind. `Ok(None)` = absent (use
 /// default); `Err(got)` = present but wrong type, with a display of the value.
 fn read_setting(
@@ -424,5 +452,34 @@ mod config_tests {
         assert!(errors.is_empty());
         assert_eq!(cfg.tabstop, 3);
         assert!(cfg.number);
+    }
+
+    #[test]
+    fn syntax_overrides_are_parsed() {
+        let rt = rt_with(
+            r##"
+            ruster.config.general = { tabstop = 4 }
+            ruster.config.syntax = {
+                rust = { keyword = "#ff00ff", string = "not-a-color" },
+                python = { comment = "#123456" },
+            }
+        "##,
+        );
+        let (cfg, _errors) = rt.config_validated();
+        assert_eq!(cfg.syntax_overrides["rust"].get("keyword").map(String::as_str), Some("#ff00ff"));
+        // Non-hex values are dropped.
+        assert!(!cfg.syntax_overrides["rust"].contains_key("string"));
+        assert_eq!(cfg.syntax_overrides["python"].get("comment").map(String::as_str), Some("#123456"));
+    }
+
+    #[test]
+    fn syntax_to_lua_round_trips_through_the_parser() {
+        use std::collections::HashMap;
+        let mut map: HashMap<String, HashMap<String, String>> = HashMap::new();
+        map.insert("rust".into(), HashMap::from([("keyword".to_string(), "#abcdef".to_string())]));
+        let lua = crate::config::syntax_to_lua(&map);
+        let rt = rt_with(&lua);
+        let (cfg, _) = rt.config_validated();
+        assert_eq!(cfg.syntax_overrides["rust"].get("keyword").map(String::as_str), Some("#abcdef"));
     }
 }
