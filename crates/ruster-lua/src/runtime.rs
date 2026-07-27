@@ -263,6 +263,7 @@ impl LuaRuntime {
             accent_fg: get("accent_fg", bg),
             whichkey_bg: get("whichkey_bg", d.divider),
             whichkey_fg: get("whichkey_fg", fg),
+            whichkey_key: get("whichkey_key", d.accent),
             cmdline_bg: get("cmdline_bg", d.divider),
             cmdline_fg: get("cmdline_fg", fg),
             cmdline_accent: get("cmdline_accent", d.accent),

@@ -277,6 +277,7 @@ impl Renderer for RaylibRenderer {
         let statusline_fg = to_raylib(theme.statusline_fg, default_color);
         let whichkey_bg = to_raylib(theme.whichkey_bg, divider);
         let whichkey_fg = to_raylib(theme.whichkey_fg, default_color);
+        let whichkey_key = to_raylib(theme.whichkey_key, accent);
         let cmdline_bg = to_raylib(theme.cmdline_bg, divider);
         let cmdline_fg = to_raylib(theme.cmdline_fg, default_color);
         let cmdline_accent = to_raylib(theme.cmdline_accent, accent);
@@ -784,7 +785,9 @@ impl Renderer for RaylibRenderer {
             s.draw_rectangle(0, panel_top, screen_w, screen_h - panel_top, whichkey_bg);
             for (i, entry) in wk.rows.iter().enumerate() {
                 let ry = panel_top + i as i32 * line_h;
-                s.draw_text_ex(font, &format!("   {}", entry), Vector2::new(pad_x as f32, ry as f32), font_size as f32, 1.0, whichkey_fg);
+                s.draw_text_ex(font, &format!("   {}", entry.key), Vector2::new(pad_x as f32, ry as f32), font_size as f32, 1.0, whichkey_key);
+                let key_w = measure(&format!("   {}", entry.key)) as i32;
+                s.draw_text_ex(font, &entry.desc, Vector2::new((pad_x + key_w) as f32, ry as f32), font_size as f32, 1.0, whichkey_fg);
             }
         }
 

@@ -894,8 +894,13 @@ impl Widget for WhichKeyWidget {
         for (row, entry) in self.view.rows.iter().enumerate() {
             let y = area.y + row as u16;
             if y >= area.bottom() { break; }
-            for (i, ch) in format!("  {}", entry).chars().enumerate() {
+            let prefix = format!("  {}", entry.key);
+            for (i, ch) in prefix.chars().enumerate() {
                 put(buf, area.x + i as u16, y, ch, self.fg, self.bg);
+            }
+            let desc_x = area.x + prefix.len() as u16 + 2;
+            for (i, ch) in entry.desc.chars().enumerate() {
+                put(buf, desc_x + i as u16, y, ch, self.fg, self.bg);
             }
         }
     }

@@ -27,6 +27,8 @@ pub struct Theme {
     /// Which-key panel background (defaults to `cmdline_bg`).
     pub whichkey_bg: Color,
     pub whichkey_fg: Color,
+    /// Key-letter highlight in which-key / completions (defaults to `accent`).
+    pub whichkey_key: Color,
     /// Cmdline prompt bar background (defaults to `divider`).
     pub cmdline_bg: Color,
     pub cmdline_fg: Color,
@@ -51,6 +53,7 @@ impl Default for Theme {
             accent_fg: Color::Rgb(30, 30, 30),
             whichkey_bg: Color::Default,
             whichkey_fg: Color::Default,
+            whichkey_key: Color::Default,
             cmdline_bg: Color::Default,
             cmdline_fg: Color::Default,
             cmdline_accent: Color::Default,
@@ -60,6 +63,7 @@ impl Default for Theme {
         Theme {
             whichkey_bg: default.divider,
             whichkey_fg: default.fg,
+            whichkey_key: default.accent,
             cmdline_bg: default.divider,
             cmdline_fg: default.fg,
             cmdline_accent: default.accent,
@@ -357,13 +361,19 @@ pub struct PickerView {
     pub preview: Vec<StyledLine>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct WhichKeyEntry {
+    pub key: String,
+    pub desc: String,
+}
+
 /// A which-key hint panel that slides up from the bottom mini-buffer. `anim` is
 /// the slide progress in `0.0..=1.0` (0 = fully hidden below the screen edge,
 /// 1 = fully visible).
 #[derive(Debug, Clone, PartialEq)]
 pub struct WhichKeyView {
     pub title: String,
-    pub rows: Vec<String>,
+    pub rows: Vec<WhichKeyEntry>,
     pub anim: f32,
 }
 

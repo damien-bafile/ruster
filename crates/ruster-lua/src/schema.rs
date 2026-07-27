@@ -261,6 +261,7 @@ pub fn schema() -> Vec<SettingSpec> {
     add("colors", "accent_fg", "Accent text", Text, t(""), "Override text drawn on accent bars");
     add("colors", "whichkey_bg", "WhichKey background", Text, t(""), "Which-key panel background (empty = cmdline bg)");
     add("colors", "whichkey_fg", "WhichKey foreground", Text, t(""), "Which-key panel text (empty = cmdline fg)");
+    add("colors", "whichkey_key", "Which-key key", Text, t(""), "Key-letter highlight in which-key / completions");
     add("colors", "cmdline_bg", "Cmdline background", Text, t(""), "Cmdline prompt bar background (empty = divider)");
     add("colors", "cmdline_fg", "Cmdline foreground", Text, t(""), "Cmdline prompt text (empty = theme fg)");
     add("colors", "cmdline_accent", "Cmdline accent", Text, t(""), "Cmdline `:` prompt color (empty = accent)");

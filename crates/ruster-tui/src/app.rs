@@ -17,7 +17,7 @@ use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 use ruster_lua::{config::Config, LuaAction, LuaRuntime};
 use ruster_render::{
     CursorKind, FrameState, Rect as RRect, Renderer, SelectionView, StatuslineView, StyledLine,
-    WelcomeView, WhichKeyView, WindowView,
+    WelcomeView, WhichKeyEntry, WhichKeyView, WindowView,
 };
 use ruster_syntax::SyntaxEngine;
 use ruster_lsp::{LspManager, LspPosition, ServerMessage};
@@ -247,6 +247,7 @@ fn resolve_theme_colors(
     set(&ov.accent_fg, &mut colors.accent_fg);
     set(&ov.whichkey_bg, &mut colors.whichkey_bg);
     set(&ov.whichkey_fg, &mut colors.whichkey_fg);
+    set(&ov.whichkey_key, &mut colors.whichkey_key);
     set(&ov.cmdline_bg, &mut colors.cmdline_bg);
     set(&ov.cmdline_fg, &mut colors.cmdline_fg);
     set(&ov.cmdline_accent, &mut colors.cmdline_accent);
@@ -770,7 +771,7 @@ fn leader_children(seq: &[char]) -> Option<&'static [(char, LeaderNode)]> {
 
 /// Build the which-key content (title, formatted rows) for the current pending
 /// leader sequence, for the bottom sliding panel.
-fn leader_whichkey(seq: &[char]) -> Option<(String, Vec<String>)> {
+fn leader_whichkey(seq: &[char]) -> Option<(String, Vec<WhichKeyEntry>)> {
     let children = leader_children(seq)?;
     let mut title = String::from("SPC");
     for c in seq {
@@ -784,23 +785,23 @@ fn leader_whichkey(seq: &[char]) -> Option<(String, Vec<String>)> {
                 LeaderNode::Group(d, _) => format!("+{}", d),
                 LeaderNode::Action(d, _) => d.to_string(),
             };
-            format!("{}  {}", k, desc)
+            WhichKeyEntry { key: k.to_string(), desc }
         })
         .collect();
     Some((title, rows))
 }
 
 /// The which-key content for the `g` menu (LazyVim-style goto prefix).
-fn g_whichkey() -> (String, Vec<String>) {
+fn g_whichkey() -> (String, Vec<WhichKeyEntry>) {
     (
         "g".to_string(),
         vec![
-            "d  go to definition".to_string(),
-            "r  references".to_string(),
-            "h  hover".to_string(),
-            "g  top of buffer".to_string(),
-            "-  older change (undo-tree time)".to_string(),
-            "+  newer change (undo-tree time)".to_string(),
+            WhichKeyEntry { key: "d".into(), desc: "go to definition".into() },
+            WhichKeyEntry { key: "r".into(), desc: "references".into() },
+            WhichKeyEntry { key: "h".into(), desc: "hover".into() },
+            WhichKeyEntry { key: "g".into(), desc: "top of buffer".into() },
+            WhichKeyEntry { key: "-".into(), desc: "older change (undo-tree time)".into() },
+            WhichKeyEntry { key: "+".into(), desc: "newer change (undo-tree time)".into() },
         ],
     )
 }
@@ -869,7 +870,7 @@ pub struct App {
     /// Slide progress (0..1) of the bottom which-key panel, and the last content
     /// shown (kept while it slides back down). `anim_clock` measures frame dt.
     whichkey_anim: f32,
-    whichkey_cache: Option<(String, Vec<String>)>,
+    whichkey_cache: Option<(String, Vec<WhichKeyEntry>)>,
     anim_clock: std::time::Instant,
     /// When the current leader sequence started, so the which-key panel only
     /// pops after `Config.timeoutlen` (unless already visible).
@@ -1325,6 +1326,7 @@ impl App {
                 accent_fg: col(c.colors.accent_fg),
                 whichkey_bg: col(c.colors.whichkey_bg),
                 whichkey_fg: col(c.colors.whichkey_fg),
+                whichkey_key: col(c.colors.whichkey_key),
                 cmdline_bg: col(c.colors.cmdline_bg),
                 cmdline_fg: col(c.colors.cmdline_fg),
                 cmdline_accent: col(c.colors.cmdline_accent),
@@ -5505,8 +5507,8 @@ mod tests {
         ));
         let (title, rows) = leader_whichkey(&['c']).expect("code panel");
         assert_eq!(title, "SPC c");
-        assert!(rows.iter().any(|r| r.contains("hover")));
-        assert!(rows.iter().any(|r| r.contains("references")));
+        assert!(rows.iter().any(|r| r.desc.contains("hover")));
+        assert!(rows.iter().any(|r| r.desc.contains("references")));
     }
 
     #[test]
@@ -5590,13 +5592,13 @@ mod tests {
     fn leader_whichkey_shows_groups() {
         let (title, rows) = leader_whichkey(&[]).expect("root panel");
         assert_eq!(title, "SPC");
-        assert!(rows.iter().any(|r| r.contains("+windows")));
-        assert!(rows.iter().any(|r| r.contains("+quit")));
+        assert!(rows.iter().any(|r| r.desc.contains("+windows")));
+        assert!(rows.iter().any(|r| r.desc.contains("+quit")));
 
         let (wtitle, wrows) = leader_whichkey(&['w']).expect("window panel");
         assert_eq!(wtitle, "SPC w");
-        assert!(wrows.iter().any(|r| r.starts_with("h ")));
-        assert!(wrows.iter().any(|r| r.contains("focus left")));
+        assert!(wrows.iter().any(|r| r.key == "h"));
+        assert!(wrows.iter().any(|r| r.desc.contains("focus left")));
     }
 
     #[test]
