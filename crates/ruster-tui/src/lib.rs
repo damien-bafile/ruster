@@ -18,6 +18,7 @@ mod tests {
         let mut r = crate::renderer::TuiRenderer::dummy();
         let view = WindowView {
             rect: Rect::new(0, 0, 80, 24),
+            header: "f".to_string(),
             lines: vec![StyledLine { text: "hi".to_string(), highlights: vec![] }],
             cursor: (0, 1),
             extra_cursors: Vec::new(),
@@ -37,7 +38,7 @@ mod tests {
             selection: None,
             terminal: None,
         };
-        let state = FrameState { windows: vec![view], cmdline: None, message: None, picker: None, whichkey: None, hover: None, settings: None };
+        let state = FrameState { windows: vec![view], cmdline: None, message: None, picker: None, whichkey: None, hover: None, settings: None, welcome: None };
         // Dummy renderer has no terminal; this exercises the type wiring.
         r.render_frame(&state);
     }

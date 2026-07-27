@@ -4,7 +4,7 @@
 //! and picker streams. No tokio — plain threads + channels.
 
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
@@ -187,6 +187,92 @@ fn severity_from_message(msg: &str) -> u8 {
     }
 }
 
+/// Whether a test passed, failed, or was ignored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestOutcome {
+    Pass,
+    Fail,
+    Ignored,
+}
+
+/// One test's result, with the failure location when the harness reported a panic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestResult {
+    pub name: String,
+    pub outcome: TestOutcome,
+    /// `(path, line, col)` of the panic for a failed test, resolved against root.
+    pub location: Option<(PathBuf, usize, usize)>,
+}
+
+/// The parsed outcome of a test run.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TestRun {
+    pub results: Vec<TestResult>,
+    pub passed: usize,
+    pub failed: usize,
+}
+
+/// Parse `cargo test` / libtest textual output into per-test results. Reads the
+/// `test NAME ... ok|FAILED|ignored` lines and attaches failure locations from
+/// the `thread 'NAME' panicked at file:line:col` lines (new and old formats).
+pub fn parse_test_results(output: &str, root: &Path) -> TestRun {
+    use std::collections::HashMap;
+    let mut results: Vec<TestResult> = Vec::new();
+    let mut locs: HashMap<String, (PathBuf, usize, usize)> = HashMap::new();
+
+    for raw in output.lines() {
+        let line = raw.trim();
+        // `test NAME ... ok` / `FAILED` / `ignored`.
+        if let Some(rest) = line.strip_prefix("test ") {
+            if let Some((name, outcome)) = rest.rsplit_once(" ... ") {
+                let outcome = match outcome.trim() {
+                    "ok" => Some(TestOutcome::Pass),
+                    "FAILED" => Some(TestOutcome::Fail),
+                    s if s.starts_with("ignored") => Some(TestOutcome::Ignored),
+                    _ => None,
+                };
+                if let Some(o) = outcome {
+                    results.push(TestResult { name: name.trim().to_string(), outcome: o, location: None });
+                    continue;
+                }
+            }
+        }
+        // `thread 'NAME' panicked at file:line:col` → failure location.
+        if let Some((name, path, l, c)) = parse_panic(line) {
+            let p = Path::new(path);
+            let path = if p.is_absolute() { p.to_path_buf() } else { root.join(p) };
+            locs.insert(name, (path, l, c));
+        }
+    }
+
+    for r in &mut results {
+        if r.outcome == TestOutcome::Fail {
+            r.location = locs.get(&r.name).cloned();
+        }
+    }
+    let passed = results.iter().filter(|r| r.outcome == TestOutcome::Pass).count();
+    let failed = results.iter().filter(|r| r.outcome == TestOutcome::Fail).count();
+    TestRun { results, passed, failed }
+}
+
+/// Parse a libtest panic line into `(test name, path, line, col)`. Handles the
+/// new `thread 'N' panicked at path:line:col:` and old
+/// `thread 'N' panicked at 'msg', path:line:col` formats.
+fn parse_panic(line: &str) -> Option<(String, &str, usize, usize)> {
+    let after = line.strip_prefix("thread '")?;
+    let (name, rest) = after.split_once("' panicked at ")?;
+    let loc = if let Some(stripped) = rest.strip_prefix('\'') {
+        // old format: `'msg', path:line:col`
+        let _ = stripped;
+        rest.split_once("', ").map(|(_, l)| l)?
+    } else {
+        rest
+    };
+    let loc = loc.trim_end_matches(':').trim();
+    let (path, l, c) = split_path_line_col(loc)?;
+    Some((name.to_string(), path, l, c))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,6 +323,42 @@ error: aborting due to previous error";
         // Colons + numbers but no path-like field → ignored.
         let items = parse_build_diagnostics("note: run with 3:2 for details", Path::new("/p"));
         assert!(items.is_empty());
+    }
+
+    #[test]
+    fn parses_libtest_results_with_failure_location() {
+        let out = "\
+running 3 tests
+test tests::alpha ... ok
+test tests::gamma ... ignored
+test tests::beta ... FAILED
+
+failures:
+
+---- tests::beta stdout ----
+thread 'tests::beta' panicked at src/lib.rs:42:9:
+assertion `left == right` failed
+
+test result: FAILED. 1 passed; 1 failed; 1 ignored; 0 measured; 0 filtered out;";
+        let run = parse_test_results(out, Path::new("/proj"));
+        assert_eq!((run.passed, run.failed), (1, 1));
+        assert_eq!(run.results.len(), 3);
+        let beta = run.results.iter().find(|r| r.name == "tests::beta").unwrap();
+        assert_eq!(beta.outcome, TestOutcome::Fail);
+        assert_eq!(beta.location, Some((PathBuf::from("/proj/src/lib.rs"), 42, 9)));
+        let alpha = run.results.iter().find(|r| r.name == "tests::alpha").unwrap();
+        assert_eq!(alpha.outcome, TestOutcome::Pass);
+        assert!(alpha.location.is_none());
+    }
+
+    #[test]
+    fn parses_old_style_panic_location() {
+        let out = "\
+test t::x ... FAILED
+thread 't::x' panicked at 'boom', src/x.rs:7:1";
+        let run = parse_test_results(out, Path::new("/r"));
+        let x = &run.results[0];
+        assert_eq!(x.location, Some((PathBuf::from("/r/src/x.rs"), 7, 1)));
     }
 
     #[test]

@@ -17,7 +17,7 @@ use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 use ruster_lua::{config::Config, LuaAction, LuaRuntime};
 use ruster_render::{
     CursorKind, FrameState, Rect as RRect, Renderer, SelectionView, StatuslineView, StyledLine,
-    WhichKeyView, WindowView,
+    WelcomeView, WhichKeyView, WindowView,
 };
 use ruster_syntax::SyntaxEngine;
 use ruster_lsp::{LspManager, LspPosition, ServerMessage};
@@ -466,6 +466,8 @@ enum CmdAction {
     Settings,
     /// Run the project's build command (`:build` / `:make`).
     Build,
+    /// Run the project's test command (`:test`).
+    Test,
     /// Open the quickfix list as a picker (`:copen`).
     QuickfixOpen,
     /// Step to the next/prev quickfix entry and jump (`:cnext`/`:cprev`).
@@ -589,6 +591,7 @@ enum LeaderAction {
     ToggleRelative,
     Grep,
     Build,
+    Test,
 }
 
 enum LeaderNode {
@@ -622,6 +625,7 @@ static QUIT_GROUP: &[(char, LeaderNode)] = &[
 
 static CODE_GROUP: &[(char, LeaderNode)] = &[
     ('b', LeaderNode::Action("build", LeaderAction::Build)),
+    ('t', LeaderNode::Action("test", LeaderAction::Test)),
     ('k', LeaderNode::Action("hover", LeaderAction::Hover)),
     ('g', LeaderNode::Action("go to definition", LeaderAction::Definition)),
     ('r', LeaderNode::Action("references", LeaderAction::References)),
@@ -944,14 +948,24 @@ pub struct App {
     bracket_pending: Option<char>,
     /// The shared quickfix list (`:copen`/`:cnext`/`:cprev`, `]q`/`[q`).
     quickfix: QuickfixList,
-    /// A running build/test/task command's output stream, drained per frame.
-    build_rx: Option<std::sync::mpsc::Receiver<crate::runner::RunnerMsg>>,
-    /// The `*build*` results buffer the current run streams into.
-    build_buf: Option<BufferId>,
-    /// The project root the current run was launched from (to resolve diagnostic
-    /// paths) and the accumulated output for post-run parsing.
-    build_root: PathBuf,
-    build_output: String,
+    /// A running build/test command's output stream, drained per frame.
+    runner_rx: Option<std::sync::mpsc::Receiver<crate::runner::RunnerMsg>>,
+    /// The results buffer the current run streams into.
+    runner_buf: Option<BufferId>,
+    /// The project root the run was launched from (to resolve diagnostic paths),
+    /// the accumulated output for post-run parsing, and what kind of run it is.
+    runner_root: PathBuf,
+    runner_output: String,
+    runner_kind: RunnerKind,
+    /// Per-file gutter signs from the last test run (✓/✗), merged with diagnostics.
+    result_signs: std::collections::HashMap<PathBuf, ruster_render::SignsView>,
+}
+
+/// What a background run is, so its output is parsed appropriately on completion.
+#[derive(Clone, Copy, PartialEq)]
+enum RunnerKind {
+    Build,
+    Test,
 }
 
 /// The active editing paradigm. Neovim is modal; Emacs is modeless.
@@ -1261,10 +1275,12 @@ impl App {
             g_replaying: false,
             bracket_pending: None,
             quickfix: QuickfixList::default(),
-            build_rx: None,
-            build_buf: None,
-            build_root: PathBuf::new(),
-            build_output: String::new(),
+            runner_rx: None,
+            runner_buf: None,
+            runner_root: PathBuf::new(),
+            runner_output: String::new(),
+            runner_kind: RunnerKind::Build,
+            result_signs: std::collections::HashMap::new(),
         }
     }
 
@@ -2652,7 +2668,7 @@ impl App {
                     )
                 };
                 // Keep the cursor visible within this window's text area.
-                let buf_h = rect.height.saturating_sub(1) as usize;
+                let buf_h = rect.height.saturating_sub(2) as usize;
                 if buf_h > 0 {
                     if cline < scroll {
                         scroll = cline;
@@ -2686,7 +2702,7 @@ impl App {
                 } else {
                     String::new()
                 };
-                let mut center = name;
+                let mut center = name.clone();
                 let mut right = format!("{}%  {},{}", pct, cline + 1, ccol + 1);
                 if is_active {
                     if !lua_left.is_empty() {
@@ -2727,14 +2743,32 @@ impl App {
                 } else {
                     None
                 };
-                // Diagnostics render as a sign column (not on terminals).
+                // Diagnostics render as a sign column (not on terminals); test
+                // results (✓/✗) from the last run are merged in by file path.
                 let signs = if terminal.is_some() {
                     ruster_render::SignsView::default()
                 } else {
-                    self.diagnostics.get(&buf_id).map(|d| diagnostics_to_signs(d)).unwrap_or_default()
+                    let mut s = self
+                        .diagnostics
+                        .get(&buf_id)
+                        .map(|d| diagnostics_to_signs(d))
+                        .unwrap_or_default();
+                    if !self.result_signs.is_empty() {
+                        if let Some(p) =
+                            self.ws.borrow().buffers.get(buf_id).and_then(|d| d.file_path.clone())
+                        {
+                            let key = p.canonicalize().unwrap_or(p);
+                            if let Some(rs) = self.result_signs.get(&key) {
+                                s.width = s.width.max(rs.width);
+                                s.signs.extend(rs.signs.iter().cloned());
+                            }
+                        }
+                    }
+                    s
                 };
                 views.push(WindowView {
                     rect: RRect::new(rect.x, rect.y, rect.width, rect.height),
+                    header: name.clone(),
                     lines,
                     cursor: (cline as u16, ccol as u16),
                     extra_cursors,
@@ -2803,6 +2837,28 @@ impl App {
             None
         };
 
+        // Show the welcome / "Ready Room" screen when no named file is open.
+        let has_file = self.ws.borrow().active_doc().file_path.is_some();
+        let welcome_view = if !has_file {
+            Some(WelcomeView {
+                visible: true,
+                recent_projects: Vec::new(),
+                version: option_env!("CARGO_PKG_VERSION")
+                    .unwrap_or("0.1.0")
+                    .to_string(),
+                lsp_status: "● Ready".into(),
+                edit_mode: match mode {
+                    VimMode::Insert => "Insert",
+                    VimMode::VisualChar | VimMode::VisualLine | VimMode::VisualBlock => "Visual",
+                    VimMode::Cmdline => "Cmdline",
+                    _ => "Normal",
+                }
+                .into(),
+            })
+        } else {
+            None
+        };
+
         let state = FrameState {
             windows: views,
             cmdline: cmdline.as_deref(),
@@ -2811,6 +2867,7 @@ impl App {
             whichkey,
             hover: self.hover.clone(),
             settings: self.settings.as_ref().map(|s| s.view()),
+            welcome: welcome_view,
         };
         self.renderer.render_frame(&state);
     }
@@ -2845,6 +2902,7 @@ impl App {
             "config-errors" | "configerrors" => Ok(CmdAction::ConfigErrors),
             "settings" | "config" => Ok(CmdAction::Settings),
             "build" | "make" => Ok(CmdAction::Build),
+            "test" => Ok(CmdAction::Test),
             "copen" | "cope" | "cwindow" | "cw" => Ok(CmdAction::QuickfixOpen),
             "cnext" | "cn" => Ok(CmdAction::QuickfixNext),
             "cprev" | "cp" | "cN" | "cprevious" => Ok(CmdAction::QuickfixPrev),
@@ -2957,6 +3015,7 @@ impl App {
             CmdAction::ConfigErrors => self.open_config_errors(),
             CmdAction::Settings => self.open_settings(),
             CmdAction::Build => self.run_build(),
+            CmdAction::Test => self.run_test(),
             CmdAction::QuickfixOpen => self.open_quickfix(),
             CmdAction::QuickfixNext => self.quickfix_next(),
             CmdAction::QuickfixPrev => self.quickfix_prev(),
@@ -4092,6 +4151,7 @@ impl App {
                 self.message = Some("Type a pattern and press Enter".to_string());
             }
             LeaderAction::Build => self.run_build(),
+            LeaderAction::Test => self.run_test(),
         }
     }
 
@@ -4288,67 +4348,87 @@ impl App {
     }
 
     /// Ensure the `*build*` results buffer exists, returning its id.
-    fn ensure_build_buffer(&mut self) -> BufferId {
-        if let Some(id) = self.build_buf {
+    fn ensure_runner_buffer(&mut self, name: &str) -> BufferId {
+        if let Some(id) = self.runner_buf {
             if self.ws.borrow().buffers.get(id).is_some() {
                 return id;
             }
         }
-        let id = self.ws.borrow_mut().buffers.create_special(SpecialKind::Build, "*build*");
-        self.build_buf = Some(id);
+        let id = self.ws.borrow_mut().buffers.create_special(SpecialKind::Build, name);
+        self.runner_buf = Some(id);
         id
     }
 
-    /// `:build` / `SPC c b` — run the project's build command on a background
-    /// thread, streaming output into `*build*`; diagnostics feed the quickfix
-    /// list when it finishes.
+    /// `:build` / `SPC c b` — run the project's build command.
     fn run_build(&mut self) {
-        if self.build_rx.is_some() {
-            self.message = Some("A build is already running".to_string());
-            return;
-        }
-        // Project root from the active file, falling back to the cwd.
-        let root = self
-            .ws
+        let root = self.project_root_for_run();
+        let cmd = ruster_project::ProjectConfig::load(&root).build_command(&root);
+        self.start_run(RunnerKind::Build, cmd, root);
+    }
+
+    /// `:test` / `SPC c t` — run the project's test command.
+    fn run_test(&mut self) {
+        let root = self.project_root_for_run();
+        let cmd = ruster_project::ProjectConfig::load(&root).test_command(&root);
+        self.start_run(RunnerKind::Test, cmd, root);
+    }
+
+    /// The project root for a run: the active file's root, else the cwd.
+    fn project_root_for_run(&self) -> PathBuf {
+        self.ws
             .borrow()
             .active_doc()
             .file_path
             .clone()
             .and_then(|p| ruster_project::project_root(&p))
             .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_else(|| PathBuf::from("."));
-        let cmd = ruster_project::ProjectConfig::load(&root).build_command(&root);
-        if cmd.is_empty() {
-            self.message = Some("No build command for this project (set [build].command in ruster.toml)".to_string());
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    /// Spawn a background run, streaming into a results buffer; the per-frame
+    /// drain parses its output on completion.
+    fn start_run(&mut self, kind: RunnerKind, cmd: String, root: PathBuf) {
+        let (buf_name, label) = match kind {
+            RunnerKind::Build => ("*build*", "build"),
+            RunnerKind::Test => ("*test*", "test"),
+        };
+        if self.runner_rx.is_some() {
+            self.message = Some(format!("A {label} is already running"));
             return;
         }
-        self.build_output = format!("$ {cmd}\n");
-        self.build_root = root.clone();
-        let id = self.ensure_build_buffer();
+        if cmd.is_empty() {
+            self.message = Some(format!("No {label} command for this project (set it in ruster.toml)"));
+            return;
+        }
+        self.runner_kind = kind;
+        self.runner_output = format!("$ {cmd}\n");
+        self.runner_root = root.clone();
+        let id = self.ensure_runner_buffer(buf_name);
         {
             let mut w = self.ws.borrow_mut();
             if let Some(doc) = w.buffers.get_mut(id) {
-                doc.buffer = Buffer::from_str(&self.build_output);
+                doc.buffer = Buffer::from_str(&self.runner_output);
             }
             w.set_active_buffer(id);
         }
-        self.build_rx = Some(crate::runner::spawn_shell_command(&cmd, &root));
-        self.message = Some(format!("build: {cmd}"));
+        self.runner_rx = Some(crate::runner::spawn_shell_command(&cmd, &root));
+        self.message = Some(format!("{label}: {cmd}"));
     }
 
-    /// Drain the running build's output into `*build*`; on completion, parse the
-    /// captured output into the quickfix list. Called once per frame.
+    /// Drain the running command's output into its results buffer; on completion
+    /// parse it (build → diagnostics; test → results + ✓/✗ signs) into the
+    /// quickfix list. Called once per frame.
     fn drain_build_runner(&mut self) {
         use crate::runner::RunnerMsg;
         use std::sync::mpsc::TryRecvError;
-        let Some(rx) = self.build_rx.as_ref() else { return };
+        let Some(rx) = self.runner_rx.as_ref() else { return };
         let mut appended = false;
         let mut done: Option<Option<i32>> = None;
         loop {
             match rx.try_recv() {
                 Ok(RunnerMsg::Line(l)) => {
-                    self.build_output.push_str(&l);
-                    self.build_output.push('\n');
+                    self.runner_output.push_str(&l);
+                    self.runner_output.push('\n');
                     appended = true;
                 }
                 Ok(RunnerMsg::Done(code)) => {
@@ -4363,26 +4443,65 @@ impl App {
             }
         }
         if appended {
-            if let Some(id) = self.build_buf {
+            if let Some(id) = self.runner_buf {
                 let mut w = self.ws.borrow_mut();
                 if let Some(doc) = w.buffers.get_mut(id) {
-                    doc.buffer = Buffer::from_str(&self.build_output);
+                    doc.buffer = Buffer::from_str(&self.runner_output);
                 }
             }
         }
         if let Some(code) = done {
-            self.build_rx = None;
-            let items = crate::runner::parse_build_diagnostics(&self.build_output, &self.build_root);
-            let n = items.len();
-            self.quickfix = QuickfixList::new(items);
-            let status = match code {
-                Some(0) => "ok".to_string(),
-                Some(c) => format!("exit {c}"),
-                None => "failed to run".to_string(),
-            };
-            let hint = if n > 0 { "  (:copen)" } else { "" };
-            self.message = Some(format!("build {status} — {n} problem(s){hint}"));
+            self.runner_rx = None;
+            match self.runner_kind {
+                RunnerKind::Build => self.finish_build(code),
+                RunnerKind::Test => self.finish_test(code),
+            }
         }
+    }
+
+    fn finish_build(&mut self, code: Option<i32>) {
+        let items = crate::runner::parse_build_diagnostics(&self.runner_output, &self.runner_root);
+        let n = items.len();
+        self.quickfix = QuickfixList::new(items);
+        let status = match code {
+            Some(0) => "ok".to_string(),
+            Some(c) => format!("exit {c}"),
+            None => "failed to run".to_string(),
+        };
+        let hint = if n > 0 { "  (:copen)" } else { "" };
+        self.message = Some(format!("build {status} — {n} problem(s){hint}"));
+    }
+
+    fn finish_test(&mut self, code: Option<i32>) {
+        let run = crate::runner::parse_test_results(&self.runner_output, &self.runner_root);
+        // Failures feed the quickfix list and place ✗ signs; passes tally only.
+        let mut items: Vec<QuickfixItem> = Vec::new();
+        self.result_signs.clear();
+        for t in &run.results {
+            if t.outcome != crate::runner::TestOutcome::Fail {
+                continue;
+            }
+            let Some((path, line, col)) = t.location.clone() else { continue };
+            items.push(QuickfixItem {
+                path: path.clone(),
+                line,
+                col,
+                message: format!("test failed: {}", t.name),
+                severity: 1,
+            });
+            // Key signs by the canonical path so they match open buffers.
+            let key = path.canonicalize().unwrap_or(path);
+            let entry = self.result_signs.entry(key).or_default();
+            entry.width = 1;
+            entry.signs.push((line.saturating_sub(1) as u16, '✗', ruster_render::Color::Rgb(243, 139, 168)));
+        }
+        self.quickfix = QuickfixList::new(items);
+        let status = if run.failed == 0 && code == Some(0) { "ok" } else { "FAILED" };
+        let hint = if run.failed > 0 { "  (:copen)" } else { "" };
+        self.message = Some(format!(
+            "test {status} — {} passed, {} failed{hint}",
+            run.passed, run.failed
+        ));
     }
 
     /// Interpret the key following a `Ctrl-w` prefix.
@@ -5703,10 +5822,15 @@ mod tests {
     }
 
     #[test]
-    fn build_command_parses() {
+    fn build_and_test_commands_parse() {
         let a = App::new("x".into(), PathBuf::from("f.txt"));
         assert!(matches!(a.parse_cmdline("build"), Ok(CmdAction::Build)));
         assert!(matches!(a.parse_cmdline("make"), Ok(CmdAction::Build)));
+        assert!(matches!(a.parse_cmdline("test"), Ok(CmdAction::Test)));
+        assert!(matches!(
+            leader_resolve(&['c', 't']),
+            LeaderResolve::Action(LeaderAction::Test)
+        ));
     }
 
     #[test]
