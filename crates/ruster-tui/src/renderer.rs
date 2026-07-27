@@ -59,11 +59,24 @@ impl Renderer for TuiRenderer {
             let divider_color = ruster_color_to_ratatui(&self.theme.divider);
             let accent = ruster_color_to_ratatui(&self.theme.accent);
 
+            // Whichkey height (computed once so statuslines can sit above it).
+            let wk_visible = state.whichkey.as_ref().map(|wk| {
+                let full = wk.rows.len() as u16;
+                ((full as f32) * wk.anim).round() as u16
+            }).unwrap_or(0);
+
             for view in &state.windows {
                 let buf_h = view.rect.height.saturating_sub(2);
                 let hdr_area = Rect::new(view.rect.x, view.rect.y, view.rect.width, 1);
                 let buf_area = Rect::new(view.rect.x, view.rect.y + 1, view.rect.width, buf_h);
-                let sl_area = Rect::new(view.rect.x, view.rect.y + 1 + buf_h, view.rect.width, 1);
+                let mut sl_area = Rect::new(view.rect.x, view.rect.y + 1 + buf_h, view.rect.width, 1);
+
+                // Lift this window's statusline above the whichkey so it stays
+                // visible (the statusline slides up with the whichkey panel).
+                if wk_visible > 0 && sl_area.bottom() > area.height.saturating_sub(wk_visible) {
+                    let lift = sl_area.bottom().saturating_sub(area.height.saturating_sub(wk_visible));
+                    sl_area.y = sl_area.y.saturating_sub(lift);
+                }
 
                 // Panel header: a dark ruled line with the filename as a stencil label.
                 let label = &view.header;
@@ -123,13 +136,17 @@ impl Renderer for TuiRenderer {
             }
 
             if let Some(wk) = &state.whichkey {
-                let full = wk.rows.len() as u16 + 1;
+                let full = wk.rows.len() as u16;
                 let visible = ((full as f32) * wk.anim).round() as u16;
                 if visible > 0 {
                     let h = visible.min(area.height);
                     let py = area.height.saturating_sub(h);
                     let parea = Rect::new(0, py, area.width, h);
-                    frame.render_widget(crate::widgets::WhichKeyWidget::new(wk.clone()), parea);
+                    frame.render_widget(
+                        crate::widgets::WhichKeyWidget::new(wk.clone())
+                            .with_theme(&self.theme),
+                        parea,
+                    );
                 }
             }
 

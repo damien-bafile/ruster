@@ -48,8 +48,10 @@ returning a palette you can edit or copy:
 return { bg = "#1e1e1e", fg = "#cdd6f4", gutter = "#6c7086", gutter_bg = "#1e1e1e",
          selection = "#585b70", selection_fg = "#cdd6f4",
          cursor = "#f5e0dc", cursor_fg = "#1e1e1e",
-         divider = "#45475a", statusline_fg = "#cdd6f4",
-         accent = "#f38ba8", accent_fg = "#1e1e1e" }
+          divider = "#45475a", statusline_fg = "#cdd6f4",
+          accent = "#f38ba8", accent_fg = "#1e1e1e",
+          whichkey_bg = "#45475a", whichkey_fg = "#cdd6f4",
+          cmdline_bg = "#45475a", cmdline_fg = "#cdd6f4", cmdline_accent = "#f38ba8" }
 ```
 
 The **starship** theme uses a CRT‑black background (`#0a0e0a`) with green‑phosphor

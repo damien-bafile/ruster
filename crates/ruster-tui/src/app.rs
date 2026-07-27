@@ -245,6 +245,11 @@ fn resolve_theme_colors(
     set(&ov.statusline_fg, &mut colors.statusline_fg);
     set(&ov.accent, &mut colors.accent);
     set(&ov.accent_fg, &mut colors.accent_fg);
+    set(&ov.whichkey_bg, &mut colors.whichkey_bg);
+    set(&ov.whichkey_fg, &mut colors.whichkey_fg);
+    set(&ov.cmdline_bg, &mut colors.cmdline_bg);
+    set(&ov.cmdline_fg, &mut colors.cmdline_fg);
+    set(&ov.cmdline_accent, &mut colors.cmdline_accent);
     colors
 }
 
@@ -1318,6 +1323,11 @@ impl App {
                 statusline_fg: col(c.colors.statusline_fg),
                 accent: col(c.colors.accent),
                 accent_fg: col(c.colors.accent_fg),
+                whichkey_bg: col(c.colors.whichkey_bg),
+                whichkey_fg: col(c.colors.whichkey_fg),
+                cmdline_bg: col(c.colors.cmdline_bg),
+                cmdline_fg: col(c.colors.cmdline_fg),
+                cmdline_accent: col(c.colors.cmdline_accent),
             },
         }
     }

@@ -401,21 +401,25 @@ impl Widget for StatuslineWidget {
     }
 }
 
-/// Renders the cmdline prompt line.
+/// Renders the cmdline prompt line (e.g. `:write`). The prompt character (`:`)
+/// is drawn in accent; the rest uses the theme's bright foreground on the
+/// divider background for strong contrast.
 pub struct CmdlineWidget<'a> {
     text: &'a str,
     fg: Color,
     bg: Color,
+    accent: Color,
 }
 
 impl<'a> CmdlineWidget<'a> {
     pub fn new(text: &'a str) -> Self {
-        CmdlineWidget { text, fg: Color::White, bg: Color::Black }
+        CmdlineWidget { text, fg: Color::White, bg: Color::Black, accent: Color::Rgb(255, 136, 0) }
     }
 
     pub fn with_theme(mut self, theme: &ruster_render::Theme) -> Self {
-        self.fg = ruster_render_color_to_tui(&theme.statusline_fg);
-        self.bg = ruster_render_color_to_tui(&theme.bg);
+        self.fg = ruster_render_color_to_tui(&theme.cmdline_fg);
+        self.bg = ruster_render_color_to_tui(&theme.cmdline_bg);
+        self.accent = ruster_render_color_to_tui(&theme.cmdline_accent);
         self
     }
 }
@@ -428,14 +432,16 @@ impl Widget for CmdlineWidget<'_> {
                 cell.set_bg(self.bg);
             }
         }
+        let mut first = true;
         for (i, ch) in self.text.chars().enumerate() {
             let x = area.x + i as u16;
             if x >= area.right() { break; }
             if let Some(cell) = buf.cell_mut((x, area.y)) {
                 cell.set_char(ch);
-                cell.set_fg(self.fg);
+                cell.set_fg(if first { self.accent } else { self.fg });
                 cell.set_bg(self.bg);
             }
+            first = false;
         }
     }
 }
@@ -840,51 +846,56 @@ impl Widget for PickerWidget {
     }
 }
 
-/// Renders the bottom which-key panel (title on top, one binding per line).
+/// Renders the bottom which-key panel (no title bar, styled like cmdline).
 /// The caller sizes `area` to the currently-visible height for the slide-up.
 pub struct WhichKeyWidget {
     view: ruster_render::WhichKeyView,
+    fg: Color,
+    bg: Color,
 }
 
 impl WhichKeyWidget {
     pub fn new(view: ruster_render::WhichKeyView) -> Self {
-        WhichKeyWidget { view }
+        WhichKeyWidget {
+            view,
+            fg: Color::Rgb(205, 214, 244),
+            bg: Color::Rgb(69, 71, 90),
+        }
+    }
+
+    pub fn with_theme(mut self, theme: &ruster_render::Theme) -> Self {
+        self.fg = ruster_render_color_to_tui(&theme.whichkey_fg);
+        self.bg = ruster_render_color_to_tui(&theme.whichkey_bg);
+        self
     }
 }
 
 impl Widget for WhichKeyWidget {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let bg = Color::Rgb(30, 30, 46);
-        let accent = Color::Rgb(137, 180, 250);
-        let fg = Color::Rgb(205, 214, 244);
         for y in area.top()..area.bottom() {
             for x in area.left()..area.right() {
                 if let Some(cell) = buf.cell_mut((x, y)) {
                     cell.set_char(' ');
-                    cell.set_bg(bg);
+                    cell.set_bg(self.bg);
                 }
             }
         }
-        let put = |buf: &mut Buffer, x: u16, y: u16, ch: char, color: Color| {
+        let put = |buf: &mut Buffer, x: u16, y: u16, ch: char, color: Color, cb: Color| {
             if x < area.right() && y < area.bottom() {
                 if let Some(cell) = buf.cell_mut((x, y)) {
                     cell.set_char(ch);
                     cell.set_fg(color);
-                    cell.set_bg(bg);
+                    cell.set_bg(cb);
                 }
             }
         };
-        // Title row.
-        let title = format!(" {} ", self.view.title);
-        for (i, ch) in title.chars().enumerate() {
-            put(buf, area.x + i as u16, area.y, ch, accent);
-        }
-        // One binding per line below the title.
+
+        // No title bar — just entries starting from the first row.
         for (row, entry) in self.view.rows.iter().enumerate() {
-            let y = area.y + 1 + row as u16;
+            let y = area.y + row as u16;
             if y >= area.bottom() { break; }
             for (i, ch) in format!("  {}", entry).chars().enumerate() {
-                put(buf, area.x + i as u16, y, ch, fg);
+                put(buf, area.x + i as u16, y, ch, self.fg, self.bg);
             }
         }
     }

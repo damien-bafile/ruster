@@ -261,6 +261,11 @@ impl LuaRuntime {
             statusline_fg: get("statusline_fg", fg),
             accent: get("accent", d.accent),
             accent_fg: get("accent_fg", bg),
+            whichkey_bg: get("whichkey_bg", d.divider),
+            whichkey_fg: get("whichkey_fg", fg),
+            cmdline_bg: get("cmdline_bg", d.divider),
+            cmdline_fg: get("cmdline_fg", fg),
+            cmdline_accent: get("cmdline_accent", d.accent),
         };
         // A `palette` sub-table of named colors, or (for older files) the roles.
         let palette = match t.get::<Option<mlua::Table>>("palette").ok().flatten() {

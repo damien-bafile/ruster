@@ -275,6 +275,11 @@ impl Renderer for RaylibRenderer {
         let accent = to_raylib(theme.accent, Color::new(243, 139, 168, 255));
         let accent_fg = to_raylib(theme.accent_fg, bg);
         let statusline_fg = to_raylib(theme.statusline_fg, default_color);
+        let whichkey_bg = to_raylib(theme.whichkey_bg, divider);
+        let whichkey_fg = to_raylib(theme.whichkey_fg, default_color);
+        let cmdline_bg = to_raylib(theme.cmdline_bg, divider);
+        let cmdline_fg = to_raylib(theme.cmdline_fg, default_color);
+        let cmdline_accent = to_raylib(theme.cmdline_accent, accent);
 
         let mut d = self.rl.begin_drawing(&self.thread);
         d.clear_background(bg);
@@ -617,8 +622,14 @@ impl Renderer for RaylibRenderer {
         if let Some(cmd) = state.cmdline.or(state.message) {
             let rows = ((screen_h - pad_y) / line_h).max(1);
             let cmd_y = pad_y + (rows - 1) * line_h;
-            d.draw_rectangle(0, cmd_y, screen_w, screen_h - cmd_y, bg);
-            d.draw_text_ex(font, cmd, Vector2::new(pad_x as f32, cmd_y as f32), font_size as f32, 1.0, default_color);
+            d.draw_rectangle(0, cmd_y, screen_w, screen_h - cmd_y, cmdline_bg);
+            if cmd.starts_with(':') {
+                let colon_w = measure(":") as i32;
+                d.draw_text_ex(font, ":", Vector2::new(pad_x as f32, cmd_y as f32), font_size as f32, 1.0, cmdline_accent);
+                d.draw_text_ex(font, &cmd[1..], Vector2::new((pad_x + colon_w) as f32, cmd_y as f32), font_size as f32, 1.0, cmdline_fg);
+            } else {
+                d.draw_text_ex(font, cmd, Vector2::new(pad_x as f32, cmd_y as f32), font_size as f32, 1.0, cmdline_fg);
+            }
         }
 
         // Floating picker overlay, centered.
@@ -765,18 +776,15 @@ impl Renderer for RaylibRenderer {
         }
 
         // Bottom which-key panel, sliding up from the screen edge by `anim`.
+        // No title bar — just entries on the panel background, styled like cmdline.
         if let Some(wk) = &state.whichkey {
-            let box_bg = Color::new(30, 30, 46, 255);
-            let panel_h = (wk.rows.len() as i32 + 1) * line_h + 8;
-            let panel_top = screen_h - (panel_h as f32 * wk.anim.clamp(0.0, 1.0)) as i32;
-            // Clip to the visible (slid-in) region so nothing draws above it.
+            let row_h = (wk.rows.len() as i32).max(1) * line_h;
+            let panel_top = screen_h - (row_h as f32 * wk.anim.clamp(0.0, 1.0)) as i32;
             let mut s = d.begin_scissor_mode(0, panel_top, screen_w, screen_h - panel_top);
-            s.draw_rectangle(0, panel_top, screen_w, screen_h - panel_top, box_bg);
-            s.draw_rectangle(0, panel_top, screen_w, 2, accent);
-            s.draw_text_ex(font, &format!(" {} ", wk.title), Vector2::new(pad_x as f32, (panel_top + 4) as f32), font_size as f32, 1.0, accent);
+            s.draw_rectangle(0, panel_top, screen_w, screen_h - panel_top, whichkey_bg);
             for (i, entry) in wk.rows.iter().enumerate() {
-                let ry = panel_top + 4 + (i as i32 + 1) * line_h;
-                s.draw_text_ex(font, &format!("   {}", entry), Vector2::new(pad_x as f32, ry as f32), font_size as f32, 1.0, default_color);
+                let ry = panel_top + i as i32 * line_h;
+                s.draw_text_ex(font, &format!("   {}", entry), Vector2::new(pad_x as f32, ry as f32), font_size as f32, 1.0, whichkey_fg);
             }
         }
 

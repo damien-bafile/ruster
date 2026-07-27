@@ -36,6 +36,14 @@ pub struct ThemeColors {
     pub accent: Rgb,
     /// Text drawn on accent-colored bars. Defaults to `bg`.
     pub accent_fg: Rgb,
+    /// Which-key panel colors (defaults pull from base fields).
+    pub whichkey_bg: Rgb,
+    pub whichkey_fg: Rgb,
+    /// Cmdline bar colors (defaults pull from base fields).
+    pub cmdline_bg: Rgb,
+    pub cmdline_fg: Rgb,
+    /// Cmdline `:` prompt glyph (defaults to accent).
+    pub cmdline_accent: Rgb,
 }
 
 impl Default for ThemeColors {
@@ -53,6 +61,12 @@ impl Default for ThemeColors {
             statusline_fg: Rgb::new(205, 214, 244),
             accent: Rgb::new(243, 139, 168),
             accent_fg: Rgb::new(30, 30, 30),
+            // Defaults fall through to base fields above; see resolve_theme_colors.
+            whichkey_bg: Rgb::new(69, 71, 90),    // = divider
+            whichkey_fg: Rgb::new(205, 214, 244),  // = fg
+            cmdline_bg: Rgb::new(69, 71, 90),      // = divider
+            cmdline_fg: Rgb::new(205, 214, 244),   // = fg
+            cmdline_accent: Rgb::new(243, 139, 168), // = accent
         }
     }
 }
@@ -78,10 +92,14 @@ impl Theme {
         s.push_str(&format!(
             "  bg = {:?}, fg = {:?}, gutter = {:?}, gutter_bg = {:?},\n  \
              selection = {:?}, selection_fg = {:?}, cursor = {:?}, cursor_fg = {:?},\n  \
-             divider = {:?}, statusline_fg = {:?}, accent = {:?}, accent_fg = {:?},\n",
+             divider = {:?}, statusline_fg = {:?}, accent = {:?}, accent_fg = {:?},\n  \
+             whichkey_bg = {:?}, whichkey_fg = {:?},\n  \
+             cmdline_bg = {:?}, cmdline_fg = {:?}, cmdline_accent = {:?},\n",
             r.bg.to_hex(), r.fg.to_hex(), r.gutter.to_hex(), r.gutter_bg.to_hex(),
             r.selection.to_hex(), r.selection_fg.to_hex(), r.cursor.to_hex(), r.cursor_fg.to_hex(),
             r.divider.to_hex(), r.statusline_fg.to_hex(), r.accent.to_hex(), r.accent_fg.to_hex(),
+            r.whichkey_bg.to_hex(), r.whichkey_fg.to_hex(),
+            r.cmdline_bg.to_hex(), r.cmdline_fg.to_hex(), r.cmdline_accent.to_hex(),
         ));
         s.push_str("  palette = {\n");
         for (name, c) in &self.palette {
@@ -142,6 +160,11 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                     cursor: Rgb::new(102, 255, 153), cursor_fg: Rgb::new(10, 14, 10),
                     divider: Rgb::new(17, 26, 17), statusline_fg: Rgb::new(51, 255, 102),
                     accent: Rgb::new(255, 136, 0), accent_fg: Rgb::new(10, 14, 10),
+                    whichkey_bg: Rgb::new(17, 26, 17),   // = divider
+                    whichkey_fg: Rgb::new(51, 255, 102), // = fg
+                    cmdline_bg: Rgb::new(17, 26, 17),    // = divider
+                    cmdline_fg: Rgb::new(51, 255, 102),  // = fg
+                    cmdline_accent: Rgb::new(255, 136, 0), // = accent
                 },
             },
         ),
@@ -165,6 +188,11 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                     cursor: Rgb::new(254, 128, 25), cursor_fg: Rgb::new(40, 40, 40),
                     divider: Rgb::new(60, 56, 54), statusline_fg: Rgb::new(235, 219, 178),
                     accent: Rgb::new(250, 189, 47), accent_fg: Rgb::new(40, 40, 40),
+                    whichkey_bg: Rgb::new(60, 56, 54),   // = divider
+                    whichkey_fg: Rgb::new(235, 219, 178),// = fg
+                    cmdline_bg: Rgb::new(60, 56, 54),    // = divider
+                    cmdline_fg: Rgb::new(235, 219, 178), // = fg
+                    cmdline_accent: Rgb::new(250, 189, 47),// = accent
                 },
             },
         ),
@@ -185,6 +213,11 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                     cursor: Rgb::new(192, 202, 245), cursor_fg: Rgb::new(26, 27, 38),
                     divider: Rgb::new(65, 72, 104), statusline_fg: Rgb::new(192, 202, 245),
                     accent: Rgb::new(122, 162, 247), accent_fg: Rgb::new(26, 27, 38),
+                    whichkey_bg: Rgb::new(65, 72, 104),  // = divider
+                    whichkey_fg: Rgb::new(192, 202, 245),// = fg
+                    cmdline_bg: Rgb::new(65, 72, 104),   // = divider
+                    cmdline_fg: Rgb::new(192, 202, 245), // = fg
+                    cmdline_accent: Rgb::new(122, 162, 247),// = accent
                 },
             },
         ),
@@ -204,6 +237,11 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                     cursor: Rgb::new(136, 192, 208), cursor_fg: Rgb::new(46, 52, 64),
                     divider: Rgb::new(59, 66, 82), statusline_fg: Rgb::new(216, 222, 233),
                     accent: Rgb::new(136, 192, 208), accent_fg: Rgb::new(46, 52, 64),
+                    whichkey_bg: Rgb::new(59, 66, 82),   // = divider
+                    whichkey_fg: Rgb::new(216, 222, 233),// = fg
+                    cmdline_bg: Rgb::new(59, 66, 82),    // = divider
+                    cmdline_fg: Rgb::new(216, 222, 233), // = fg
+                    cmdline_accent: Rgb::new(136, 192, 208),// = accent
                 },
             },
         ),
@@ -218,6 +256,11 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                     cursor: Rgb::new(245, 224, 220), cursor_fg: Rgb::new(30, 30, 46),
                     divider: Rgb::new(49, 50, 68), statusline_fg: Rgb::new(205, 214, 244),
                     accent: Rgb::new(203, 166, 247), accent_fg: Rgb::new(30, 30, 46),
+                    whichkey_bg: Rgb::new(49, 50, 68),   // = divider
+                    whichkey_fg: Rgb::new(205, 214, 244),// = fg
+                    cmdline_bg: Rgb::new(49, 50, 68),    // = divider
+                    cmdline_fg: Rgb::new(205, 214, 244), // = fg
+                    cmdline_accent: Rgb::new(203, 166, 247),// = accent
                 },
             },
         ),
@@ -241,6 +284,11 @@ pub struct ColorOverrides {
     pub statusline_fg: String,
     pub accent: String,
     pub accent_fg: String,
+    pub whichkey_bg: String,
+    pub whichkey_fg: String,
+    pub cmdline_bg: String,
+    pub cmdline_fg: String,
+    pub cmdline_accent: String,
 }
 
 #[derive(Debug, Clone)]
@@ -350,6 +398,11 @@ impl Config {
             (("colors", "statusline_fg"), Text(self.color_overrides.statusline_fg.clone())),
             (("colors", "accent"), Text(self.color_overrides.accent.clone())),
             (("colors", "accent_fg"), Text(self.color_overrides.accent_fg.clone())),
+            (("colors", "whichkey_bg"), Text(self.color_overrides.whichkey_bg.clone())),
+            (("colors", "whichkey_fg"), Text(self.color_overrides.whichkey_fg.clone())),
+            (("colors", "cmdline_bg"), Text(self.color_overrides.cmdline_bg.clone())),
+            (("colors", "cmdline_fg"), Text(self.color_overrides.cmdline_fg.clone())),
+            (("colors", "cmdline_accent"), Text(self.color_overrides.cmdline_accent.clone())),
         ]
     }
 
@@ -425,6 +478,11 @@ impl Config {
                 statusline_fg: st("colors", "statusline_fg").unwrap_or_default(),
                 accent: st("colors", "accent").unwrap_or_default(),
                 accent_fg: st("colors", "accent_fg").unwrap_or_default(),
+                whichkey_bg: st("colors", "whichkey_bg").unwrap_or_default(),
+                whichkey_fg: st("colors", "whichkey_fg").unwrap_or_default(),
+                cmdline_bg: st("colors", "cmdline_bg").unwrap_or_default(),
+                cmdline_fg: st("colors", "cmdline_fg").unwrap_or_default(),
+                cmdline_accent: st("colors", "cmdline_accent").unwrap_or_default(),
             },
         }
     }

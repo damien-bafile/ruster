@@ -24,11 +24,19 @@ pub struct Theme {
     pub accent: Color,
     /// Text on accent-colored bars (defaults to `bg`).
     pub accent_fg: Color,
+    /// Which-key panel background (defaults to `cmdline_bg`).
+    pub whichkey_bg: Color,
+    pub whichkey_fg: Color,
+    /// Cmdline prompt bar background (defaults to `divider`).
+    pub cmdline_bg: Color,
+    pub cmdline_fg: Color,
+    /// Cmdline `:` prompt glyph (defaults to `accent`).
+    pub cmdline_accent: Color,
 }
 
 impl Default for Theme {
     fn default() -> Self {
-        Theme {
+        let default = Theme {
             bg: Color::Rgb(30, 30, 30),
             fg: Color::Rgb(205, 214, 244),
             gutter: Color::Rgb(108, 112, 134),
@@ -41,6 +49,21 @@ impl Default for Theme {
             statusline_fg: Color::Rgb(205, 214, 244),
             accent: Color::Rgb(243, 139, 168),
             accent_fg: Color::Rgb(30, 30, 30),
+            whichkey_bg: Color::Default,
+            whichkey_fg: Color::Default,
+            cmdline_bg: Color::Default,
+            cmdline_fg: Color::Default,
+            cmdline_accent: Color::Default,
+        };
+        // Fill the whichkey/cmdline aliases *after* the base fields are set,
+        // since the defaults reference the base colors.
+        Theme {
+            whichkey_bg: default.divider,
+            whichkey_fg: default.fg,
+            cmdline_bg: default.divider,
+            cmdline_fg: default.fg,
+            cmdline_accent: default.accent,
+            ..default
         }
     }
 }
