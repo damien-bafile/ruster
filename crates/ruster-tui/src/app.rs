@@ -657,6 +657,7 @@ static UI_GROUP: &[(char, LeaderNode)] = &[
 ];
 
 static LEADER_ROOT: &[(char, LeaderNode)] = &[
+    (',', LeaderNode::Action("settings", LeaderAction::Settings)),
     ('w', LeaderNode::Group("windows", WINDOW_GROUP)),
     ('f', LeaderNode::Group("find", FIND_GROUP)),
     ('b', LeaderNode::Group("buffers", BUFFER_GROUP)),
@@ -3837,6 +3838,11 @@ impl App {
             })
             .collect();
         let mut p = PickerState::new("Commands", items);
+        // The command palette can dock at the bottom (which-key area) or float
+        // centered, per `whichkey.command_palette`.
+        if self.config.command_palette == "bottom" {
+            p.placement = ruster_render::PickerPlacement::Bottom;
+        }
         for c in seed.chars() {
             p.push_char(c);
         }
@@ -5439,6 +5445,28 @@ mod tests {
             leader_resolve(&['s', 's']),
             LeaderResolve::Action(LeaderAction::DocumentSymbol)
         ));
+        // Settings: top-level `SPC ,` and the `SPC o s` group entry.
+        assert!(matches!(leader_resolve(&[',']), LeaderResolve::Action(LeaderAction::Settings)));
+        assert!(matches!(leader_resolve(&['o', 's']), LeaderResolve::Action(LeaderAction::Settings)));
+    }
+
+    #[test]
+    fn command_palette_placement_follows_config() {
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        // Default: centered.
+        a.open_command_picker("");
+        assert_eq!(
+            a.picker.as_mut().unwrap().view().placement,
+            ruster_render::PickerPlacement::Center
+        );
+        // With the bottom setting, the palette docks at the bottom.
+        a.picker = None;
+        a.config.command_palette = "bottom".to_string();
+        a.open_command_picker("");
+        assert_eq!(
+            a.picker.as_mut().unwrap().view().placement,
+            ruster_render::PickerPlacement::Bottom
+        );
     }
 
     #[test]

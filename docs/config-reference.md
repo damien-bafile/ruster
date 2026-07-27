@@ -122,6 +122,7 @@ Keys are addressed as `group.key`.
 | `gutter.relativenumber` | boolean | false | Show relative line numbers (hybrid with `number`). Toggle live with `:set relativenumber` / `:set norelativenumber` / `:set relativenumber!` (abbrev. `rnu`) |
 | `whichkey.enabled` | boolean | true | Show the which-key hint panel |
 | `whichkey.timeoutlen` | integer | 300 | Milliseconds before the panel appears |
+| `whichkey.command_palette` | enum | "center" | Where the `:`-Tab command palette appears: `center` (floating box) or `bottom` (docked in the which-key area) |
 | `lsp.format_on_save` | boolean | false | Format via LSP before writing on `:w` |
 | `lsp.diagnostics` / `hover` / `autostart` | boolean | true | LSP feature toggles |
 | `terminal.shell` | string | _(platform)_ | `:term` program. Unset → `$SHELL` / `%COMSPEC%` (→ `/bin/sh` / `cmd.exe`) |

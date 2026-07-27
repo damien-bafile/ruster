@@ -231,6 +231,7 @@ pub fn schema() -> Vec<SettingSpec> {
     // --- whichkey ---
     add("whichkey", "enabled", "Enabled", Bool, b(true), "Show the which-key hint panel");
     add("whichkey", "timeoutlen", "Timeout (ms)", Int { min: 0, max: 5000 }, i(300), "Delay before the panel appears");
+    add("whichkey", "command_palette", "Command palette", Enum(&["center", "bottom"]), e("center"), "Where the :-Tab command palette appears: a centered box or docked at the bottom");
 
     // --- lsp ---
     add("lsp", "format_on_save", "Format on save", Bool, b(false), "Run LSP formatting on :w");

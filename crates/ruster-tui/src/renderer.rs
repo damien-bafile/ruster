@@ -117,16 +117,21 @@ impl Renderer for TuiRenderer {
                 }
             }
 
-            // Floating picker overlay, centered. Wider when it has a preview pane.
+            // Picker overlay: a centered floating box, or a full-width strip
+            // docked at the bottom (the command palette's "bottom" mode).
             if let Some(picker) = &state.picker {
-                let frac = if picker.preview.is_empty() { 6 } else { 9 };
-                let pw = (area.width * frac / 10).clamp(20, area.width.saturating_sub(2));
-                let rows = picker.rows.len() as u16 + 2; // title + query + rows
-                let rows = rows.max(picker.preview.len() as u16);
-                let ph = rows.clamp(3, area.height.saturating_sub(2));
-                let px = area.x + (area.width.saturating_sub(pw)) / 2;
-                let py = area.y + (area.height.saturating_sub(ph)) / 2;
-                let parea = Rect::new(px, py, pw, ph);
+                let rows = (picker.rows.len() as u16 + 2).max(picker.preview.len() as u16);
+                let parea = if picker.placement == ruster_render::PickerPlacement::Bottom {
+                    let ph = rows.clamp(3, area.height.saturating_sub(1)).min(area.height / 2);
+                    Rect::new(area.x, area.height.saturating_sub(ph), area.width, ph)
+                } else {
+                    let frac = if picker.preview.is_empty() { 6 } else { 9 };
+                    let pw = (area.width * frac / 10).clamp(20, area.width.saturating_sub(2));
+                    let ph = rows.clamp(3, area.height.saturating_sub(2));
+                    let px = area.x + (area.width.saturating_sub(pw)) / 2;
+                    let py = area.y + (area.height.saturating_sub(ph)) / 2;
+                    Rect::new(px, py, pw, ph)
+                };
                 frame.render_widget(crate::widgets::PickerWidget::new(picker.clone()), parea);
             }
 
