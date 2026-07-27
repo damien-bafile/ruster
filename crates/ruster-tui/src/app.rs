@@ -468,6 +468,8 @@ enum CmdAction {
     Build,
     /// Run the project's test command (`:test`).
     Test,
+    /// Pick a `ruster.toml` task to run (`:task`).
+    TaskPicker,
     /// Open the quickfix list as a picker (`:copen`).
     QuickfixOpen,
     /// Step to the next/prev quickfix entry and jump (`:cnext`/`:cprev`).
@@ -592,6 +594,7 @@ enum LeaderAction {
     Grep,
     Build,
     Test,
+    Tasks,
 }
 
 enum LeaderNode {
@@ -653,6 +656,7 @@ static OPEN_GROUP: &[(char, LeaderNode)] = &[
     ('t', LeaderNode::Action("terminal", LeaderAction::Terminal)),
     ('s', LeaderNode::Action("settings", LeaderAction::Settings)),
     ('e', LeaderNode::Action("explorer (dired)", LeaderAction::Explorer)),
+    ('r', LeaderNode::Action("run task", LeaderAction::Tasks)),
 ];
 
 static UI_GROUP: &[(char, LeaderNode)] = &[
@@ -966,6 +970,7 @@ pub struct App {
 enum RunnerKind {
     Build,
     Test,
+    Task,
 }
 
 /// The active editing paradigm. Neovim is modal; Emacs is modeless.
@@ -1933,7 +1938,7 @@ impl App {
                     None => return Vec::new(),
                 }
             }
-            PickerAction::RunCmd(_) => return Vec::new(),
+            PickerAction::RunCmd(_) | PickerAction::RunTask(_) => return Vec::new(),
         };
 
         // Load + highlight the file, reusing the cache when the path is unchanged.
@@ -2903,6 +2908,7 @@ impl App {
             "settings" | "config" => Ok(CmdAction::Settings),
             "build" | "make" => Ok(CmdAction::Build),
             "test" => Ok(CmdAction::Test),
+            "task" | "tasks" => Ok(CmdAction::TaskPicker),
             "copen" | "cope" | "cwindow" | "cw" => Ok(CmdAction::QuickfixOpen),
             "cnext" | "cn" => Ok(CmdAction::QuickfixNext),
             "cprev" | "cp" | "cN" | "cprevious" => Ok(CmdAction::QuickfixPrev),
@@ -3016,6 +3022,7 @@ impl App {
             CmdAction::Settings => self.open_settings(),
             CmdAction::Build => self.run_build(),
             CmdAction::Test => self.run_test(),
+            CmdAction::TaskPicker => self.open_task_picker(),
             CmdAction::QuickfixOpen => self.open_quickfix(),
             CmdAction::QuickfixNext => self.quickfix_next(),
             CmdAction::QuickfixPrev => self.quickfix_prev(),
@@ -4033,6 +4040,7 @@ impl App {
                 Ok(a) => self.apply_cmd(a),
                 Err(e) => self.message = Some(e),
             },
+            PickerAction::RunTask(name) => self.run_task(&name),
         }
     }
 
@@ -4152,6 +4160,7 @@ impl App {
             }
             LeaderAction::Build => self.run_build(),
             LeaderAction::Test => self.run_test(),
+            LeaderAction::Tasks => self.open_task_picker(),
         }
     }
 
@@ -4373,6 +4382,70 @@ impl App {
         self.start_run(RunnerKind::Test, cmd, root);
     }
 
+    /// `:task` / `SPC o r` — pick a `ruster.toml` task to run.
+    fn open_task_picker(&mut self) {
+        let root = self.project_root_for_run();
+        let cfg = ruster_project::ProjectConfig::load(&root);
+        if cfg.tasks.is_empty() {
+            self.message = Some("No tasks — add [tasks.<name>] to ruster.toml".to_string());
+            return;
+        }
+        let items: Vec<PickerItem> = cfg
+            .tasks
+            .iter()
+            .map(|(name, task)| {
+                PickerItem::new(format!("{name:<16} {}", task.cmd), PickerAction::RunTask(name.clone()))
+            })
+            .collect();
+        self.picker = Some(PickerState::new("Tasks", items));
+    }
+
+    /// Run the named `ruster.toml` task — in the embedded terminal (default) or a
+    /// background thread when `use_terminal = false`.
+    fn run_task(&mut self, name: &str) {
+        let root = self.project_root_for_run();
+        let cfg = ruster_project::ProjectConfig::load(&root);
+        let Some(task) = cfg.tasks.get(name) else {
+            self.message = Some(format!("No such task: {name}"));
+            return;
+        };
+        let cwd = match &task.cwd {
+            Some(c) => root.join(c),
+            None => root.clone(),
+        };
+        if task.use_terminal {
+            self.open_terminal_running(&task.cmd, &cwd, name);
+        } else {
+            self.start_run(RunnerKind::Task, task.cmd.clone(), cwd);
+        }
+    }
+
+    /// Open an embedded terminal that runs `cmd` in `cwd`, then drops to a shell
+    /// so its output stays visible.
+    fn open_terminal_running(&mut self, cmd: &str, cwd: &std::path::Path, name: &str) {
+        let cwd = cwd.to_string_lossy();
+        let (shell, args) = if cfg!(windows) {
+            ("cmd".to_string(), vec!["/K".to_string(), format!("cd /d {cwd} && {cmd}")])
+        } else {
+            ("sh".to_string(), vec!["-c".to_string(), format!("cd {cwd} && {cmd}; exec ${{SHELL:-sh}}")])
+        };
+        let scrollback = self.config.terminal_scrollback as usize;
+        match TerminalSession::spawn(&shell, &args, 80, 24, scrollback) {
+            Ok(session) => {
+                let id = self
+                    .ws
+                    .borrow_mut()
+                    .buffers
+                    .create_special(SpecialKind::Terminal, &format!("*task:{name}*"));
+                self.ws.borrow_mut().set_active_buffer(id);
+                self.terminals.insert(id, session);
+                self.terminal_focused = self.config.terminal_default_mode != "normal";
+                self.message = Some(format!("task {name}: Ctrl-\\ to leave, i to re-enter"));
+            }
+            Err(e) => self.message = Some(format!("task {name}: {e}")),
+        }
+    }
+
     /// The project root for a run: the active file's root, else the cwd.
     fn project_root_for_run(&self) -> PathBuf {
         self.ws
@@ -4391,6 +4464,7 @@ impl App {
         let (buf_name, label) = match kind {
             RunnerKind::Build => ("*build*", "build"),
             RunnerKind::Test => ("*test*", "test"),
+            RunnerKind::Task => ("*task*", "task"),
         };
         if self.runner_rx.is_some() {
             self.message = Some(format!("A {label} is already running"));
@@ -4455,6 +4529,14 @@ impl App {
             match self.runner_kind {
                 RunnerKind::Build => self.finish_build(code),
                 RunnerKind::Test => self.finish_test(code),
+                RunnerKind::Task => {
+                    let status = match code {
+                        Some(0) => "finished".to_string(),
+                        Some(c) => format!("exited {c}"),
+                        None => "failed to run".to_string(),
+                    };
+                    self.message = Some(format!("task {status}"));
+                }
             }
         }
     }
@@ -5827,9 +5909,14 @@ mod tests {
         assert!(matches!(a.parse_cmdline("build"), Ok(CmdAction::Build)));
         assert!(matches!(a.parse_cmdline("make"), Ok(CmdAction::Build)));
         assert!(matches!(a.parse_cmdline("test"), Ok(CmdAction::Test)));
+        assert!(matches!(a.parse_cmdline("task"), Ok(CmdAction::TaskPicker)));
         assert!(matches!(
             leader_resolve(&['c', 't']),
             LeaderResolve::Action(LeaderAction::Test)
+        ));
+        assert!(matches!(
+            leader_resolve(&['o', 'r']),
+            LeaderResolve::Action(LeaderAction::Tasks)
         ));
     }
 

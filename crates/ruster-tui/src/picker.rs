@@ -20,6 +20,8 @@ pub enum PickerAction {
     OpenLocation(PathBuf, usize, usize),
     /// Run a cmdline command string (without the leading ':').
     RunCmd(String),
+    /// Run a named `ruster.toml` task.
+    RunTask(String),
 }
 
 /// One selectable entry.
