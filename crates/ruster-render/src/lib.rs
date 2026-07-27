@@ -367,6 +367,19 @@ pub struct WhichKeyEntry {
     pub desc: String,
 }
 
+/// One item in the cmdline tab-completion panel.
+#[derive(Clone)]
+pub struct CmdlineCompletionItem {
+    pub key: String,
+    pub desc: String,
+}
+
+#[derive(Clone)]
+pub struct CmdlineCompletions {
+    pub items: Vec<CmdlineCompletionItem>,
+    pub selected: usize,
+}
+
 /// A which-key hint panel that slides up from the bottom mini-buffer. `anim` is
 /// the slide progress in `0.0..=1.0` (0 = fully hidden below the screen edge,
 /// 1 = fully visible).
@@ -464,6 +477,7 @@ pub struct FrameState<'a> {
     pub message: Option<&'a str>,
     pub picker: Option<PickerView>,
     pub whichkey: Option<WhichKeyView>,
+    pub cmdline_completions: Option<CmdlineCompletions>,
     /// LSP hover popup lines (syntax-highlighted), in a floating box near the top.
     pub hover: Option<Vec<StyledLine>>,
     /// The settings page overlay, when open.
@@ -600,6 +614,7 @@ mod tests {
             hover: None,
             settings: None,
             welcome: None,
+            cmdline_completions: None,
         };
         let mut r = TestRenderer;
         r.render_frame(&state);

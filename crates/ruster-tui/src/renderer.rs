@@ -135,6 +135,23 @@ impl Renderer for TuiRenderer {
                 frame.render_widget(cmd, cl_area);
             }
 
+            if let Some(cc) = &state.cmdline_completions {
+                let h = cc.items.len().min(10) as u16;
+                if h > 0 {
+                    let py = area.height.saturating_sub(h).saturating_sub(1);
+                    let parea = Rect::new(0, py, area.width, h);
+                    frame.render_widget(
+                        crate::widgets::CmdlineCompletionsWidget::new(
+                            ruster_render::CmdlineCompletions {
+                                items: cc.items.clone(),
+                                selected: cc.selected,
+                            },
+                        ).with_theme(&self.theme),
+                        parea,
+                    );
+                }
+            }
+
             if let Some(wk) = &state.whichkey {
                 let full = wk.rows.len() as u16;
                 let visible = ((full as f32) * wk.anim).round() as u16;

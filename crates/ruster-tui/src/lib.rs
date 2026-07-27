@@ -38,7 +38,7 @@ mod tests {
             selection: None,
             terminal: None,
         };
-        let state = FrameState { windows: vec![view], cmdline: None, message: None, picker: None, whichkey: None, hover: None, settings: None, welcome: None };
+        let state = FrameState { windows: vec![view], cmdline: None, message: None, picker: None, whichkey: None, cmdline_completions: None, hover: None, settings: None, welcome: None };
         // Dummy renderer has no terminal; this exercises the type wiring.
         r.render_frame(&state);
     }

@@ -906,6 +906,77 @@ impl Widget for WhichKeyWidget {
     }
 }
 
+/// Renders the cmdline tab-completions panel above the cmdline bar.
+pub struct CmdlineCompletionsWidget {
+    view: ruster_render::CmdlineCompletions,
+    fg: Color,
+    key_color: Color,
+    bg: Color,
+}
+
+impl CmdlineCompletionsWidget {
+    pub fn new(view: ruster_render::CmdlineCompletions) -> Self {
+        CmdlineCompletionsWidget {
+            view,
+            fg: Color::Rgb(205, 214, 244),
+            key_color: Color::Rgb(137, 180, 250),
+            bg: Color::Rgb(69, 71, 90),
+        }
+    }
+
+    pub fn with_theme(mut self, theme: &ruster_render::Theme) -> Self {
+        self.fg = ruster_render_color_to_tui(&theme.whichkey_fg);
+        self.key_color = ruster_render_color_to_tui(&theme.whichkey_key);
+        self.bg = ruster_render_color_to_tui(&theme.whichkey_bg);
+        self
+    }
+}
+
+impl Widget for CmdlineCompletionsWidget {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let highlight_bg = Color::Rgb(88, 91, 112);
+        // Fill background.
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_char(' ');
+                    cell.set_bg(self.bg);
+                }
+            }
+        }
+        let put = |buf: &mut Buffer, x: u16, y: u16, ch: char, color: Color, cb: Color| {
+            if x < area.right() && y < area.bottom() {
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_char(ch);
+                    cell.set_fg(color);
+                    cell.set_bg(cb);
+                }
+            }
+        };
+
+        for (row, item) in self.view.items.iter().enumerate() {
+            let y = area.y + row as u16;
+            if y >= area.bottom() { break; }
+            let row_bg = if row == self.view.selected { highlight_bg } else { self.bg };
+            let prefix = format!("  {}", item.key);
+            // Draw key part in key_color.
+            for (i, ch) in prefix.chars().enumerate() {
+                put(buf, area.x + i as u16, y, ch, self.key_color, row_bg);
+            }
+            // Draw spacer + desc in fg.
+            let desc_x = area.x + prefix.len() as u16 + 2;
+            let spacer = " ";
+            for (i, ch) in spacer.chars().enumerate() {
+                put(buf, desc_x + i as u16, y, ch, self.fg, row_bg);
+            }
+            let desc_start = desc_x + spacer.len() as u16;
+            for (i, ch) in item.desc.chars().enumerate() {
+                put(buf, desc_start + i as u16, y, ch, self.fg, row_bg);
+            }
+        }
+    }
+}
+
 /// Renders an LSP hover popup: a bordered box of syntax-highlighted lines.
 pub struct HoverWidget {
     lines: Vec<StyledLine>,

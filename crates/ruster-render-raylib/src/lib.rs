@@ -776,6 +776,26 @@ impl Renderer for RaylibRenderer {
             }
         }
 
+        // Cmdline tab-completions panel, above the cmdline bar.
+        if let Some(cc) = &state.cmdline_completions {
+            let cap = cc.items.len().min(10);
+            let ph = cap as i32 * line_h;
+            let py = screen_h - ph - line_h;
+            let mut s = d.begin_scissor_mode(0, py, screen_w, ph);
+            s.draw_rectangle(0, py, screen_w, ph, whichkey_bg);
+            let sel_bg = Color::new(88, 91, 112, 255);
+            for (i, item) in cc.items.iter().enumerate() {
+                let ry = py + i as i32 * line_h;
+                if i == cc.selected {
+                    s.draw_rectangle(0, ry, screen_w, line_h, sel_bg);
+                }
+                let key_text = format!("  {}", item.key);
+                s.draw_text_ex(font, &key_text, Vector2::new(pad_x as f32, ry as f32), font_size as f32, 1.0, whichkey_key);
+                let key_w = measure(&key_text) as i32;
+                s.draw_text_ex(font, &item.desc, Vector2::new((pad_x + key_w + 8) as f32, ry as f32), font_size as f32, 1.0, whichkey_fg);
+            }
+        }
+
         // Bottom which-key panel, sliding up from the screen edge by `anim`.
         // No title bar — just entries on the panel background, styled like cmdline.
         if let Some(wk) = &state.whichkey {

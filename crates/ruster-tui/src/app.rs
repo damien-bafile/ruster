@@ -16,8 +16,8 @@ use ruster_core::workspace::Workspace;
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 use ruster_lua::{config::Config, LuaAction, LuaRuntime};
 use ruster_render::{
-    CursorKind, FrameState, Rect as RRect, Renderer, SelectionView, StatuslineView, StyledLine,
-    WelcomeView, WhichKeyEntry, WhichKeyView, WindowView,
+    CmdlineCompletionItem, CmdlineCompletions, CursorKind, FrameState, Rect as RRect, Renderer,
+    SelectionView, StatuslineView, StyledLine, WelcomeView, WhichKeyEntry, WhichKeyView, WindowView,
 };
 use ruster_syntax::SyntaxEngine;
 use ruster_lsp::{LspManager, LspPosition, ServerMessage};
@@ -877,6 +877,10 @@ pub struct App {
     leader_since: Option<std::time::Instant>,
     /// Active floating picker (buffer list, file finder, ...), if any.
     picker: Option<PickerState>,
+    /// Whether the cmdline tab-completions panel is currently visible.
+    cmdline_completions_visible: bool,
+    /// Index of the highlighted item in the completions panel.
+    cmdline_completions_selected: usize,
     /// Streaming results for the active picker (`:Files` walk, `:Rg` output),
     /// drained into the picker each frame. Backend-agnostic (polled in render).
     pending_results: Option<std::sync::mpsc::Receiver<PickerItem>>,
@@ -1233,7 +1237,9 @@ impl App {
         App {
             ws, vim, renderer,
             should_quit: false, message: startup_message, syntax, syntax_tried, lua, config, timer,
-            has_smooth_cursor: false, cursor_anim, pending_ctrl_w: false, picker: None,
+            has_smooth_cursor: false, cursor_anim,             pending_ctrl_w: false, picker: None,
+            cmdline_completions_visible: false,
+            cmdline_completions_selected: 0,
             leader_pending: None,
             pending_results: None,
             preview_cache: None,
@@ -1535,16 +1541,45 @@ impl App {
         }
         let key = crossterm_to_ruster_key(ck);
 
-        // Tab in the cmdline opens the command palette, seeded with the partial.
+        // Tab in the cmdline toggles the completions panel.
         if self.vim.mode == VimMode::Cmdline && key == KeyEvent::Tab {
-            let seed = self
-                .vim
-                .cmdline_buffer()
-                .trim_start_matches(':')
-                .trim()
-                .to_string();
-            self.vim.mode = VimMode::Normal;
-            self.open_command_picker(&seed);
+            self.cmdline_completions_visible = !self.cmdline_completions_visible;
+            self.cmdline_completions_selected = 0;
+            return;
+        }
+        // While the completions panel is visible, Esc/Up/Down/Enter navigate it.
+        if self.cmdline_completions_visible {
+            match ck.code {
+                KeyCode::Esc => self.cmdline_completions_visible = false,
+                KeyCode::Up => {
+                    self.cmdline_completions_selected =
+                        self.cmdline_completions_selected.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    self.cmdline_completions_selected =
+                        self.cmdline_completions_selected.saturating_add(1);
+                }
+                KeyCode::Enter => {
+                    let partial = self.vim.cmdline_buffer()
+                        .trim_start_matches(':').trim();
+                    let mut matched: Vec<&str> = PALETTE_COMMANDS
+                        .iter()
+                        .filter(|(name, _)| name.starts_with(partial))
+                        .map(|(name, _)| *name)
+                        .collect();
+                    matched.sort_by(|a, b| a.len().cmp(&b.len()));
+                    if let Some(cmd) = matched.get(self.cmdline_completions_selected) {
+                        self.vim.mode = VimMode::Normal;
+                        match self.parse_cmdline(&format!(":{}", cmd)) {
+                            Ok(a) => self.apply_cmd(a),
+                            Err(e) => self.message = Some(e),
+                        }
+                    }
+                    self.cmdline_completions_visible = false;
+                    self.cmdline_completions_selected = 0;
+                }
+                _ => {}
+            }
             return;
         }
 
@@ -1686,11 +1721,6 @@ impl App {
             KeyEvent::Ctrl('g') => {
                 self.emacs.cancel();
                 self.message = Some("Quit".to_string());
-                return;
-            }
-            KeyEvent::Alt('x') => {
-                // M-x: run a command via the palette.
-                self.open_command_picker("");
                 return;
             }
             KeyEvent::Ctrl('s') => {
@@ -2870,12 +2900,41 @@ impl App {
             None
         };
 
+        // Build cmdline tab-completions panel when the user presses Tab in
+        // `:`-mode.  Filter PALETTE_COMMANDS by what has been typed so far.
+        let cmdline_completions = if self.cmdline_completions_visible {
+            let partial = self.vim.cmdline_buffer().trim_start_matches(':').trim();
+            let mut matched: Vec<CmdlineCompletionItem> = PALETTE_COMMANDS
+                .iter()
+                .filter(|(name, _)| name.starts_with(partial))
+                .map(|(name, desc)| CmdlineCompletionItem {
+                    key: name.to_string(),
+                    desc: desc.to_string(),
+                })
+                .collect();
+            matched.sort_by(|a, b| a.key.len().cmp(&b.key.len()));
+            if self.cmdline_completions_selected >= matched.len() {
+                self.cmdline_completions_selected = matched.len().saturating_sub(1);
+            }
+            if matched.is_empty() {
+                None
+            } else {
+                Some(CmdlineCompletions {
+                    items: matched,
+                    selected: self.cmdline_completions_selected,
+                })
+            }
+        } else {
+            None
+        };
+
         let state = FrameState {
             windows: views,
             cmdline: cmdline.as_deref(),
             message: None,
             picker: picker_view,
             whichkey,
+            cmdline_completions,
             hover: self.hover.clone(),
             settings: self.settings.as_ref().map(|s| s.view()),
             welcome: welcome_view,
@@ -3894,24 +3953,6 @@ impl App {
             None => return,
         };
         self.refresh_dired(id, target);
-    }
-
-    /// Open the `:`-Tab command palette, pre-filtered by `seed`.
-    fn open_command_picker(&mut self, seed: &str) {
-        let items: Vec<PickerItem> = PALETTE_COMMANDS
-            .iter()
-            .map(|(name, desc)| {
-                PickerItem::new(
-                    format!("{:<12} {}", name, desc),
-                    PickerAction::RunCmd(name.to_string()),
-                )
-            })
-            .collect();
-        let mut p = PickerState::new("Commands", items);
-        for c in seed.chars() {
-            p.push_char(c);
-        }
-        self.picker = Some(p);
     }
 
     /// Open the buffer-list picker over every open buffer.
@@ -5546,12 +5587,17 @@ mod tests {
     }
 
     #[test]
-    fn command_palette_opens_with_seed_and_filters() {
+    fn cmdline_completions_opens_and_selects() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
         let mut a = App::new("x".into(), PathBuf::from("f.txt"));
-        a.open_command_picker("wq");
-        let p = a.picker.as_mut().expect("palette open");
-        assert_eq!(p.filter, "wq");
-        assert!(!p.filtered().is_empty(), "seed matches at least one command");
+        // Tab in cmdline mode toggles the completions panel.
+        a.vim.mode = VimMode::Cmdline;
+        a.handle_key(CtKey::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert!(a.cmdline_completions_visible, "Tab shows completions");
+        assert_eq!(a.cmdline_completions_selected, 0);
+        // Tab again hides it.
+        a.handle_key(CtKey::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert!(!a.cmdline_completions_visible, "Tab toggles completions off");
     }
 
     #[test]
