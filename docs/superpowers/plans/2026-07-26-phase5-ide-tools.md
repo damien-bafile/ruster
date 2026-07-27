@@ -58,11 +58,11 @@ then DAP (largest, isolated). Ordered so each task is independently shippable.
   no line for passing tests.
 - [x] Tests: parse `cargo test`/`libtest` output → per-test results (new + old panic formats).
 
-### Task 5: Task runner
+### Task 5: Task runner ✅
 
-- [ ] `:task` (`SPC o r`) lists `ruster.toml` tasks in a picker; running one opens the
+- [x] `:task` (`SPC o r`) lists `ruster.toml` tasks in a picker; running one opens the
   embedded terminal on its `cmd` (or a background thread if `use_terminal = false`).
-- [ ] Tests: task discovery from a fixture `ruster.toml`.
+- [x] Tests: task discovery from a fixture `ruster.toml` (ruster-project), `:task`/`SPC o r` wiring.
 
 ### Task 6: File-explorer sidebar
 

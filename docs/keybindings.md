@@ -161,6 +161,7 @@ Press `SPC` in Normal mode; the which-key panel lists continuations.
 | `SPC s f` / `SPC s g` | Search files / grep (ripgrep) |
 | `SPC s s` / `SPC s d` | Document symbols / diagnostics |
 | `SPC o t` / `SPC o s` / `SPC o e` | Open terminal / settings / explorer |
+| `SPC o r` | Run a `ruster.toml` task (picker) |
 | `SPC u n` / `SPC u r` | Toggle line / relative numbers |
 | `SPC q q` | Quit |
 | `SPC q w` | Save and quit |
@@ -225,6 +226,7 @@ colored by severity). The **quickfix list** collects them for navigation.
 |---------|--------|
 | `:build` / `:make` (or `SPC c b`) | Run the project's build command in the background; output streams to `*build*`, diagnostics feed the quickfix list |
 | `:test` (or `SPC c t`) | Run the project's test command; output streams to `*test*`, failures get ✗ gutter signs and feed the quickfix list |
+| `:task` / `:tasks` (or `SPC o r`) | Pick a `ruster.toml` task to run — in the embedded terminal, or a background thread when `use_terminal = false` |
 | `:copen` (`:cwindow`) | Open the quickfix list as a picker; Enter jumps to an entry |
 | `:cnext` / `:cn` (or `]q`) | Jump to the next quickfix entry |
 | `:cprev` / `:cp` (or `[q`) | Jump to the previous quickfix entry |
