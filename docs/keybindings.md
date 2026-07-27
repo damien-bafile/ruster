@@ -146,6 +146,7 @@ Press `SPC` in Normal mode; the which-key panel lists continuations.
 | `SPC f b` | Buffer list (`:ls`) |
 | `SPC f e` | File explorer (`:Dired`) |
 | `SPC c b` | Build the project (`:build`) |
+| `SPC c t` | Run tests (`:test`) |
 | `SPC c k` (or `K`) | LSP hover |
 | `SPC c g` | Go to definition |
 | `SPC c r` | Find references |
@@ -222,6 +223,7 @@ colored by severity). The **quickfix list** collects them for navigation.
 | Command | Action |
 |---------|--------|
 | `:build` / `:make` (or `SPC c b`) | Run the project's build command in the background; output streams to `*build*`, diagnostics feed the quickfix list |
+| `:test` (or `SPC c t`) | Run the project's test command; output streams to `*test*`, failures get ✗ gutter signs and feed the quickfix list |
 | `:copen` (`:cwindow`) | Open the quickfix list as a picker; Enter jumps to an entry |
 | `:cnext` / `:cn` (or `]q`) | Jump to the next quickfix entry |
 | `:cprev` / `:cp` (or `[q`) | Jump to the previous quickfix entry |

@@ -300,7 +300,62 @@ impl Renderer for RaylibRenderer {
             {
                 let mut s = d.begin_scissor_mode(px, py, pw, win_h);
 
-                if let Some(grid) = &view.terminal {
+                // Welcome / "Ready Room" screen — replaces buffer content when
+                // no named file is open.
+                if let Some(welcome) = &state.welcome {
+                    if welcome.visible {
+                        let mut row = 0;
+                        let cx = px + (pw as f32 / 2.0) as i32;
+                        let draw_text = |s: &mut RaylibDrawHandle, x: i32, r: i32, text: &str, color: Color| {
+                            s.draw_text_ex(font, text, Vector2::new(x as f32, (py + r * line_h) as f32), font_size as f32, 1.0, color);
+                        };
+                        let _dimmer = Color::new(0, 0, 0, 0);
+
+                        let title = format!("RUSTER  {}", welcome.version);
+                        let tx = cx - (measure(&title) / 2.0) as i32;
+                        draw_text(&mut s, tx, row, &title, default_color);
+                        row += 1;
+                        let rr = "READY ROOM";
+                        let rx = cx - (measure(rr) / 2.0) as i32;
+                        draw_text(&mut s, rx, row, rr, accent);
+                        row += 2;
+
+                        let section = |s: &mut RaylibDrawHandle, r: &mut i32, label: &str, color: Color| {
+                            let hdr = format!(" ▌{}▐ ", label);
+                            draw_text(s, px + 4, *r, &hdr, color);
+                            *r += 1;
+                        };
+
+                        section(&mut s, &mut row, "RECENT PROJECTS", accent);
+                        draw_text(&mut s, px + 8, row, "  No recent projects", gutter_color);
+                        row += 2;
+
+                        section(&mut s, &mut row, "QUICK ACTIONS", accent);
+                        for (cmd, desc) in &[(":e path/to/file", "Open File"), (":FuzzySearch", "Find Files"), (":term", "Terminal")] {
+                            let dl = measure(cmd) + 4.0;
+                            draw_text(&mut s, px + 8, row, cmd, default_color);
+                            draw_text(&mut s, px + 8 + dl as i32, row, desc, gutter_color);
+                            row += 1;
+                        }
+                        row += 1;
+
+                        section(&mut s, &mut row, "SYSTEM STATUS", accent);
+                        let lsp_text = format!("  LSP  {}", welcome.lsp_status);
+                        draw_text(&mut s, px + 8, row, &lsp_text, default_color);
+                        row += 1;
+                        let mode_text = format!("  Mode: {}", welcome.edit_mode);
+                        draw_text(&mut s, px + 8, row, &mode_text, default_color);
+                        row += 2;
+
+                        section(&mut s, &mut row, "KEYBINDS", accent);
+                        for (key, desc) in &[("Ctrl+P  ", "Fuzzy Finder"), ("Ctrl+S  ", "Save"), ("Ctrl+W  ", "Window Commands"), (":help  ", "Help")] {
+                            draw_text(&mut s, px + 8, row, key, default_color);
+                            let kx = px + 8 + measure(key) as i32;
+                            draw_text(&mut s, kx, row, desc, gutter_color);
+                            row += 1;
+                        }
+                    }
+                } else if let Some(grid) = &view.terminal {
                     // An embedded terminal: a background quad per cell, then the
                     // glyph, then a block cursor. No gutter/scroll/selection.
                     for r in 0..grid.rows.min(buf_rows) {

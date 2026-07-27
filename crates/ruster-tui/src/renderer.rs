@@ -1,7 +1,7 @@
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
-use ruster_render::{Color, FrameState, Renderer, SyntaxStyle};
+use ruster_render::{Color, FrameState, Renderer, SyntaxStyle, Theme};
 use std::io::Stdout;
 
 fn ruster_color_to_ratatui(c: &Color) -> ratatui::style::Color {
@@ -22,25 +22,29 @@ pub fn ruster_style_to_ratatui(s: &SyntaxStyle) -> ratatui::style::Style {
 
 pub struct TuiRenderer {
     terminal: Option<Terminal<CrosstermBackend<Stdout>>>,
-    /// Persistent top-line for the Settings overlay (see `SettingsWidget`).
     settings_scroll: usize,
+    theme: Theme,
 }
 
 impl TuiRenderer {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let stdout = std::io::stdout();
         let terminal = Terminal::new(CrosstermBackend::new(stdout))?;
-        Ok(TuiRenderer { terminal: Some(terminal), settings_scroll: 0 })
+        Ok(TuiRenderer { terminal: Some(terminal), settings_scroll: 0, theme: Theme::default() })
     }
 
     pub fn dummy() -> Self {
-        TuiRenderer { terminal: None, settings_scroll: 0 }
+        TuiRenderer { terminal: None, settings_scroll: 0, theme: Theme::default() }
     }
 }
 
 impl Renderer for TuiRenderer {
     fn viewport_cells(&self) -> (u16, u16) {
         crossterm::terminal::size().unwrap_or((80, 24))
+    }
+
+    fn set_gui_config(&mut self, gui: &ruster_render::GuiConfig, _font: Option<&str>) {
+        self.theme = gui.theme;
     }
 
     fn render_frame(&mut self, state: &FrameState) {
@@ -60,8 +64,12 @@ impl Renderer for TuiRenderer {
                 let buf_area = Rect::new(view.rect.x, view.rect.y, view.rect.width, buf_h);
                 let sl_area = Rect::new(view.rect.x, view.rect.y + buf_h, view.rect.width, 1);
 
-                if let Some(grid) = &view.terminal {
-                    // A terminal window draws its grid instead of buffer text.
+                if state.welcome.as_ref().is_some_and(|w| w.visible) {
+                    let ww = crate::widgets::WelcomeWidget::new(
+                        state.welcome.as_ref().unwrap().clone(),
+                    ).with_theme(&self.theme);
+                    frame.render_widget(ww, buf_area);
+                } else if let Some(grid) = &view.terminal {
                     let term_widget = crate::widgets::TerminalWidget::new(grid.clone())
                         .with_cursor_visible(view.cursor_visible && view.active);
                     frame.render_widget(term_widget, buf_area);
@@ -79,20 +87,21 @@ impl Renderer for TuiRenderer {
                     frame.render_widget(buf_widget, buf_area);
                 }
 
-                let sl = crate::widgets::StatuslineWidget::new(view.statusline.clone());
+                let sl = crate::widgets::StatuslineWidget::new(view.statusline.clone())
+                    .with_theme(&self.theme);
                 frame.render_widget(sl, sl_area);
             }
 
-            // Shared cmdline / message on the bottom row.
             let cmd_text = state.cmdline.or(state.message);
             if let Some(text) = cmd_text {
                 let cl_area = Rect::new(0, area.height.saturating_sub(1), area.width, 1);
-                frame.render_widget(crate::widgets::CmdlineWidget::new(text), cl_area);
+                let cmd = crate::widgets::CmdlineWidget::new(text)
+                    .with_theme(&self.theme);
+                frame.render_widget(cmd, cl_area);
             }
 
-            // Bottom which-key panel, sliding up (revealed row-by-row by anim).
             if let Some(wk) = &state.whichkey {
-                let full = wk.rows.len() as u16 + 1; // title + rows
+                let full = wk.rows.len() as u16 + 1;
                 let visible = ((full as f32) * wk.anim).round() as u16;
                 if visible > 0 {
                     let h = visible.min(area.height);
@@ -102,7 +111,6 @@ impl Renderer for TuiRenderer {
                 }
             }
 
-            // Hover popup, near the top-center.
             if let Some(lines) = &state.hover {
                 if !lines.is_empty() {
                     let w = lines.iter().map(|l| l.text.chars().count()).max().unwrap_or(0) as u16 + 2;
@@ -117,11 +125,10 @@ impl Renderer for TuiRenderer {
                 }
             }
 
-            // Floating picker overlay, centered. Wider when it has a preview pane.
             if let Some(picker) = &state.picker {
                 let frac = if picker.preview.is_empty() { 6 } else { 9 };
                 let pw = (area.width * frac / 10).clamp(20, area.width.saturating_sub(2));
-                let rows = picker.rows.len() as u16 + 2; // title + query + rows
+                let rows = picker.rows.len() as u16 + 2;
                 let rows = rows.max(picker.preview.len() as u16);
                 let ph = rows.clamp(3, area.height.saturating_sub(2));
                 let px = area.x + (area.width.saturating_sub(pw)) / 2;
@@ -130,7 +137,6 @@ impl Renderer for TuiRenderer {
                 frame.render_widget(crate::widgets::PickerWidget::new(picker.clone()), parea);
             }
 
-            // Settings page, a large centered overlay.
             if let Some(settings) = &state.settings {
                 let sw = (area.width * 8 / 10).clamp(30, area.width.saturating_sub(2));
                 let sh = (area.height * 9 / 10).clamp(6, area.height.saturating_sub(1));

@@ -5,7 +5,7 @@ use ratatui::widgets::Widget;
 use ruster_core::vim::VimMode;
 use ruster_render::{
     ControlKind, CursorKind, GutterView, SettingRowView, SettingsView, StatuslineView, StyledLine,
-    TermGridView, Color as RColor,
+    TermGridView, WelcomeView, Color as RColor,
 };
 
 /// Convert a VimMode to a display string.
@@ -310,28 +310,52 @@ impl Widget for BufferWidget {
 }
 
 /// Renders one window's statusline from a [`StatuslineView`] (left / center /
-/// right groups). The active window's statusline is brighter than inactive ones.
+/// right groups). The active window's statusline reads as a panel strip with an
+/// amber mode badge on its left edge.
 pub struct StatuslineWidget {
     view: StatuslineView,
+    bar_bg: Color,
+    bar_fg: Color,
+    dim_bg: Color,
+    dim_fg: Color,
+    mode_bg: Color,
+    mode_fg: Color,
 }
 
 impl StatuslineWidget {
     pub fn new(view: StatuslineView) -> Self {
-        StatuslineWidget { view }
+        StatuslineWidget {
+            view,
+            bar_bg: Color::Rgb(17, 26, 17),
+            bar_fg: Color::White,
+            dim_bg: Color::Rgb(17, 26, 17),
+            dim_fg: Color::Gray,
+            mode_bg: Color::Rgb(255, 136, 0),
+            mode_fg: Color::Rgb(10, 14, 10),
+        }
+    }
+
+    pub fn with_theme(mut self, theme: &ruster_render::Theme) -> Self {
+        self.bar_bg = ruster_render_color_to_tui(&theme.divider);
+        self.bar_fg = ruster_render_color_to_tui(&theme.statusline_fg);
+        self.dim_bg = ruster_render_color_to_tui(&theme.divider);
+        self.dim_fg = ruster_render_color_to_tui(&theme.gutter);
+        self.mode_bg = ruster_render_color_to_tui(&theme.accent);
+        self.mode_fg = ruster_render_color_to_tui(&theme.accent_fg);
+        self
     }
 }
 
 impl Widget for StatuslineWidget {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let bg = if self.view.active { Color::DarkGray } else { Color::Rgb(35, 35, 35) };
-        let fg = if self.view.active { Color::White } else { Color::Gray };
+        let (bg, fg) = if self.view.active { (self.bar_bg, self.bar_fg) } else { (self.dim_bg, self.dim_fg) };
 
-        let put = |buf: &mut Buffer, x: u16, ch: char| {
+        let put = |buf: &mut Buffer, x: u16, y: u16, ch: char, cf: Color, cb: Color| {
             if x >= area.left() && x < area.right() {
-                if let Some(cell) = buf.cell_mut((x, area.y)) {
+                if let Some(cell) = buf.cell_mut((x, y)) {
                     cell.set_char(ch);
-                    cell.set_fg(fg);
-                    cell.set_bg(bg);
+                    cell.set_fg(cf);
+                    cell.set_bg(cb);
                 }
             }
         };
@@ -342,24 +366,37 @@ impl Widget for StatuslineWidget {
             }
         }
 
-        let left = format!(" {} ", self.view.left);
-        for (i, ch) in left.chars().enumerate() {
-            put(buf, area.x + i as u16, ch);
+        let left = &self.view.left;
+        let right = &self.view.right;
+        let center = &self.view.center;
+
+        let mut x = area.x;
+        if !left.is_empty() {
+            put(buf, x, area.y, ' ', self.mode_fg, self.mode_bg);
+            x += 1;
+            for (i, ch) in left.chars().enumerate() {
+                put(buf, x + i as u16, area.y, ch, self.mode_fg, self.mode_bg);
+            }
+            x += left.chars().count() as u16;
+            put(buf, x, area.y, ' ', self.mode_fg, self.mode_bg);
+            x += 1;
+            put(buf, x, area.y, '│', fg, bg);
+            x += 1;
         }
 
-        let right = format!(" {} ", self.view.right);
-        let rstart = area.right().saturating_sub(right.chars().count() as u16);
-        for (i, ch) in right.chars().enumerate() {
-            put(buf, rstart + i as u16, ch);
-        }
-
-        // Center group: placed after the left group, clipped before the right.
-        let center_start = area.x + left.chars().count() as u16 + 1;
-        let center_limit = rstart.saturating_sub(1);
-        for (i, ch) in self.view.center.chars().enumerate() {
-            let x = center_start + i as u16;
-            if x >= center_limit { break; }
-            put(buf, x, ch);
+        let right_len = right.chars().count() as u16;
+        let right_start = area.right().saturating_sub(right_len + 2);
+        if right_start > x {
+            for (i, ch) in center.chars().enumerate() {
+                let cx = x + i as u16;
+                if cx >= right_start { break; }
+                put(buf, cx, area.y, ch, fg, bg);
+            }
+            put(buf, right_start, area.y, ' ', fg, bg);
+            for (i, ch) in right.chars().enumerate() {
+                put(buf, right_start + 1 + i as u16, area.y, ch, fg, bg);
+            }
+            put(buf, right_start + 1 + right_len, area.y, ' ', fg, bg);
         }
     }
 }
@@ -367,24 +404,185 @@ impl Widget for StatuslineWidget {
 /// Renders the cmdline prompt line.
 pub struct CmdlineWidget<'a> {
     text: &'a str,
+    fg: Color,
+    bg: Color,
 }
 
 impl<'a> CmdlineWidget<'a> {
     pub fn new(text: &'a str) -> Self {
-        CmdlineWidget { text }
+        CmdlineWidget { text, fg: Color::White, bg: Color::Black }
+    }
+
+    pub fn with_theme(mut self, theme: &ruster_render::Theme) -> Self {
+        self.fg = ruster_render_color_to_tui(&theme.statusline_fg);
+        self.bg = ruster_render_color_to_tui(&theme.bg);
+        self
     }
 }
 
 impl Widget for CmdlineWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        for x in area.left()..area.right() {
+            if let Some(cell) = buf.cell_mut((x, area.y)) {
+                cell.set_char(' ');
+                cell.set_bg(self.bg);
+            }
+        }
         for (i, ch) in self.text.chars().enumerate() {
             let x = area.x + i as u16;
             if x >= area.right() { break; }
             if let Some(cell) = buf.cell_mut((x, area.y)) {
                 cell.set_char(ch);
+                cell.set_fg(self.fg);
+                cell.set_bg(self.bg);
             }
         }
     }
+}
+
+/// Renders the welcome / "Ready Room" screen — a centered panel shown when no
+/// file is open, styled as a starship crew terminal readout.
+pub struct WelcomeWidget {
+    view: WelcomeView,
+    theme: Option<ruster_render::Theme>,
+}
+
+impl WelcomeWidget {
+    pub fn new(view: WelcomeView) -> Self {
+        WelcomeWidget { view, theme: None }
+    }
+
+    pub fn with_theme(mut self, theme: &ruster_render::Theme) -> Self {
+        self.theme = Some(*theme);
+        self
+    }
+
+    fn c(&self, fallback: Color, get: impl FnOnce(&ruster_render::Theme) -> RColor) -> Color {
+        self.theme.as_ref().map(|t| ruster_render_color_to_tui(&get(t))).unwrap_or(fallback)
+    }
+}
+
+impl Widget for WelcomeWidget {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let bg = self.c(Color::Rgb(10, 14, 10), |t| t.bg);
+        let fg = self.c(Color::Rgb(51, 255, 102), |t| t.fg);
+        let accent = self.c(Color::Rgb(255, 136, 0), |t| t.accent);
+        let dim = self.c(Color::Rgb(26, 102, 51), |t| t.gutter);
+        let _panel = self.c(Color::Rgb(17, 26, 17), |t| t.divider);
+
+        let put = |buf: &mut Buffer, x: u16, y: u16, ch: char, cf: Color, cb: Color| {
+            if x < area.right() && y < area.bottom() {
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_char(ch);
+                    cell.set_fg(cf);
+                    cell.set_bg(cb);
+                }
+            }
+        };
+        let text = |buf: &mut Buffer, x: u16, y: u16, s: &str, cf: Color, cb: Color| {
+            for (i, ch) in s.chars().enumerate() {
+                put(buf, x + i as u16, y, ch, cf, cb);
+            }
+        };
+
+        // Clear the whole area.
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_char(' ');
+                    cell.set_bg(bg);
+                }
+            }
+        }
+
+        let cx = area.width / 2;
+        let mut row = area.y + 1;
+
+        // Title: RUSTER
+        let title = format!("RUSTER  {}", self.view.version);
+        let tx = cx.saturating_sub(title.chars().count() as u16 / 2);
+        text(buf, tx, row, &title, fg, bg);
+        row += 1;
+
+        // Divider line
+        let div = "─".repeat(area.width as usize - 4);
+        text(buf, area.x + 2, row, &div, dim, bg);
+        row += 1;
+
+        // "READY ROOM" in accent
+        let rr = "READY ROOM";
+        let rx = cx.saturating_sub(rr.chars().count() as u16 / 2);
+        text(buf, rx, row, rr, accent, bg);
+        row += 2;
+
+        // Section: Recent Projects
+        row = draw_section_header(buf, put, text, area, row, "RECENT PROJECTS", accent, dim, bg);
+        if self.view.recent_projects.is_empty() {
+            text(buf, area.x + 4, row, "  No recent projects", dim, bg);
+            row += 1;
+        } else {
+            for proj in &self.view.recent_projects {
+                text(buf, area.x + 4, row, &format!("  {}", proj), fg, bg);
+                row += 1;
+            }
+        }
+        row += 1;
+
+        // Section: Quick Actions
+        row = draw_section_header(buf, put, text, area, row, "QUICK ACTIONS", accent, dim, bg);
+        let actions = [
+            (":e path/to/file", "Open File"),
+            (":FuzzySearch", "Find Files"),
+            (":term", "Terminal"),
+        ];
+        for (cmd, desc) in &actions {
+            text(buf, area.x + 4, row, cmd, fg, bg);
+            let dl = cmd.chars().count() as u16 + 2;
+            text(buf, area.x + 4 + dl, row, desc, dim, bg);
+            row += 1;
+        }
+        row += 1;
+
+        // Section: System Status
+        row = draw_section_header(buf, put, text, area, row, "SYSTEM STATUS", accent, dim, bg);
+        text(buf, area.x + 4, row, &format!("  LSP  {}", self.view.lsp_status), fg, bg);
+        row += 1;
+        text(buf, area.x + 4, row, &format!("  Mode: {}", self.view.edit_mode), fg, bg);
+        row += 1;
+        row += 1;
+
+        // Section: Keybinds
+        row = draw_section_header(buf, put, text, area, row, "KEYBINDS", accent, dim, bg);
+        let binds = [
+            ("Ctrl+P", "Fuzzy Finder"),
+            ("Ctrl+S", "Save"),
+            ("Ctrl+W", "Window Commands"),
+            (":help", "Help"),
+        ];
+        for (key, desc) in &binds {
+            text(buf, area.x + 4, row, &format!("  {:<12}{}", key, desc), fg, bg);
+            row += 1;
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_section_header(
+    buf: &mut Buffer,
+    _put: impl Fn(&mut Buffer, u16, u16, char, Color, Color),
+    text: impl Fn(&mut Buffer, u16, u16, &str, Color, Color),
+    area: Rect,
+    row: u16,
+    label: &str,
+    accent: Color,
+    _dim: Color,
+    bg: Color,
+) -> u16 {
+    let mut r = row;
+    let hdr = format!(" ▌{}▐ ", label);
+    text(buf, area.x + 2, r, &hdr, accent, bg);
+    r += 1;
+    r
 }
 
 /// Renders a floating picker overlay (title, query line, selectable rows).

@@ -312,6 +312,8 @@ pub struct WindowView {
     pub selection: Option<SelectionView>,
     /// When set, this window is a terminal: draw the grid instead of `lines`.
     pub terminal: Option<TermGridView>,
+    /// Panel header label shown in the window's top chrome row (e.g. filename).
+    pub header: String,
 }
 
 /// One row of a floating picker overlay.
@@ -397,8 +399,32 @@ pub fn settings_scroll(prev: usize, selected: usize, viewport: usize, total: usi
     top.min(max)
 }
 
+/// The welcome/start screen ("Ready Room"), shown when no file is open. Rendered
+/// as a centered panel in the first window when present.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WelcomeView {
+    pub visible: bool,
+    pub recent_projects: Vec<String>,
+    pub version: String,
+    pub lsp_status: String,
+    pub edit_mode: String,
+}
+
+impl Default for WelcomeView {
+    fn default() -> Self {
+        WelcomeView {
+            visible: false,
+            recent_projects: Vec::new(),
+            version: String::new(),
+            lsp_status: "● Ready".into(),
+            edit_mode: "Neovim".into(),
+        }
+    }
+}
+
 /// A full frame: every visible window, the shared cmdline/message line, an
-/// optional centered picker overlay, and an optional bottom which-key panel.
+/// optional centered picker overlay, optional bottom which-key panel, and an
+/// optional welcome screen.
 pub struct FrameState<'a> {
     pub windows: Vec<WindowView>,
     pub cmdline: Option<&'a str>,
@@ -409,6 +435,8 @@ pub struct FrameState<'a> {
     pub hover: Option<Vec<StyledLine>>,
     /// The settings page overlay, when open.
     pub settings: Option<SettingsView>,
+    /// Welcome/start screen ("Ready Room"), shown when no file is open.
+    pub welcome: Option<WelcomeView>,
 }
 
 pub trait Renderer {
@@ -537,6 +565,7 @@ mod tests {
             whichkey: None,
             hover: None,
             settings: None,
+            welcome: None,
         };
         let mut r = TestRenderer;
         r.render_frame(&state);
