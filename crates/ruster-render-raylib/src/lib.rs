@@ -279,15 +279,17 @@ impl Renderer for RaylibRenderer {
         let mut d = self.rl.begin_drawing(&self.thread);
         d.clear_background(bg);
 
-        for view in &state.windows {
-            if view.rect.width == 0 || view.rect.height == 0 {
-                continue;
-            }
+        // Collect and sort by x to find adjacent windows for vertical seams.
+        let mut window_list: Vec<&ruster_render::WindowView> = state.windows.iter().filter(|v| v.rect.width > 0 && v.rect.height > 0).collect();
+        window_list.sort_by_key(|v| v.rect.x);
+
+        for (win_idx, view) in window_list.iter().enumerate() {
             let px = pad_x + (view.rect.x as f32 * char_w) as i32;
             let py = pad_y + view.rect.y as i32 * line_h;
             let pw = (view.rect.width as f32 * char_w) as i32;
-            // The window's last cell-row is its statusline.
-            let buf_rows = view.rect.height.saturating_sub(1) as usize;
+            // Header row + content rows + statusline row.
+            let buf_rows = view.rect.height.saturating_sub(2) as usize;
+            let content_y = py + line_h; // after the header
             // Layout left-to-right: sign column, then line-number gutter, then text.
             let sign_x = px;
             let gutter_x = px + (view.signs.width as f32 * char_w) as i32;
@@ -295,10 +297,34 @@ impl Renderer for RaylibRenderer {
             let scroll = view.scroll_offset as usize;
             let win_h = view.rect.height as i32 * line_h;
 
-            // Clip everything in this window to its own rect so text/statusline
-            // can't bleed past the divider into a neighbouring pane.
+            // Panel header: draw a ruled line with the filename as stencil label
+            // before the scissor region (the header spans the full window width).
+            let label = if view.header.is_empty() { "untitled" } else { &view.header };
+            let hdr = format!("─ {} ─", label);
+            let hdr_color = if view.active { accent } else { divider };
+            d.draw_rectangle(px, py, pw, line_h, bg);
+            // We cannot use `s` (the scissor handle) here, so use `d` directly.
+            d.draw_text_ex(font, &hdr, Vector2::new(px as f32, py as f32), font_size as f32, 1.0, hdr_color);
+            // Fill the rest of the header row with rule characters.
+            let hdr_w = measure(&hdr);
+            let mut rule_x = px as f32 + hdr_w;
+            while (rule_x as i32) < px + pw {
+                d.draw_text_ex(font, "─", Vector2::new(rule_x, py as f32), font_size as f32, 1.0, divider);
+                rule_x += measure("─");
+            }
+
+            // Vertical seam on the right edge of each window (drawn over the gap).
+            if win_idx < window_list.len() - 1 {
+                let seam_x = px + pw - 1;
+                for iy in py..py + win_h {
+                    d.draw_rectangle(seam_x, iy, 1, 1, divider);
+                }
+            }
+
+            // Clip everything in this window's content + statusline to its rect.
+            let clip_h = win_h - line_h; // exclude header
             {
-                let mut s = d.begin_scissor_mode(px, py, pw, win_h);
+                let mut s = d.begin_scissor_mode(px, content_y, pw, clip_h);
 
                 // Welcome / "Ready Room" screen — replaces buffer content when
                 // no named file is open.
@@ -553,8 +579,8 @@ impl Renderer for RaylibRenderer {
                 }
                 } // end: buffer vs. terminal drawing
 
-                // Per-window statusline on its bottom row.
-                let sl_y = py + buf_rows as i32 * line_h;
+                // Per-window statusline on its bottom row (below header + content).
+                let sl_y = content_y + buf_rows as i32 * line_h;
                 let (sl_bg, sl_fg) = if view.active {
                     (divider, statusline_fg)
                 } else {

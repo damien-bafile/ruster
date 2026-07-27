@@ -2668,7 +2668,7 @@ impl App {
                     )
                 };
                 // Keep the cursor visible within this window's text area.
-                let buf_h = rect.height.saturating_sub(1) as usize;
+                let buf_h = rect.height.saturating_sub(2) as usize;
                 if buf_h > 0 {
                     if cline < scroll {
                         scroll = cline;
@@ -2702,7 +2702,7 @@ impl App {
                 } else {
                     String::new()
                 };
-                let mut center = name;
+                let mut center = name.clone();
                 let mut right = format!("{}%  {},{}", pct, cline + 1, ccol + 1);
                 if is_active {
                     if !lua_left.is_empty() {
@@ -2768,6 +2768,7 @@ impl App {
                 };
                 views.push(WindowView {
                     rect: RRect::new(rect.x, rect.y, rect.width, rect.height),
+                    header: name.clone(),
                     lines,
                     cursor: (cline as u16, ccol as u16),
                     extra_cursors,
