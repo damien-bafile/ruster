@@ -4907,7 +4907,7 @@ impl App {
             KeyCode::Char('d') => self.lsp_definition(),
             KeyCode::Char('r') => self.lsp_references(),
             KeyCode::Char('h') => self.lsp_hover(),
-            KeyCode::Esc => {} // cancel
+            KeyCode::Esc | KeyCode::Backspace => {} // cancel
             other => {
                 self.feed_key_to_vim(KeyCode::Char('g'));
                 self.feed_key_to_vim(other);
@@ -4924,6 +4924,17 @@ impl App {
     }
 
     fn handle_leader_key(&mut self, ck: crossterm::event::KeyEvent) {
+        // Backspace pops the last key from the leader sequence. When the
+        // sequence becomes empty, cancel leader mode entirely.
+        if ck.code == KeyCode::Backspace {
+            if let Some(seq) = &mut self.leader_pending {
+                seq.pop();
+                if seq.is_empty() {
+                    self.leader_pending = None;
+                }
+            }
+            return;
+        }
         let c = match ck.code {
             KeyCode::Char(c) => c,
             // Esc or anything else cancels the leader sequence.
