@@ -18,6 +18,7 @@ mod tests {
         let mut r = crate::renderer::TuiRenderer::dummy();
         let view = WindowView {
             rect: Rect::new(0, 0, 80, 24),
+            header: "f".to_string(),
             lines: vec![StyledLine { text: "hi".to_string(), highlights: vec![] }],
             cursor: (0, 1),
             extra_cursors: Vec::new(),

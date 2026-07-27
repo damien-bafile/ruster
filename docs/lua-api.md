@@ -126,7 +126,9 @@ follow-up).
 Register a statusline component. `pos` is `"left"`, `"center"`, or `"right"`.
 `fn` is called each frame and must return a string; empty strings are skipped.
 Sections are shown on the active window's statusline, appended to the built-in
-components (mode, file name, percentage, and `line,col`).
+components (mode, file name, percentage, and `line,col`). The statusline uses
+the active theme's `statusline_fg` color and `divider` background; the first
+segment (mode) is highlighted on the `accent` background for the active window.
 
 ```lua
 -- Show the current git branch on the right side of the statusline.
@@ -152,6 +154,9 @@ ruster.lsp = {
 ### `ruster.config`
 
 Configuration table. See [Config Reference](config-reference.md).
+
+Built-in themes: `default`, `gruvbox`, `tokyonight`, `nord`, `catppuccin-mocha`,
+`starship`. Set with `ruster.config.general.theme = "starship"`.
 
 ```lua
 ruster.config.tabstop = 2

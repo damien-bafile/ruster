@@ -39,7 +39,7 @@ Launching `ruster <directory>` opens the file explorer (dired) at that location.
 ## Themes
 
 Colors come from a **theme**, not individual settings. Built-in themes (`default`,
-`gruvbox`, `tokyonight`, `nord`, `catppuccin-mocha`) are written to
+`gruvbox`, `tokyonight`, `nord`, `catppuccin-mocha`, `starship`) are written to
 `~/.config/ruster/themes/<name>.lua` on first run; pick one with `general.theme = "gruvbox"`. Each theme file is a Lua chunk
 returning a palette you can edit or copy:
 
@@ -52,8 +52,22 @@ return { bg = "#1e1e1e", fg = "#cdd6f4", gutter = "#6c7086", gutter_bg = "#1e1e1
          accent = "#f38ba8", accent_fg = "#1e1e1e" }
 ```
 
+The **starship** theme uses a CRT‑black background (`#0a0e0a`) with green‑phosphor
+foreground (`#33ff66`) and amber accent (`#ff8800`) — a crew‑terminal / industrial
+sci‑fi palette. It is the default visual direction for the Starship UI.
+
 GUI theme, colors, font, and size changes apply **live** when you save the Settings page
 with `:w` — no restart needed.
+
+### Starship UI — panel chrome & welcome screen
+
+When no file is open, ruster shows the **"Ready Room"** welcome screen — a centered
+panel listing recent projects, quick actions, system status (LSP), and keybinds. It
+renders in both GUI and TUI modes using the active theme's colors.
+
+Every window is framed with a **panel header** (a ruled line at the top showing the
+filename as a stencil label) and, in the GUI, a thin vertical seam between adjacent
+windows — giving the editor a crew‑terminal / control‑panel feel.
 
 ### Recoloring individual elements
 

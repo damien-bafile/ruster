@@ -55,14 +55,36 @@ impl Renderer for TuiRenderer {
         };
         let _ = term.draw(|frame| {
             let area = frame.area();
+            let panel_bg = ruster_color_to_ratatui(&self.theme.bg);
+            let divider_color = ruster_color_to_ratatui(&self.theme.divider);
+            let accent = ruster_color_to_ratatui(&self.theme.accent);
 
             for view in &state.windows {
-                if view.rect.width == 0 || view.rect.height == 0 {
-                    continue;
+                let buf_h = view.rect.height.saturating_sub(2);
+                let hdr_area = Rect::new(view.rect.x, view.rect.y, view.rect.width, 1);
+                let buf_area = Rect::new(view.rect.x, view.rect.y + 1, view.rect.width, buf_h);
+                let sl_area = Rect::new(view.rect.x, view.rect.y + 1 + buf_h, view.rect.width, 1);
+
+                // Panel header: a dark ruled line with the filename as a stencil label.
+                let label = &view.header;
+                let cap = if label.is_empty() { "untitled" } else { label };
+                let hdr = format!("─ {} ─", cap);
+                let w = hdr.chars().count().min(view.rect.width as usize) as u16;
+                let hdr_fg = if view.active { accent } else { divider_color };
+                for (i, ch) in hdr.chars().enumerate().take(w as usize) {
+                    if let Some(cell) = frame.buffer_mut().cell_mut((hdr_area.x + i as u16, hdr_area.y)) {
+                        cell.set_char(ch);
+                        cell.set_fg(hdr_fg);
+                        cell.set_bg(panel_bg);
+                    }
                 }
-                let buf_h = view.rect.height.saturating_sub(1);
-                let buf_area = Rect::new(view.rect.x, view.rect.y, view.rect.width, buf_h);
-                let sl_area = Rect::new(view.rect.x, view.rect.y + buf_h, view.rect.width, 1);
+                for x in (hdr_area.x + w)..hdr_area.right() {
+                    if let Some(cell) = frame.buffer_mut().cell_mut((x, hdr_area.y)) {
+                        cell.set_char('─');
+                        cell.set_fg(divider_color);
+                        cell.set_bg(panel_bg);
+                    }
+                }
 
                 if state.welcome.as_ref().is_some_and(|w| w.visible) {
                     let ww = crate::widgets::WelcomeWidget::new(

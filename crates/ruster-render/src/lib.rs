@@ -508,6 +508,7 @@ mod tests {
             active: true,
             selection: None,
             terminal: None,
+            header: "test.txt".into(),
         }
     }
 
