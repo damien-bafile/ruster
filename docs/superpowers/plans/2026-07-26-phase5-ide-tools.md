@@ -49,13 +49,14 @@ then DAP (largest, isolated). Ordered so each task is independently shippable.
   quickfix list; jump on select.
 - [x] Tests: parse captured `cargo build` textual output → quickfix items.
 
-### Task 4: Test runner
+### Task 4: Test runner ✅
 
-- [ ] `:test` (`SPC c t`) runs `[test].command` (default `cargo test`); parse per-test
+- [x] `:test` (`SPC c t`) runs `[test].command` (default `cargo test`); parse per-test
   pass/fail and file/line.
-- [ ] Show **gutter signs** (✓/✗) on the relevant lines and a results picker; failures feed
-  the quickfix list.
-- [ ] Tests: parse `cargo test`/`libtest` output → per-test results.
+- [x] Show **gutter signs** (✗) on failure lines; failures feed the quickfix list
+  (results stream to the `*test*` buffer). ✓-per-pass signs are omitted — libtest gives
+  no line for passing tests.
+- [x] Tests: parse `cargo test`/`libtest` output → per-test results (new + old panic formats).
 
 ### Task 5: Task runner
 

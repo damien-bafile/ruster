@@ -126,6 +126,26 @@ const MOCHA: &[(&str, &str)] = &[
 pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
     vec![
         (
+            "starship",
+            Theme {
+                palette: palette(&[
+                    ("crt_black", "#0a0e0a"), ("phosphor_green", "#33ff66"),
+                    ("phosphor_dim", "#1a6633"), ("phosphor_bright", "#66ff99"),
+                    ("amber", "#ff8800"), ("amber_dim", "#664400"),
+                    ("panel_offwhite", "#ccbbaa"), ("panel_gray", "#222a22"),
+                    ("stencil", "#88aa88"), ("hazard_red", "#ff3333"),
+                ]),
+                roles: ThemeColors {
+                    bg: Rgb::new(10, 14, 10), fg: Rgb::new(51, 255, 102),
+                    gutter: Rgb::new(26, 102, 51), gutter_bg: Rgb::new(10, 14, 10),
+                    selection: Rgb::new(13, 51, 26), selection_fg: Rgb::new(51, 255, 102),
+                    cursor: Rgb::new(102, 255, 153), cursor_fg: Rgb::new(10, 14, 10),
+                    divider: Rgb::new(17, 26, 17), statusline_fg: Rgb::new(51, 255, 102),
+                    accent: Rgb::new(255, 136, 0), accent_fg: Rgb::new(10, 14, 10),
+                },
+            },
+        ),
+        (
             "default",
             Theme { palette: palette(MOCHA), roles: ThemeColors::default() },
         ),
