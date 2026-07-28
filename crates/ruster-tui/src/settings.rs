@@ -732,14 +732,14 @@ mod tests {
     #[test]
     fn stored_hex_displays_palette_name_with_swatch() {
         let mut s = state();
-        goto(&mut s, "colors", "cursor");
+        goto(&mut s, "colors", "cursor_bg");
         s.activate(); // pick mauve
         let view = s.view();
         let row = view
             .groups
             .iter()
             .flat_map(|g| &g.rows)
-            .find(|r| r.label == "Cursor")
+            .find(|r| r.label == "Cursor background")
             .unwrap();
         assert_eq!(row.value, "mauve");
         assert_eq!(row.swatch.as_deref(), Some("#cba6f7"));

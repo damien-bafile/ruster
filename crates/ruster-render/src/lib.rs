@@ -1,3 +1,14 @@
+/// Editing mode for statusline coloring.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum UIMode {
+    #[default]
+    Normal,
+    Insert,
+    Visual,
+    Cmdline,
+    Emacs,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Color {
     Default,
@@ -12,18 +23,50 @@ pub struct Theme {
     pub gutter: Color,
     /// Gutter background (defaults to `bg` when a theme doesn't set it).
     pub gutter_bg: Color,
-    pub selection: Color,
-    /// Text over the selection highlight (defaults to `fg`).
-    pub selection_fg: Color,
-    pub cursor: Color,
-    /// Glyph under the block cursor (defaults to `bg`).
+    /// Block / bar cursor background.
+    pub cursor_bg: Color,
+    /// Text over the cursor block.
     pub cursor_fg: Color,
+    /// Selection highlight background.
+    pub selection_bg: Color,
+    /// Text over the selection highlight.
+    pub selection_fg: Color,
     pub divider: Color,
     /// Statusline / bar text (defaults to `fg`).
     pub statusline_fg: Color,
+    /// Statusline / bar background (defaults to `divider`).
+    pub statusline_bg: Color,
+    /// Statusline background in Normal mode (defaults to `statusline_bg`).
+    pub mode_normal_bg: Color,
+    /// Statusline text in Normal mode (defaults to `statusline_fg`).
+    pub mode_normal_fg: Color,
+    /// Statusline background in Insert mode (defaults to `statusline_bg`).
+    pub mode_insert_bg: Color,
+    /// Statusline text in Insert mode (defaults to `statusline_fg`).
+    pub mode_insert_fg: Color,
+    /// Statusline background in Visual mode (defaults to `statusline_bg`).
+    pub mode_visual_bg: Color,
+    /// Statusline text in Visual mode (defaults to `statusline_fg`).
+    pub mode_visual_fg: Color,
+    /// Statusline background in Cmdline mode (defaults to `statusline_bg`).
+    pub mode_cmdline_bg: Color,
+    /// Statusline text in Cmdline mode (defaults to `statusline_fg`).
+    pub mode_cmdline_fg: Color,
+    /// Statusline background in Emacs mode (defaults to `statusline_bg`).
+    pub mode_emacs_bg: Color,
+    /// Statusline text in Emacs mode (defaults to `statusline_fg`).
+    pub mode_emacs_fg: Color,
     pub accent: Color,
     /// Text on accent-colored bars (defaults to `bg`).
     pub accent_fg: Color,
+    /// Which-key panel background.
+    pub whichkey_bg: Color,
+    /// Which-key panel text.
+    pub whichkey_fg: Color,
+    /// Cmdline / mini-buffer background.
+    pub cmdline_bg: Color,
+    /// Cmdline / mini-buffer text.
+    pub cmdline_fg: Color,
 }
 
 impl Default for Theme {
@@ -33,14 +76,51 @@ impl Default for Theme {
             fg: Color::Rgb(205, 214, 244),
             gutter: Color::Rgb(108, 112, 134),
             gutter_bg: Color::Rgb(30, 30, 30),
-            selection: Color::Rgb(88, 91, 112),
-            selection_fg: Color::Rgb(205, 214, 244),
-            cursor: Color::Rgb(245, 224, 220),
+            cursor_bg: Color::Rgb(245, 224, 220),
             cursor_fg: Color::Rgb(30, 30, 30),
+            selection_bg: Color::Rgb(88, 91, 112),
+            selection_fg: Color::Rgb(205, 214, 244),
             divider: Color::Rgb(69, 71, 90),
             statusline_fg: Color::Rgb(205, 214, 244),
+            statusline_bg: Color::Rgb(69, 71, 90),
+            mode_normal_bg: Color::Rgb(69, 71, 90),
+            mode_normal_fg: Color::Rgb(205, 214, 244),
+            mode_insert_bg: Color::Rgb(40, 72, 50),
+            mode_insert_fg: Color::Rgb(205, 214, 244),
+            mode_visual_bg: Color::Rgb(72, 50, 80),
+            mode_visual_fg: Color::Rgb(205, 214, 244),
+            mode_cmdline_bg: Color::Rgb(60, 55, 40),
+            mode_cmdline_fg: Color::Rgb(205, 214, 244),
+            mode_emacs_bg: Color::Rgb(50, 50, 70),
+            mode_emacs_fg: Color::Rgb(205, 214, 244),
             accent: Color::Rgb(243, 139, 168),
             accent_fg: Color::Rgb(30, 30, 30),
+            whichkey_bg: Color::Rgb(30, 30, 46),
+            whichkey_fg: Color::Rgb(205, 214, 244),
+            cmdline_bg: Color::Rgb(30, 30, 30),
+            cmdline_fg: Color::Rgb(205, 214, 244),
+        }
+    }
+}
+
+impl Theme {
+    pub fn mode_bg(&self, mode: UIMode) -> Color {
+        match mode {
+            UIMode::Normal => self.mode_normal_bg,
+            UIMode::Insert => self.mode_insert_bg,
+            UIMode::Visual => self.mode_visual_bg,
+            UIMode::Cmdline => self.mode_cmdline_bg,
+            UIMode::Emacs => self.mode_emacs_bg,
+        }
+    }
+
+    pub fn mode_fg(&self, mode: UIMode) -> Color {
+        match mode {
+            UIMode::Normal => self.mode_normal_fg,
+            UIMode::Insert => self.mode_insert_fg,
+            UIMode::Visual => self.mode_visual_fg,
+            UIMode::Cmdline => self.mode_cmdline_fg,
+            UIMode::Emacs => self.mode_emacs_fg,
         }
     }
 }
@@ -197,6 +277,7 @@ pub struct StatuslineView {
     pub center: String,
     pub right: String,
     pub active: bool,
+    pub mode: UIMode,
 }
 
 /// How a visual selection covers the lines it spans.
@@ -449,6 +530,9 @@ pub struct FrameState<'a> {
     pub settings: Option<SettingsView>,
     /// Welcome/start screen ("Dashboard"), shown when no file is open.
     pub welcome: Option<WelcomeView>,
+    /// The theme palette for this frame. Used by both the TUI and GUI backends
+    /// so that every widget and overlay reads a consistent set of colours.
+    pub theme: Theme,
 }
 
 pub trait Renderer {
@@ -473,7 +557,8 @@ pub trait Renderer {
 mod tests {
     use crate::{
         Color, CursorKind, FrameState, GutterView, Rect, Renderer, SelectionKind, SelectionView,
-        SignsView, StatuslineView, StyledLine, TermCellView, TermGridView, WindowView,
+        SignsView, StatuslineView, StyledLine, TermCellView, TermGridView, Theme, UIMode,
+        WindowView,
     };
 
     struct TestRenderer;
@@ -516,6 +601,7 @@ mod tests {
                 center: "test.txt".into(),
                 right: "1,1".into(),
                 active: true,
+                mode: UIMode::Normal,
             },
             active: true,
             selection: None,
@@ -579,6 +665,7 @@ mod tests {
             hover: None,
             settings: None,
             welcome: None,
+            theme: Theme::default(),
         };
         let mut r = TestRenderer;
         r.render_frame(&state);

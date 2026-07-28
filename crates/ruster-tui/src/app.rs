@@ -237,9 +237,9 @@ fn resolve_theme_colors(
     set(&ov.fg, &mut colors.fg);
     set(&ov.gutter, &mut colors.gutter);
     set(&ov.gutter_bg, &mut colors.gutter_bg);
-    set(&ov.selection, &mut colors.selection);
+    set(&ov.selection_bg, &mut colors.selection_bg);
     set(&ov.selection_fg, &mut colors.selection_fg);
-    set(&ov.cursor, &mut colors.cursor);
+    set(&ov.cursor_bg, &mut colors.cursor_bg);
     set(&ov.cursor_fg, &mut colors.cursor_fg);
     set(&ov.divider, &mut colors.divider);
     set(&ov.statusline_fg, &mut colors.statusline_fg);
@@ -276,6 +276,18 @@ fn severity_sign(severity: u8) -> (char, ruster_render::Color) {
         2 => ('W', Rgb(249, 226, 175)), // warn   — yellow
         3 => ('I', Rgb(137, 180, 250)), // info   — blue
         _ => ('H', Rgb(148, 226, 213)), // hint   — teal
+    }
+}
+
+fn vim_mode_to_ui_mode(mode: ruster_core::vim::VimMode) -> ruster_render::UIMode {
+    use ruster_core::vim::VimMode;
+    match mode {
+        VimMode::Normal => ruster_render::UIMode::Normal,
+        VimMode::Insert => ruster_render::UIMode::Insert,
+        VimMode::VisualChar | VimMode::VisualLine | VimMode::VisualBlock => {
+            ruster_render::UIMode::Visual
+        }
+        VimMode::Cmdline => ruster_render::UIMode::Cmdline,
     }
 }
 
@@ -491,6 +503,8 @@ enum CmdAction {
     Projects,
     /// Toggle the file-explorer sidebar (`:sidebar`).
     Sidebar,
+    /// Open a file by path (`:e path` / `:edit path`).
+    OpenFile(String),
 }
 
 /// Parse the argument of `:set <opt>` for a boolean option. Accepts `number`
@@ -568,6 +582,8 @@ const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("set editmode neovim", "switch to Neovim (modal) editing"),
     ("set number", "show absolute line numbers"),
     ("set relativenumber", "show relative line numbers"),
+    ("e", "open file by path"),
+    ("edit", "open file by path (alias)"),
 ];
 
 /// The which-key continuations shown after a `Ctrl-w` prefix.
@@ -1379,15 +1395,64 @@ impl App {
                 fg: col(c.colors.fg),
                 gutter: col(c.colors.gutter),
                 gutter_bg: col(c.colors.gutter_bg),
-                selection: col(c.colors.selection),
-                selection_fg: col(c.colors.selection_fg),
-                cursor: col(c.colors.cursor),
+                cursor_bg: col(c.colors.cursor_bg),
                 cursor_fg: col(c.colors.cursor_fg),
+                selection_bg: col(c.colors.selection_bg),
+                selection_fg: col(c.colors.selection_fg),
                 divider: col(c.colors.divider),
                 statusline_fg: col(c.colors.statusline_fg),
+                statusline_bg: col(c.colors.statusline_bg),
+                mode_normal_bg: col(c.colors.mode_normal_bg),
+                mode_normal_fg: col(c.colors.mode_normal_fg),
+                mode_insert_bg: col(c.colors.mode_insert_bg),
+                mode_insert_fg: col(c.colors.mode_insert_fg),
+                mode_visual_bg: col(c.colors.mode_visual_bg),
+                mode_visual_fg: col(c.colors.mode_visual_fg),
+                mode_cmdline_bg: col(c.colors.mode_cmdline_bg),
+                mode_cmdline_fg: col(c.colors.mode_cmdline_fg),
+                mode_emacs_bg: col(c.colors.mode_emacs_bg),
+                mode_emacs_fg: col(c.colors.mode_emacs_fg),
                 accent: col(c.colors.accent),
                 accent_fg: col(c.colors.accent_fg),
+                whichkey_bg: col(c.colors.whichkey_bg),
+                whichkey_fg: col(c.colors.whichkey_fg),
+                cmdline_bg: col(c.colors.cmdline_bg),
+                cmdline_fg: col(c.colors.cmdline_fg),
             },
+        }
+    }
+
+    fn theme_palette(&self) -> ruster_render::Theme {
+        let c = &self.config;
+        let col = |rgb: ruster_lua::config::Rgb| ruster_render::Color::Rgb(rgb.r, rgb.g, rgb.b);
+        ruster_render::Theme {
+            bg: col(c.colors.bg),
+            fg: col(c.colors.fg),
+            gutter: col(c.colors.gutter),
+            gutter_bg: col(c.colors.gutter_bg),
+            cursor_bg: col(c.colors.cursor_bg),
+            cursor_fg: col(c.colors.cursor_fg),
+            selection_bg: col(c.colors.selection_bg),
+            selection_fg: col(c.colors.selection_fg),
+            divider: col(c.colors.divider),
+            statusline_fg: col(c.colors.statusline_fg),
+            statusline_bg: col(c.colors.statusline_bg),
+            mode_normal_bg: col(c.colors.mode_normal_bg),
+            mode_normal_fg: col(c.colors.mode_normal_fg),
+            mode_insert_bg: col(c.colors.mode_insert_bg),
+            mode_insert_fg: col(c.colors.mode_insert_fg),
+            mode_visual_bg: col(c.colors.mode_visual_bg),
+            mode_visual_fg: col(c.colors.mode_visual_fg),
+            mode_cmdline_bg: col(c.colors.mode_cmdline_bg),
+            mode_cmdline_fg: col(c.colors.mode_cmdline_fg),
+            mode_emacs_bg: col(c.colors.mode_emacs_bg),
+            mode_emacs_fg: col(c.colors.mode_emacs_fg),
+            accent: col(c.colors.accent),
+            accent_fg: col(c.colors.accent_fg),
+            whichkey_bg: col(c.colors.whichkey_bg),
+            whichkey_fg: col(c.colors.whichkey_fg),
+            cmdline_bg: col(c.colors.cmdline_bg),
+            cmdline_fg: col(c.colors.cmdline_fg),
         }
     }
 
@@ -2828,7 +2893,7 @@ impl App {
                         right = format!("{}  {}", lua_right, right);
                     }
                 }
-                let statusline = StatuslineView { left, center, right, active: is_active };
+                let statusline = StatuslineView { left, center, right, active: is_active, mode: vim_mode_to_ui_mode(mode) };
                 let cursor_smooth = if is_active && smooth {
                     Some((anim_x - ccol as f32, anim_y - cline as f32))
                 } else {
@@ -2926,7 +2991,7 @@ impl App {
                 scroll_offset: 0,
                 gutter: ruster_render::GutterView { width: 0, rows: vec![] },
                 signs: ruster_render::SignsView::default(),
-                statusline: StatuslineView { left: "Sidebar".into(), center: String::new(), right: format!("{} items", rows.len()), active: self.sidebar_focused },
+                statusline: StatuslineView { left: "Sidebar".into(), center: String::new(), right: format!("{} items", rows.len()), active: self.sidebar_focused, mode: vim_mode_to_ui_mode(self.vim.mode) },
                 active: self.sidebar_focused,
                 selection: None,
                 terminal: None,
@@ -3033,6 +3098,7 @@ impl App {
             hover: self.hover.clone(),
             settings: self.settings.as_ref().map(|s| s.view()),
             welcome: welcome_view,
+            theme: self.theme_palette(),
         };
         self.renderer.render_frame(&state);
     }
@@ -3120,6 +3186,20 @@ impl App {
             _ if trimmed.starts_with("messages/") || trimmed.starts_with("msgs/") => {
                 let filter = trimmed.split_once('/').map(|x| x.1).unwrap_or("").trim().to_string();
                 Ok(CmdAction::MessagesFilter(filter))
+            }
+            "e" | "edit" => Ok(CmdAction::Files),
+            _ if trimmed.starts_with("e ") || trimmed.starts_with("edit ") => {
+                let path = trimmed
+                    .split_once(' ')
+                    .map(|x| x.1)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if path.is_empty() {
+                    Ok(CmdAction::Files)
+                } else {
+                    Ok(CmdAction::OpenFile(path))
+                }
             }
             _ if trimmed == "projects" => Ok(CmdAction::Projects),
             _ if trimmed == "sidebar" => Ok(CmdAction::Sidebar),
@@ -3218,6 +3298,10 @@ impl App {
             CmdAction::MessagesFilter(filter) => self.apply_messages_filter(&filter),
             CmdAction::Projects => self.open_projects(),
             CmdAction::Sidebar => self.toggle_sidebar(),
+            CmdAction::OpenFile(path) => {
+                let resolved = std::path::PathBuf::from(&path);
+                self.open_path(&resolved, None);
+            }
         }
     }
 

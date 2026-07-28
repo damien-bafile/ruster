@@ -10,7 +10,8 @@ pub mod widgets;
 #[cfg(test)]
 mod tests {
     use ruster_render::{
-        CursorKind, FrameState, GutterView, Rect, Renderer, StatuslineView, StyledLine, WindowView,
+        CursorKind, FrameState, GutterView, Rect, Renderer, StatuslineView, StyledLine, UIMode,
+        WindowView,
     };
 
     #[test]
@@ -33,12 +34,13 @@ mod tests {
                 center: "f".into(),
                 right: "1,2".into(),
                 active: true,
+                mode: UIMode::default(),
             },
             active: true,
             selection: None,
             terminal: None,
         };
-        let state = FrameState { windows: vec![view], cmdline: None, message: None, picker: None, whichkey: None, hover: None, settings: None, welcome: None };
+        let state = FrameState { windows: vec![view], cmdline: None, message: None, picker: None, whichkey: None, hover: None, settings: None, welcome: None, theme: Default::default() };
         // Dummy renderer has no terminal; this exercises the type wiring.
         r.render_frame(&state);
     }

@@ -1,7 +1,7 @@
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::Rect;
 use ratatui::Terminal;
-use ruster_render::{Color, FrameState, Renderer, SyntaxStyle, Theme};
+use ruster_render::{Color, FrameState, Renderer, SyntaxStyle};
 use std::io::Stdout;
 
 fn ruster_color_to_ratatui(c: &Color) -> ratatui::style::Color {
@@ -23,18 +23,17 @@ pub fn ruster_style_to_ratatui(s: &SyntaxStyle) -> ratatui::style::Style {
 pub struct TuiRenderer {
     terminal: Option<Terminal<CrosstermBackend<Stdout>>>,
     settings_scroll: usize,
-    theme: Theme,
 }
 
 impl TuiRenderer {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let stdout = std::io::stdout();
         let terminal = Terminal::new(CrosstermBackend::new(stdout))?;
-        Ok(TuiRenderer { terminal: Some(terminal), settings_scroll: 0, theme: Theme::default() })
+        Ok(TuiRenderer { terminal: Some(terminal), settings_scroll: 0 })
     }
 
     pub fn dummy() -> Self {
-        TuiRenderer { terminal: None, settings_scroll: 0, theme: Theme::default() }
+        TuiRenderer { terminal: None, settings_scroll: 0 }
     }
 }
 
@@ -43,8 +42,8 @@ impl Renderer for TuiRenderer {
         crossterm::terminal::size().unwrap_or((80, 24))
     }
 
-    fn set_gui_config(&mut self, gui: &ruster_render::GuiConfig, _font: Option<&str>) {
-        self.theme = gui.theme;
+    fn set_gui_config(&mut self, _gui: &ruster_render::GuiConfig, _font: Option<&str>) {
+        // Theme is now consumed from FrameState, no need to store locally.
     }
 
     fn render_frame(&mut self, state: &FrameState) {
@@ -55,9 +54,9 @@ impl Renderer for TuiRenderer {
         };
         let _ = term.draw(|frame| {
             let area = frame.area();
-            let panel_bg = ruster_color_to_ratatui(&self.theme.bg);
-            let divider_color = ruster_color_to_ratatui(&self.theme.divider);
-            let accent = ruster_color_to_ratatui(&self.theme.accent);
+            let panel_bg = ruster_color_to_ratatui(&state.theme.bg);
+            let divider_color = ruster_color_to_ratatui(&state.theme.divider);
+            let accent = ruster_color_to_ratatui(&state.theme.accent);
 
             for view in &state.windows {
                 let buf_h = view.rect.height.saturating_sub(2);
@@ -89,11 +88,12 @@ impl Renderer for TuiRenderer {
                 if state.welcome.as_ref().is_some_and(|w| w.visible) {
                     let ww = crate::widgets::WelcomeWidget::new(
                         state.welcome.as_ref().unwrap().clone(),
-                    ).with_theme(&self.theme);
+                    ).with_theme(&state.theme);
                     frame.render_widget(ww, buf_area);
                 } else if let Some(grid) = &view.terminal {
                     let term_widget = crate::widgets::TerminalWidget::new(grid.clone())
-                        .with_cursor_visible(view.cursor_visible && view.active);
+                        .with_cursor_visible(view.cursor_visible && view.active)
+                        .with_theme(&state.theme);
                     frame.render_widget(term_widget, buf_area);
                 } else {
                     let has_highlights = view.lines.iter().any(|l| !l.highlights.is_empty());
@@ -106,20 +106,26 @@ impl Renderer for TuiRenderer {
                         .with_signs(view.signs.clone())
                         .with_extra_cursors(view.extra_cursors.clone())
                         .with_selection(view.selection)
-                        .with_active(view.active);
+                        .with_active(view.active)
+                        .with_theme(&state.theme);
                     frame.render_widget(buf_widget, buf_area);
                 }
 
                 let sl = crate::widgets::StatuslineWidget::new(view.statusline.clone())
-                    .with_theme(&self.theme);
+                    .with_theme(&state.theme);
                 frame.render_widget(sl, sl_area);
             }
 
-            let cmd_text = state.cmdline.or(state.message);
-            if let Some(text) = cmd_text {
+            if let Some(text) = state.cmdline {
                 let cl_area = Rect::new(0, area.height.saturating_sub(1), area.width, 1);
                 let cmd = crate::widgets::CmdlineWidget::new(text)
-                    .with_theme(&self.theme);
+                    .with_theme(&state.theme);
+                frame.render_widget(cmd, cl_area);
+            } else if let Some(text) = state.message {
+                let cl_area = Rect::new(0, area.height.saturating_sub(1), area.width, 1);
+                let cmd = crate::widgets::CmdlineWidget::new(text)
+                    .with_message_style()
+                    .with_theme(&state.theme);
                 frame.render_widget(cmd, cl_area);
             }
 
@@ -130,7 +136,10 @@ impl Renderer for TuiRenderer {
                     let h = visible.min(area.height);
                     let py = area.height.saturating_sub(h);
                     let parea = Rect::new(0, py, area.width, h);
-                    frame.render_widget(crate::widgets::WhichKeyWidget::new(wk.clone()), parea);
+                    frame.render_widget(
+                        crate::widgets::WhichKeyWidget::new(wk.clone()).with_theme(&state.theme),
+                        parea,
+                    );
                 }
             }
 
@@ -142,7 +151,7 @@ impl Renderer for TuiRenderer {
                     let x = area.x + (area.width.saturating_sub(w)) / 2;
                     let y = area.y + 1;
                     frame.render_widget(
-                        crate::widgets::HoverWidget::new(lines.clone()),
+                        crate::widgets::HoverWidget::new(lines.clone()).with_theme(&state.theme),
                         Rect::new(x, y, w, h),
                     );
                 }
@@ -163,7 +172,10 @@ impl Renderer for TuiRenderer {
                     let py = area.y + (area.height.saturating_sub(ph)) / 2;
                     Rect::new(px, py, pw, ph)
                 };
-                frame.render_widget(crate::widgets::PickerWidget::new(picker.clone()), parea);
+                frame.render_widget(
+                    crate::widgets::PickerWidget::new(picker.clone()).with_theme(&state.theme),
+                    parea,
+                );
             }
 
             if let Some(settings) = &state.settings {
@@ -173,7 +185,8 @@ impl Renderer for TuiRenderer {
                 let sy = area.y + (area.height.saturating_sub(sh)) / 2;
                 let sarea = Rect::new(sx, sy, sw, sh);
                 frame.render_widget(
-                    crate::widgets::SettingsWidget::new(settings.clone(), sscroll),
+                    crate::widgets::SettingsWidget::new(settings.clone(), sscroll)
+                        .with_theme(&state.theme),
                     sarea,
                 );
             }

@@ -259,7 +259,7 @@ impl Renderer for RaylibRenderer {
         // Read the config-driven metrics + palette into locals so they stay
         // disjoint from the &mut self.rl borrow the draw handle holds.
         let (font_size, line_h, pad_x, pad_y) = (self.font_size, self.line_h, self.pad_x, self.pad_y);
-        let theme = self.theme;
+        let theme = state.theme;
         let font = &self.font;
         let measure = |s: &str| font.measure_text(s, font_size as f32, 1.0).x;
 
@@ -268,13 +268,18 @@ impl Renderer for RaylibRenderer {
         let divider = to_raylib(theme.divider, Color::new(69, 71, 90, 255));
         let bg = to_raylib(theme.bg, Color::new(30, 30, 30, 255));
         let gutter_bg = to_raylib(theme.gutter_bg, bg);
-        let selection_bg = to_raylib(theme.selection, Color::new(88, 91, 112, 255));
+        let selection_bg = to_raylib(theme.selection_bg, Color::new(88, 91, 112, 255));
         let selection_fg = to_raylib(theme.selection_fg, default_color);
-        let (cur_r, cur_g, cur_b) = rgb_of(theme.cursor, (245, 224, 220));
+        let (cur_r, cur_g, cur_b) = rgb_of(theme.cursor_bg, (245, 224, 220));
         let cursor_fg = to_raylib(theme.cursor_fg, bg);
         let accent = to_raylib(theme.accent, Color::new(243, 139, 168, 255));
         let accent_fg = to_raylib(theme.accent_fg, bg);
         let statusline_fg = to_raylib(theme.statusline_fg, default_color);
+        let statusline_bg = to_raylib(theme.statusline_bg, divider);
+        let whichkey_bg = to_raylib(theme.whichkey_bg, Color::new(30, 30, 46, 255));
+        let whichkey_fg = to_raylib(theme.whichkey_fg, default_color);
+        let cmdline_bg = to_raylib(theme.cmdline_bg, bg);
+        let cmdline_fg = to_raylib(theme.cmdline_fg, default_color);
 
         let mut d = self.rl.begin_drawing(&self.thread);
         d.clear_background(bg);
@@ -330,6 +335,8 @@ impl Renderer for RaylibRenderer {
                 // no named file is open.
                 if let Some(welcome) = &state.welcome {
                     if welcome.visible {
+                        // Fill the content area with the background colour.
+                        s.draw_rectangle(px, content_y, pw, clip_h, bg);
                         let mut row = 0;
                         let cx = px + (pw as f32 / 2.0) as i32;
                         let draw_text = |s: &mut RaylibDrawHandle, x: i32, r: i32, text: &str, color: Color| {
@@ -353,8 +360,16 @@ impl Renderer for RaylibRenderer {
                         };
 
                         section(&mut s, &mut row, "RECENT PROJECTS", accent);
-                        draw_text(&mut s, px + 8, row, "  No recent projects", gutter_color);
-                        row += 2;
+                        if welcome.recent_projects.is_empty() {
+                            draw_text(&mut s, px + 8, row, "  No recent projects", gutter_color);
+                            row += 1;
+                        } else {
+                            for (i, proj) in welcome.recent_projects.iter().enumerate() {
+                                draw_text(&mut s, px + 8, row, &format!(" {}. {}", i + 1, proj), default_color);
+                                row += 1;
+                            }
+                        }
+                        row += 1;
 
                         section(&mut s, &mut row, "QUICK ACTIONS", accent);
                         for (cmd, desc) in &[(":e path/to/file", "Open File"), (":Dired", "File Explorer"), (":FuzzySearch", "Find Files"), (":term", "Terminal")] {
@@ -592,25 +607,34 @@ impl Renderer for RaylibRenderer {
 
                 // Per-window statusline on its bottom row (below header + content).
                 let sl_y = content_y + buf_rows as i32 * line_h;
-                let (sl_bg, sl_fg) = if view.active {
-                    (divider, statusline_fg)
-                } else {
-                    (Color::new(40, 40, 48, 255), Color::new(120, 120, 130, 255))
-                };
-                s.draw_rectangle(px, sl_y, pw, line_h, sl_bg);
+                let mode_bg = to_raylib(theme.mode_bg(view.statusline.mode), statusline_bg);
+                let mode_fg = to_raylib(theme.mode_fg(view.statusline.mode), statusline_fg);
+                // Fill entire statusline with neutral bg.
+                s.draw_rectangle(px, sl_y, pw, line_h, statusline_bg);
+                // Mode label (left section) — per-mode bg + fg.
                 let left = format!(" {} ", view.statusline.left);
+                let left_w = measure(&left);
+                let (sl_bg, sl_fg) = if view.active {
+                    (mode_bg, mode_fg)
+                } else {
+                    let c = mode_bg;
+                    (Color::new(c.r.saturating_sub(20), c.g.saturating_sub(20), c.b.saturating_sub(20), c.a), gutter_color)
+                };
+                s.draw_rectangle(px, sl_y, left_w as i32, line_h, sl_bg);
                 s.draw_text_ex(font, &left, Vector2::new(px as f32, sl_y as f32), font_size as f32, 1.0, sl_fg);
+                // Right section — neutral bg + statusline_fg (or gutter for inactive).
                 let right = format!(" {} ", view.statusline.right);
                 let right_x = (px + pw) as f32 - measure(&right);
-                s.draw_text_ex(font, &right, Vector2::new(right_x, sl_y as f32), font_size as f32, 1.0, sl_fg);
+                let right_fg = if view.active { statusline_fg } else { gutter_color };
+                s.draw_text_ex(font, &right, Vector2::new(right_x, sl_y as f32), font_size as f32, 1.0, right_fg);
+                // Center section — neutral bg + statusline_fg (or gutter for inactive).
                 if !view.statusline.center.is_empty() {
                     let center_w = measure(&view.statusline.center);
                     let center_x = px as f32 + (pw as f32 - center_w) / 2.0;
-                    // Only draw the center group if it fits between left and right.
-                    let left_w = measure(&left);
+                    let left_w_val = measure(&left);
                     let right_w = measure(&right);
-                    if pw as f32 > left_w + right_w + center_w {
-                        s.draw_text_ex(font, &view.statusline.center, Vector2::new(center_x, sl_y as f32), font_size as f32, 1.0, sl_fg);
+                    if pw as f32 > left_w_val + right_w + center_w {
+                        s.draw_text_ex(font, &view.statusline.center, Vector2::new(center_x, sl_y as f32), font_size as f32, 1.0, right_fg);
                     }
                 }
             }
@@ -625,18 +649,21 @@ impl Renderer for RaylibRenderer {
         // the windows) while one is shown, so draw it flush at that reserved row
         // and only when present — otherwise it would overpaint the last window's
         // statusline, which now fills the bottom row itself.
-        if let Some(cmd) = state.cmdline.or(state.message) {
+        if let Some(cmd) = state.cmdline {
             let rows = ((screen_h - pad_y) / line_h).max(1);
             let cmd_y = pad_y + (rows - 1) * line_h;
-            d.draw_rectangle(0, cmd_y, screen_w, screen_h - cmd_y, bg);
-            d.draw_text_ex(font, cmd, Vector2::new(pad_x as f32, cmd_y as f32), font_size as f32, 1.0, default_color);
+            d.draw_rectangle(0, cmd_y, screen_w, screen_h - cmd_y, cmdline_bg);
+            d.draw_text_ex(font, cmd, Vector2::new(pad_x as f32, cmd_y as f32), font_size as f32, 1.0, cmdline_fg);
+        } else if let Some(msg) = state.message {
+            let rows = ((screen_h - pad_y) / line_h).max(1);
+            let cmd_y = pad_y + (rows - 1) * line_h;
+            d.draw_rectangle(0, cmd_y, screen_w, screen_h - cmd_y, cmdline_bg);
+            d.draw_text_ex(font, msg, Vector2::new(pad_x as f32, cmd_y as f32), font_size as f32, 1.0, accent);
         }
 
         // Picker overlay: centered floating box, or a full-width strip docked at
         // the bottom (the command palette's "bottom" mode).
         if let Some(picker) = &state.picker {
-            let box_bg = Color::new(30, 30, 46, 255);
-            let preview_bg = Color::new(24, 24, 37, 255);
             let has_preview = !picker.preview.is_empty();
             let frac = if has_preview { 9 } else { 6 };
             let n_rows = (picker.rows.len() as i32 + 2).max(picker.preview.len() as i32);
@@ -650,9 +677,9 @@ impl Renderer for RaylibRenderer {
                 ((screen_w - w) / 2, ((screen_h - h) / 2).max(0), w, h)
             };
             let list_w = if has_preview { box_w * 2 / 5 } else { box_w };
-            d.draw_rectangle(box_x, box_y, box_w, box_h, box_bg);
+            d.draw_rectangle(box_x, box_y, box_w, box_h, bg);
             if has_preview {
-                d.draw_rectangle(box_x + list_w, box_y, box_w - list_w, box_h, preview_bg);
+                d.draw_rectangle(box_x + list_w, box_y, box_w - list_w, box_h, bg);
                 d.draw_rectangle(box_x + list_w, box_y, 1, box_h, accent);
             }
             d.draw_rectangle_lines(box_x, box_y, box_w, box_h, accent);
@@ -673,7 +700,7 @@ impl Renderer for RaylibRenderer {
                     let ry = box_y + (2 + i as i32) * line_h;
                     if row.selected {
                         s.draw_rectangle(box_x, ry, list_clip_w, line_h, accent);
-                        s.draw_text_ex(font, &format!(" {}", row.label), Vector2::new(box_x as f32 + 4.0, ry as f32), font_size as f32, 1.0, box_bg);
+                        s.draw_text_ex(font, &format!(" {}", row.label), Vector2::new(box_x as f32 + 4.0, ry as f32), font_size as f32, 1.0, accent_fg);
                     } else {
                         s.draw_text_ex(font, &format!(" {}", row.label), Vector2::new(box_x as f32 + 4.0, ry as f32), font_size as f32, 1.0, default_color);
                     }
@@ -733,7 +760,7 @@ impl Renderer for RaylibRenderer {
         // Hover popup, near the top-center (syntax-highlighted).
         if let Some(lines) = &state.hover {
             if !lines.is_empty() {
-                let box_bg = Color::new(24, 24, 37, 255);
+                let box_bg = bg;
                 let longest = lines.iter().map(|l| l.text.chars().count()).max().unwrap_or(0);
                 let box_w = ((longest as f32 * char_w) as i32 + 16).min(screen_w - 20);
                 let box_h = (lines.len() as i32 * line_h + 8).min(screen_h - 20);
@@ -783,17 +810,16 @@ impl Renderer for RaylibRenderer {
 
         // Bottom which-key panel, sliding up from the screen edge by `anim`.
         if let Some(wk) = &state.whichkey {
-            let box_bg = Color::new(30, 30, 46, 255);
             let panel_h = (wk.rows.len() as i32 + 1) * line_h + 8;
             let panel_top = screen_h - (panel_h as f32 * wk.anim.clamp(0.0, 1.0)) as i32;
             // Clip to the visible (slid-in) region so nothing draws above it.
             let mut s = d.begin_scissor_mode(0, panel_top, screen_w, screen_h - panel_top);
-            s.draw_rectangle(0, panel_top, screen_w, screen_h - panel_top, box_bg);
+            s.draw_rectangle(0, panel_top, screen_w, screen_h - panel_top, whichkey_bg);
             s.draw_rectangle(0, panel_top, screen_w, 2, accent);
             s.draw_text_ex(font, &format!(" {} ", wk.title), Vector2::new(pad_x as f32, (panel_top + 4) as f32), font_size as f32, 1.0, accent);
             for (i, entry) in wk.rows.iter().enumerate() {
                 let ry = panel_top + 4 + (i as i32 + 1) * line_h;
-                s.draw_text_ex(font, &format!("   {}", entry), Vector2::new(pad_x as f32, ry as f32), font_size as f32, 1.0, default_color);
+                s.draw_text_ex(font, &format!("   {}", entry), Vector2::new(pad_x as f32, ry as f32), font_size as f32, 1.0, whichkey_fg);
             }
         }
 
@@ -802,7 +828,7 @@ impl Renderer for RaylibRenderer {
             let sbg = bg;
             let sel_bg = selection_bg;
             let dim = gutter_color;
-            let bar_bg = divider;
+            let bar_bg = statusline_bg;
             let bw = screen_w * 8 / 10;
             let bh = screen_h * 9 / 10;
             let bx = (screen_w - bw) / 2;

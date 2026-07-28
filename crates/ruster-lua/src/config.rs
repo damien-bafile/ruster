@@ -6,6 +6,10 @@ pub struct Rgb {
     pub b: u8,
 }
 
+/// Bump this when built-in theme defaults change to force regeneration of
+/// cached theme files on disk.
+pub const CURRENT_THEME_VERSION: u32 = 2;
+
 impl Rgb {
     pub const fn new(r: u8, g: u8, b: u8) -> Self {
         Rgb { r, g, b }
@@ -24,18 +28,49 @@ pub struct ThemeColors {
     pub gutter: Rgb,
     /// Gutter background. Defaults to `bg` when a theme doesn't set it.
     pub gutter_bg: Rgb,
-    pub selection: Rgb,
-    /// Text drawn over the selection highlight. Defaults to `fg`.
+    pub cursor_bg: Rgb,
+    /// Selection highlight background.
+    pub selection_bg: Rgb,
+    /// Text over the selection / cursor highlight.
     pub selection_fg: Rgb,
-    pub cursor: Rgb,
     /// Glyph under the block cursor. Defaults to `bg` (a solid block).
     pub cursor_fg: Rgb,
     pub divider: Rgb,
     /// Statusline / bar text. Defaults to `fg`.
     pub statusline_fg: Rgb,
+    /// Statusline / bar background.
+    pub statusline_bg: Rgb,
     pub accent: Rgb,
     /// Text drawn on accent-colored bars. Defaults to `bg`.
     pub accent_fg: Rgb,
+    /// Which-key panel background.
+    pub whichkey_bg: Rgb,
+    /// Which-key panel text.
+    pub whichkey_fg: Rgb,
+    /// Cmdline / mini-buffer background.
+    pub cmdline_bg: Rgb,
+    /// Cmdline / mini-buffer text.
+    pub cmdline_fg: Rgb,
+    /// Statusline background in Normal mode.
+    pub mode_normal_bg: Rgb,
+    /// Statusline text in Normal mode.
+    pub mode_normal_fg: Rgb,
+    /// Statusline background in Insert mode.
+    pub mode_insert_bg: Rgb,
+    /// Statusline text in Insert mode.
+    pub mode_insert_fg: Rgb,
+    /// Statusline background in Visual mode.
+    pub mode_visual_bg: Rgb,
+    /// Statusline text in Visual mode.
+    pub mode_visual_fg: Rgb,
+    /// Statusline background in Cmdline mode.
+    pub mode_cmdline_bg: Rgb,
+    /// Statusline text in Cmdline mode.
+    pub mode_cmdline_fg: Rgb,
+    /// Statusline background in Emacs mode.
+    pub mode_emacs_bg: Rgb,
+    /// Statusline text in Emacs mode.
+    pub mode_emacs_fg: Rgb,
 }
 
 impl Default for ThemeColors {
@@ -45,14 +80,29 @@ impl Default for ThemeColors {
             fg: Rgb::new(205, 214, 244),
             gutter: Rgb::new(108, 112, 134),
             gutter_bg: Rgb::new(30, 30, 30),
-            selection: Rgb::new(88, 91, 112),
-            selection_fg: Rgb::new(205, 214, 244),
-            cursor: Rgb::new(245, 224, 220),
+            cursor_bg: Rgb::new(245, 224, 220),
             cursor_fg: Rgb::new(30, 30, 30),
+            selection_bg: Rgb::new(88, 91, 112),
+            selection_fg: Rgb::new(205, 214, 244),
             divider: Rgb::new(69, 71, 90),
             statusline_fg: Rgb::new(205, 214, 244),
+            statusline_bg: Rgb::new(69, 71, 90),
             accent: Rgb::new(243, 139, 168),
             accent_fg: Rgb::new(30, 30, 30),
+            whichkey_bg: Rgb::new(30, 30, 46),
+            whichkey_fg: Rgb::new(205, 214, 244),
+            cmdline_bg: Rgb::new(30, 30, 30),
+            cmdline_fg: Rgb::new(205, 214, 244),
+            mode_normal_bg: Rgb::new(69, 71, 90),
+            mode_normal_fg: Rgb::new(205, 214, 244),
+            mode_insert_bg: Rgb::new(40, 72, 50),
+            mode_insert_fg: Rgb::new(205, 214, 244),
+            mode_visual_bg: Rgb::new(72, 50, 80),
+            mode_visual_fg: Rgb::new(205, 214, 244),
+            mode_cmdline_bg: Rgb::new(60, 55, 40),
+            mode_cmdline_fg: Rgb::new(205, 214, 244),
+            mode_emacs_bg: Rgb::new(50, 50, 70),
+            mode_emacs_fg: Rgb::new(205, 214, 244),
         }
     }
 }
@@ -71,17 +121,34 @@ impl Theme {
     pub fn to_lua(&self) -> String {
         let r = &self.roles;
         let mut s = String::from(
-            "-- ruster theme. `roles` colour the UI; `palette` are the named colours\n\
-             -- the Settings page assigns to each element. Edit or copy freely.\n\
-             return {\n",
+            format!(
+                "-- ruster theme. `roles` colour the UI; `palette` are the named colours\n\
+                 -- the Settings page assigns to each element. Edit or copy freely.\n\
+                 -- ruster-theme-version: {}\n\
+                 return {{\n",
+                CURRENT_THEME_VERSION,
+            ),
         );
         s.push_str(&format!(
             "  bg = {:?}, fg = {:?}, gutter = {:?}, gutter_bg = {:?},\n  \
-             selection = {:?}, selection_fg = {:?}, cursor = {:?}, cursor_fg = {:?},\n  \
-             divider = {:?}, statusline_fg = {:?}, accent = {:?}, accent_fg = {:?},\n",
+             cursor_bg = {:?}, selection_bg = {:?}, selection_fg = {:?}, cursor_fg = {:?},\n  \
+             divider = {:?}, statusline_fg = {:?}, statusline_bg = {:?}, accent = {:?}, accent_fg = {:?},\n  \
+             whichkey_bg = {:?}, whichkey_fg = {:?}, cmdline_bg = {:?}, cmdline_fg = {:?},\n  \
+             mode_normal_bg = {:?}, mode_normal_fg = {:?},\n  \
+             mode_insert_bg = {:?}, mode_insert_fg = {:?},\n  \
+             mode_visual_bg = {:?}, mode_visual_fg = {:?},\n  \
+             mode_cmdline_bg = {:?}, mode_cmdline_fg = {:?},\n  \
+             mode_emacs_bg = {:?}, mode_emacs_fg = {:?},\n",
             r.bg.to_hex(), r.fg.to_hex(), r.gutter.to_hex(), r.gutter_bg.to_hex(),
-            r.selection.to_hex(), r.selection_fg.to_hex(), r.cursor.to_hex(), r.cursor_fg.to_hex(),
-            r.divider.to_hex(), r.statusline_fg.to_hex(), r.accent.to_hex(), r.accent_fg.to_hex(),
+            r.cursor_bg.to_hex(), r.selection_bg.to_hex(), r.selection_fg.to_hex(), r.cursor_fg.to_hex(),
+            r.divider.to_hex(), r.statusline_fg.to_hex(), r.statusline_bg.to_hex(), r.accent.to_hex(), r.accent_fg.to_hex(),
+            r.whichkey_bg.to_hex(), r.whichkey_fg.to_hex(),
+            r.cmdline_bg.to_hex(), r.cmdline_fg.to_hex(),
+            r.mode_normal_bg.to_hex(), r.mode_normal_fg.to_hex(),
+            r.mode_insert_bg.to_hex(), r.mode_insert_fg.to_hex(),
+            r.mode_visual_bg.to_hex(), r.mode_visual_fg.to_hex(),
+            r.mode_cmdline_bg.to_hex(), r.mode_cmdline_fg.to_hex(),
+            r.mode_emacs_bg.to_hex(), r.mode_emacs_fg.to_hex(),
         ));
         s.push_str("  palette = {\n");
         for (name, c) in &self.palette {
@@ -90,6 +157,19 @@ impl Theme {
         s.push_str("  },\n}\n");
         s
     }
+}
+
+/// Extract the `ruster-theme-version: N` marker from a theme file's content.
+/// Returns `None` if the marker is absent (old file without versioning).
+pub fn theme_version(content: &str) -> Option<u32> {
+    for line in content.lines() {
+        if let Some(rest) = line.strip_prefix("-- ruster-theme-version: ") {
+            if let Ok(v) = rest.trim().parse::<u32>() {
+                return Some(v);
+            }
+        }
+    }
+    None
 }
 
 fn hex_to_rgb(hex: &str) -> Rgb {
@@ -138,10 +218,18 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                 roles: ThemeColors {
                     bg: Rgb::new(10, 14, 10), fg: Rgb::new(51, 255, 102),
                     gutter: Rgb::new(26, 102, 51), gutter_bg: Rgb::new(10, 14, 10),
-                    selection: Rgb::new(13, 51, 26), selection_fg: Rgb::new(51, 255, 102),
-                    cursor: Rgb::new(102, 255, 153), cursor_fg: Rgb::new(10, 14, 10),
+                    cursor_bg: Rgb::new(102, 255, 153), cursor_fg: Rgb::new(10, 14, 10),
+                    selection_bg: Rgb::new(88, 91, 112), selection_fg: Rgb::new(51, 255, 102),
                     divider: Rgb::new(17, 26, 17), statusline_fg: Rgb::new(51, 255, 102),
+                    statusline_bg: Rgb::new(17, 26, 17),
                     accent: Rgb::new(255, 136, 0), accent_fg: Rgb::new(10, 14, 10),
+                    whichkey_bg: Rgb::new(10, 14, 10), whichkey_fg: Rgb::new(51, 255, 102),
+                    cmdline_bg: Rgb::new(10, 14, 10), cmdline_fg: Rgb::new(51, 255, 102),
+                    mode_normal_bg: Rgb::new(17, 26, 17), mode_normal_fg: Rgb::new(51, 255, 102),
+                    mode_insert_bg: Rgb::new(17, 26, 51), mode_insert_fg: Rgb::new(51, 255, 102),
+                    mode_visual_bg: Rgb::new(40, 20, 20), mode_visual_fg: Rgb::new(51, 255, 102),
+                    mode_cmdline_bg: Rgb::new(17, 26, 17), mode_cmdline_fg: Rgb::new(51, 255, 102),
+                    mode_emacs_bg: Rgb::new(17, 26, 17), mode_emacs_fg: Rgb::new(51, 255, 102),
                 },
             },
         ),
@@ -161,10 +249,18 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                 roles: ThemeColors {
                     bg: Rgb::new(40, 40, 40), fg: Rgb::new(235, 219, 178),
                     gutter: Rgb::new(124, 111, 100), gutter_bg: Rgb::new(40, 40, 40),
-                    selection: Rgb::new(80, 73, 69), selection_fg: Rgb::new(235, 219, 178),
-                    cursor: Rgb::new(254, 128, 25), cursor_fg: Rgb::new(40, 40, 40),
+                    cursor_bg: Rgb::new(254, 128, 25), cursor_fg: Rgb::new(40, 40, 40),
+                    selection_bg: Rgb::new(88, 91, 112), selection_fg: Rgb::new(235, 219, 178),
                     divider: Rgb::new(60, 56, 54), statusline_fg: Rgb::new(235, 219, 178),
+                    statusline_bg: Rgb::new(60, 56, 54),
                     accent: Rgb::new(250, 189, 47), accent_fg: Rgb::new(40, 40, 40),
+                    whichkey_bg: Rgb::new(40, 40, 40), whichkey_fg: Rgb::new(235, 219, 178),
+                    cmdline_bg: Rgb::new(40, 40, 40), cmdline_fg: Rgb::new(235, 219, 178),
+                    mode_normal_bg: Rgb::new(60, 56, 54), mode_normal_fg: Rgb::new(235, 219, 178),
+                    mode_insert_bg: Rgb::new(40, 60, 40), mode_insert_fg: Rgb::new(235, 219, 178),
+                    mode_visual_bg: Rgb::new(60, 40, 50), mode_visual_fg: Rgb::new(235, 219, 178),
+                    mode_cmdline_bg: Rgb::new(60, 56, 54), mode_cmdline_fg: Rgb::new(235, 219, 178),
+                    mode_emacs_bg: Rgb::new(50, 50, 65), mode_emacs_fg: Rgb::new(235, 219, 178),
                 },
             },
         ),
@@ -181,10 +277,18 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                 roles: ThemeColors {
                     bg: Rgb::new(26, 27, 38), fg: Rgb::new(192, 202, 245),
                     gutter: Rgb::new(86, 95, 137), gutter_bg: Rgb::new(26, 27, 38),
-                    selection: Rgb::new(40, 52, 87), selection_fg: Rgb::new(192, 202, 245),
-                    cursor: Rgb::new(192, 202, 245), cursor_fg: Rgb::new(26, 27, 38),
+                    cursor_bg: Rgb::new(192, 202, 245), cursor_fg: Rgb::new(26, 27, 38),
+                    selection_bg: Rgb::new(88, 91, 112), selection_fg: Rgb::new(192, 202, 245),
                     divider: Rgb::new(65, 72, 104), statusline_fg: Rgb::new(192, 202, 245),
+                    statusline_bg: Rgb::new(65, 72, 104),
                     accent: Rgb::new(122, 162, 247), accent_fg: Rgb::new(26, 27, 38),
+                    whichkey_bg: Rgb::new(30, 30, 46), whichkey_fg: Rgb::new(192, 202, 245),
+                    cmdline_bg: Rgb::new(26, 27, 38), cmdline_fg: Rgb::new(192, 202, 245),
+                    mode_normal_bg: Rgb::new(65, 72, 104), mode_normal_fg: Rgb::new(192, 202, 245),
+                    mode_insert_bg: Rgb::new(40, 72, 50), mode_insert_fg: Rgb::new(192, 202, 245),
+                    mode_visual_bg: Rgb::new(65, 50, 80), mode_visual_fg: Rgb::new(192, 202, 245),
+                    mode_cmdline_bg: Rgb::new(65, 72, 104), mode_cmdline_fg: Rgb::new(192, 202, 245),
+                    mode_emacs_bg: Rgb::new(50, 60, 90), mode_emacs_fg: Rgb::new(192, 202, 245),
                 },
             },
         ),
@@ -200,10 +304,18 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                 roles: ThemeColors {
                     bg: Rgb::new(46, 52, 64), fg: Rgb::new(216, 222, 233),
                     gutter: Rgb::new(76, 86, 106), gutter_bg: Rgb::new(46, 52, 64),
-                    selection: Rgb::new(67, 76, 94), selection_fg: Rgb::new(216, 222, 233),
-                    cursor: Rgb::new(136, 192, 208), cursor_fg: Rgb::new(46, 52, 64),
+                    cursor_bg: Rgb::new(136, 192, 208), cursor_fg: Rgb::new(46, 52, 64),
+                    selection_bg: Rgb::new(88, 91, 112), selection_fg: Rgb::new(216, 222, 233),
                     divider: Rgb::new(59, 66, 82), statusline_fg: Rgb::new(216, 222, 233),
+                    statusline_bg: Rgb::new(59, 66, 82),
                     accent: Rgb::new(136, 192, 208), accent_fg: Rgb::new(46, 52, 64),
+                    whichkey_bg: Rgb::new(46, 52, 64), whichkey_fg: Rgb::new(216, 222, 233),
+                    cmdline_bg: Rgb::new(46, 52, 64), cmdline_fg: Rgb::new(216, 222, 233),
+                    mode_normal_bg: Rgb::new(59, 66, 82), mode_normal_fg: Rgb::new(216, 222, 233),
+                    mode_insert_bg: Rgb::new(40, 66, 50), mode_insert_fg: Rgb::new(216, 222, 233),
+                    mode_visual_bg: Rgb::new(66, 45, 80), mode_visual_fg: Rgb::new(216, 222, 233),
+                    mode_cmdline_bg: Rgb::new(59, 66, 82), mode_cmdline_fg: Rgb::new(216, 222, 233),
+                    mode_emacs_bg: Rgb::new(50, 55, 75), mode_emacs_fg: Rgb::new(216, 222, 233),
                 },
             },
         ),
@@ -214,10 +326,18 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                 roles: ThemeColors {
                     bg: Rgb::new(30, 30, 46), fg: Rgb::new(205, 214, 244),
                     gutter: Rgb::new(108, 112, 134), gutter_bg: Rgb::new(30, 30, 46),
-                    selection: Rgb::new(88, 91, 112), selection_fg: Rgb::new(205, 214, 244),
-                    cursor: Rgb::new(245, 224, 220), cursor_fg: Rgb::new(30, 30, 46),
+                    cursor_bg: Rgb::new(245, 224, 220), cursor_fg: Rgb::new(30, 30, 46),
+                    selection_bg: Rgb::new(88, 91, 112), selection_fg: Rgb::new(205, 214, 244),
                     divider: Rgb::new(49, 50, 68), statusline_fg: Rgb::new(205, 214, 244),
+                    statusline_bg: Rgb::new(49, 50, 68),
                     accent: Rgb::new(203, 166, 247), accent_fg: Rgb::new(30, 30, 46),
+                    whichkey_bg: Rgb::new(30, 30, 46), whichkey_fg: Rgb::new(205, 214, 244),
+                    cmdline_bg: Rgb::new(30, 30, 46), cmdline_fg: Rgb::new(205, 214, 244),
+                    mode_normal_bg: Rgb::new(49, 50, 68), mode_normal_fg: Rgb::new(205, 214, 244),
+                    mode_insert_bg: Rgb::new(30, 60, 45), mode_insert_fg: Rgb::new(205, 214, 244),
+                    mode_visual_bg: Rgb::new(55, 35, 70), mode_visual_fg: Rgb::new(205, 214, 244),
+                    mode_cmdline_bg: Rgb::new(49, 50, 68), mode_cmdline_fg: Rgb::new(205, 214, 244),
+                    mode_emacs_bg: Rgb::new(40, 45, 60), mode_emacs_fg: Rgb::new(205, 214, 244),
                 },
             },
         ),
@@ -233,14 +353,29 @@ pub struct ColorOverrides {
     pub fg: String,
     pub gutter: String,
     pub gutter_bg: String,
-    pub selection: String,
+    pub cursor_bg: String,
+    pub selection_bg: String,
     pub selection_fg: String,
-    pub cursor: String,
     pub cursor_fg: String,
     pub divider: String,
     pub statusline_fg: String,
+    pub statusline_bg: String,
     pub accent: String,
     pub accent_fg: String,
+    pub whichkey_bg: String,
+    pub whichkey_fg: String,
+    pub cmdline_bg: String,
+    pub cmdline_fg: String,
+    pub mode_normal_bg: String,
+    pub mode_normal_fg: String,
+    pub mode_insert_bg: String,
+    pub mode_insert_fg: String,
+    pub mode_visual_bg: String,
+    pub mode_visual_fg: String,
+    pub mode_cmdline_bg: String,
+    pub mode_cmdline_fg: String,
+    pub mode_emacs_bg: String,
+    pub mode_emacs_fg: String,
 }
 
 #[derive(Debug, Clone)]
@@ -345,14 +480,29 @@ impl Config {
             (("colors", "fg"), Text(self.color_overrides.fg.clone())),
             (("colors", "gutter"), Text(self.color_overrides.gutter.clone())),
             (("colors", "gutter_bg"), Text(self.color_overrides.gutter_bg.clone())),
-            (("colors", "selection"), Text(self.color_overrides.selection.clone())),
+            (("colors", "cursor_bg"), Text(self.color_overrides.cursor_bg.clone())),
+            (("colors", "selection_bg"), Text(self.color_overrides.selection_bg.clone())),
             (("colors", "selection_fg"), Text(self.color_overrides.selection_fg.clone())),
-            (("colors", "cursor"), Text(self.color_overrides.cursor.clone())),
             (("colors", "cursor_fg"), Text(self.color_overrides.cursor_fg.clone())),
             (("colors", "divider"), Text(self.color_overrides.divider.clone())),
             (("colors", "statusline_fg"), Text(self.color_overrides.statusline_fg.clone())),
+            (("colors", "statusline_bg"), Text(self.color_overrides.statusline_bg.clone())),
             (("colors", "accent"), Text(self.color_overrides.accent.clone())),
             (("colors", "accent_fg"), Text(self.color_overrides.accent_fg.clone())),
+            (("colors", "whichkey_bg"), Text(self.color_overrides.whichkey_bg.clone())),
+            (("colors", "whichkey_fg"), Text(self.color_overrides.whichkey_fg.clone())),
+            (("colors", "cmdline_bg"), Text(self.color_overrides.cmdline_bg.clone())),
+            (("colors", "cmdline_fg"), Text(self.color_overrides.cmdline_fg.clone())),
+            (("colors", "mode_normal_bg"), Text(self.color_overrides.mode_normal_bg.clone())),
+            (("colors", "mode_normal_fg"), Text(self.color_overrides.mode_normal_fg.clone())),
+            (("colors", "mode_insert_bg"), Text(self.color_overrides.mode_insert_bg.clone())),
+            (("colors", "mode_insert_fg"), Text(self.color_overrides.mode_insert_fg.clone())),
+            (("colors", "mode_visual_bg"), Text(self.color_overrides.mode_visual_bg.clone())),
+            (("colors", "mode_visual_fg"), Text(self.color_overrides.mode_visual_fg.clone())),
+            (("colors", "mode_cmdline_bg"), Text(self.color_overrides.mode_cmdline_bg.clone())),
+            (("colors", "mode_cmdline_fg"), Text(self.color_overrides.mode_cmdline_fg.clone())),
+            (("colors", "mode_emacs_bg"), Text(self.color_overrides.mode_emacs_bg.clone())),
+            (("colors", "mode_emacs_fg"), Text(self.color_overrides.mode_emacs_fg.clone())),
         ]
     }
 
@@ -421,14 +571,29 @@ impl Config {
                 fg: st("colors", "fg").unwrap_or_default(),
                 gutter: st("colors", "gutter").unwrap_or_default(),
                 gutter_bg: st("colors", "gutter_bg").unwrap_or_default(),
-                selection: st("colors", "selection").unwrap_or_default(),
+                cursor_bg: st("colors", "cursor_bg").unwrap_or_default(),
+                selection_bg: st("colors", "selection_bg").unwrap_or_default(),
                 selection_fg: st("colors", "selection_fg").unwrap_or_default(),
-                cursor: st("colors", "cursor").unwrap_or_default(),
                 cursor_fg: st("colors", "cursor_fg").unwrap_or_default(),
                 divider: st("colors", "divider").unwrap_or_default(),
                 statusline_fg: st("colors", "statusline_fg").unwrap_or_default(),
+                statusline_bg: st("colors", "statusline_bg").unwrap_or_default(),
                 accent: st("colors", "accent").unwrap_or_default(),
                 accent_fg: st("colors", "accent_fg").unwrap_or_default(),
+                whichkey_bg: st("colors", "whichkey_bg").unwrap_or_default(),
+                whichkey_fg: st("colors", "whichkey_fg").unwrap_or_default(),
+                cmdline_bg: st("colors", "cmdline_bg").unwrap_or_default(),
+                cmdline_fg: st("colors", "cmdline_fg").unwrap_or_default(),
+                mode_normal_bg: st("colors", "mode_normal_bg").unwrap_or_default(),
+                mode_normal_fg: st("colors", "mode_normal_fg").unwrap_or_default(),
+                mode_insert_bg: st("colors", "mode_insert_bg").unwrap_or_default(),
+                mode_insert_fg: st("colors", "mode_insert_fg").unwrap_or_default(),
+                mode_visual_bg: st("colors", "mode_visual_bg").unwrap_or_default(),
+                mode_visual_fg: st("colors", "mode_visual_fg").unwrap_or_default(),
+                mode_cmdline_bg: st("colors", "mode_cmdline_bg").unwrap_or_default(),
+                mode_cmdline_fg: st("colors", "mode_cmdline_fg").unwrap_or_default(),
+                mode_emacs_bg: st("colors", "mode_emacs_bg").unwrap_or_default(),
+                mode_emacs_fg: st("colors", "mode_emacs_fg").unwrap_or_default(),
             },
         }
     }

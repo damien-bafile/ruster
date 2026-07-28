@@ -25,28 +25,24 @@ pub fn cmdline_label(buf: &str) -> String {
     if buf.is_empty() { ":".to_string() } else { buf.to_string() }
 }
 
-fn apply_cursor(cell: &mut ratatui::buffer::Cell, kind: CursorKind) {
+fn apply_cursor(cell: &mut ratatui::buffer::Cell, kind: CursorKind, theme: &ruster_render::Theme) {
+    let bg = ruster_render_color_to_tui(&theme.cursor_bg);
+    let fg = ruster_render_color_to_tui(&theme.cursor_fg);
     match kind {
-        CursorKind::Bar => {
-            cell.set_bg(Color::DarkGray);
-            cell.set_fg(Color::White);
-        }
-        CursorKind::Block => {
-            cell.set_bg(Color::White);
-            cell.set_fg(Color::Black);
+        CursorKind::Bar | CursorKind::Block => {
+            cell.set_bg(bg);
+            cell.set_fg(fg);
         }
     }
 }
 
-fn apply_dim_cursor(cell: &mut ratatui::buffer::Cell, kind: CursorKind) {
+fn apply_dim_cursor(cell: &mut ratatui::buffer::Cell, kind: CursorKind, theme: &ruster_render::Theme) {
+    let bg = ruster_render_color_to_tui(&theme.cursor_bg);
+    let fg = ruster_render_color_to_tui(&theme.cursor_fg);
     match kind {
-        CursorKind::Bar => {
-            cell.set_bg(Color::DarkGray);
-            cell.set_fg(Color::White);
-        }
-        CursorKind::Block => {
-            cell.set_bg(Color::Rgb(69, 71, 90));
-            cell.set_fg(Color::Rgb(166, 173, 200));
+        CursorKind::Bar | CursorKind::Block => {
+            cell.set_bg(bg);
+            cell.set_fg(fg);
         }
     }
 }
@@ -63,15 +59,21 @@ fn ruster_render_color_to_tui(c: &RColor) -> Color {
 pub struct TerminalWidget {
     grid: TermGridView,
     cursor_visible: bool,
+    _theme: Option<ruster_render::Theme>,
 }
 
 impl TerminalWidget {
     pub fn new(grid: TermGridView) -> Self {
-        TerminalWidget { grid, cursor_visible: true }
+        TerminalWidget { grid, cursor_visible: true, _theme: None }
     }
 
     pub fn with_cursor_visible(mut self, visible: bool) -> Self {
         self.cursor_visible = visible;
+        self
+    }
+
+    pub fn with_theme(mut self, theme: &ruster_render::Theme) -> Self {
+        self._theme = Some(*theme);
         self
     }
 }
@@ -110,7 +112,9 @@ impl Widget for TerminalWidget {
             let (cr, cc) = self.grid.cursor;
             if cr < rows && cc < cols {
                 if let Some(cell) = buf.cell_mut((area.x + cc as u16, area.y + cr as u16)) {
-                    apply_cursor(cell, CursorKind::Block);
+                    let default_theme = ruster_render::Theme::default();
+                    let t = self._theme.as_ref().unwrap_or(&default_theme);
+                    apply_cursor(cell, CursorKind::Block, t);
                 }
             }
         }
@@ -134,6 +138,7 @@ pub struct BufferWidget {
     signs: ruster_render::SignsView,
     selection: Option<ruster_render::SelectionView>,
     active: bool,
+    theme: Option<ruster_render::Theme>,
 }
 
 impl BufferWidget {
@@ -150,6 +155,7 @@ impl BufferWidget {
             signs: ruster_render::SignsView::default(),
             selection: None,
             active: true,
+            theme: None,
         }
     }
 
@@ -197,10 +203,17 @@ impl BufferWidget {
         self.gutter = gutter;
         self
     }
+
+    pub fn with_theme(mut self, theme: &ruster_render::Theme) -> Self {
+        self.theme = Some(*theme);
+        self
+    }
 }
 
 impl Widget for BufferWidget {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let default_theme = ruster_render::Theme::default();
+        let theme = self.theme.as_ref().unwrap_or(&default_theme);
         // Layout: sign column, then line-number gutter, then text.
         let sign_w = self.signs.width.min(area.width);
         let gutter_x = area.x + sign_w;
@@ -222,6 +235,19 @@ impl Widget for BufferWidget {
             }
         }
 
+        let gutter_fg = self.theme.map(|t| ruster_render_color_to_tui(&t.gutter)).unwrap_or(Color::DarkGray);
+        let gutter_bg = self.theme.map(|t| ruster_render_color_to_tui(&t.gutter_bg)).unwrap_or(Color::Reset);
+        // Gutter background — only paint when it differs from main bg.
+        if gutter_bg != Color::Reset {
+            for row in 0..area.height {
+                let y = area.y + row;
+                for x in gutter_x..text_x {
+                    if let Some(cell) = buf.cell_mut((x, y)) {
+                        cell.set_bg(gutter_bg);
+                    }
+                }
+            }
+        }
         // Gutter column.
         for (row, label) in self.gutter.rows.iter().enumerate() {
             if row as u16 >= area.height { break; }
@@ -233,7 +259,7 @@ impl Widget for BufferWidget {
                 if x >= text_x { break; }
                 if let Some(cell) = buf.cell_mut((x, y)) {
                     cell.set_char(ch);
-                    cell.set_fg(Color::DarkGray);
+                    cell.set_fg(gutter_fg);
                 }
             }
         }
@@ -253,7 +279,8 @@ impl Widget for BufferWidget {
             }
         }
 
-        let selection_bg = Color::Rgb(88, 91, 112);
+        let selection_bg = self.theme.map(|t| ruster_render_color_to_tui(&t.selection_bg)).unwrap_or(Color::Rgb(88, 91, 112));
+        let selection_fg = self.theme.map(|t| ruster_render_color_to_tui(&t.selection_fg)).unwrap_or(Color::Reset);
         for (row, line) in self.lines.iter().skip(scroll).enumerate() {
             if row as u16 >= area.height { break; }
             let y = area.y + row as u16;
@@ -284,9 +311,9 @@ impl Widget for BufferWidget {
                     cell.set_char(ch);
                     if is_cursor_line && j as u16 == self.cursor.1 && self.cursor_visible {
                         if self.active {
-                            apply_cursor(cell, self.cursor_kind);
+                            apply_cursor(cell, self.cursor_kind, theme);
                         } else {
-                            apply_dim_cursor(cell, self.cursor_kind);
+                            apply_dim_cursor(cell, self.cursor_kind, theme);
                         }
                     } else {
                         if let Some((fg, bg)) = style_map.get(&(row as u16, j as u16)) {
@@ -297,6 +324,7 @@ impl Widget for BufferWidget {
                         }
                         if selected {
                             cell.set_bg(selection_bg);
+                            cell.set_fg(selection_fg);
                         }
                     }
                 }
@@ -307,9 +335,9 @@ impl Widget for BufferWidget {
                     if let Some(cell) = buf.cell_mut((x, y)) {
                         cell.set_char(' ');
                         if self.active {
-                            apply_cursor(cell, self.cursor_kind);
+                            apply_cursor(cell, self.cursor_kind, theme);
                         } else {
-                            apply_dim_cursor(cell, self.cursor_kind);
+                            apply_dim_cursor(cell, self.cursor_kind, theme);
                         }
                     }
                 }
@@ -331,7 +359,7 @@ impl Widget for BufferWidget {
                 continue;
             }
             if let Some(cell) = buf.cell_mut((x, area.y + row as u16)) {
-                apply_cursor(cell, self.cursor_kind);
+                apply_cursor(cell, self.cursor_kind, theme);
             }
         }
     }
@@ -364,12 +392,12 @@ impl StatuslineWidget {
     }
 
     pub fn with_theme(mut self, theme: &ruster_render::Theme) -> Self {
-        self.bar_bg = ruster_render_color_to_tui(&theme.divider);
+        self.bar_bg = ruster_render_color_to_tui(&theme.statusline_bg);
         self.bar_fg = ruster_render_color_to_tui(&theme.statusline_fg);
-        self.dim_bg = ruster_render_color_to_tui(&theme.divider);
+        self.dim_bg = ruster_render_color_to_tui(&theme.statusline_bg);
         self.dim_fg = ruster_render_color_to_tui(&theme.gutter);
-        self.mode_bg = ruster_render_color_to_tui(&theme.accent);
-        self.mode_fg = ruster_render_color_to_tui(&theme.accent_fg);
+        self.mode_bg = ruster_render_color_to_tui(&theme.mode_bg(self.view.mode));
+        self.mode_fg = ruster_render_color_to_tui(&theme.mode_fg(self.view.mode));
         self
     }
 }
@@ -434,22 +462,35 @@ pub struct CmdlineWidget<'a> {
     text: &'a str,
     fg: Color,
     bg: Color,
+    is_message: bool,
+    theme: Option<ruster_render::Theme>,
 }
 
 impl<'a> CmdlineWidget<'a> {
     pub fn new(text: &'a str) -> Self {
-        CmdlineWidget { text, fg: Color::White, bg: Color::Black }
+        CmdlineWidget { text, fg: Color::White, bg: Color::Black, is_message: false, theme: None }
+    }
+
+    pub fn with_message_style(mut self) -> Self {
+        self.is_message = true;
+        self
     }
 
     pub fn with_theme(mut self, theme: &ruster_render::Theme) -> Self {
-        self.fg = ruster_render_color_to_tui(&theme.statusline_fg);
-        self.bg = ruster_render_color_to_tui(&theme.bg);
+        self.fg = ruster_render_color_to_tui(&theme.cmdline_fg);
+        self.bg = ruster_render_color_to_tui(&theme.cmdline_bg);
+        self.theme = Some(*theme);
         self
     }
 }
 
 impl Widget for CmdlineWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let fg = if self.is_message {
+            self.theme.as_ref().map(|t| ruster_render_color_to_tui(&t.accent)).unwrap_or(self.fg)
+        } else {
+            self.fg
+        };
         for x in area.left()..area.right() {
             if let Some(cell) = buf.cell_mut((x, area.y)) {
                 cell.set_char(' ');
@@ -461,7 +502,7 @@ impl Widget for CmdlineWidget<'_> {
             if x >= area.right() { break; }
             if let Some(cell) = buf.cell_mut((x, area.y)) {
                 cell.set_char(ch);
-                cell.set_fg(self.fg);
+                cell.set_fg(fg);
                 cell.set_bg(self.bg);
             }
         }
@@ -549,8 +590,9 @@ impl Widget for WelcomeWidget {
             text(buf, area.x + 4, row, "  No recent projects", dim, bg);
             row += 1;
         } else {
-            for proj in &self.view.recent_projects {
-                text(buf, area.x + 4, row, &format!("  {}", proj), fg, bg);
+            for (i, proj) in self.view.recent_projects.iter().enumerate() {
+                let n = (i + 1).to_string();
+                text(buf, area.x + 4, row, &format!(" {}. {}", n, proj), fg, bg);
                 row += 1;
             }
         }
@@ -617,11 +659,17 @@ fn draw_section_header(
 /// Renders a floating picker overlay (title, query line, selectable rows).
 pub struct PickerWidget {
     view: ruster_render::PickerView,
+    theme: Option<ruster_render::Theme>,
 }
 
 impl PickerWidget {
     pub fn new(view: ruster_render::PickerView) -> Self {
-        PickerWidget { view }
+        PickerWidget { view, theme: None }
+    }
+
+    pub fn with_theme(mut self, theme: &ruster_render::Theme) -> Self {
+        self.theme = Some(*theme);
+        self
     }
 }
 
@@ -662,23 +710,34 @@ enum SettingsLine<'a> {
 
 pub struct SettingsWidget<'a> {
     view: SettingsView,
-    /// Persistent top-line, updated in place so the list scrolls like a normal
-    /// widget instead of pinning the selection to the bottom edge.
     scroll: &'a mut usize,
+    theme: Option<ruster_render::Theme>,
 }
 
 impl<'a> SettingsWidget<'a> {
     pub fn new(view: SettingsView, scroll: &'a mut usize) -> Self {
-        SettingsWidget { view, scroll }
+        SettingsWidget { view, scroll, theme: None }
+    }
+
+    pub fn with_theme(mut self, theme: &ruster_render::Theme) -> Self {
+        self.theme = Some(*theme);
+        self
     }
 }
 
 impl Widget for SettingsWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let bg = Color::Rgb(30, 30, 46);
-        let accent = Color::Rgb(137, 180, 250);
-        let fg = Color::Rgb(205, 214, 244);
-        let dim = Color::Rgb(127, 132, 156);
+        let c = |fallback: Color, get: fn(&ruster_render::Theme) -> RColor| -> Color {
+            self.theme.as_ref().map(|t| ruster_render_color_to_tui(&get(t))).unwrap_or(fallback)
+        };
+        let bg = c(Color::Rgb(30, 30, 46), |t| t.bg);
+        let accent = c(Color::Rgb(137, 180, 250), |t| t.accent);
+        let fg = c(Color::Rgb(205, 214, 244), |t| t.fg);
+        let dim = c(Color::Rgb(127, 132, 156), |t| t.gutter);
+        let sel = c(Color::Rgb(88, 91, 112), |t| t.selection_bg);
+        let sel_fg = c(Color::Rgb(205, 214, 244), |t| t.selection_fg);
+        let accent_fg = c(Color::Rgb(30, 30, 46), |t| t.accent_fg);
+        let footer_bg = c(Color::Rgb(24, 24, 37), |t| t.bg);
         for y in area.top()..area.bottom() {
             for x in area.left()..area.right() {
                 if let Some(cell) = buf.cell_mut((x, y)) {
@@ -705,9 +764,9 @@ impl Widget for SettingsWidget<'_> {
         // Title row.
         let title = format!(" Settings{} ", if self.view.dirty { " [+]" } else { "" });
         for x in area.left()..area.right() {
-            put(buf, x, area.y, ' ', Color::Black, accent);
+            put(buf, x, area.y, ' ', accent_fg, accent);
         }
-        text(buf, area.x + 1, area.y, &title, Color::Black, accent);
+        text(buf, area.x + 1, area.y, &title, accent_fg, accent);
 
         // Flatten groups into header + row lines.
         let mut lines: Vec<SettingsLine> = Vec::new();
@@ -740,9 +799,9 @@ impl Widget for SettingsWidget<'_> {
                 SettingsLine::Row(r) => {
                     let (row_fg, row_bg) = if r.selected {
                         for x in area.left()..area.right() {
-                            put(buf, x, y, ' ', Color::Black, Color::Rgb(69, 71, 90));
+                            put(buf, x, y, ' ', sel_fg, sel);
                         }
-                        (fg, Color::Rgb(69, 71, 90))
+                        (sel_fg, sel)
                     } else {
                         (fg, bg)
                     };
@@ -764,9 +823,9 @@ impl Widget for SettingsWidget<'_> {
         // Help/footer at the bottom.
         let fy = area.bottom().saturating_sub(1);
         for x in area.left()..area.right() {
-            put(buf, x, fy, ' ', dim, Color::Rgb(24, 24, 37));
+            put(buf, x, fy, ' ', dim, footer_bg);
         }
-        text(buf, area.x + 1, fy, &self.view.footer, dim, Color::Rgb(24, 24, 37));
+        text(buf, area.x + 1, fy, &self.view.footer, dim, footer_bg);
 
         // Selected row's help just above the footer.
         if let Some(SettingsLine::Row(r)) = lines.get(selected) {
@@ -778,8 +837,15 @@ impl Widget for SettingsWidget<'_> {
 
 impl Widget for PickerWidget {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let bg = Color::Rgb(30, 30, 46);
-        let preview_bg = Color::Rgb(24, 24, 37);
+        let c = |fallback: Color, get: fn(&ruster_render::Theme) -> RColor| -> Color {
+            self.theme.as_ref().map(|t| ruster_render_color_to_tui(&get(t))).unwrap_or(fallback)
+        };
+        let bg = c(Color::Rgb(30, 30, 46), |t| t.bg);
+        let preview_bg = c(Color::Rgb(24, 24, 37), |t| t.bg);
+        let accent = c(Color::Rgb(137, 180, 250), |t| t.accent);
+        let fg = c(Color::Rgb(205, 214, 244), |t| t.fg);
+        let accent_fg = c(Color::Rgb(30, 30, 46), |t| t.accent_fg);
+        let divider = c(Color::Rgb(69, 71, 90), |t| t.divider);
         for y in area.top()..area.bottom() {
             for x in area.left()..area.right() {
                 if let Some(cell) = buf.cell_mut((x, y)) {
@@ -806,7 +872,7 @@ impl Widget for PickerWidget {
         // Title row.
         let title = format!(" {} ", self.view.title);
         for (i, ch) in title.chars().enumerate() {
-            put(buf, area.x + i as u16, area.y, ch, Color::Black, Color::Rgb(137, 180, 250));
+            put(buf, area.x + i as u16, area.y, ch, accent_fg, accent);
         }
         // Query row.
         let query = format!(" > {}", self.view.query);
@@ -817,19 +883,19 @@ impl Widget for PickerWidget {
         for (row, item) in self.view.rows.iter().enumerate() {
             let y = area.y + 2 + row as u16;
             if y >= area.bottom() { break; }
-            let (fg, row_bg) = if item.selected {
-                (Color::Black, Color::Rgb(137, 180, 250))
+            let (row_fg, row_bg) = if item.selected {
+                (Color::Black, accent)
             } else {
-                (Color::Rgb(205, 214, 244), bg)
+                (fg, bg)
             };
             for x in area.left()..list_right.min(area.right()) {
-                put(buf, x, y, ' ', fg, row_bg);
+                put(buf, x, y, ' ', row_fg, row_bg);
             }
             let label = format!(" {}", item.label);
             for (i, ch) in label.chars().enumerate() {
                 let x = area.x + i as u16;
                 if x >= list_right { break; }
-                put(buf, x, y, ch, fg, row_bg);
+                put(buf, x, y, ch, row_fg, row_bg);
             }
         }
 
@@ -843,7 +909,7 @@ impl Widget for PickerWidget {
                     }
                 }
                 // Divider between the two columns.
-                put(buf, list_right, y, '│', Color::Rgb(69, 71, 90), bg);
+                put(buf, list_right, y, '│', divider, bg);
             }
             for (row, line) in self.view.preview.iter().enumerate() {
                 let y = area.y + row as u16;
@@ -858,11 +924,11 @@ impl Widget for PickerWidget {
                 for (i, ch) in line.text.chars().enumerate() {
                     let x = px + 1 + i as u16;
                     if x >= area.right() { break; }
-                    let fg = colors
+                    let pfg = colors
                         .get(&i)
                         .map(ruster_render_color_to_tui)
-                        .unwrap_or(Color::Rgb(205, 214, 244));
-                    put(buf, x, y, ch, fg, preview_bg);
+                        .unwrap_or(fg);
+                    put(buf, x, y, ch, pfg, preview_bg);
                 }
             }
         }
@@ -873,19 +939,28 @@ impl Widget for PickerWidget {
 /// The caller sizes `area` to the currently-visible height for the slide-up.
 pub struct WhichKeyWidget {
     view: ruster_render::WhichKeyView,
+    theme: Option<ruster_render::Theme>,
 }
 
 impl WhichKeyWidget {
     pub fn new(view: ruster_render::WhichKeyView) -> Self {
-        WhichKeyWidget { view }
+        WhichKeyWidget { view, theme: None }
+    }
+
+    pub fn with_theme(mut self, theme: &ruster_render::Theme) -> Self {
+        self.theme = Some(*theme);
+        self
     }
 }
 
 impl Widget for WhichKeyWidget {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let bg = Color::Rgb(30, 30, 46);
-        let accent = Color::Rgb(137, 180, 250);
-        let fg = Color::Rgb(205, 214, 244);
+        let c = |fallback: Color, get: fn(&ruster_render::Theme) -> RColor| -> Color {
+            self.theme.as_ref().map(|t| ruster_render_color_to_tui(&get(t))).unwrap_or(fallback)
+        };
+        let bg = c(Color::Rgb(30, 30, 46), |t| t.whichkey_bg);
+        let accent = c(Color::Rgb(137, 180, 250), |t| t.accent);
+        let fg = c(Color::Rgb(205, 214, 244), |t| t.whichkey_fg);
         for y in area.top()..area.bottom() {
             for x in area.left()..area.right() {
                 if let Some(cell) = buf.cell_mut((x, y)) {
@@ -922,18 +997,27 @@ impl Widget for WhichKeyWidget {
 /// Renders an LSP hover popup: a bordered box of syntax-highlighted lines.
 pub struct HoverWidget {
     lines: Vec<StyledLine>,
+    theme: Option<ruster_render::Theme>,
 }
 
 impl HoverWidget {
     pub fn new(lines: Vec<StyledLine>) -> Self {
-        HoverWidget { lines }
+        HoverWidget { lines, theme: None }
+    }
+
+    pub fn with_theme(mut self, theme: &ruster_render::Theme) -> Self {
+        self.theme = Some(*theme);
+        self
     }
 }
 
 impl Widget for HoverWidget {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let bg = Color::Rgb(24, 24, 37);
-        let default_fg = Color::Rgb(205, 214, 244);
+        let c = |fallback: Color, get: fn(&ruster_render::Theme) -> RColor| -> Color {
+            self.theme.as_ref().map(|t| ruster_render_color_to_tui(&get(t))).unwrap_or(fallback)
+        };
+        let bg = c(Color::Rgb(24, 24, 37), |t| t.bg);
+        let default_fg = c(Color::Rgb(205, 214, 244), |t| t.fg);
         for y in area.top()..area.bottom() {
             for x in area.left()..area.right() {
                 if let Some(cell) = buf.cell_mut((x, y)) {
