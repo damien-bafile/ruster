@@ -2855,9 +2855,15 @@ impl App {
             None
         };
 
-        // Show the welcome / "Ready Room" screen when no named file is open.
-        let has_file = self.ws.borrow().active_doc().file_path.is_some();
-        let welcome_view = if !has_file {
+        // Show the welcome / "Ready Room" screen when no named file is open and
+        // the active buffer is a scratch document (not a special buffer like
+        // Dired, terminal, ibuffer, etc.).
+        let is_scratch = {
+            let w = self.ws.borrow();
+            let active = w.active_doc();
+            active.file_path.is_none() && matches!(active.kind, DocKind::Scratch)
+        };
+        let welcome_view = if is_scratch {
             Some(WelcomeView {
                 visible: true,
                 recent_projects: Vec::new(),
