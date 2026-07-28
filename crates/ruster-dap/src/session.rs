@@ -1,0 +1,334 @@
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+use dap::requests::*;
+use dap::types::*;
+
+use crate::client::DapClient;
+use crate::config::AdapterConfig;
+use crate::transport::ServerMessage;
+
+pub type Result<T> = std::result::Result<T, SessionError>;
+
+#[derive(Debug, thiserror::Error)]
+pub enum SessionError {
+    #[error("Client error: {0}")]
+    Client(#[from] crate::client::ClientError),
+    #[error("Not initialized")]
+    NotInitialized,
+    #[error("Session not running")]
+    NotRunning,
+    #[error("DAP error: {0}")]
+    Dap(String),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum SessionState {
+    Inactive,
+    Initializing,
+    Running,
+    Paused,
+    Terminated,
+}
+
+#[derive(Debug, Clone)]
+pub enum DapEvent {
+    Stopped { reason: String, thread_id: u64 },
+    Continued { thread_id: u64 },
+    Exited { exit_code: i64 },
+    Terminated,
+    Output { category: String, output: String },
+    BreakpointValidated { id: u64, verified: bool },
+    Module { id: u64, name: String },
+    Process { name: String, pid: u64 },
+    Thread { reason: String, thread_id: u64 },
+}
+
+pub struct DebugSession {
+    pub client: DapClient,
+    pub state: SessionState,
+    pub breakpoints: HashMap<(PathBuf, usize), Breakpoint>,
+    pub threads: HashMap<u64, Thread>,
+    pub stack_frames: Vec<StackFrame>,
+    pub scopes: Vec<Scope>,
+    pub variable_cache: HashMap<u64, Variable>,
+    pub stopped_thread: Option<u64>,
+    next_seq: i64,
+}
+
+impl DebugSession {
+    pub fn start(config: &AdapterConfig, root: &Path) -> Result<Self> {
+        let (client, _reader_thread) = DapClient::spawn(config, root)?;
+        Ok(DebugSession {
+            client,
+            state: SessionState::Initializing,
+            breakpoints: HashMap::new(),
+            threads: HashMap::new(),
+            stack_frames: Vec::new(),
+            scopes: Vec::new(),
+            variable_cache: HashMap::new(),
+            stopped_thread: None,
+            next_seq: 1,
+        })
+    }
+
+    fn next_seq(&mut self) -> i64 {
+        let s = self.next_seq;
+        self.next_seq += 1;
+        s
+    }
+
+    pub fn send_initialize(&mut self) -> Result<()> {
+        let args = InitializeArguments {
+            client_id: Some("ruster".into()),
+            client_name: Some("Ruster Editor".into()),
+            adapter_id: "lldb-vscode".into(),
+            lines_start_at1: Some(true),
+            columns_start_at1: Some(true),
+            supports_variable_type: Some(true),
+            supports_variable_paging: Some(false),
+            supports_run_in_terminal_request: Some(false),
+            ..Default::default()
+        };
+        let req = Request { seq: self.next_seq(), command: Command::Initialize(args) };
+        self.client.send_request(req)?;
+        Ok(())
+    }
+
+    pub fn send_launch(&mut self, config_json: serde_json::Value) -> Result<()> {
+        let args = LaunchRequestArguments {
+            no_debug: Some(false),
+            additional_data: Some(config_json),
+            ..Default::default()
+        };
+        let req = Request { seq: self.next_seq(), command: Command::Launch(args) };
+        self.client.send_request(req)?;
+        self.state = SessionState::Running;
+        Ok(())
+    }
+
+    pub fn set_breakpoints(&mut self, path: PathBuf, lines: &[usize]) -> Result<()> {
+        let src = Source {
+            name: Some(path.file_name().unwrap_or_default().to_string_lossy().to_string()),
+            path: Some(path.to_string_lossy().to_string()),
+            ..Default::default()
+        };
+        let bps: Vec<SourceBreakpoint> = lines.iter().map(|&line| {
+            self.breakpoints.retain(|(p, _), _| p != &path);
+            SourceBreakpoint {
+                line: line as i64,
+                column: None,
+                condition: None,
+                hit_condition: None,
+                log_message: None,
+            }
+        }).collect();
+        let args = SetBreakpointsArguments {
+            source: src,
+            breakpoints: Some(bps),
+            source_modified: Some(false),
+            ..Default::default()
+        };
+        let req = Request { seq: self.next_seq(), command: Command::SetBreakpoints(args) };
+        self.client.send_request(req)?;
+        Ok(())
+    }
+
+    pub fn continue_exec(&mut self) -> Result<()> {
+        let tid = self.stopped_thread.unwrap_or(0) as i64;
+        let args = ContinueArguments { thread_id: tid, single_thread: None };
+        let req = Request { seq: self.next_seq(), command: Command::Continue(args) };
+        self.client.send_request(req)?;
+        self.state = SessionState::Running;
+        self.stopped_thread = None;
+        self.stack_frames.clear();
+        self.scopes.clear();
+        self.variable_cache.clear();
+        Ok(())
+    }
+
+    pub fn pause(&mut self) -> Result<()> {
+        let tid = self.threads.keys().next().copied().unwrap_or(0) as i64;
+        let args = PauseArguments { thread_id: tid };
+        let req = Request { seq: self.next_seq(), command: Command::Pause(args) };
+        self.client.send_request(req)?;
+        Ok(())
+    }
+
+    pub fn step_over(&mut self) -> Result<()> {
+        let tid = self.stopped_thread.unwrap_or(0) as i64;
+        let args = NextArguments { thread_id: tid, single_thread: None, granularity: None };
+        let req = Request { seq: self.next_seq(), command: Command::Next(args) };
+        self.client.send_request(req)?;
+        self.state = SessionState::Running;
+        self.stack_frames.clear();
+        self.scopes.clear();
+        self.variable_cache.clear();
+        Ok(())
+    }
+
+    pub fn step_into(&mut self) -> Result<()> {
+        let tid = self.stopped_thread.unwrap_or(0) as i64;
+        let args = StepInArguments { thread_id: tid, single_thread: None, target_id: None, granularity: None };
+        let req = Request { seq: self.next_seq(), command: Command::StepIn(args) };
+        self.client.send_request(req)?;
+        self.state = SessionState::Running;
+        self.stack_frames.clear();
+        self.scopes.clear();
+        self.variable_cache.clear();
+        Ok(())
+    }
+
+    pub fn step_out(&mut self) -> Result<()> {
+        let tid = self.stopped_thread.unwrap_or(0) as i64;
+        let args = StepOutArguments { thread_id: tid, single_thread: None, granularity: None };
+        let req = Request { seq: self.next_seq(), command: Command::StepOut(args) };
+        self.client.send_request(req)?;
+        self.state = SessionState::Running;
+        self.stack_frames.clear();
+        self.scopes.clear();
+        self.variable_cache.clear();
+        Ok(())
+    }
+
+    pub fn get_stack(&mut self, thread_id: u64) -> Result<()> {
+        let args = StackTraceArguments {
+            thread_id: thread_id as i64,
+            start_frame: Some(0),
+            levels: Some(50),
+            format: None,
+        };
+        let req = Request { seq: self.next_seq(), command: Command::StackTrace(args) };
+        self.client.send_request(req)?;
+        Ok(())
+    }
+
+    pub fn get_scopes(&mut self, frame_id: u64) -> Result<()> {
+        let args = ScopesArguments { frame_id: frame_id as i64 };
+        let req = Request { seq: self.next_seq(), command: Command::Scopes(args) };
+        self.client.send_request(req)?;
+        Ok(())
+    }
+
+    pub fn get_variables(&mut self, var_ref: u64) -> Result<()> {
+        let args = VariablesArguments {
+            variables_reference: var_ref as i64,
+            filter: None,
+            start: None,
+            count: None,
+            format: None,
+        };
+        let req = Request { seq: self.next_seq(), command: Command::Variables(args) };
+        self.client.send_request(req)?;
+        Ok(())
+    }
+
+    pub fn evaluate(&mut self, expr: &str, frame_id: u64) -> Result<()> {
+        let args = EvaluateArguments {
+            expression: expr.into(),
+            frame_id: Some(frame_id as i64),
+            context: Some(EvaluateArgumentsContext::Hover),
+            format: None,
+        };
+        let req = Request { seq: self.next_seq(), command: Command::Evaluate(args) };
+        self.client.send_request(req)?;
+        Ok(())
+    }
+
+    pub fn disconnect(&mut self) -> Result<()> {
+        let args = DisconnectArguments {
+            terminate_debuggee: Some(true),
+            ..Default::default()
+        };
+        let req = Request { seq: self.next_seq(), command: Command::Disconnect(args) };
+        self.client.send_request(req)?;
+        self.state = SessionState::Terminated;
+        Ok(())
+    }
+
+    pub fn poll_events(&mut self) -> Vec<DapEvent> {
+        let mut events = Vec::new();
+        while let Some(msg) = self.client.poll() {
+            match msg {
+                ServerMessage::Response(rsp) => {
+                    self.handle_response(rsp);
+                }
+                ServerMessage::Event(evt) => {
+                    if let Some(de) = self.handle_event(evt) {
+                        events.push(de);
+                    }
+                }
+                ServerMessage::Request(req) => {
+                    let rsp = dap::responses::Response {
+                        request_seq: req.seq,
+                        success: true,
+                        message: None,
+                        body: None,
+                        error: None,
+                    };
+                    self.client.send_response(rsp).ok();
+                }
+            }
+        }
+        events
+    }
+
+    fn handle_response(&mut self, _rsp: dap::responses::Response) {
+    }
+
+    fn handle_event(&mut self, evt: dap::events::Event) -> Option<DapEvent> {
+        use dap::events::Event;
+        match evt {
+            Event::Stopped(body) => {
+                let reason = format!("{:?}", body.reason);
+                let tid = body.thread_id.unwrap_or(0) as u64;
+                self.state = SessionState::Paused;
+                self.stopped_thread = Some(tid);
+                if tid > 0 && !self.threads.contains_key(&tid) {
+                    self.threads.insert(tid, Thread { id: tid as i64, name: format!("Thread {tid}") });
+                }
+                Some(DapEvent::Stopped { reason, thread_id: tid })
+            }
+            Event::Continued(body) => {
+                let tid = body.thread_id as u64;
+                self.state = SessionState::Running;
+                Some(DapEvent::Continued { thread_id: tid })
+            }
+            Event::Exited(body) => {
+                Some(DapEvent::Exited { exit_code: body.exit_code })
+            }
+            Event::Terminated(_) => {
+                self.state = SessionState::Terminated;
+                Some(DapEvent::Terminated)
+            }
+            Event::Output(body) => {
+                let cat = format!("{:?}", body.category.unwrap_or(dap::types::OutputEventCategory::Console));
+                Some(DapEvent::Output { category: cat, output: body.output })
+            }
+            Event::Thread(body) => {
+                let reason = format!("{:?}", body.reason);
+                let tid = body.thread_id as u64;
+                self.threads.insert(tid, Thread { id: tid as i64, name: format!("Thread {tid}") });
+                Some(DapEvent::Thread { reason, thread_id: tid })
+            }
+            Event::Breakpoint(body) => {
+                let id = body.breakpoint.id.unwrap_or(0) as u64;
+                let verified = body.breakpoint.verified;
+                Some(DapEvent::BreakpointValidated { id, verified })
+            }
+            Event::Module(body) => {
+                let id = match body.module.id {
+                    dap::types::ModuleId::Number | _ => 0,
+                };
+                let name = body.module.name.clone();
+                Some(DapEvent::Module { id, name })
+            }
+            Event::Process(body) => {
+                let name = body.name;
+                let pid = body.system_process_id.unwrap_or(0) as u64;
+                Some(DapEvent::Process { name, pid })
+            }
+            _ => None,
+        }
+    }
+}
