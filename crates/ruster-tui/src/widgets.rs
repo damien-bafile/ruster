@@ -38,6 +38,19 @@ fn apply_cursor(cell: &mut ratatui::buffer::Cell, kind: CursorKind) {
     }
 }
 
+fn apply_dim_cursor(cell: &mut ratatui::buffer::Cell, kind: CursorKind) {
+    match kind {
+        CursorKind::Bar => {
+            cell.set_bg(Color::DarkGray);
+            cell.set_fg(Color::White);
+        }
+        CursorKind::Block => {
+            cell.set_bg(Color::Rgb(69, 71, 90));
+            cell.set_fg(Color::Rgb(166, 173, 200));
+        }
+    }
+}
+
 fn ruster_render_color_to_tui(c: &RColor) -> Color {
     match c {
         RColor::Default => Color::Reset,
@@ -120,6 +133,7 @@ pub struct BufferWidget {
     gutter: GutterView,
     signs: ruster_render::SignsView,
     selection: Option<ruster_render::SelectionView>,
+    active: bool,
 }
 
 impl BufferWidget {
@@ -135,6 +149,7 @@ impl BufferWidget {
             gutter: GutterView::default(),
             signs: ruster_render::SignsView::default(),
             selection: None,
+            active: true,
         }
     }
 
@@ -150,6 +165,11 @@ impl BufferWidget {
 
     pub fn with_selection(mut self, selection: Option<ruster_render::SelectionView>) -> Self {
         self.selection = selection;
+        self
+    }
+
+    pub fn with_active(mut self, active: bool) -> Self {
+        self.active = active;
         self
     }
 
@@ -263,7 +283,11 @@ impl Widget for BufferWidget {
                 if let Some(cell) = buf.cell_mut((x, y)) {
                     cell.set_char(ch);
                     if is_cursor_line && j as u16 == self.cursor.1 && self.cursor_visible {
-                        apply_cursor(cell, self.cursor_kind);
+                        if self.active {
+                            apply_cursor(cell, self.cursor_kind);
+                        } else {
+                            apply_dim_cursor(cell, self.cursor_kind);
+                        }
                     } else {
                         if let Some((fg, bg)) = style_map.get(&(row as u16, j as u16)) {
                             cell.set_fg(ruster_render_color_to_tui(fg));
@@ -282,7 +306,11 @@ impl Widget for BufferWidget {
                 if x < area.right() {
                     if let Some(cell) = buf.cell_mut((x, y)) {
                         cell.set_char(' ');
-                        apply_cursor(cell, self.cursor_kind);
+                        if self.active {
+                            apply_cursor(cell, self.cursor_kind);
+                        } else {
+                            apply_dim_cursor(cell, self.cursor_kind);
+                        }
                     }
                 }
             }

@@ -2884,7 +2884,7 @@ impl App {
                     cursor: (cline as u16, ccol as u16),
                     extra_cursors,
                     cursor_kind,
-                    cursor_visible: is_active,
+                    cursor_visible: true,
                     cursor_smooth,
                     scroll_offset: scroll as u16,
                     gutter,
@@ -2907,7 +2907,7 @@ impl App {
                 let text = format!("{}{}{}", indent, marker, r.name);
                 let highlights = if i == selected {
                     let len = text.len();
-                    vec![(0, len, SyntaxStyle { fg: Color::Default, bg: Color::Rgb(51, 51, 51), bold: false, italic: false })]
+                    vec![(0, len, SyntaxStyle { fg: Color::Default, bg: Color::Rgb(80, 80, 100), bold: false, italic: false })]
                 } else {
                     vec![]
                 };

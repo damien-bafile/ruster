@@ -105,7 +105,8 @@ impl Renderer for TuiRenderer {
                         .with_gutter(view.gutter.clone())
                         .with_signs(view.signs.clone())
                         .with_extra_cursors(view.extra_cursors.clone())
-                        .with_selection(view.selection);
+                        .with_selection(view.selection)
+                        .with_active(view.active);
                     frame.render_widget(buf_widget, buf_area);
                 }
 
