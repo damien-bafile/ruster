@@ -2889,7 +2889,7 @@ impl App {
             let rows = tree.rows();
             let selected = self.sidebar_selected.min(rows.len().saturating_sub(1));
             let scroll = self.sidebar_scroll.min(selected.saturating_sub((srect.height as usize).saturating_sub(2).max(0) / 2));
-            let lines: Vec<StyledLine> = rows.iter().enumerate().skip(scroll).take(srect.height as usize).map(|(i, r)| {
+            let lines: Vec<StyledLine> = rows.iter().enumerate().skip(scroll).take(srect.height as usize).map(|(_, r)| {
                 let indent = "  ".repeat(r.depth);
                 let marker = if r.is_dir { if r.expanded { "▾ " } else { "▸ " } } else { "  " };
                 let text = format!("{}{}{}", indent, marker, r.name);
@@ -4230,6 +4230,33 @@ impl App {
         }
     }
 
+    /// Reveal `path` in the sidebar: expand all ancestors, select the matching
+    /// entry, and scroll to keep it visible. No-op when the sidebar is hidden.
+    fn reveal_in_sidebar(&mut self, path: &std::path::Path) {
+        let tree = match self.sidebar.as_mut() {
+            Some(t) => t,
+            None => return,
+        };
+        // Canonicalize the path if it's relative.
+        let path = if path.is_relative() {
+            std::env::current_dir().ok().map(|cwd| cwd.join(path)).unwrap_or_else(|| path.to_path_buf())
+        } else {
+            path.to_path_buf()
+        };
+        // Only reveal paths under the sidebar root.
+        if !path.starts_with(&tree.root) {
+            return;
+        }
+        tree.reveal(&path);
+        // Find the row matching this path and select it.
+        let rows = tree.rows();
+        if let Some(idx) = rows.iter().position(|r| r.path == path) {
+            self.sidebar_selected = idx;
+            // Reset scroll so the selected row is visible (render loop centers it).
+            self.sidebar_scroll = idx.saturating_sub(8);
+        }
+    }
+
     /// Handle keyboard input while the sidebar is focused.
     fn handle_sidebar_key(&mut self, ck: crossterm::event::KeyEvent) {
         let tree = match self.sidebar.as_mut() {
@@ -4452,6 +4479,7 @@ impl App {
             };
             self.ws.borrow_mut().execute(Action::Move(Motion::To(pos)));
         }
+        self.reveal_in_sidebar(path);
     }
 
     /// Advance the pending Space-leader sequence with the next key.
