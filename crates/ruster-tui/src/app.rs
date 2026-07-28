@@ -992,6 +992,8 @@ pub struct App {
     sidebar_scroll: usize,
     sidebar_focused: bool,
     sidebar_width: u16,
+    /// Directory override for sidebar-initiated dired prompts.
+    sidebar_prompt_dir: Option<PathBuf>,
     /// The message log for editor/plugin messages.
     messages: ruster_core::message::MessageLog,
     /// The pinned messages buffer, once created.
@@ -1338,6 +1340,7 @@ impl App {
             sidebar_scroll: 0,
             sidebar_focused: false,
             sidebar_width: 30,
+            sidebar_prompt_dir: None,
             messages: ruster_core::message::MessageLog::new(),
             messages_buf: None,
             messages_filter_source: None,
@@ -3922,9 +3925,8 @@ impl App {
                             Err(e) => format!("Delete failed for '{}': {}", name, e),
                         });
                     }
-                    self.dired_refresh_current();
-                }
-                _ => self.dired_prompt = None,
+                    }
+                    _ => self.dired_prompt = None,
             }
             return;
         }
@@ -3950,11 +3952,11 @@ impl App {
     }
 
     fn dired_execute_prompt(&mut self, prompt: DiredPrompt) {
-        let id = self.ws.borrow().active_buffer();
-        let dir = match self.dired_dirs.get(&id) {
-            Some(d) => d.clone(),
-            None => return,
-        };
+        let is_sidebar = self.sidebar_prompt_dir.is_some();
+        let dir = self.sidebar_prompt_dir.take().unwrap_or_else(|| {
+            let id = self.ws.borrow().active_buffer();
+            self.dired_dirs.get(&id).cloned().unwrap_or_default()
+        });
         let input = prompt.input.trim().to_string();
         match prompt.kind {
             // A trailing '/' creates a directory, otherwise a file.
@@ -3997,7 +3999,14 @@ impl App {
             }
             _ => {}
         }
-        self.dired_refresh_current();
+        if is_sidebar {
+            if self.sidebar.is_some() {
+                let rows = self.sidebar.as_ref().unwrap().rows();
+                self.sidebar_selected = self.sidebar_selected.min(rows.len().saturating_sub(1));
+            }
+        } else {
+            self.dired_refresh_current();
+        }
     }
 
     /// Reload the active dired buffer's listing (after a mutation).
@@ -4315,6 +4324,30 @@ impl App {
             }
             KeyCode::Tab => {
                 self.sidebar_focused = false;
+            }
+            KeyCode::Char('a') if ck.modifiers.is_empty() => {
+                if !rows.is_empty() {
+                    let row = &rows[self.sidebar_selected.min(rows.len().saturating_sub(1))];
+                    let dir = if row.is_dir { row.path.clone() } else { row.path.parent().unwrap_or(&row.path).to_path_buf() };
+                    self.sidebar_prompt_dir = Some(dir);
+                    self.dired_prompt = Some(DiredPrompt { kind: DiredPromptKind::Create, input: String::new() });
+                }
+            }
+            KeyCode::Char('r') if ck.modifiers.is_empty() => {
+                if !rows.is_empty() {
+                    let row = &rows[self.sidebar_selected.min(rows.len().saturating_sub(1))];
+                    let dir = row.path.parent().unwrap_or(&row.path).to_path_buf();
+                    let name = row.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                    self.sidebar_prompt_dir = Some(dir);
+                    self.dired_prompt = Some(DiredPrompt { kind: DiredPromptKind::Rename(name.clone()), input: name });
+                }
+            }
+            KeyCode::Char('d') if ck.modifiers.is_empty() => {
+                if !rows.is_empty() {
+                    let row = &rows[self.sidebar_selected.min(rows.len().saturating_sub(1))];
+                    self.sidebar_prompt_dir = row.path.parent().map(|p| p.to_path_buf());
+                    self.dired_prompt = Some(DiredPrompt { kind: DiredPromptKind::Delete(row.path.clone()), input: String::new() });
+                }
             }
             _ => {}
         }
