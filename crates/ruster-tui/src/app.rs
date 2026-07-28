@@ -17,7 +17,7 @@ use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 use ruster_lua::{config::Config, LuaAction, LuaRuntime};
 use ruster_render::{
     Color, CursorKind, FrameState, Rect as RRect, Renderer, SelectionView, StatuslineView,
-    StyledLine, SyntaxStyle, WelcomeView, WhichKeyView, WindowView,
+    StyledLine, SyntaxStyle, UIMode, WelcomeView, WhichKeyView, WindowView,
 };
 use ruster_syntax::SyntaxEngine;
 use ruster_lsp::{LspManager, LspPosition, ServerMessage};
@@ -237,14 +237,29 @@ fn resolve_theme_colors(
     set(&ov.fg, &mut colors.fg);
     set(&ov.gutter, &mut colors.gutter);
     set(&ov.gutter_bg, &mut colors.gutter_bg);
-    set(&ov.selection, &mut colors.selection);
+    set(&ov.cursor_bg, &mut colors.cursor_bg);
+    set(&ov.selection_bg, &mut colors.selection_bg);
     set(&ov.selection_fg, &mut colors.selection_fg);
-    set(&ov.cursor, &mut colors.cursor);
     set(&ov.cursor_fg, &mut colors.cursor_fg);
     set(&ov.divider, &mut colors.divider);
     set(&ov.statusline_fg, &mut colors.statusline_fg);
+    set(&ov.statusline_bg, &mut colors.statusline_bg);
     set(&ov.accent, &mut colors.accent);
     set(&ov.accent_fg, &mut colors.accent_fg);
+    set(&ov.whichkey_bg, &mut colors.whichkey_bg);
+    set(&ov.whichkey_fg, &mut colors.whichkey_fg);
+    set(&ov.cmdline_bg, &mut colors.cmdline_bg);
+    set(&ov.cmdline_fg, &mut colors.cmdline_fg);
+    set(&ov.mode_normal_bg, &mut colors.mode_normal_bg);
+    set(&ov.mode_normal_fg, &mut colors.mode_normal_fg);
+    set(&ov.mode_insert_bg, &mut colors.mode_insert_bg);
+    set(&ov.mode_insert_fg, &mut colors.mode_insert_fg);
+    set(&ov.mode_visual_bg, &mut colors.mode_visual_bg);
+    set(&ov.mode_visual_fg, &mut colors.mode_visual_fg);
+    set(&ov.mode_cmdline_bg, &mut colors.mode_cmdline_bg);
+    set(&ov.mode_cmdline_fg, &mut colors.mode_cmdline_fg);
+    set(&ov.mode_emacs_bg, &mut colors.mode_emacs_bg);
+    set(&ov.mode_emacs_fg, &mut colors.mode_emacs_fg);
     colors
 }
 
@@ -491,6 +506,8 @@ enum CmdAction {
     Projects,
     /// Toggle the file-explorer sidebar (`:sidebar`).
     Sidebar,
+    /// Open a file by path (`:e path` / `:edit path`).
+    OpenFile(String),
 }
 
 /// Parse the argument of `:set <opt>` for a boolean option. Accepts `number`
@@ -568,6 +585,8 @@ const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("set editmode neovim", "switch to Neovim (modal) editing"),
     ("set number", "show absolute line numbers"),
     ("set relativenumber", "show relative line numbers"),
+    ("e", "open file by path"),
+    ("edit", "open file by path (alias)"),
 ];
 
 /// The which-key continuations shown after a `Ctrl-w` prefix.
@@ -869,6 +888,8 @@ pub struct App {
     pub renderer: Box<dyn Renderer>,
     pub should_quit: bool,
     message: Option<String>,
+    /// The instant `message` was last set, for auto-dismiss.
+    message_time: Option<std::time::Instant>,
     /// Per-buffer tree-sitter syntax engines, created lazily the first time a
     /// buffer with a supported filetype is rendered. Buffers without a supported
     /// language (or without a file path) simply have no entry and render plain.
@@ -1201,7 +1222,16 @@ impl App {
             let _ = std::fs::create_dir_all(&themes_dir);
             for (name, theme) in ruster_lua::config::builtin_themes() {
                 let path = themes_dir.join(format!("{name}.lua"));
-                if !path.exists() {
+                // Regenerate if the file doesn't exist or was written with an
+                // older version (stale built-in mode colors, etc.).
+                let needs_write = match std::fs::read_to_string(&path) {
+                    Err(_) => true,
+                    Ok(content) => {
+                        ruster_lua::config::theme_version(&content)
+                            .unwrap_or(0) < ruster_lua::config::CURRENT_THEME_VERSION
+                    }
+                };
+                if needs_write {
                     let _ = std::fs::write(&path, theme.to_lua());
                 }
             }
@@ -1280,7 +1310,7 @@ impl App {
         }
         let mut app = App {
             ws, vim, renderer,
-            should_quit: false, message: startup_message, syntax, syntax_tried, lua, config, timer,
+            should_quit: false, message: startup_message.clone(), message_time: startup_message.as_ref().map(|_| std::time::Instant::now()), syntax, syntax_tried, lua, config, timer,
             has_smooth_cursor: false, cursor_anim, pending_ctrl_w: false, picker: None,
             leader_pending: None,
             pending_results: None,
@@ -1379,16 +1409,41 @@ impl App {
                 fg: col(c.colors.fg),
                 gutter: col(c.colors.gutter),
                 gutter_bg: col(c.colors.gutter_bg),
-                selection: col(c.colors.selection),
+                cursor_bg: col(c.colors.cursor_bg),
+                selection_bg: col(c.colors.selection_bg),
                 selection_fg: col(c.colors.selection_fg),
-                cursor: col(c.colors.cursor),
                 cursor_fg: col(c.colors.cursor_fg),
                 divider: col(c.colors.divider),
                 statusline_fg: col(c.colors.statusline_fg),
+                statusline_bg: col(c.colors.statusline_bg),
                 accent: col(c.colors.accent),
                 accent_fg: col(c.colors.accent_fg),
+                whichkey_bg: col(c.colors.whichkey_bg),
+                whichkey_fg: col(c.colors.whichkey_fg),
+                cmdline_bg: col(c.colors.cmdline_bg),
+                cmdline_fg: col(c.colors.cmdline_fg),
+                mode_normal_bg: col(c.colors.mode_normal_bg),
+                mode_normal_fg: col(c.colors.mode_normal_fg),
+                mode_insert_bg: col(c.colors.mode_insert_bg),
+                mode_insert_fg: col(c.colors.mode_insert_fg),
+                mode_visual_bg: col(c.colors.mode_visual_bg),
+                mode_visual_fg: col(c.colors.mode_visual_fg),
+                mode_cmdline_bg: col(c.colors.mode_cmdline_bg),
+                mode_cmdline_fg: col(c.colors.mode_cmdline_fg),
+                mode_emacs_bg: col(c.colors.mode_emacs_bg),
+                mode_emacs_fg: col(c.colors.mode_emacs_fg),
             },
         }
+    }
+
+    fn set_message(&mut self, msg: String) {
+        self.message = Some(msg.clone());
+        self.message_time = Some(std::time::Instant::now());
+        self.messages.push(
+            ruster_core::message::MessageLevel::Info,
+            ruster_core::message::MessageSource::Echo,
+            msg,
+        );
     }
 
     pub fn handle_key(&mut self, ck: crossterm::event::KeyEvent) {
@@ -1423,6 +1478,28 @@ impl App {
         if self.dired_prompt.is_some() {
             self.handle_dired_prompt_key(ck);
             return;
+        }
+
+        // Dashboard welcome screen: 1..5 opens a recent project.
+        if let KeyCode::Char(d) = ck.code {
+            if let Some(idx) = d.to_digit(10).and_then(|n| (1..=5).contains(&n).then_some(n as usize - 1)) {
+                let is_dashboard = {
+                    let w = self.ws.borrow();
+                    let active = w.active_doc();
+                    active.file_path.is_none()
+                        && (matches!(active.kind, DocKind::Scratch)
+                            || matches!(active.kind, DocKind::Special(SpecialKind::Dashboard)))
+                };
+                if is_dashboard {
+                    if let Some(dir) = ruster_config_dir() {
+                        let projects = ruster_project::recent_projects(&dir);
+                        if let Some(path) = projects.get(idx) {
+                            self.open_path(path, None);
+                            return;
+                        }
+                    }
+                }
+            }
         }
 
         // A pending Space-leader sequence captures the next key.
@@ -1567,7 +1644,7 @@ impl App {
                 if let KeyCode::Char(reg) = ck.code {
                     if kind == 'q' {
                         self.macro_recording = Some((reg, Vec::new()));
-                        self.message = Some(format!("Recording @{}", reg));
+                        self.set_message(format!("Recording @{}", reg));
                     } else {
                         self.replay_macro(reg);
                     }
@@ -1579,7 +1656,7 @@ impl App {
                     if let Some((reg, keys)) = self.macro_recording.take() {
                         let n = keys.len();
                         self.macros.insert(reg, keys);
-                        self.message = Some(format!("Recorded @{} ({} keys)", reg, n));
+                        self.set_message(format!("Recorded @{} ({} keys)", reg, n));
                     } else {
                         self.pending_macro = Some('q');
                     }
@@ -1662,9 +1739,10 @@ impl App {
                 }
                 Action::CmdlineResult(cmd) => {
                     self.message = None;
+                    self.message_time = None;
                     match self.parse_cmdline(&cmd) {
                         Ok(a) => self.apply_cmd(a),
-                        Err(e) => self.message = Some(e),
+                        Err(e) => self.set_message(e),
                     }
                 }
                 other => self.ws.borrow_mut().execute(other),
@@ -1691,7 +1769,7 @@ impl App {
             EditMode::Emacs => "emacs",
         };
         self.lua.set_editmode(name);
-        self.message = Some(format!("editmode: {}", name));
+        self.set_message(format!("editmode: {}", name));
     }
 
     /// Apply a `:set number`/`:set relativenumber` toggle. The gutter rebuilds
@@ -1711,7 +1789,7 @@ impl App {
             BoolOpt::Number => "number",
             BoolOpt::RelativeNumber => "relativenumber",
         };
-        self.message = Some(format!("{}{}", if new { "" } else { "no" }, name));
+        self.set_message(format!("{}{}", if new { "" } else { "no" }, name));
     }
 
     /// Handle a key in Emacs (modeless) mode. App-level chords — the `C-x`
@@ -1746,7 +1824,7 @@ impl App {
                 KeyCode::Char('1') => self.ws.borrow_mut().windows.only(),
                 KeyCode::Char('2') => self.ws.borrow_mut().split(SplitDir::Horizontal),
                 KeyCode::Char('3') => self.ws.borrow_mut().split(SplitDir::Vertical),
-                _ => self.message = Some("C-x undefined".to_string()),
+                _ => self.set_message("C-x undefined".to_string()),
             }
             return;
         }
@@ -1759,7 +1837,7 @@ impl App {
             }
             KeyEvent::Ctrl('g') => {
                 self.emacs.cancel();
-                self.message = Some("Quit".to_string());
+                self.set_message("Quit".to_string());
                 return;
             }
             KeyEvent::Alt('x') => {
@@ -1783,12 +1861,13 @@ impl App {
             self.ws.borrow_mut().execute(action);
         }
         self.message = None;
+        self.message_time = None;
     }
 
     /// Begin an Emacs incremental search in the given direction.
     fn start_isearch(&mut self, forward: bool) {
         self.emacs_isearch = Some((String::new(), forward));
-        self.message = Some(if forward { "I-search: ".into() } else { "I-search backward: ".into() });
+        self.set_message(if forward { "I-search: ".into() } else { "I-search backward: ".into() });
     }
 
     /// Drive an active incremental search: printable keys extend the query and
@@ -1798,6 +1877,7 @@ impl App {
         match ck.code {
             KeyCode::Enter | KeyCode::Esc => {
                 self.message = None;
+                self.message_time = None;
                 return;
             }
             KeyCode::Backspace => {
@@ -1819,6 +1899,7 @@ impl App {
             }
             KeyCode::Char('g') if ck.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
                 self.message = None;
+                self.message_time = None;
                 return;
             }
             KeyCode::Char(c) => {
@@ -1834,7 +1915,7 @@ impl App {
 
     fn set_isearch_message(&mut self, query: &str, forward: bool) {
         let label = if forward { "I-search" } else { "I-search backward" };
-        self.message = Some(format!("{}: {}", label, query));
+        self.set_message(format!("{}: {}", label, query));
     }
 
     /// Move the cursor to the next/previous occurrence of `query`. `advance`
@@ -1957,11 +2038,11 @@ impl App {
                     LuaAction::Cmd(cmd) => {
                         match self.parse_cmdline(&cmd) {
                             Ok(a) => self.apply_cmd(a),
-                            Err(e) => self.message = Some(e),
+                            Err(e) => self.set_message(e),
                         }
                     }
                     LuaAction::Print(msg) => {
-                        self.message = Some(msg);
+                        self.set_message(msg);
                     }
                 }
             }
@@ -2302,7 +2383,7 @@ impl App {
         let lang = match self.active_lsp_target() {
             Some((lang, _, _)) => lang,
             None => {
-                self.message = Some("No language server for this buffer".to_string());
+                self.set_message("No language server for this buffer".to_string());
                 return false;
             }
         };
@@ -2310,7 +2391,7 @@ impl App {
             self.lsp_pending.insert((lang, id), action);
             true
         } else {
-            self.message = Some("Language server still starting…".to_string());
+            self.set_message("Language server still starting…".to_string());
             false
         }
     }
@@ -2392,7 +2473,7 @@ impl App {
                 if let Some(text) = ruster_lsp::parse_hover(&result) {
                     self.hover = Some(build_hover_lines(&text));
                 } else {
-                    self.message = Some("No hover info".to_string());
+                    self.set_message("No hover info".to_string());
                 }
             }
             LspAction::Definition => {
@@ -2403,13 +2484,13 @@ impl App {
                         Some((loc.start.line as usize + 1, loc.start.character as usize + 1)),
                     );
                 } else {
-                    self.message = Some("No definition found".to_string());
+                    self.set_message("No definition found".to_string());
                 }
             }
             LspAction::References => {
                 let locs = ruster_lsp::parse_locations(&result);
                 if locs.is_empty() {
-                    self.message = Some("No references".to_string());
+                    self.set_message("No references".to_string());
                     return;
                 }
                 let items = locs
@@ -2496,13 +2577,13 @@ impl App {
                         let params = ruster_lsp::protocol::call_hierarchy_calls_params(&item);
                         self.lsp_request(method, params, LspAction::CallHierarchy(incoming));
                     }
-                    None => self.message = Some("No call hierarchy for symbol".to_string()),
+                    None => self.set_message("No call hierarchy for symbol".to_string()),
                 }
             }
             LspAction::CallHierarchy(incoming) => {
                 let calls = ruster_lsp::parse_call_hierarchy_calls(&result, incoming);
                 if calls.is_empty() {
-                    self.message = Some(
+                    self.set_message(
                         if incoming { "No callers" } else { "No callees" }.to_string(),
                     );
                     return;
@@ -2601,7 +2682,7 @@ impl App {
             })
             .collect();
         if count == 0 {
-            self.message = Some(format!("Pattern not found: {}", pattern));
+            self.set_message(format!("Pattern not found: {}", pattern));
             return;
         }
         let mut text = new.join("\n");
@@ -2609,7 +2690,7 @@ impl App {
             text.push('\n');
         }
         self.replace_active_content(&text);
-        self.message = Some(format!(
+        self.set_message(format!(
             "{} substitution{}",
             count,
             if count == 1 { "" } else { "s" }
@@ -2632,6 +2713,11 @@ impl App {
     }
 
     fn render(&mut self) {
+        // Auto-dismiss transient messages after 3 s.
+        if self.message_time.is_some_and(|t| t.elapsed() > std::time::Duration::from_secs(3)) {
+            self.message = None;
+            self.message_time = None;
+        }
         self.drain_pending_results();
         self.drain_build_runner();
         self.update_lsp();
@@ -2653,6 +2739,15 @@ impl App {
         let (mode_lbl, emacs) = match self.editmode {
             EditMode::Emacs => ("-- EMACS --".to_string(), true),
             EditMode::Neovim => (crate::widgets::mode_label(&mode).to_string(), false),
+        };
+        let ui_mode = match self.editmode {
+            EditMode::Emacs => UIMode::Emacs,
+            EditMode::Neovim => match mode {
+                VimMode::Insert => UIMode::Insert,
+                VimMode::VisualChar | VimMode::VisualLine | VimMode::VisualBlock => UIMode::Visual,
+                VimMode::Cmdline => UIMode::Cmdline,
+                VimMode::Normal => UIMode::Normal,
+            },
         };
         // Non-insert cursor uses the configured shape (gui.cursor_kind).
         let rest_cursor = if self.config.cursor_kind == "bar" {
@@ -2828,7 +2923,7 @@ impl App {
                         right = format!("{}  {}", lua_right, right);
                     }
                 }
-                let statusline = StatuslineView { left, center, right, active: is_active };
+                let statusline = StatuslineView { left, center, right, active: is_active, mode: ui_mode };
                 let cursor_smooth = if is_active && smooth {
                     Some((anim_x - ccol as f32, anim_y - cline as f32))
                 } else {
@@ -2926,7 +3021,7 @@ impl App {
                 scroll_offset: 0,
                 gutter: ruster_render::GutterView { width: 0, rows: vec![] },
                 signs: ruster_render::SignsView::default(),
-                statusline: StatuslineView { left: "Sidebar".into(), center: String::new(), right: format!("{} items", rows.len()), active: self.sidebar_focused },
+                statusline: StatuslineView { left: "Sidebar".into(), center: String::new(), right: format!("{} items", rows.len()), active: self.sidebar_focused, mode: UIMode::Normal },
                 active: self.sidebar_focused,
                 selection: None,
                 terminal: None,
@@ -2999,7 +3094,7 @@ impl App {
             .map(|d| {
                 ruster_project::recent_projects(&d)
                     .iter()
-                    .take(10)
+                    .take(5)
                     .map(|p| p.display().to_string())
                     .collect()
             })
@@ -3033,6 +3128,7 @@ impl App {
             hover: self.hover.clone(),
             settings: self.settings.as_ref().map(|s| s.view()),
             welcome: welcome_view,
+            theme: self.gui_config().theme,
         };
         self.renderer.render_frame(&state);
     }
@@ -3122,6 +3218,20 @@ impl App {
                 Ok(CmdAction::MessagesFilter(filter))
             }
             _ if trimmed == "projects" => Ok(CmdAction::Projects),
+            "e" | "edit" => Ok(CmdAction::Files),
+            _ if trimmed.starts_with("e ") || trimmed.starts_with("edit ") => {
+                let path = trimmed
+                    .split_once(' ')
+                    .map(|x| x.1)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                if path.is_empty() {
+                    Ok(CmdAction::Files)
+                } else {
+                    Ok(CmdAction::OpenFile(path))
+                }
+            }
             _ if trimmed == "sidebar" => Ok(CmdAction::Sidebar),
             _ if trimmed.starts_with("set editmode") || trimmed == "set editmode" => {
                 match trimmed.rsplit(' ').next().unwrap_or("") {
@@ -3184,7 +3294,7 @@ impl App {
             CmdAction::CloseWindow => {
                 let closed = self.ws.borrow_mut().windows.close_active();
                 if !closed {
-                    self.message = Some("E444: Cannot close last window".to_string());
+                    self.set_message("E444: Cannot close last window".to_string());
                 }
             }
             CmdAction::Only => self.ws.borrow_mut().windows.only(),
@@ -3218,6 +3328,11 @@ impl App {
             CmdAction::MessagesFilter(filter) => self.apply_messages_filter(&filter),
             CmdAction::Projects => self.open_projects(),
             CmdAction::Sidebar => self.toggle_sidebar(),
+            CmdAction::OpenFile(path) => {
+                let p = std::path::PathBuf::from(&path);
+                let p = p.canonicalize().unwrap_or(p);
+                self.open_path(&p, None);
+            }
         }
     }
 
@@ -3268,14 +3383,14 @@ impl App {
         {
             Ok(c) => c,
             Err(_) => {
-                self.message = Some("ripgrep (rg) not found in PATH".to_string());
+                self.set_message("ripgrep (rg) not found in PATH".to_string());
                 return;
             }
         };
         let stdout = match child.stdout.take() {
             Some(s) => s,
             None => {
-                self.message = Some("failed to capture rg output".to_string());
+                self.set_message("failed to capture rg output".to_string());
                 return;
             }
         };
@@ -3449,7 +3564,7 @@ impl App {
         if let Some(s) = self.settings.as_mut() {
             s.dirty = false;
         }
-        self.message = Some(if wrote {
+        self.set_message(if wrote {
             "Saved config.lua".to_string()
         } else {
             "Could not write config.lua".to_string()
@@ -3667,9 +3782,9 @@ impl App {
                 self.terminals.insert(id, session);
                 // Honor terminal.default_mode ("insert" focuses the shell).
                 self.terminal_focused = self.config.terminal_default_mode != "normal";
-                self.message = Some("terminal: Ctrl-\\ to leave, i to re-enter".to_string());
+                self.set_message("terminal: Ctrl-\\ to leave, i to re-enter".to_string());
             }
-            Err(e) => self.message = Some(format!("terminal: {e}")),
+            Err(e) => self.set_message(format!("terminal: {e}")),
         }
     }
 
@@ -3714,7 +3829,7 @@ impl App {
         }
         self.terminal_focused = false;
         self.vim = VimState::new();
-        self.message = Some("terminal: NORMAL — motions/visual/y to yank, i to resume".to_string());
+        self.set_message("terminal: NORMAL — motions/visual/y to yank, i to resume".to_string());
     }
 
     /// Handle a key in a dired buffer. Returns true if the key was consumed
@@ -3804,7 +3919,7 @@ impl App {
             KeyCode::Char('.') => {
                 self.dired_show_hidden = !self.dired_show_hidden;
                 self.dired_refresh_current();
-                self.message = Some(format!(
+                self.set_message(format!(
                     "Hidden files {}",
                     if self.dired_show_hidden { "shown" } else { "hidden" }
                 ));
@@ -3828,13 +3943,13 @@ impl App {
         match self.dired_current_target() {
             Some((path, name)) => {
                 self.dired_clipboard = Some((path, cut));
-                self.message = Some(format!(
+                self.set_message(format!(
                     "{} '{}'",
                     if cut { "Cut" } else { "Copied" },
                     name
                 ));
             }
-            None => self.message = Some("Nothing selected".to_string()),
+            None => self.set_message("Nothing selected".to_string()),
         }
     }
 
@@ -3843,7 +3958,7 @@ impl App {
         let (src, cut) = match self.dired_clipboard.clone() {
             Some(s) => s,
             None => {
-                self.message = Some("Clipboard empty".to_string());
+                self.set_message("Clipboard empty".to_string());
                 return;
             }
         };
@@ -3858,7 +3973,7 @@ impl App {
         };
         let dest = dir.join(&name);
         if dest.exists() {
-            self.message = Some(format!("'{}' already exists", name.to_string_lossy()));
+            self.set_message(format!("'{}' already exists", name.to_string_lossy()));
             return;
         }
         let result = if cut {
@@ -3884,7 +3999,7 @@ impl App {
         };
         match result {
             Ok(()) => {
-                self.message = Some(format!(
+                self.set_message(format!(
                     "{} '{}'",
                     if cut { "Moved" } else { "Pasted" },
                     name.to_string_lossy()
@@ -3893,7 +4008,7 @@ impl App {
                     self.dired_clipboard = None; // a cut is consumed by the paste
                 }
             }
-            Err(e) => self.message = Some(format!("Paste failed: {}", e)),
+            Err(e) => self.set_message(format!("Paste failed: {}", e)),
         }
         self.dired_refresh_current();
     }
@@ -3937,7 +4052,7 @@ impl App {
                             .and_then(|n| n.to_str())
                             .unwrap_or("")
                             .to_string();
-                        self.message = Some(match result {
+                        self.set_message(match result {
                             Ok(()) => format!("Deleted '{}'", name),
                             Err(e) => format!("Delete failed for '{}': {}", name, e),
                         });
@@ -3981,11 +4096,11 @@ impl App {
                 let is_dir = input.ends_with('/');
                 let name = input.trim_end_matches('/').to_string();
                 if name.is_empty() {
-                    self.message = Some("No name given".to_string());
+                    self.set_message("No name given".to_string());
                 } else {
                     let target = dir.join(&name);
                     if target.exists() {
-                        self.message = Some(format!("'{}' already exists", name));
+                        self.set_message(format!("'{}' already exists", name));
                     } else {
                         let result = if is_dir {
                             std::fs::create_dir_all(&target)
@@ -3995,7 +4110,7 @@ impl App {
                             }
                             std::fs::File::create(&target).map(|_| ())
                         };
-                        self.message = Some(match result {
+                        self.set_message(match result {
                             Ok(()) => format!(
                                 "Created {} '{}'",
                                 if is_dir { "directory" } else { "file" },
@@ -4009,9 +4124,9 @@ impl App {
             DiredPromptKind::Rename(old) if !input.is_empty() => {
                 let target = dir.join(&input);
                 if target.exists() {
-                    self.message = Some(format!("'{}' already exists", input));
+                    self.set_message(format!("'{}' already exists", input));
                 } else if let Err(e) = std::fs::rename(dir.join(&old), &target) {
-                    self.message = Some(format!("Rename failed: {}", e));
+                    self.set_message(format!("Rename failed: {}", e));
                 }
             }
             _ => {}
@@ -4224,7 +4339,7 @@ impl App {
             .map(|d| ruster_project::recent_projects(&d))
             .unwrap_or_default();
         if recent.is_empty() {
-            self.message = Some("No recent projects".to_string());
+            self.set_message("No recent projects".to_string());
             return;
         }
         let items: Vec<PickerItem> = recent
@@ -4243,7 +4358,7 @@ impl App {
         if self.sidebar.is_some() {
             self.sidebar = None;
             self.sidebar_focused = false;
-            self.message = Some("Sidebar closed".to_string());
+            self.set_message("Sidebar closed".to_string());
         } else {
             let root = self.project_root
                 .clone()
@@ -4253,7 +4368,7 @@ impl App {
             self.sidebar_selected = 0;
             self.sidebar_scroll = 0;
             self.sidebar_focused = true;
-            self.message = Some("Sidebar opened".to_string());
+            self.set_message("Sidebar opened".to_string());
         }
     }
 
@@ -4261,7 +4376,7 @@ impl App {
     fn close_sidebar(&mut self) {
         self.sidebar = None;
         self.sidebar_focused = false;
-        self.message = Some("Sidebar closed".to_string());
+        self.set_message("Sidebar closed".to_string());
     }
 
     /// Reveal `path` in the sidebar: expand all ancestors, select the matching
@@ -4301,6 +4416,38 @@ impl App {
         if matches!(ck.code, KeyCode::Char('q')) && ck.modifiers.is_empty() {
             self.close_sidebar();
             return true;
+        }
+        // v/s on a file opens it in a vertical/horizontal split. Borrow path
+        // before tree.
+        if matches!(ck.code, KeyCode::Char('v')) && ck.modifiers.is_empty() {
+            if let Some(path) = self.sidebar.as_ref().and_then(|t| {
+                let rows = t.rows();
+                if rows.is_empty() { None }
+                else {
+                    let r = &rows[self.sidebar_selected.min(rows.len().saturating_sub(1))];
+                    (!r.is_dir).then(|| r.path.clone())
+                }
+            }) {
+                self.ws.borrow_mut().split(SplitDir::Vertical);
+                self.sidebar_focused = false;
+                self.open_path(&path, None);
+                return true;
+            }
+        }
+        if matches!(ck.code, KeyCode::Char('s')) && ck.modifiers.is_empty() {
+            if let Some(path) = self.sidebar.as_ref().and_then(|t| {
+                let rows = t.rows();
+                if rows.is_empty() { None }
+                else {
+                    let r = &rows[self.sidebar_selected.min(rows.len().saturating_sub(1))];
+                    (!r.is_dir).then(|| r.path.clone())
+                }
+            }) {
+                self.ws.borrow_mut().split(SplitDir::Horizontal);
+                self.sidebar_focused = false;
+                self.open_path(&path, None);
+                return true;
+            }
         }
         // Enter on a file opens it — borrow path before tree.
         if matches!(ck.code, KeyCode::Enter) && ck.modifiers.is_empty() {
@@ -4346,7 +4493,7 @@ impl App {
                 }
                 true
             }
-            KeyCode::Char('h') | KeyCode::Left if ck.modifiers.is_empty() => {
+            KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace if ck.modifiers.is_empty() => {
                 let row = &rows[self.sidebar_selected];
                 if row.is_dir && row.expanded {
                     tree.collapse(&row.path);
@@ -4452,7 +4599,7 @@ impl App {
             Some(o) => {
                 if w.buffers.get(cur).map(|d| d.modified).unwrap_or(false) {
                     drop(w);
-                    self.message = Some("E89: buffer modified (add ! to override)".to_string());
+                    self.set_message("E89: buffer modified (add ! to override)".to_string());
                     return;
                 }
                 w.set_active_buffer(o);
@@ -4460,7 +4607,7 @@ impl App {
             }
             None => {
                 drop(w);
-                self.message = Some("E514: cannot close last buffer".to_string());
+                self.set_message("E514: cannot close last buffer".to_string());
             }
         }
     }
@@ -4474,7 +4621,7 @@ impl App {
         let keys = match self.macros.get(&reg) {
             Some(k) => k.clone(),
             None => {
-                self.message = Some(format!("No macro in @{}", reg));
+                self.set_message(format!("No macro in @{}", reg));
                 return;
             }
         };
@@ -4545,7 +4692,7 @@ impl App {
             }
             PickerAction::RunCmd(cmd) => match self.parse_cmdline(&cmd) {
                 Ok(a) => self.apply_cmd(a),
-                Err(e) => self.message = Some(e),
+                Err(e) => self.set_message(e),
             },
             PickerAction::RunTask(name) => self.run_task(&name),
         }
@@ -4654,7 +4801,7 @@ impl App {
             }
             LeaderAction::Rename => {
                 // Seed the cmdline with :rename for the new name.
-                self.message = Some("Use :rename <new-name>".to_string());
+                self.set_message("Use :rename <new-name>".to_string());
             }
             LeaderAction::DocumentSymbol => self.lsp_document_symbols(),
             LeaderAction::Diagnostics => self.open_diagnostics_picker(),
@@ -4665,16 +4812,16 @@ impl App {
             LeaderAction::Settings => self.open_settings(),
             LeaderAction::ToggleNumber => {
                 self.config.number = !self.config.number;
-                self.message = Some(format!("number: {}", self.config.number));
+                self.set_message(format!("number: {}", self.config.number));
             }
             LeaderAction::ToggleRelative => {
                 self.config.relativenumber = !self.config.relativenumber;
-                self.message = Some(format!("relativenumber: {}", self.config.relativenumber));
+                self.set_message(format!("relativenumber: {}", self.config.relativenumber));
             }
             LeaderAction::Grep => {
                 // Seed the cmdline for a ripgrep pattern.
                 self.vim.set_cmdline(":Rg ");
-                self.message = Some("Type a pattern and press Enter".to_string());
+                self.set_message("Type a pattern and press Enter".to_string());
             }
             LeaderAction::Build => self.run_build(),
             LeaderAction::Test => self.run_test(),
@@ -4751,7 +4898,7 @@ impl App {
         let path = self.ws.borrow().active_doc().file_path.clone();
         let diags = self.diagnostics.get(&active).cloned().unwrap_or_default();
         if diags.is_empty() {
-            self.message = Some("No diagnostics".to_string());
+            self.set_message("No diagnostics".to_string());
             return;
         }
         let path = match path {
@@ -4812,7 +4959,7 @@ impl App {
     fn open_quickfix(&mut self) {
         self.rebuild_quickfix_from_diagnostics();
         if self.quickfix.is_empty() {
-            self.message = Some("Quickfix list is empty".to_string());
+            self.set_message("Quickfix list is empty".to_string());
             return;
         }
         let items: Vec<PickerItem> = self
@@ -4852,12 +4999,12 @@ impl App {
                 self.quickfix.len(),
             ),
             None => {
-                self.message = Some("Quickfix list is empty".to_string());
+                self.set_message("Quickfix list is empty".to_string());
                 return;
             }
         };
         self.open_path(&path, Some((line, col)));
-        self.message = Some(format!("({pos}/{total}) {msg}"));
+        self.set_message(format!("({pos}/{total}) {msg}"));
     }
 
     /// `:cnext` / `]q` — advance the quickfix selection and jump.
@@ -4909,7 +5056,7 @@ impl App {
         let root = self.project_root_for_run();
         let cfg = ruster_project::ProjectConfig::load(&root);
         if cfg.tasks.is_empty() {
-            self.message = Some("No tasks — add [tasks.<name>] to ruster.toml".to_string());
+            self.set_message("No tasks — add [tasks.<name>] to ruster.toml".to_string());
             return;
         }
         let items: Vec<PickerItem> = cfg
@@ -4928,7 +5075,7 @@ impl App {
         let root = self.project_root_for_run();
         let cfg = ruster_project::ProjectConfig::load(&root);
         let Some(task) = cfg.tasks.get(name) else {
-            self.message = Some(format!("No such task: {name}"));
+            self.set_message(format!("No such task: {name}"));
             return;
         };
         let cwd = match &task.cwd {
@@ -4962,9 +5109,9 @@ impl App {
                 self.ws.borrow_mut().set_active_buffer(id);
                 self.terminals.insert(id, session);
                 self.terminal_focused = self.config.terminal_default_mode != "normal";
-                self.message = Some(format!("task {name}: Ctrl-\\ to leave, i to re-enter"));
+                self.set_message(format!("task {name}: Ctrl-\\ to leave, i to re-enter"));
             }
-            Err(e) => self.message = Some(format!("task {name}: {e}")),
+            Err(e) => self.set_message(format!("task {name}: {e}")),
         }
     }
 
@@ -4989,11 +5136,11 @@ impl App {
             RunnerKind::Task => ("*task*", "task"),
         };
         if self.runner_rx.is_some() {
-            self.message = Some(format!("A {label} is already running"));
+            self.set_message(format!("A {label} is already running"));
             return;
         }
         if cmd.is_empty() {
-            self.message = Some(format!("No {label} command for this project (set it in ruster.toml)"));
+            self.set_message(format!("No {label} command for this project (set it in ruster.toml)"));
             return;
         }
         self.runner_kind = kind;
@@ -5008,7 +5155,7 @@ impl App {
             w.set_active_buffer(id);
         }
         self.runner_rx = Some(crate::runner::spawn_shell_command(&cmd, &root));
-        self.message = Some(format!("{label}: {cmd}"));
+        self.set_message(format!("{label}: {cmd}"));
     }
 
     /// Drain the running command's output into its results buffer; on completion
@@ -5068,7 +5215,7 @@ impl App {
                         ruster_core::message::MessageSource::Task,
                         status_text.clone(),
                     );
-                    self.message = Some(format!("task {status_text}"));
+                    self.set_message(format!("task {status_text}"));
                 }
             }
         }
@@ -5090,7 +5237,7 @@ impl App {
             ruster_core::message::MessageSource::Build,
             msg.clone(),
         );
-        self.message = Some(msg);
+        self.set_message(msg);
     }
 
     fn finish_test(&mut self, code: Option<i32>) {
@@ -5125,7 +5272,7 @@ impl App {
             ruster_core::message::MessageSource::Test,
             msg.clone(),
         );
-        self.message = Some(msg);
+        self.set_message(msg);
     }
 
     /// Interpret the key following a `Ctrl-w` prefix.
@@ -5170,7 +5317,7 @@ impl App {
         let path = match path {
             Some(p) => p,
             None => {
-                self.message = Some("E32: No file name".to_string());
+                self.set_message("E32: No file name".to_string());
                 return;
             }
         };
@@ -5178,14 +5325,14 @@ impl App {
         match std::fs::write(&path, &content) {
             Ok(()) => {
                 self.ws.borrow_mut().active_doc_mut().modified = false;
-                self.message = Some(format!("Saved: {}", path.display()));
+                self.set_message(format!("Saved: {}", path.display()));
             }
             Err(_e) if force => {
                 let _ = std::fs::write(&path, &content);
                 self.ws.borrow_mut().active_doc_mut().modified = false;
-                self.message = Some(format!("Saved (forced): {}", path.display()));
+                self.set_message(format!("Saved (forced): {}", path.display()));
             }
-            Err(e) => self.message = Some(format!("Error: {}", e)),
+            Err(e) => self.set_message(format!("Error: {}", e)),
         }
         self.lua.fire_event_str("BufWritePost", &[path.to_str().unwrap_or("")]);
     }
@@ -5225,9 +5372,9 @@ impl App {
                     doc.file_path = Some(PathBuf::from(path));
                     doc.modified = false;
                 }
-                self.message = Some(format!("Saved: {}", path));
+                self.set_message(format!("Saved: {}", path));
             }
-            Err(e) => self.message = Some(format!("Error: {}", e)),
+            Err(e) => self.set_message(format!("Error: {}", e)),
         }
     }
 }
