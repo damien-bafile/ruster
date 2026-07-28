@@ -4508,6 +4508,7 @@ impl App {
         if self.sidebar.is_some() {
             self.sidebar = None;
             self.sidebar_focused = false;
+            self.sidebar_pending_g = false;
             self.message = Some("Sidebar closed".to_string());
         } else {
             let root = self.project_root
@@ -4526,6 +4527,7 @@ impl App {
     fn close_sidebar(&mut self) {
         self.sidebar = None;
         self.sidebar_focused = false;
+        self.sidebar_pending_g = false;
         self.message = Some("Sidebar closed".to_string());
     }
 

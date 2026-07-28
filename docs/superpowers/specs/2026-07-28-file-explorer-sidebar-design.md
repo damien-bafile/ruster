@@ -115,8 +115,6 @@ detection (alongside the Dashboard).
 | `d` | Delete (reuse dired prompt: confirm with `y`/`n`) |
 | `a` | Create new file or directory (reuse dired `+` prompt: name ending in `/` = directory) |
 | `.` | Toggle hidden files |
-| `gg` | Jump to first row |
-| `G` | Jump to last row (uppercase — Shift+g) |
 | `R` | Refresh (re-read the tree from disk) |
 | `Esc` / `Tab` | Focus the main window tree |
 

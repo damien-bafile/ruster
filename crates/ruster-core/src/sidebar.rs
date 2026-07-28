@@ -85,7 +85,6 @@ impl SidebarTree {
     /// next [`rows()`](Self::rows) call. Call after file-system mutations.
     pub fn refresh(&mut self) {
         self.expanded.clear();
-        // Re-expand root so the top level is visible.
         let root = self.root.clone();
         self.expand(&root);
     }
