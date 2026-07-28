@@ -489,6 +489,8 @@ enum CmdAction {
     MessagesFilter(String),
     /// Project list / switch (`:projects`).
     Projects,
+    /// Toggle the file-explorer sidebar (`:sidebar`).
+    Sidebar,
 }
 
 /// Parse the argument of `:set <opt>` for a boolean option. Accepts `number`
@@ -604,6 +606,7 @@ enum LeaderAction {
     Dashboard,
     Messages,
     Projects,
+    Sidebar,
 }
 
 enum LeaderNode {
@@ -677,6 +680,7 @@ static PROJECT_GROUP: &[(char, LeaderNode)] = &[
 static UI_GROUP: &[(char, LeaderNode)] = &[
     ('n', LeaderNode::Action("toggle line numbers", LeaderAction::ToggleNumber)),
     ('r', LeaderNode::Action("toggle relative numbers", LeaderAction::ToggleRelative)),
+    ('s', LeaderNode::Action("toggle sidebar", LeaderAction::Sidebar)),
 ];
 
 static LEADER_ROOT: &[(char, LeaderNode)] = &[
@@ -3092,6 +3096,7 @@ impl App {
                 Ok(CmdAction::MessagesFilter(filter))
             }
             _ if trimmed == "projects" => Ok(CmdAction::Projects),
+            _ if trimmed == "sidebar" => Ok(CmdAction::Sidebar),
             _ if trimmed.starts_with("set editmode") || trimmed == "set editmode" => {
                 match trimmed.rsplit(' ').next().unwrap_or("") {
                     "emacs" => Ok(CmdAction::SetEditMode(EditMode::Emacs)),
@@ -3186,6 +3191,7 @@ impl App {
             CmdAction::Messages => self.open_messages(),
             CmdAction::MessagesFilter(filter) => self.apply_messages_filter(&filter),
             CmdAction::Projects => self.open_projects(),
+            CmdAction::Sidebar => self.toggle_sidebar(),
         }
     }
 
@@ -4199,6 +4205,24 @@ impl App {
         self.picker = Some(PickerState::new("Projects", items));
     }
 
+    /// Toggle the file-explorer sidebar on/off. Creates the tree lazily on first
+    /// enable using the project root (or current directory as fallback).
+    fn toggle_sidebar(&mut self) {
+        if self.sidebar.is_some() {
+            self.sidebar = None;
+            self.message = Some("Sidebar closed".to_string());
+        } else {
+            let root = self.project_root
+                .clone()
+                .or_else(|| std::env::current_dir().ok())
+                .unwrap_or_else(|| PathBuf::from("."));
+            self.sidebar = Some(ruster_core::sidebar::SidebarTree::new(root, false));
+            self.sidebar_selected = 0;
+            self.sidebar_scroll = 0;
+            self.message = Some("Sidebar opened".to_string());
+        }
+    }
+
     /// Open the buffer-list picker over every open buffer.
     fn open_ibuffer(&mut self) {
         let items: Vec<PickerItem> = {
@@ -4458,6 +4482,7 @@ impl App {
             LeaderAction::Dashboard => self.open_dashboard(),
             LeaderAction::Messages => self.open_messages(),
             LeaderAction::Projects => self.open_projects(),
+            LeaderAction::Sidebar => self.toggle_sidebar(),
         }
     }
 
