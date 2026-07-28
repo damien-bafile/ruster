@@ -1418,6 +1418,10 @@ impl App {
         // Create background buffers (pinned, not navigated to).
         app.ensure_dashboard_buffer();
         app.ensure_messages_buffer();
+        // Auto-open sidebar if configured and a project root is detected.
+        if app.config.sidebar_auto_open && app.project_root.is_some() {
+            app.toggle_sidebar();
+        }
         app
     }
 
