@@ -1674,6 +1674,22 @@ impl App {
                 return;
             }
         }
+        // F-key dispatch for build/test/task.
+        match ck.code {
+            KeyCode::F(7) => {
+                self.run_build();
+                return;
+            }
+            KeyCode::F(6) => {
+                self.run_test();
+                return;
+            }
+            KeyCode::F(9) => {
+                self.open_task_picker();
+                return;
+            }
+            _ => {}
+        }
         // K → LSP hover (like vim's keyword lookup).
         if self.vim.mode == VimMode::Normal
             && ck.code == KeyCode::Char('K')
@@ -3042,7 +3058,12 @@ impl App {
                 } else {
                     String::new()
                 };
-                let mut center = name.clone();
+                let runner_msg = self.runner_status_text();
+                let mut center = if let Some(msg) = runner_msg {
+                    format!(" {} {} ", msg, name)
+                } else {
+                    name.clone()
+                };
                 let mut right = format!("{}%  {},{}", pct, cline + 1, ccol + 1);
                 if is_active {
                     if !lua_left.is_empty() {
@@ -5263,6 +5284,19 @@ impl App {
         self.picker = Some(PickerState::new("Tasks", items));
     }
 
+    /// Returns a status message when a build/test/task runner is active, or None.
+    pub fn runner_status_text(&self) -> Option<&'static str> {
+        if self.runner_rx.is_some() {
+            Some(match self.runner_kind {
+                RunnerKind::Build => "Building...",
+                RunnerKind::Test => "Testing...",
+                RunnerKind::Task => "Running Task...",
+            })
+        } else {
+            None
+        }
+    }
+
     /// Run the named `ruster.toml` task — in the embedded terminal (default) or a
     /// background thread when `use_terminal = false`.
     fn run_task(&mut self, name: &str) {
@@ -5419,6 +5453,9 @@ impl App {
         let items = crate::runner::parse_build_diagnostics(&self.runner_output, &self.runner_root);
         let n = items.len();
         self.quickfix = QuickfixList::new(items);
+        if !self.quickfix.is_empty() {
+            self.open_quickfix();
+        }
         let status = match code {
             Some(0) => "ok".to_string(),
             Some(c) => format!("exit {c}"),
