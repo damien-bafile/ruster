@@ -138,6 +138,7 @@ Press `SPC` in Normal mode; the which-key panel lists continuations.
 | Sequence | Action |
 |----------|--------|
 | `SPC ,` | Open settings (also `SPC o s`) |
+| `SPC e` | Toggle sidebar (`:sidebar`) |
 | `SPC w h/j/k/l` | Focus window left/down/up/right |
 | `SPC w s` / `SPC w v` | Split below / right |
 | `SPC w c` / `SPC w q` | Close window |
@@ -166,7 +167,6 @@ Press `SPC` in Normal mode; the which-key panel lists continuations.
 | `SPC o r` | Run a `ruster.toml` task (picker) |
 | `SPC p p` | Switch project (`:projects`) |
 | `SPC u n` / `SPC u r` | Toggle line / relative numbers |
-| `SPC u s` | Toggle sidebar (`:sidebar`) |
 | `SPC q q` | Quit |
 | `SPC q w` | Save and quit |
 
@@ -343,19 +343,23 @@ foreground.
 
 | Key | Action |
 |-----|--------|
-| `:sidebar` / `SPC u s` | Toggle the sidebar on/off |
+| `:sidebar` / `SPC e` | Toggle the sidebar on/off |
 | `j` / `k` (`↓`/`↑`) | Move selection |
 | `<CR>` | Open the selected file or expand/collapse a directory |
 | `h` (`←`) | Collapse the current directory, or move to its parent |
 | `l` (`→`) | Expand the current directory |
 | `Esc` / `C-c` / `Tab` | Unfocus the sidebar (return keyboard to the editor) |
+| `C-h` | Move focus from sidebar back to the editor (also `C-l`) |
+| `C-h` (from editor) | Move focus from the leftmost window to the sidebar |
+| `q` | Close the sidebar entirely |
 | `a` | Create a new file (append `/` for a directory) |
 | `r` | Rename the selected entry |
 | `d` | Delete the selected entry (`y`/`n` to confirm) |
 
 The sidebar is automatically created when toggled on, rooted at the project root
 (or the current directory if no project root is detected). Opening a file in the
-editor reveals it in the sidebar if the sidebar is visible.
+editor reveals it in the sidebar if the sidebar is visible. The selected row is
+highlighted with a dim background.
 
 ## Snippets
 

@@ -16,8 +16,8 @@ use ruster_core::workspace::Workspace;
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 use ruster_lua::{config::Config, LuaAction, LuaRuntime};
 use ruster_render::{
-    CursorKind, FrameState, Rect as RRect, Renderer, SelectionView, StatuslineView, StyledLine,
-    WelcomeView, WhichKeyView, WindowView,
+    Color, CursorKind, FrameState, Rect as RRect, Renderer, SelectionView, StatuslineView,
+    StyledLine, SyntaxStyle, WelcomeView, WhichKeyView, WindowView,
 };
 use ruster_syntax::SyntaxEngine;
 use ruster_lsp::{LspManager, LspPosition, ServerMessage};
@@ -680,11 +680,11 @@ static PROJECT_GROUP: &[(char, LeaderNode)] = &[
 static UI_GROUP: &[(char, LeaderNode)] = &[
     ('n', LeaderNode::Action("toggle line numbers", LeaderAction::ToggleNumber)),
     ('r', LeaderNode::Action("toggle relative numbers", LeaderAction::ToggleRelative)),
-    ('s', LeaderNode::Action("toggle sidebar", LeaderAction::Sidebar)),
 ];
 
 static LEADER_ROOT: &[(char, LeaderNode)] = &[
     (',', LeaderNode::Action("settings", LeaderAction::Settings)),
+    ('e', LeaderNode::Action("toggle sidebar", LeaderAction::Sidebar)),
     ('w', LeaderNode::Group("windows", WINDOW_GROUP)),
     ('f', LeaderNode::Group("find", FIND_GROUP)),
     ('b', LeaderNode::Group("buffers", BUFFER_GROUP)),
@@ -1537,7 +1537,16 @@ impl App {
                 _ => None,
             };
             if let Some(dir) = dir {
-                self.ws.borrow_mut().windows.focus(dir);
+                if dir == FocusDir::Left && self.sidebar.is_some() && !self.sidebar_focused {
+                    let before = self.ws.borrow().windows.active();
+                    self.ws.borrow_mut().windows.focus(dir);
+                    let after = self.ws.borrow().windows.active();
+                    if before == after {
+                        self.sidebar_focused = true;
+                    }
+                } else {
+                    self.ws.borrow_mut().windows.focus(dir);
+                }
                 return;
             }
         }
@@ -2892,11 +2901,17 @@ impl App {
             let rows = tree.rows();
             let selected = self.sidebar_selected.min(rows.len().saturating_sub(1));
             let scroll = self.sidebar_scroll.min(selected.saturating_sub((srect.height as usize).saturating_sub(2).max(0) / 2));
-            let lines: Vec<StyledLine> = rows.iter().enumerate().skip(scroll).take(srect.height as usize).map(|(_, r)| {
+            let lines: Vec<StyledLine> = rows.iter().enumerate().skip(scroll).take(srect.height as usize).map(|(i, r)| {
                 let indent = "  ".repeat(r.depth);
                 let marker = if r.is_dir { if r.expanded { "▾ " } else { "▸ " } } else { "  " };
                 let text = format!("{}{}{}", indent, marker, r.name);
-                StyledLine { text, highlights: vec![] }
+                let highlights = if i == selected {
+                    let len = text.len();
+                    vec![(0, len, SyntaxStyle { fg: Color::Default, bg: Color::Rgb(51, 51, 51), bold: false, italic: false })]
+                } else {
+                    vec![]
+                };
+                StyledLine { text, highlights }
             }).collect();
             let view = WindowView {
                 rect: RRect::new(srect.x, srect.y, srect.width, srect.height),
@@ -4239,6 +4254,13 @@ impl App {
         }
     }
 
+    /// Close the sidebar and drop the tree.
+    fn close_sidebar(&mut self) {
+        self.sidebar = None;
+        self.sidebar_focused = false;
+        self.message = Some("Sidebar closed".to_string());
+    }
+
     /// Reveal `path` in the sidebar: expand all ancestors, select the matching
     /// entry, and scroll to keep it visible. No-op when the sidebar is hidden.
     fn reveal_in_sidebar(&mut self, path: &std::path::Path) {
@@ -4324,6 +4346,15 @@ impl App {
             }
             KeyCode::Tab => {
                 self.sidebar_focused = false;
+            }
+            KeyCode::Char('h') if ck.modifiers == crossterm::event::KeyModifiers::CONTROL => {
+                self.sidebar_focused = false;
+            }
+            KeyCode::Char('l') if ck.modifiers == crossterm::event::KeyModifiers::CONTROL => {
+                self.sidebar_focused = false;
+            }
+            KeyCode::Char('q') if ck.modifiers.is_empty() => {
+                return self.close_sidebar();
             }
             KeyCode::Char('a') if ck.modifiers.is_empty() => {
                 if !rows.is_empty() {
