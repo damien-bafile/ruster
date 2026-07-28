@@ -595,6 +595,7 @@ enum LeaderAction {
     Build,
     Test,
     Tasks,
+    Dashboard,
 }
 
 enum LeaderNode {
@@ -653,6 +654,7 @@ static SEARCH_GROUP: &[(char, LeaderNode)] = &[
 ];
 
 static OPEN_GROUP: &[(char, LeaderNode)] = &[
+    ('d', LeaderNode::Action("dashboard", LeaderAction::Dashboard)),
     ('t', LeaderNode::Action("terminal", LeaderAction::Terminal)),
     ('s', LeaderNode::Action("settings", LeaderAction::Settings)),
     ('e', LeaderNode::Action("explorer (dired)", LeaderAction::Explorer)),
@@ -991,7 +993,11 @@ pub enum EditMode {
 
 impl App {
     pub fn new(content: String, file_path: PathBuf) -> Self {
-        let ws = Rc::new(RefCell::new(Workspace::from_file(file_path.clone(), content.clone())));
+        let ws = if file_path.as_os_str().is_empty() {
+            Rc::new(RefCell::new(Workspace::scratch()))
+        } else {
+            Rc::new(RefCell::new(Workspace::from_file(file_path.clone(), content.clone())))
+        };
         ws.borrow_mut().execute(Action::Move(Motion::To(0)));
         let initial_buffer = ws.borrow().active_buffer();
         let vim = VimState::new();
@@ -2855,15 +2861,16 @@ impl App {
             None
         };
 
-        // Show the welcome / "Ready Room" screen when no named file is open and
-        // the active buffer is a scratch document (not a special buffer like
-        // Dired, terminal, ibuffer, etc.).
-        let is_scratch = {
+        // Show the welcome / "Dashboard" screen when no named file is open and
+        // the active buffer is a scratch document or the pinned Dashboard.
+        let is_dashboard = {
             let w = self.ws.borrow();
             let active = w.active_doc();
-            active.file_path.is_none() && matches!(active.kind, DocKind::Scratch)
+            active.file_path.is_none()
+                && (matches!(active.kind, DocKind::Scratch)
+                    || matches!(active.kind, DocKind::Special(SpecialKind::Dashboard)))
         };
-        let welcome_view = if is_scratch {
+        let welcome_view = if is_dashboard {
             Some(WelcomeView {
                 visible: true,
                 recent_projects: Vec::new(),
@@ -3934,6 +3941,24 @@ impl App {
         self.picker = Some(p);
     }
 
+    /// Switch to the Dashboard buffer, or create a pinned one if none exists.
+    fn open_dashboard(&mut self) {
+        let mut w = self.ws.borrow_mut();
+        let existing = w.buffers.ids().iter().copied().find(|&id| {
+            w.buffers.get(id).is_some_and(|d| d.pinned && matches!(d.kind, ruster_core::document::DocKind::Special(ruster_core::document::SpecialKind::Dashboard)))
+        });
+        match existing {
+            Some(id) => w.set_active_buffer(id),
+            None => {
+                let id = w.buffers.create_special(ruster_core::document::SpecialKind::Dashboard, "Dashboard");
+                if let Some(doc) = w.buffers.get_mut(id) {
+                    doc.pinned = true;
+                }
+                w.set_active_buffer(id);
+            }
+        }
+    }
+
     /// Open the buffer-list picker over every open buffer.
     fn open_ibuffer(&mut self) {
         let items: Vec<PickerItem> = {
@@ -4180,6 +4205,7 @@ impl App {
             LeaderAction::Build => self.run_build(),
             LeaderAction::Test => self.run_test(),
             LeaderAction::Tasks => self.open_task_picker(),
+            LeaderAction::Dashboard => self.open_dashboard(),
         }
     }
 

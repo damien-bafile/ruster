@@ -153,11 +153,14 @@ impl Workspace {
         Workspace { buffers, windows }
     }
 
-    /// Create a workspace with a single unnamed scratch document (shows the
-    /// Dashboard / welcome screen).
+    /// Create a workspace with a single pinned Dashboard buffer (shows the
+    /// welcome screen).
     pub fn scratch() -> Self {
         let mut buffers = BufferStore::new();
-        let id = buffers.create_scratch("Dashboard");
+        let id = buffers.create_special(SpecialKind::Dashboard, "Dashboard");
+        if let Some(doc) = buffers.get_mut(id) {
+            doc.pinned = true;
+        }
         let windows = WindowTree::single(id);
         Workspace { buffers, windows }
     }
