@@ -430,6 +430,8 @@ pub struct Config {
     pub terminal_default_mode: String,
     /// Show dotfiles in dired by default.
     pub dired_show_hidden: bool,
+    /// Open the sidebar automatically on startup.
+    pub sidebar_auto_open: bool,
     /// Per-language syntax color overrides: `lang key -> (group -> hex)`. Carried
     /// separately from the flat schema (edited via the Settings syntax editor).
     pub syntax_overrides: std::collections::HashMap<String, std::collections::HashMap<String, String>>,
@@ -476,6 +478,7 @@ impl Config {
             (("terminal", "scrollback"), Int(self.terminal_scrollback as i64)),
             (("terminal", "default_mode"), Enum(self.terminal_default_mode.clone())),
             (("dired", "show_hidden"), Bool(self.dired_show_hidden)),
+            (("sidebar", "auto_open"), Bool(self.sidebar_auto_open)),
             (("colors", "bg"), Text(self.color_overrides.bg.clone())),
             (("colors", "fg"), Text(self.color_overrides.fg.clone())),
             (("colors", "gutter"), Text(self.color_overrides.gutter.clone())),
@@ -563,6 +566,7 @@ impl Config {
             terminal_scrollback: u("terminal", "scrollback", d.terminal_scrollback),
             terminal_default_mode: st("terminal", "default_mode").unwrap_or(d.terminal_default_mode),
             dired_show_hidden: bl("dired", "show_hidden", d.dired_show_hidden),
+            sidebar_auto_open: bl("sidebar", "auto_open", d.sidebar_auto_open),
             // Not part of the flat schema; carried separately and merged by the
             // caller (runtime parse / Settings save).
             syntax_overrides: std::collections::HashMap::new(),
@@ -636,6 +640,7 @@ impl Default for Config {
             terminal_scrollback: 10000,
             terminal_default_mode: "insert".into(),
             dired_show_hidden: false,
+            sidebar_auto_open: false,
             syntax_overrides: std::collections::HashMap::new(),
         }
     }

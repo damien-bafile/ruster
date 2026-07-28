@@ -189,6 +189,7 @@ pub const GROUPS: &[(&str, &str)] = &[
     ("lsp", "Language server features"),
     ("terminal", "Embedded terminal"),
     ("dired", "File explorer"),
+    ("sidebar", "Sidebar panel"),
     ("colors", "Per-element color overrides (empty = theme)"),
 ];
 
@@ -246,6 +247,9 @@ pub fn schema() -> Vec<SettingSpec> {
 
     // --- dired ---
     add("dired", "show_hidden", "Show hidden files", Bool, b(false), "Show dotfiles in the file explorer");
+
+    // --- sidebar ---
+    add("sidebar", "auto_open", "Auto-open sidebar", Bool, b(false), "Open the sidebar automatically on startup");
 
     // --- colors (overrides; empty = use the theme's color) ---
     add("colors", "bg", "Background", Text, t(""), "Override editor background");
