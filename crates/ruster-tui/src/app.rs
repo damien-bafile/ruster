@@ -1478,6 +1478,12 @@ impl App {
             }
         }
 
+        // A focused sidebar captures navigation keys.
+        if self.sidebar.is_some() && self.sidebar_focused {
+            self.handle_sidebar_key(ck);
+            return;
+        }
+
         // Dired claims its action keys, but only while at rest — never while a
         // command-line/search prompt (vim Cmdline or an Emacs isearch) is open,
         // or a search term containing a dired key (e.g. `d` in "docs") would be
@@ -4219,7 +4225,76 @@ impl App {
             self.sidebar = Some(ruster_core::sidebar::SidebarTree::new(root, false));
             self.sidebar_selected = 0;
             self.sidebar_scroll = 0;
+            self.sidebar_focused = true;
             self.message = Some("Sidebar opened".to_string());
+        }
+    }
+
+    /// Handle keyboard input while the sidebar is focused.
+    fn handle_sidebar_key(&mut self, ck: crossterm::event::KeyEvent) {
+        let tree = match self.sidebar.as_mut() {
+            Some(t) => t,
+            None => return,
+        };
+        let rows = tree.rows();
+        if rows.is_empty() {
+            self.sidebar_focused = false;
+            return;
+        }
+        match ck.code {
+            KeyCode::Char('j') | KeyCode::Down if ck.modifiers.is_empty() => {
+                if self.sidebar_selected + 1 < rows.len() {
+                    self.sidebar_selected += 1;
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up if ck.modifiers.is_empty() => {
+                self.sidebar_selected = self.sidebar_selected.saturating_sub(1);
+            }
+            KeyCode::Enter if ck.modifiers.is_empty() => {
+                let row = &rows[self.sidebar_selected];
+                if row.is_dir {
+                    tree.toggle(&row.path);
+                } else {
+                    let path = row.path.clone();
+                    self.sidebar_focused = false;
+                    self.open_path(&path, None);
+                    return;
+                }
+            }
+            KeyCode::Char('h') | KeyCode::Left if ck.modifiers.is_empty() => {
+                let row = &rows[self.sidebar_selected];
+                if row.is_dir && row.expanded {
+                    tree.collapse(&row.path);
+                } else {
+                    // Move selection to parent directory
+                    if let Some(parent_depth) = row.depth.checked_sub(1) {
+                        for i in (0..self.sidebar_selected).rev() {
+                            if rows[i].depth == parent_depth {
+                                self.sidebar_selected = i;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            KeyCode::Char('l') | KeyCode::Right if ck.modifiers.is_empty() => {
+                let row = &rows[self.sidebar_selected];
+                if row.is_dir {
+                    tree.expand(&row.path);
+                }
+            }
+            KeyCode::Esc | KeyCode::Char('c') if ck.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                self.sidebar_focused = false;
+            }
+            KeyCode::Tab => {
+                self.sidebar_focused = false;
+            }
+            _ => {}
+        }
+        // Clamp selection and scroll to keep it visible.
+        let rows = tree.rows();
+        if !rows.is_empty() {
+            self.sidebar_selected = self.sidebar_selected.min(rows.len().saturating_sub(1));
         }
     }
 
