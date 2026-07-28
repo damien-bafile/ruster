@@ -291,6 +291,24 @@ fn vim_mode_to_ui_mode(mode: ruster_core::vim::VimMode) -> ruster_render::UIMode
     }
 }
 
+/// Expand leading `~` to the user's home directory and resolve relative paths
+/// against a base directory. Normalizes the result.
+fn resolve_path(raw: &str, base_dir: &std::path::Path) -> std::path::PathBuf {
+    let expanded = if raw.starts_with("~/") {
+        let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
+        home.join(&raw[2..])
+    } else if raw == "~" {
+        dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."))
+    } else {
+        std::path::PathBuf::from(raw)
+    };
+    if expanded.is_absolute() {
+        expanded
+    } else {
+        base_dir.join(expanded)
+    }
+}
+
 /// Build a sign column from a buffer's diagnostics: one glyph per line, the most
 /// severe (lowest severity number) winning when several land on the same line.
 fn diagnostics_to_signs(diags: &[ruster_lsp::Diagnostic]) -> ruster_render::SignsView {
@@ -3299,7 +3317,13 @@ impl App {
             CmdAction::Projects => self.open_projects(),
             CmdAction::Sidebar => self.toggle_sidebar(),
             CmdAction::OpenFile(path) => {
-                let resolved = std::path::PathBuf::from(&path);
+                let base = self.ws.borrow()
+                    .active_doc()
+                    .file_path
+                    .as_ref()
+                    .and_then(|p| std::path::Path::new(p).parent().map(|p| p.to_path_buf()))
+                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+                let resolved = resolve_path(&path, &base);
                 self.open_path(&resolved, None);
             }
         }
