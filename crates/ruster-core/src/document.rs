@@ -25,6 +25,10 @@ pub enum SpecialKind {
     Build,
     /// The file-explorer sidebar (tree dired) in a persistent side column.
     Sidebar,
+    /// The Dashboard / welcome screen — a static page that cannot be closed.
+    Dashboard,
+    /// A general-purpose message log (build, LSP, echo, etc.).
+    Message,
 }
 
 /// What a document represents.
@@ -78,6 +82,8 @@ pub struct Document {
     /// The on-disk line ending to preserve when saving. The buffer itself is
     /// always LF-normalized.
     pub line_ending: LineEnding,
+    /// When true, `BufferStore::close()` refuses to remove this document.
+    pub pinned: bool,
 }
 
 impl Document {
@@ -104,6 +110,7 @@ impl Document {
             kind: DocKind::File,
             indent: DEFAULT_INDENT.to_string(),
             line_ending,
+            pinned: false,
         }
     }
 
@@ -118,6 +125,7 @@ impl Document {
             kind: DocKind::Scratch,
             indent: DEFAULT_INDENT.to_string(),
             line_ending: LineEnding::Lf,
+            pinned: false,
         }
     }
 
@@ -132,6 +140,7 @@ impl Document {
             kind: DocKind::Special(kind),
             indent: DEFAULT_INDENT.to_string(),
             line_ending: LineEnding::Lf,
+            pinned: false,
         }
     }
 
