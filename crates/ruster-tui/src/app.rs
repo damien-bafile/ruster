@@ -13,7 +13,10 @@ use ruster_core::vim::VimMode;
 use ruster_core::vim::VimState;
 use ruster_core::windows::{FocusDir, Rect as CoreRect, SplitDir};
 use ruster_core::workspace::Workspace;
-use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEventKind, KeyModifiers, MouseButton,
+    MouseEvent, MouseEventKind,
+};
 use ruster_lua::{config::Config, LuaAction, LuaRuntime};
 use ruster_render::{
     Color, CursorKind, FrameState, Rect as RRect, Renderer, SelectionView, StatuslineView,
@@ -1688,6 +1691,34 @@ impl App {
                 return;
             }
         }
+        // Ctrl+D: add cursor at next word occurrence.
+        if self.vim.mode == VimMode::Normal
+            && ck.code == KeyCode::Char('d')
+            && ck.modifiers.contains(KeyModifiers::CONTROL)
+        {
+            let win_id = self.ws.borrow().windows.active();
+            let pos = self.ws.borrow().primary_head();
+            let text = self.ws.borrow().buffer().to_string();
+            let is_word = |c: char| c.is_alphanumeric() || c == '_';
+            let chars: Vec<char> = text.chars().collect();
+            if pos < chars.len() {
+                let start = (0..pos).rev().find(|&i| is_word(chars[i])).unwrap_or(0);
+                let end = (pos..chars.len()).find(|&i| !is_word(chars[i])).unwrap_or(chars.len());
+                if start < end {
+                    let word: String = chars[start..end].iter().collect();
+                    let word_len = word.chars().count();
+                    let search_from = pos + word_len;
+                    if search_from < chars.len() {
+                        let text_rest: String = chars[search_from..].iter().collect();
+                        if let Some(found) = text_rest.find(&word) {
+                            let offset = search_from + found;
+                            self.ws.borrow_mut().windows.window_mut(win_id).unwrap().cursors.add_cursor(offset);
+                        }
+                    }
+                }
+            }
+            return;
+        }
         // F-key dispatch for build/test/task and debug.
         match ck.code {
             KeyCode::F(7) => {
@@ -2062,6 +2093,53 @@ impl App {
         self.message = None;
     }
 
+    fn handle_mouse_event(&mut self, me: MouseEvent) {
+        if me.kind == MouseEventKind::Down(MouseButton::Left)
+            && me.modifiers.contains(KeyModifiers::ALT)
+        {
+            let row = me.row as usize;
+            let col = me.column as usize;
+            let (cols, rows) = self.renderer.viewport_cells();
+            let buf_area = CoreRect::new(0, 0, cols, rows.saturating_sub(1));
+            let w = self.ws.borrow();
+            let mut target: Option<(ruster_core::windows::WindowId, usize)> = None;
+            for (wid, rect) in w.windows.compute_rects(buf_area) {
+                if row >= rect.y as usize && row < (rect.y + rect.height) as usize
+                    && col >= rect.x as usize && col < (rect.x + rect.width) as usize
+                {
+                    let win = match w.windows.window(wid) {
+                        Some(win) => win,
+                        None => continue,
+                    };
+                    let win_row = row - rect.y as usize;
+                    let buf_line = win_row + win.scroll_top;
+                    let doc = match w.buffers.get(win.buffer) {
+                        Some(d) => d,
+                        None => continue,
+                    };
+                    let line_start = doc.buffer.line_start_char(buf_line);
+                    let line_end = doc.buffer.line_end_char(buf_line);
+                    let line_len = if line_end > line_start
+                        && doc.buffer.char_at(line_end - 1) == '\n'
+                    {
+                        line_end - line_start - 1
+                    } else {
+                        line_end - line_start
+                    };
+                    let col_clamped = (col - rect.x as usize).min(line_len.saturating_sub(1));
+                    target = Some((wid, line_start + col_clamped));
+                    break;
+                }
+            }
+            drop(w);
+            if let Some((wid, offset)) = target {
+                if let Some(win) = self.ws.borrow_mut().windows.window_mut(wid) {
+                    win.cursors.add_cursor(offset);
+                }
+            }
+        }
+    }
+
     /// Begin an Emacs incremental search in the given direction.
     fn start_isearch(&mut self, forward: bool) {
         self.emacs_isearch = Some((String::new(), forward));
@@ -2149,6 +2227,7 @@ impl App {
         let mut stdout = std::io::stdout();
         crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen)?;
         self.renderer = Box::new(TuiRenderer::new()?);
+        crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
 
         loop {
             let dt = self.timer.tick();
@@ -2163,6 +2242,10 @@ impl App {
             let ev = crossterm::event::read()?;
             let ck = match ev {
                 crossterm::event::Event::Key(k) => k,
+                crossterm::event::Event::Mouse(me) => {
+                    self.handle_mouse_event(me);
+                    continue;
+                }
                 _ => continue,
             };
             self.handle_key(ck);
@@ -2170,6 +2253,7 @@ impl App {
 
         self.terminals.clear();
         self.lsp.shutdown_all();
+        crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
         crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen)?;
         crossterm::terminal::disable_raw_mode()?;
         Ok(())
