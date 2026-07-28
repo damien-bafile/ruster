@@ -1258,7 +1258,7 @@ impl App {
                 config_errors[0]
             ))
         };
-        App {
+        let mut app = App {
             ws, vim, renderer,
             should_quit: false, message: startup_message, syntax, syntax_tried, lua, config, timer,
             has_smooth_cursor: false, cursor_anim, pending_ctrl_w: false, picker: None,
@@ -1322,7 +1322,11 @@ impl App {
             messages_buf: None,
             messages_filter_source: None,
             messages_filter_level: None,
-        }
+        };
+        // Create background buffers (pinned, not navigated to).
+        app.ensure_dashboard_buffer();
+        app.ensure_messages_buffer();
+        app
     }
 
     /// The configured GUI font (`gui_font`), for the renderer to load.
@@ -3985,6 +3989,19 @@ impl App {
     }
 
     /// Switch to the Dashboard buffer, or create a pinned one if none exists.
+    fn ensure_dashboard_buffer(&mut self) {
+        let mut w = self.ws.borrow_mut();
+        let existing = w.buffers.ids().iter().copied().any(|id| {
+            w.buffers.get(id).is_some_and(|d| d.pinned && matches!(d.kind, ruster_core::document::DocKind::Special(ruster_core::document::SpecialKind::Dashboard)))
+        });
+        if !existing {
+            let id = w.buffers.create_special(ruster_core::document::SpecialKind::Dashboard, "Dashboard");
+            if let Some(doc) = w.buffers.get_mut(id) {
+                doc.pinned = true;
+            }
+        }
+    }
+
     fn open_dashboard(&mut self) {
         let mut w = self.ws.borrow_mut();
         let existing = w.buffers.ids().iter().copied().find(|&id| {
@@ -5254,7 +5271,8 @@ mod tests {
         a.apply_cmd(CmdAction::Ibuffer);
         {
             let p = a.picker.as_mut().expect("picker open");
-            assert_eq!(p.view().rows.len(), 2);
+            // file + scratch + dashboard + messages
+            assert_eq!(p.view().rows.len(), 4);
         }
         a.dispatch_picker_action(PickerAction::OpenBuffer(scratch));
         assert_eq!(a.ws.borrow().active_buffer(), scratch);
@@ -5266,15 +5284,21 @@ mod tests {
         let orig = a.ws.borrow().active_buffer();
         a.ws.borrow_mut().buffers.create_scratch("scratch");
         a.apply_cmd(CmdAction::BufferDelete);
-        assert_eq!(a.ws.borrow().buffers.len(), 1);
+        // scratch + dashboard + messages
+        assert_eq!(a.ws.borrow().buffers.len(), 3);
         assert!(a.ws.borrow().buffers.get(orig).is_none());
     }
 
     #[test]
-    fn bdelete_refuses_last_buffer() {
+    fn bdelete_refuses_last_buffer_when_only_pinned_remain() {
         let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        let orig = a.ws.borrow().active_buffer();
         a.apply_cmd(CmdAction::BufferDelete);
-        assert_eq!(a.ws.borrow().buffers.len(), 1);
+        // pinned dashboard + messages survive, file buffer removed
+        assert_eq!(a.ws.borrow().buffers.len(), 2);
+        assert!(a.ws.borrow().buffers.get(orig).is_none());
+        // active buffer switched to a pinned one (dashboard or messages)
+        assert!(a.ws.borrow().buffers.get(a.ws.borrow().active_buffer()).is_some_and(|d| d.pinned));
     }
 
     /// Open dired on a fresh temp dir containing the given subdirectories.
