@@ -309,6 +309,18 @@ fn resolve_path(raw: &str, base_dir: &std::path::Path) -> std::path::PathBuf {
     }
 }
 
+/// State for cmdline path completion (Tab/Shift-Tab cycling).
+struct CmdlineCompletion {
+    /// The original text before completion started.
+    original: String,
+    /// Completion candidates (file/dir paths).
+    candidates: Vec<String>,
+    /// Index of the currently selected candidate (0 = first candidate).
+    index: usize,
+    /// The prefix before the path portion (e.g., ":e ").
+    prefix: String,
+}
+
 /// Build a sign column from a buffer's diagnostics: one glyph per line, the most
 /// severe (lowest severity number) winning when several land on the same line.
 fn diagnostics_to_signs(diags: &[ruster_lsp::Diagnostic]) -> ruster_render::SignsView {
@@ -1035,6 +1047,8 @@ pub struct App {
     /// Active filters for the messages buffer display.
     messages_filter_source: Option<ruster_core::message::MessageSource>,
     messages_filter_level: Option<ruster_core::message::MessageLevel>,
+    /// State for cmdline path completion (Tab/Shift-Tab cycling).
+    cmdline_completion: Option<CmdlineCompletion>,
 }
 
 /// What a background run is, so its output is parsed appropriately on completion.
@@ -1379,6 +1393,7 @@ impl App {
             messages_buf: None,
             messages_filter_source: None,
             messages_filter_level: None,
+            cmdline_completion: None,
         };
         // Create background buffers (pinned, not navigated to).
         app.ensure_dashboard_buffer();
@@ -1692,8 +1707,57 @@ impl App {
         }
         let key = crossterm_to_ruster_key(ck);
 
+        // Esc in cmdline cancels path completion and restores original input.
+        if self.vim.mode == VimMode::Cmdline && key == KeyEvent::Esc {
+            if let Some(comp) = self.cmdline_completion.take() {
+                self.vim.set_cmdline(&format!("{}{}", comp.prefix, comp.original));
+                return;
+            }
+        }
+
         // Tab in the cmdline opens the command palette, seeded with the partial.
         if self.vim.mode == VimMode::Cmdline && key == KeyEvent::Tab {
+            let raw = self.vim.cmdline_buffer().to_string();
+            let trimmed = raw.trim_start_matches(':');
+
+            // If in an :e/:edit command, do path completion
+            if trimmed.starts_with("e ") || trimmed.starts_with("edit ") {
+                let path_part = trimmed
+                    .split_once(' ')
+                    .map(|x| x.1)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+
+                if self.cmdline_completion.is_none() {
+                    // First Tab press: generate candidates
+                    let candidates = self.generate_completion_candidates(&path_part);
+                    if !candidates.is_empty() {
+                        let prefix = raw
+                            .split_once(' ')
+                            .map(|x| format!("{} ", x.0))
+                            .unwrap_or_else(|| ":e ".to_string());
+                        self.cmdline_completion = Some(CmdlineCompletion {
+                            original: path_part,
+                            candidates,
+                            index: 0,
+                            prefix: prefix.clone(),
+                        });
+                        if let Some(ref comp) = self.cmdline_completion {
+                            let candidate = comp.candidates[0].clone();
+                            self.vim.set_cmdline(&format!("{}{}", comp.prefix, candidate));
+                        }
+                    }
+                } else if let Some(ref mut comp) = self.cmdline_completion {
+                    // Subsequent Tab press: cycle to next candidate
+                    comp.index = (comp.index + 1) % comp.candidates.len();
+                    let candidate = comp.candidates[comp.index].clone();
+                    self.vim.set_cmdline(&format!("{}{}", comp.prefix, candidate));
+                }
+                return;
+            }
+
+            // Otherwise, fall back to command palette
             let seed = self
                 .vim
                 .cmdline_buffer()
@@ -1702,6 +1766,35 @@ impl App {
                 .to_string();
             self.vim.mode = VimMode::Normal;
             self.open_command_picker(&seed);
+            return;
+        }
+
+        if self.vim.mode == VimMode::Cmdline && key == KeyEvent::BackTab {
+            if let Some(_comp) = self.cmdline_completion.take() {
+                let path_part = self
+                    .vim
+                    .cmdline_buffer()
+                    .trim_start_matches(':')
+                    .split_once(' ')
+                    .map(|x| x.1)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                let candidates = self.generate_completion_candidates(&path_part);
+                if !candidates.is_empty() {
+                    let items: Vec<PickerItem> = candidates
+                        .iter()
+                        .map(|c| {
+                            PickerItem::new(
+                                c.clone(),
+                                PickerAction::OpenPath(std::path::PathBuf::from(c)),
+                            )
+                        })
+                        .collect();
+                    self.picker =
+                        Some(crate::picker::PickerState::new("path completion", items));
+                }
+            }
             return;
         }
 
@@ -4657,6 +4750,54 @@ impl App {
             },
             PickerAction::RunTask(name) => self.run_task(&name),
         }
+    }
+
+    /// Generate path completion candidates for the given path prefix.
+    fn generate_completion_candidates(&self, path_prefix: &str) -> Vec<String> {
+        let (dir, file_prefix) = if path_prefix.contains('/') {
+            let (dir_part, prefix_part) =
+                path_prefix.rsplit_once('/').unwrap_or((path_prefix, ""));
+            let base = resolve_path(dir_part, &std::env::current_dir().unwrap_or_default());
+            (base, prefix_part.to_string())
+        } else {
+            let ws = self.ws.borrow();
+            let base = ws
+                .active_doc()
+                .file_path
+                .as_ref()
+                .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+            (base, path_prefix.to_string())
+        };
+
+        let mut candidates = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with(&file_prefix) || file_prefix.is_empty() {
+                    let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
+                    let display = if is_dir {
+                        format!("{}/", name)
+                    } else {
+                        name
+                    };
+                    if path_prefix.contains('/') {
+                        let dir_part =
+                            path_prefix.rsplit_once('/').map(|x| x.0).unwrap_or("");
+                        candidates.push(format!("{}/{}", dir_part, display));
+                    } else {
+                        candidates.push(display);
+                    }
+                }
+            }
+        }
+        // Sort: directories first, then alphabetically
+        candidates.sort_by(|a, b| {
+            let a_dir = a.ends_with('/');
+            let b_dir = b.ends_with('/');
+            b_dir.cmp(&a_dir).then_with(|| a.cmp(b))
+        });
+        candidates
     }
 
     /// Open `path` into a buffer shown in the active window. When `at` is given,
