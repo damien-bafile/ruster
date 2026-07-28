@@ -483,6 +483,10 @@ enum CmdAction {
         all: bool,
         whole_buffer: bool,
     },
+    /// Open the messages buffer (`:messages` / `:msgs`).
+    Messages,
+    /// Filter the messages buffer by source or level.
+    MessagesFilter(String),
 }
 
 /// Parse the argument of `:set <opt>` for a boolean option. Accepts `number`
@@ -596,6 +600,7 @@ enum LeaderAction {
     Test,
     Tasks,
     Dashboard,
+    Messages,
 }
 
 enum LeaderNode {
@@ -658,6 +663,7 @@ static OPEN_GROUP: &[(char, LeaderNode)] = &[
     ('t', LeaderNode::Action("terminal", LeaderAction::Terminal)),
     ('s', LeaderNode::Action("settings", LeaderAction::Settings)),
     ('e', LeaderNode::Action("explorer (dired)", LeaderAction::Explorer)),
+    ('m', LeaderNode::Action("messages", LeaderAction::Messages)),
     ('r', LeaderNode::Action("run task", LeaderAction::Tasks)),
 ];
 
@@ -971,6 +977,13 @@ pub struct App {
     sidebar_selected: usize,
     sidebar_scroll: usize,
     sidebar_focused: bool,
+    /// The message log for editor/plugin messages.
+    messages: ruster_core::message::MessageLog,
+    /// The pinned messages buffer, once created.
+    messages_buf: Option<BufferId>,
+    /// Active filters for the messages buffer display.
+    messages_filter_source: Option<ruster_core::message::MessageSource>,
+    messages_filter_level: Option<ruster_core::message::MessageLevel>,
 }
 
 /// Fixed width (in cells) of the sidebar column when shown.
@@ -1305,6 +1318,10 @@ impl App {
             sidebar_selected: 0,
             sidebar_scroll: 0,
             sidebar_focused: false,
+            messages: ruster_core::message::MessageLog::new(),
+            messages_buf: None,
+            messages_filter_source: None,
+            messages_filter_level: None,
         }
     }
 
@@ -2114,8 +2131,21 @@ impl App {
                     if method == "textDocument/publishDiagnostics" =>
                 {
                     let (path, diags) = ruster_lsp::parse_diagnostics(&params);
+                    let n_err = diags.iter().filter(|d| d.severity == 1).count();
+                    let n_warn = diags.iter().filter(|d| d.severity == 2).count();
                     if let Some(buf) = self.buffer_for_path(&path) {
                         self.diagnostics.insert(buf, diags);
+                    }
+                    if n_err > 0 || n_warn > 0 {
+                        let file = std::path::Path::new(&path)
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or(path);
+                        self.push_message(
+                            ruster_core::message::MessageLevel::Warning,
+                            ruster_core::message::MessageSource::Lsp,
+                            format!("{}: {} err, {} warn", file, n_err, n_warn),
+                        );
                     }
                 }
                 ServerMessage::Response { id, result, .. } => {
@@ -2976,6 +3006,17 @@ impl App {
                 let q = trimmed.split_once(' ').map(|x| x.1).unwrap_or("").trim().to_string();
                 Ok(CmdAction::WorkspaceSymbol(q))
             }
+            _ if trimmed == "messages" || trimmed == "message" || trimmed == "msgs" => {
+                Ok(CmdAction::Messages)
+            }
+            _ if trimmed.starts_with("messages ") || trimmed.starts_with("msgs ") => {
+                let filter = trimmed.split_once(' ').map(|x| x.1).unwrap_or("").trim().to_string();
+                Ok(CmdAction::MessagesFilter(filter))
+            }
+            _ if trimmed.starts_with("messages/") || trimmed.starts_with("msgs/") => {
+                let filter = trimmed.split_once('/').map(|x| x.1).unwrap_or("").trim().to_string();
+                Ok(CmdAction::MessagesFilter(filter))
+            }
             _ if trimmed.starts_with("set editmode") || trimmed == "set editmode" => {
                 match trimmed.rsplit(' ').next().unwrap_or("") {
                     "emacs" => Ok(CmdAction::SetEditMode(EditMode::Emacs)),
@@ -3067,6 +3108,8 @@ impl App {
             CmdAction::Substitute { pattern, replacement, all, whole_buffer } => {
                 self.substitute(&pattern, &replacement, all, whole_buffer)
             }
+            CmdAction::Messages => self.open_messages(),
+            CmdAction::MessagesFilter(filter) => self.apply_messages_filter(&filter),
         }
     }
 
@@ -3959,6 +4002,88 @@ impl App {
         }
     }
 
+    /// Push a message to the log and optionally show it in the status line.
+    fn push_message(&mut self, level: ruster_core::message::MessageLevel, source: ruster_core::message::MessageSource, text: String) {
+        self.messages.push(level, source, text.clone());
+    }
+
+    /// Ensure the pinned `*messages*` buffer exists, returning its id.
+    fn ensure_messages_buffer(&mut self) -> BufferId {
+        if let Some(id) = self.messages_buf {
+            if self.ws.borrow().buffers.get(id).is_some() {
+                return id;
+            }
+        }
+        let id = self.ws.borrow_mut().buffers.create_special(
+            ruster_core::document::SpecialKind::Message,
+            "*messages*",
+        );
+        if let Some(doc) = self.ws.borrow_mut().buffers.get_mut(id) {
+            doc.pinned = true;
+        }
+        self.messages_buf = Some(id);
+        id
+    }
+
+    /// Rebuild the messages buffer text from the message log with current filters.
+    fn refresh_messages_buffer(&mut self, id: BufferId) {
+        use ruster_core::message::MessageLevel;
+        let entries = self.messages.filtered(self.messages_filter_source, self.messages_filter_level);
+        let mut text = String::new();
+        for entry in &entries {
+            let level_tag = match entry.level {
+                MessageLevel::Error => "ERR ",
+                MessageLevel::Warning => "WARN",
+                MessageLevel::Success => " OK ",
+                MessageLevel::Info => "INFO",
+            };
+            text.push_str(&format!(
+                "[{}] {} {}\n",
+                entry.source.label().to_uppercase(),
+                level_tag,
+                entry.text
+            ));
+        }
+        let mut w = self.ws.borrow_mut();
+        if let Some(doc) = w.buffers.get_mut(id) {
+            doc.buffer = ruster_core::buffer::Buffer::from_str(&text);
+        }
+    }
+
+    /// Open the messages buffer in the active window.
+    fn open_messages(&mut self) {
+        let id = self.ensure_messages_buffer();
+        self.refresh_messages_buffer(id);
+        self.ws.borrow_mut().set_active_buffer(id);
+    }
+
+    /// Apply a filter string to the messages buffer (`:msgs build`, `:msgs/err`).
+    fn apply_messages_filter(&mut self, filter: &str) {
+        use ruster_core::message::{MessageLevel, MessageSource};
+        let lower = filter.to_lowercase();
+        self.messages_filter_source = match lower.as_str() {
+            "build" => Some(MessageSource::Build),
+            "test" => Some(MessageSource::Test),
+            "task" => Some(MessageSource::Task),
+            "lsp" => Some(MessageSource::Lsp),
+            "echo" => Some(MessageSource::Echo),
+            "system" => Some(MessageSource::System),
+            "all" | "clear" => None,
+            _ => self.messages_filter_source,
+        };
+        self.messages_filter_level = match lower.as_str() {
+            "err" | "error" => Some(MessageLevel::Error),
+            "warn" | "warning" => Some(MessageLevel::Warning),
+            "ok" | "success" => Some(MessageLevel::Success),
+            "info" => Some(MessageLevel::Info),
+            "all" | "clear" => None,
+            _ => self.messages_filter_level,
+        };
+        if let Some(id) = self.messages_buf {
+            self.refresh_messages_buffer(id);
+        }
+    }
+
     /// Open the buffer-list picker over every open buffer.
     fn open_ibuffer(&mut self) {
         let items: Vec<PickerItem> = {
@@ -4206,6 +4331,7 @@ impl App {
             LeaderAction::Test => self.run_test(),
             LeaderAction::Tasks => self.open_task_picker(),
             LeaderAction::Dashboard => self.open_dashboard(),
+            LeaderAction::Messages => self.open_messages(),
         }
     }
 
@@ -4539,8 +4665,14 @@ impl App {
     /// quickfix list. Called once per frame.
     fn drain_build_runner(&mut self) {
         use crate::runner::RunnerMsg;
+        use ruster_core::message::{MessageLevel, MessageSource};
         use std::sync::mpsc::TryRecvError;
-        let Some(rx) = self.runner_rx.as_ref() else { return };
+        let Some(rx) = self.runner_rx.take() else { return };
+        let msg_source = match self.runner_kind {
+            RunnerKind::Build => MessageSource::Build,
+            RunnerKind::Test => MessageSource::Test,
+            RunnerKind::Task => MessageSource::Task,
+        };
         let mut appended = false;
         let mut done: Option<Option<i32>> = None;
         loop {
@@ -4549,6 +4681,7 @@ impl App {
                     self.runner_output.push_str(&l);
                     self.runner_output.push('\n');
                     appended = true;
+                    self.push_message(MessageLevel::Info, msg_source, l.clone());
                 }
                 Ok(RunnerMsg::Done(code)) => {
                     done = Some(code);
@@ -4570,17 +4703,21 @@ impl App {
             }
         }
         if let Some(code) = done {
-            self.runner_rx = None;
             match self.runner_kind {
                 RunnerKind::Build => self.finish_build(code),
                 RunnerKind::Test => self.finish_test(code),
                 RunnerKind::Task => {
-                    let status = match code {
-                        Some(0) => "finished".to_string(),
-                        Some(c) => format!("exited {c}"),
+                    let status_text = match code {
+                        Some(0) => "succeeded".to_string(),
+                        Some(c) => format!("exit {c}"),
                         None => "failed to run".to_string(),
                     };
-                    self.message = Some(format!("task {status}"));
+                    self.push_message(
+                        if code == Some(0) { ruster_core::message::MessageLevel::Success } else { ruster_core::message::MessageLevel::Error },
+                        ruster_core::message::MessageSource::Task,
+                        status_text.clone(),
+                    );
+                    self.message = Some(format!("task {status_text}"));
                 }
             }
         }
@@ -4596,7 +4733,13 @@ impl App {
             None => "failed to run".to_string(),
         };
         let hint = if n > 0 { "  (:copen)" } else { "" };
-        self.message = Some(format!("build {status} — {n} problem(s){hint}"));
+        let msg = format!("build {status} — {n} problem(s){hint}");
+        self.push_message(
+            if code == Some(0) { ruster_core::message::MessageLevel::Success } else { ruster_core::message::MessageLevel::Error },
+            ruster_core::message::MessageSource::Build,
+            msg.clone(),
+        );
+        self.message = Some(msg);
     }
 
     fn finish_test(&mut self, code: Option<i32>) {
@@ -4625,10 +4768,13 @@ impl App {
         self.quickfix = QuickfixList::new(items);
         let status = if run.failed == 0 && code == Some(0) { "ok" } else { "FAILED" };
         let hint = if run.failed > 0 { "  (:copen)" } else { "" };
-        self.message = Some(format!(
-            "test {status} — {} passed, {} failed{hint}",
-            run.passed, run.failed
-        ));
+        let msg = format!("test {status} — {} passed, {} failed{hint}", run.passed, run.failed);
+        self.push_message(
+            if run.failed == 0 && code == Some(0) { ruster_core::message::MessageLevel::Success } else { ruster_core::message::MessageLevel::Error },
+            ruster_core::message::MessageSource::Test,
+            msg.clone(),
+        );
+        self.message = Some(msg);
     }
 
     /// Interpret the key following a `Ctrl-w` prefix.

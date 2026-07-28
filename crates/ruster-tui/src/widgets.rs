@@ -440,7 +440,7 @@ impl Widget for CmdlineWidget<'_> {
     }
 }
 
-/// Renders the welcome / "Ready Room" screen — a centered panel shown when no
+/// Renders the welcome / "Dashboard" screen — a centered panel shown when no
 /// file is open, styled as a starship crew terminal readout.
 pub struct WelcomeWidget {
     view: WelcomeView,
@@ -509,8 +509,8 @@ impl Widget for WelcomeWidget {
         text(buf, area.x + 2, row, &div, dim, bg);
         row += 1;
 
-        // "READY ROOM" in accent
-        let rr = "READY ROOM";
+        // "DASHBOARD" in accent
+        let rr = "DASHBOARD";
         let rx = cx.saturating_sub(rr.chars().count() as u16 / 2);
         text(buf, rx, row, rr, accent, bg);
         row += 2;

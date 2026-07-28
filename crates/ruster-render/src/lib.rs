@@ -411,7 +411,7 @@ pub fn settings_scroll(prev: usize, selected: usize, viewport: usize, total: usi
     top.min(max)
 }
 
-/// The welcome/start screen ("Ready Room"), shown when no file is open. Rendered
+/// The welcome/start screen ("Dashboard"), shown when no file is open. Rendered
 /// as a centered panel in the first window when present.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WelcomeView {
@@ -447,7 +447,7 @@ pub struct FrameState<'a> {
     pub hover: Option<Vec<StyledLine>>,
     /// The settings page overlay, when open.
     pub settings: Option<SettingsView>,
-    /// Welcome/start screen ("Ready Room"), shown when no file is open.
+    /// Welcome/start screen ("Dashboard"), shown when no file is open.
     pub welcome: Option<WelcomeView>,
 }
 

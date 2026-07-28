@@ -326,14 +326,14 @@ impl Renderer for RaylibRenderer {
             {
                 let mut s = d.begin_scissor_mode(px, content_y, pw, clip_h);
 
-                // Welcome / "Ready Room" screen — replaces buffer content when
+                // Welcome / "Dashboard" screen — replaces buffer content when
                 // no named file is open.
                 if let Some(welcome) = &state.welcome {
                     if welcome.visible {
                         let mut row = 0;
                         let cx = px + (pw as f32 / 2.0) as i32;
                         let draw_text = |s: &mut RaylibDrawHandle, x: i32, r: i32, text: &str, color: Color| {
-                            s.draw_text_ex(font, text, Vector2::new(x as f32, (py + r * line_h) as f32), font_size as f32, 1.0, color);
+                            s.draw_text_ex(font, text, Vector2::new(x as f32, (content_y + r * line_h) as f32), font_size as f32, 1.0, color);
                         };
                         let _dimmer = Color::new(0, 0, 0, 0);
 
@@ -341,7 +341,7 @@ impl Renderer for RaylibRenderer {
                         let tx = cx - (measure(&title) / 2.0) as i32;
                         draw_text(&mut s, tx, row, &title, default_color);
                         row += 1;
-                        let rr = "READY ROOM";
+                        let rr = "DASHBOARD";
                         let rx = cx - (measure(rr) / 2.0) as i32;
                         draw_text(&mut s, rx, row, rr, accent);
                         row += 2;
@@ -385,7 +385,7 @@ impl Renderer for RaylibRenderer {
                     // An embedded terminal: a background quad per cell, then the
                     // glyph, then a block cursor. No gutter/scroll/selection.
                     for r in 0..grid.rows.min(buf_rows) {
-                        let gy = py + r as i32 * line_h;
+                        let gy = content_y + r as i32 * line_h;
                         for c in 0..grid.cols {
                             let tc = grid.cells[r * grid.cols + c];
                             let cx = px + (c as f32 * char_w) as i32;
@@ -410,21 +410,21 @@ impl Renderer for RaylibRenderer {
                         let (cr, cc) = grid.cursor;
                         if cr < buf_rows && cc < grid.cols {
                             let cx = px + (cc as f32 * char_w) as i32;
-                            let cy = py + cr as i32 * line_h;
+                            let cy = content_y + cr as i32 * line_h;
                             s.draw_rectangle(cx, cy, char_w as i32, line_h, Color::new(cur_r, cur_g, cur_b, 160));
                         }
                     }
                 } else {
                 // Gutter background (only when a gutter is shown).
                 if view.gutter.width > 0 && gutter_bg != bg {
-                    s.draw_rectangle(gutter_x, py, text_x - gutter_x, buf_rows as i32 * line_h, gutter_bg);
+                    s.draw_rectangle(gutter_x, content_y, text_x - gutter_x, buf_rows as i32 * line_h, gutter_bg);
                 }
                 // Sign column, left of the gutter.
                 if view.signs.width > 0 {
                     for row in 0..buf_rows {
                         let line = (row + scroll) as u16;
                         if let Some((glyph, c)) = view.signs.at(line) {
-                            let gy = py + row as i32 * line_h;
+                            let gy = content_y + row as i32 * line_h;
                             let color = to_raylib(c, default_color);
                             let mut b = [0u8; 4];
                             s.draw_text_ex(font, glyph.encode_utf8(&mut b), Vector2::new(sign_x as f32, gy as f32), font_size as f32, 1.0, color);
@@ -433,7 +433,7 @@ impl Renderer for RaylibRenderer {
                 }
                 // Gutter column.
                 for (row, label) in view.gutter.rows.iter().take(buf_rows).enumerate() {
-                    let gy = py + row as i32 * line_h;
+                    let gy = content_y + row as i32 * line_h;
                     s.draw_text_ex(font, label, Vector2::new(gutter_x as f32, gy as f32), font_size as f32, 1.0, gutter_color);
                 }
 
@@ -443,7 +443,7 @@ impl Renderer for RaylibRenderer {
                         let buffer_line = (row + scroll) as u16;
                         let line_len = line.text.chars().count() as u16;
                         if let Some((sel_start, sel_end)) = sel.span_on(buffer_line, line_len) {
-                            let gy = py + row as i32 * line_h;
+                            let gy = content_y + row as i32 * line_h;
                             let sx = text_x as f32 + sel_start as f32 * char_w;
                             // End is inclusive; empty lines still get a sliver.
                             let cols = sel_end.saturating_sub(sel_start) + 1;
@@ -455,7 +455,7 @@ impl Renderer for RaylibRenderer {
 
                 // Buffer text (this window's own scroll).
                 for (row, line) in view.lines.iter().skip(scroll).take(buf_rows).enumerate() {
-                    let gy = py + row as i32 * line_h;
+                    let gy = content_y + row as i32 * line_h;
                     let n = line.text.len();
                     if n == 0 {
                         continue;
@@ -527,7 +527,7 @@ impl Renderer for RaylibRenderer {
                             })
                             .unwrap_or("");
                         let mut cx = text_x as f32 + measure(text_before);
-                        let mut cy = py + vis_row * line_h;
+                        let mut cy = content_y + vis_row * line_h;
                         if let Some((dcx, dcy)) = view.cursor_smooth {
                             cx += dcx * char_w;
                             cy = (cy as f32 + dcy * line_h as f32) as i32;
@@ -573,7 +573,7 @@ impl Renderer for RaylibRenderer {
                             })
                             .unwrap_or("");
                         let cx = text_x as f32 + measure(text_before);
-                        let cy = py + vis_row * line_h;
+                        let cy = content_y + vis_row * line_h;
                         s.draw_rectangle(cx as i32, cy, char_w as i32, line_h, Color::new(cur_r, cur_g, cur_b, 140));
                     }
                 }
