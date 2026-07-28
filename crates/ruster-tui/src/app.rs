@@ -4269,8 +4269,9 @@ impl App {
             _ => {}
         }
         if is_sidebar {
-            if self.sidebar.is_some() {
-                let rows = self.sidebar.as_ref().unwrap().rows();
+            if let Some(ref mut tree) = self.sidebar {
+                tree.refresh();
+                let rows = tree.rows();
                 self.sidebar_selected = self.sidebar_selected.min(rows.len().saturating_sub(1));
             }
         } else {
