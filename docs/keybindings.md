@@ -166,6 +166,7 @@ Press `SPC` in Normal mode; the which-key panel lists continuations.
 | `SPC o r` | Run a `ruster.toml` task (picker) |
 | `SPC p p` | Switch project (`:projects`) |
 | `SPC u n` / `SPC u r` | Toggle line / relative numbers |
+| `SPC u s` | Toggle sidebar (`:sidebar`) |
 | `SPC q q` | Quit |
 | `SPC q w` | Save and quit |
 
@@ -207,6 +208,7 @@ Press `g` in Normal mode; the which-key panel lists the goto commands (LazyVim-s
 | `:messages` `:msgs` | Open the general-purpose messages buffer |
 | `:msgs/err` / `:msgs/warn` / `:msgs build` / `:msgs lsp` | Filter the messages buffer by level or source |
 | `:projects` | Switch to a recent project (picker) |
+| `:sidebar` | Toggle the file-explorer sidebar on/off |
 | `:config-errors` | Show config load/validation errors |
 
 ### Navigation
@@ -336,6 +338,24 @@ consumed by its paste (the original is removed only after a successful move).
 Entries are colored by type: **directories** blue (bold, with a trailing `/`),
 **executables** green, **symlinks** teal, and regular files in the default
 foreground.
+
+## Sidebar (file-explorer tree)
+
+| Key | Action |
+|-----|--------|
+| `:sidebar` / `SPC u s` | Toggle the sidebar on/off |
+| `j` / `k` (`↓`/`↑`) | Move selection |
+| `<CR>` | Open the selected file or expand/collapse a directory |
+| `h` (`←`) | Collapse the current directory, or move to its parent |
+| `l` (`→`) | Expand the current directory |
+| `Esc` / `C-c` / `Tab` | Unfocus the sidebar (return keyboard to the editor) |
+| `a` | Create a new file (append `/` for a directory) |
+| `r` | Rename the selected entry |
+| `d` | Delete the selected entry (`y`/`n` to confirm) |
+
+The sidebar is automatically created when toggled on, rooted at the project root
+(or the current directory if no project root is detected). Opening a file in the
+editor reveals it in the sidebar if the sidebar is visible.
 
 ## Snippets
 
