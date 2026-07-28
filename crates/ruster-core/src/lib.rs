@@ -8,6 +8,7 @@ pub mod document;
 pub mod dired;
 pub mod sidebar;
 pub mod snippets;
+pub mod message;
 pub mod workspace;
 pub mod windows;
 pub mod editor;
