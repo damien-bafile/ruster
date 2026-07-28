@@ -487,6 +487,8 @@ enum CmdAction {
     Messages,
     /// Filter the messages buffer by source or level.
     MessagesFilter(String),
+    /// Project list / switch (`:projects`).
+    Projects,
 }
 
 /// Parse the argument of `:set <opt>` for a boolean option. Accepts `number`
@@ -601,6 +603,7 @@ enum LeaderAction {
     Tasks,
     Dashboard,
     Messages,
+    Projects,
 }
 
 enum LeaderNode {
@@ -667,6 +670,10 @@ static OPEN_GROUP: &[(char, LeaderNode)] = &[
     ('r', LeaderNode::Action("run task", LeaderAction::Tasks)),
 ];
 
+static PROJECT_GROUP: &[(char, LeaderNode)] = &[
+    ('p', LeaderNode::Action("switch project", LeaderAction::Projects)),
+];
+
 static UI_GROUP: &[(char, LeaderNode)] = &[
     ('n', LeaderNode::Action("toggle line numbers", LeaderAction::ToggleNumber)),
     ('r', LeaderNode::Action("toggle relative numbers", LeaderAction::ToggleRelative)),
@@ -680,6 +687,7 @@ static LEADER_ROOT: &[(char, LeaderNode)] = &[
     ('s', LeaderNode::Group("search", SEARCH_GROUP)),
     ('c', LeaderNode::Group("code", CODE_GROUP)),
     ('o', LeaderNode::Group("open", OPEN_GROUP)),
+    ('p', LeaderNode::Group("project", PROJECT_GROUP)),
     ('u', LeaderNode::Group("ui / toggle", UI_GROUP)),
     ('q', LeaderNode::Group("quit", QUIT_GROUP)),
 ];
@@ -958,6 +966,8 @@ pub struct App {
     /// When `]` or `[` was pressed in idle Normal mode: the pending bracket, so
     /// `]q`/`[q` step the quickfix list (any other key replays the motion).
     bracket_pending: Option<char>,
+    /// The project root (where the .git / ruster.toml / etc. lives), if detected.
+    project_root: Option<PathBuf>,
     /// The shared quickfix list (`:copen`/`:cnext`/`:cprev`, `]q`/`[q`).
     quickfix: QuickfixList,
     /// A running build/test command's output stream, drained per frame.
@@ -977,6 +987,7 @@ pub struct App {
     sidebar_selected: usize,
     sidebar_scroll: usize,
     sidebar_focused: bool,
+    sidebar_width: u16,
     /// The message log for editor/plugin messages.
     messages: ruster_core::message::MessageLog,
     /// The pinned messages buffer, once created.
@@ -985,9 +996,6 @@ pub struct App {
     messages_filter_source: Option<ruster_core::message::MessageSource>,
     messages_filter_level: Option<ruster_core::message::MessageLevel>,
 }
-
-/// Fixed width (in cells) of the sidebar column when shown.
-const SIDEBAR_WIDTH: u16 = 30;
 
 /// What a background run is, so its output is parsed appropriately on completion.
 #[derive(Clone, Copy, PartialEq)]
@@ -1258,6 +1266,12 @@ impl App {
                 config_errors[0]
             ))
         };
+        let project_root = ruster_project::project_root(&file_path);
+        if let Some(ref state_dir) = ruster_config_dir() {
+            if let Some(ref root) = project_root {
+                ruster_project::record_recent(state_dir, root, 30);
+            }
+        }
         let mut app = App {
             ws, vim, renderer,
             should_quit: false, message: startup_message, syntax, syntax_tried, lua, config, timer,
@@ -1307,6 +1321,7 @@ impl App {
             g_pending: None,
             g_replaying: false,
             bracket_pending: None,
+            project_root,
             quickfix: QuickfixList::default(),
             runner_rx: None,
             runner_buf: None,
@@ -1318,6 +1333,7 @@ impl App {
             sidebar_selected: 0,
             sidebar_scroll: 0,
             sidebar_focused: false,
+            sidebar_width: 30,
             messages: ruster_core::message::MessageLog::new(),
             messages_buf: None,
             messages_filter_source: None,
@@ -2601,7 +2617,7 @@ impl App {
         let has_cmdline =
             self.vim.mode == VimMode::Cmdline || self.message.is_some() || self.dired_prompt.is_some();
         let reserved = if has_cmdline { 1 } else { 0 };
-        let buf_area = CoreRect::new(0, 0, cols, rows.saturating_sub(reserved));
+        let mut buf_area = CoreRect::new(0, 0, cols, rows.saturating_sub(reserved));
 
         // Ensure a syntax engine exists for every visible buffer, then reparse the
         // active buffer (the only one whose text can have changed this frame).
@@ -2644,6 +2660,15 @@ impl App {
         };
 
         let mut views: Vec<WindowView> = Vec::new();
+        let sidebar_rect = if self.sidebar.is_some() {
+            let w = self.sidebar_width.min(buf_area.width.saturating_sub(4));
+            let sidebar = CoreRect::new(buf_area.x, buf_area.y, w, buf_area.height);
+            buf_area.x += w;
+            buf_area.width = buf_area.width.saturating_sub(w);
+            Some(sidebar)
+        } else {
+            None
+        };
         {
             let mut w = self.ws.borrow_mut();
             let active_id = w.windows.active();
@@ -2756,7 +2781,13 @@ impl App {
                 let mut left = if focused_terminal {
                     "-- TERMINAL --".to_string()
                 } else if is_active {
-                    mode_lbl.clone()
+                    let mut lbl = mode_lbl.clone();
+                    if let Some(ref root) = self.project_root {
+                        if let Some(name) = root.file_name() {
+                            lbl = format!("{}  [{}]", lbl, name.to_string_lossy());
+                        }
+                    }
+                    lbl
                 } else {
                     String::new()
                 };
@@ -2843,6 +2874,36 @@ impl App {
                 });
             }
         }
+        if let Some(srect) = sidebar_rect {
+            let tree = self.sidebar.as_ref().unwrap();
+            let rows = tree.rows();
+            let selected = self.sidebar_selected.min(rows.len().saturating_sub(1));
+            let scroll = self.sidebar_scroll.min(selected.saturating_sub((srect.height as usize).saturating_sub(2).max(0) / 2));
+            let lines: Vec<StyledLine> = rows.iter().enumerate().skip(scroll).take(srect.height as usize).map(|(i, r)| {
+                let indent = "  ".repeat(r.depth);
+                let marker = if r.is_dir { if r.expanded { "▾ " } else { "▸ " } } else { "  " };
+                let text = format!("{}{}{}", indent, marker, r.name);
+                StyledLine { text, highlights: vec![] }
+            }).collect();
+            let view = WindowView {
+                rect: RRect::new(srect.x, srect.y, srect.width, srect.height),
+                lines,
+                cursor: (0, 0),
+                extra_cursors: vec![],
+                cursor_kind: CursorKind::Block,
+                cursor_visible: false,
+                cursor_smooth: None,
+                scroll_offset: 0,
+                gutter: ruster_render::GutterView { width: 0, rows: vec![] },
+                signs: ruster_render::SignsView::default(),
+                statusline: StatuslineView { left: "Sidebar".into(), center: String::new(), right: format!("{} items", rows.len()), active: self.sidebar_focused },
+                active: self.sidebar_focused,
+                selection: None,
+                terminal: None,
+                header: String::new(),
+            };
+            views.insert(0, view);
+        }
 
         let cmdline = if let Some(p) = &self.dired_prompt {
             Some(dired_prompt_display(p))
@@ -2904,10 +2965,19 @@ impl App {
                 && (matches!(active.kind, DocKind::Scratch)
                     || matches!(active.kind, DocKind::Special(SpecialKind::Dashboard)))
         };
+        let welcome_recent: Vec<String> = ruster_config_dir()
+            .map(|d| {
+                ruster_project::recent_projects(&d)
+                    .iter()
+                    .take(10)
+                    .map(|p| p.display().to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
         let welcome_view = if is_dashboard {
             Some(WelcomeView {
                 visible: true,
-                recent_projects: Vec::new(),
+                recent_projects: welcome_recent,
                 version: option_env!("CARGO_PKG_VERSION")
                     .unwrap_or("0.1.0")
                     .to_string(),
@@ -3021,6 +3091,7 @@ impl App {
                 let filter = trimmed.split_once('/').map(|x| x.1).unwrap_or("").trim().to_string();
                 Ok(CmdAction::MessagesFilter(filter))
             }
+            _ if trimmed == "projects" => Ok(CmdAction::Projects),
             _ if trimmed.starts_with("set editmode") || trimmed == "set editmode" => {
                 match trimmed.rsplit(' ').next().unwrap_or("") {
                     "emacs" => Ok(CmdAction::SetEditMode(EditMode::Emacs)),
@@ -3114,6 +3185,7 @@ impl App {
             }
             CmdAction::Messages => self.open_messages(),
             CmdAction::MessagesFilter(filter) => self.apply_messages_filter(&filter),
+            CmdAction::Projects => self.open_projects(),
         }
     }
 
@@ -3121,7 +3193,9 @@ impl App {
     /// runs on a background thread, streaming paths into the picker each frame so
     /// the render loop never blocks on a large repo.
     fn open_files_picker(&mut self) {
-        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let root = self.project_root.clone()
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
         let (tx, rx) = std::sync::mpsc::channel();
         let walk_root = root.clone();
         std::thread::spawn(move || {
@@ -3150,9 +3224,13 @@ impl App {
     /// Run `rg --vimgrep <pattern>`, streaming matches into a picker from a
     /// background thread. Reports a clear message when ripgrep is not installed.
     fn run_rg(&mut self, pattern: &str) {
+        let cwd = self.project_root.clone()
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
         let mut child = match std::process::Command::new("rg")
             .arg("--vimgrep")
             .arg(pattern)
+            .current_dir(&cwd)
             .stdout(std::process::Stdio::piped())
             .spawn()
         {
@@ -4101,6 +4179,26 @@ impl App {
         }
     }
 
+    /// Open a picker listing recent projects. Selecting one switches the working
+    /// project root, sets `runner_root`, and opens dired at that root.
+    fn open_projects(&mut self) {
+        let recent: Vec<PathBuf> = ruster_config_dir()
+            .map(|d| ruster_project::recent_projects(&d))
+            .unwrap_or_default();
+        if recent.is_empty() {
+            self.message = Some("No recent projects".to_string());
+            return;
+        }
+        let items: Vec<PickerItem> = recent
+            .iter()
+            .map(|p| {
+                let name = p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default().to_string();
+                PickerItem::new(name, PickerAction::OpenPath(p.clone()))
+            })
+            .collect();
+        self.picker = Some(PickerState::new("Projects", items));
+    }
+
     /// Open the buffer-list picker over every open buffer.
     fn open_ibuffer(&mut self) {
         let items: Vec<PickerItem> = {
@@ -4236,6 +4334,16 @@ impl App {
         let content = std::fs::read_to_string(path).unwrap_or_default();
         let id = self.ws.borrow_mut().buffers.open_file(path.to_path_buf(), content);
         self.ws.borrow_mut().set_active_buffer(id);
+        // Detect the project root for this file and update the cached root.
+        let new_root = ruster_project::project_root(path);
+        if new_root.is_some() && new_root != self.project_root {
+            self.project_root = new_root.clone();
+            if let Some(ref state_dir) = ruster_config_dir() {
+                if let Some(ref root) = self.project_root {
+                    ruster_project::record_recent(state_dir, root, 30);
+                }
+            }
+        }
         if let Some((line, col)) = at {
             let pos = {
                 let w = self.ws.borrow();
@@ -4349,6 +4457,7 @@ impl App {
             LeaderAction::Tasks => self.open_task_picker(),
             LeaderAction::Dashboard => self.open_dashboard(),
             LeaderAction::Messages => self.open_messages(),
+            LeaderAction::Projects => self.open_projects(),
         }
     }
 

@@ -161,7 +161,10 @@ Press `SPC` in Normal mode; the which-key panel lists continuations.
 | `SPC s f` / `SPC s g` | Search files / grep (ripgrep) |
 | `SPC s s` / `SPC s d` | Document symbols / diagnostics |
 | `SPC o t` / `SPC o s` / `SPC o e` | Open terminal / settings / explorer |
+| `SPC o d` | Open dashboard (`:dashboard`) |
+| `SPC o m` | Open messages buffer (`:messages`) |
 | `SPC o r` | Run a `ruster.toml` task (picker) |
+| `SPC p p` | Switch project (`:projects`) |
 | `SPC u n` / `SPC u r` | Toggle line / relative numbers |
 | `SPC q q` | Quit |
 | `SPC q w` | Save and quit |
@@ -200,6 +203,10 @@ Press `g` in Normal mode; the which-key panel lists the goto commands (LazyVim-s
 | `:bd` `:bdelete` | Delete the active buffer |
 | `:term` `:terminal` | Open an embedded terminal |
 | `:settings` `:config` | Open the settings page |
+| `:dashboard` | Open the dashboard (welcome screen with recent projects) |
+| `:messages` `:msgs` | Open the general-purpose messages buffer |
+| `:msgs/err` / `:msgs/warn` / `:msgs build` / `:msgs lsp` | Filter the messages buffer by level or source |
+| `:projects` | Switch to a recent project (picker) |
 | `:config-errors` | Show config load/validation errors |
 
 ### Navigation
