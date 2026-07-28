@@ -354,6 +354,9 @@ foreground.
 | `a` | Create a new file (append `/` for a directory) |
 | `r` | Rename the selected entry |
 | `d` | Delete the selected entry (`y`/`n` to confirm) |
+| `gg` / `G` | Jump to first / last row |
+| `.` | Toggle hidden files |
+| `R` | Refresh the tree from disk |
 
 The sidebar is automatically created when toggled on, rooted at the project root
 (or the current directory if no project root is detected). Opening a file in the
