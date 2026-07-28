@@ -74,6 +74,18 @@ When the sidebar is closed (hidden), the window tree gets the full area.
 
 ---
 
+## Lua Config
+
+```lua
+ruster.config.sidebar = {
+  auto_open = false,   -- Open sidebar automatically at startup when a project root is detected
+}
+```
+
+The `sidebar` group is registered in the schema with a `Bool` setting `auto_open` (default `false`).
+
+---
+
 ## Toggle & commands
 
 | Trigger | Action |
@@ -81,10 +93,10 @@ When the sidebar is closed (hidden), the window tree gets the full area.
 | `SPC e` (or `:Sidebar`) | Toggle sidebar open/closed. If opening: create tree at project root (or cwd), focus sidebar. If closing: focus the window tree. |
 | `Esc` / `Tab` (sidebar focused) | Focus the active window in the window tree. |
 | `:Sidebar` | Toggle. |
-| `:Sidebar resize N` | Set `SIDEBAR_WIDTH` to N columns (min 16, max 60). |
+| `:Sidebar resize N` | Set `sidebar_width` to N columns (min 16, max 60). |
 
-The sidebar auto-opens at startup when a project root is detected (alongside the
-Dashboard).
+When `sidebar.auto_open = true`, the sidebar opens at startup after project root
+detection (alongside the Dashboard).
 
 ---
 
@@ -103,11 +115,14 @@ Dashboard).
 | `d` | Delete (reuse dired prompt: confirm with `y`/`n`) |
 | `a` | Create new file or directory (reuse dired `+` prompt: name ending in `/` = directory) |
 | `.` | Toggle hidden files |
-| `Esc` / `Tab` | Focus the main window tree |
+| `gg` | Jump to first row |
+| `G` | Jump to last row (uppercase — Shift+g) |
 | `R` | Refresh (re-read the tree from disk) |
+| `Esc` / `Tab` | Focus the main window tree |
 
 All operations reuse existing dired prompt infrastructure (`DiredPrompt`, `DiredPromptKind`
-in app.rs).
+in app.rs). After a create/rename/delete prompt completes, the sidebar automatically
+refreshes to reflect the new filesystem state.
 
 ---
 
