@@ -601,7 +601,7 @@ impl Widget for WelcomeWidget {
         // Section: Quick Actions
         row = draw_section_header(buf, put, text, area, row, "QUICK ACTIONS", accent, dim, bg);
         let actions = [
-            (":e path/to/file", "Open File"),
+            (":e <path>", "Open file (Tab to complete)"),
             (":Dired", "File Explorer"),
             (":FuzzySearch", "Find Files"),
             (":term", "Terminal"),
