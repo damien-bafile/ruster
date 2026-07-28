@@ -963,7 +963,16 @@ pub struct App {
     runner_kind: RunnerKind,
     /// Per-file gutter signs from the last test run (✓/✗), merged with diagnostics.
     result_signs: std::collections::HashMap<PathBuf, ruster_render::SignsView>,
+    /// The file-explorer sidebar tree (`None` = hidden), its selected row, scroll,
+    /// and whether keyboard focus is in it.
+    sidebar: Option<ruster_core::sidebar::SidebarTree>,
+    sidebar_selected: usize,
+    sidebar_scroll: usize,
+    sidebar_focused: bool,
 }
+
+/// Fixed width (in cells) of the sidebar column when shown.
+const SIDEBAR_WIDTH: u16 = 30;
 
 /// What a background run is, so its output is parsed appropriately on completion.
 #[derive(Clone, Copy, PartialEq)]
@@ -1286,6 +1295,10 @@ impl App {
             runner_output: String::new(),
             runner_kind: RunnerKind::Build,
             result_signs: std::collections::HashMap::new(),
+            sidebar: None,
+            sidebar_selected: 0,
+            sidebar_scroll: 0,
+            sidebar_focused: false,
         }
     }
 

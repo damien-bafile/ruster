@@ -357,7 +357,7 @@ impl Renderer for RaylibRenderer {
                         row += 2;
 
                         section(&mut s, &mut row, "QUICK ACTIONS", accent);
-                        for (cmd, desc) in &[(":e path/to/file", "Open File"), (":FuzzySearch", "Find Files"), (":term", "Terminal")] {
+                        for (cmd, desc) in &[(":e path/to/file", "Open File"), (":Dired", "File Explorer"), (":FuzzySearch", "Find Files"), (":term", "Terminal")] {
                             let dl = measure(cmd) + 4.0;
                             draw_text(&mut s, px + 8, row, cmd, default_color);
                             draw_text(&mut s, px + 8 + dl as i32, row, desc, gutter_color);

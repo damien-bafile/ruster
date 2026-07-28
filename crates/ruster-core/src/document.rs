@@ -23,6 +23,8 @@ pub enum SpecialKind {
     ConfigErrors,
     /// A read-only results buffer for a build/test/task run.
     Build,
+    /// The file-explorer sidebar (tree dired) in a persistent side column.
+    Sidebar,
 }
 
 /// What a document represents.

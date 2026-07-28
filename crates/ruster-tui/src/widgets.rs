@@ -532,6 +532,7 @@ impl Widget for WelcomeWidget {
         row = draw_section_header(buf, put, text, area, row, "QUICK ACTIONS", accent, dim, bg);
         let actions = [
             (":e path/to/file", "Open File"),
+            (":Dired", "File Explorer"),
             (":FuzzySearch", "Find Files"),
             (":term", "Terminal"),
         ];
