@@ -124,9 +124,16 @@ impl SidebarTree {
 mod tests {
     use super::*;
 
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static FIXTURE_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
     /// Build `root/{a/{x.txt}, b.txt}` in a temp dir.
+    /// Each call gets a unique directory (atomic counter) to avoid
+    /// race conditions when tests run in parallel.
     fn fixture() -> PathBuf {
-        let root = std::env::temp_dir().join(format!("ruster_sidebar_{}", std::process::id()));
+        let id = FIXTURE_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("ruster_sidebar_{}", id));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("a")).unwrap();
         std::fs::write(root.join("a").join("x.txt"), "x").unwrap();

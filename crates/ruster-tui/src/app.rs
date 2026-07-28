@@ -243,8 +243,23 @@ fn resolve_theme_colors(
     set(&ov.cursor_fg, &mut colors.cursor_fg);
     set(&ov.divider, &mut colors.divider);
     set(&ov.statusline_fg, &mut colors.statusline_fg);
+    set(&ov.statusline_bg, &mut colors.statusline_bg);
     set(&ov.accent, &mut colors.accent);
     set(&ov.accent_fg, &mut colors.accent_fg);
+    set(&ov.whichkey_bg, &mut colors.whichkey_bg);
+    set(&ov.whichkey_fg, &mut colors.whichkey_fg);
+    set(&ov.cmdline_bg, &mut colors.cmdline_bg);
+    set(&ov.cmdline_fg, &mut colors.cmdline_fg);
+    set(&ov.mode_normal_bg, &mut colors.mode_normal_bg);
+    set(&ov.mode_normal_fg, &mut colors.mode_normal_fg);
+    set(&ov.mode_insert_bg, &mut colors.mode_insert_bg);
+    set(&ov.mode_insert_fg, &mut colors.mode_insert_fg);
+    set(&ov.mode_visual_bg, &mut colors.mode_visual_bg);
+    set(&ov.mode_visual_fg, &mut colors.mode_visual_fg);
+    set(&ov.mode_cmdline_bg, &mut colors.mode_cmdline_bg);
+    set(&ov.mode_cmdline_fg, &mut colors.mode_cmdline_fg);
+    set(&ov.mode_emacs_bg, &mut colors.mode_emacs_bg);
+    set(&ov.mode_emacs_fg, &mut colors.mode_emacs_fg);
     colors
 }
 
@@ -1824,6 +1839,25 @@ impl App {
         }
         // Any other key ends snippet-stop cycling (offsets would go stale).
         self.snippet_stops.clear();
+
+        // Digit keys on the dashboard open recent projects by index.
+        if self.is_dashboard_active()
+            && self.vim.is_normal_idle()
+        {
+            if let KeyEvent::Char(c) = key {
+                if let Some(d) = c.to_digit(10) {
+                    if d >= 1 && d <= 9 {
+                        let recent: Vec<PathBuf> = ruster_config_dir()
+                            .map(|d| ruster_project::recent_projects(&d))
+                            .unwrap_or_default();
+                        if let Some(path) = recent.get(d as usize - 1) {
+                            self.open_path(path, None);
+                            return;
+                        }
+                    }
+                }
+            }
+        }
 
         let actions = self.vim.handle(key, &*self.ws.borrow());
         for action in actions {
@@ -4325,6 +4359,14 @@ impl App {
                 doc.pinned = true;
             }
         }
+    }
+
+    fn is_dashboard_active(&self) -> bool {
+        let w = self.ws.borrow();
+        let active = w.active_doc();
+        active.file_path.is_none()
+            && (matches!(active.kind, DocKind::Scratch)
+                || matches!(active.kind, DocKind::Special(SpecialKind::Dashboard)))
     }
 
     fn open_dashboard(&mut self) {
