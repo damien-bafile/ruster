@@ -53,6 +53,7 @@ pub struct DebugSession {
     pub scopes: Vec<Scope>,
     pub variable_cache: HashMap<u64, Variable>,
     pub stopped_thread: Option<u64>,
+    pub variables: Vec<(String, Vec<(String, String)>)>,
     next_seq: i64,
 }
 
@@ -68,8 +69,42 @@ impl DebugSession {
             scopes: Vec::new(),
             variable_cache: HashMap::new(),
             stopped_thread: None,
+            variables: Vec::new(),
             next_seq: 1,
         })
+    }
+
+    pub fn stopped(&self) -> bool {
+        self.state == SessionState::Paused
+    }
+
+    pub fn set_breakpoints_all(&mut self, files: Vec<(PathBuf, Vec<u16>)>) -> Result<()> {
+        for (path, lines) in files {
+            let lines_usize: Vec<usize> = lines.into_iter().map(|l| l as usize).collect();
+            let src = Source {
+                name: Some(path.file_name().unwrap_or_default().to_string_lossy().to_string()),
+                path: Some(path.to_string_lossy().to_string()),
+                ..Default::default()
+            };
+            let bps: Vec<SourceBreakpoint> = lines_usize.iter().map(|&line| {
+                SourceBreakpoint {
+                    line: line as i64,
+                    column: None,
+                    condition: None,
+                    hit_condition: None,
+                    log_message: None,
+                }
+            }).collect();
+            let args = SetBreakpointsArguments {
+                source: src,
+                breakpoints: Some(bps),
+                source_modified: Some(false),
+                ..Default::default()
+            };
+            let req = Request { seq: self.next_seq(), command: Command::SetBreakpoints(args) };
+            self.client.send_request(req)?;
+        }
+        Ok(())
     }
 
     fn next_seq(&mut self) -> i64 {

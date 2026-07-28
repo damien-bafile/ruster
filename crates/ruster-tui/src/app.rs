@@ -552,6 +552,14 @@ enum CmdAction {
     SidebarResize(u16),
     /// Open a file by path (`:e path` / `:edit path`).
     OpenFile(String),
+    /// Debug actions.
+    DebugStart,
+    DebugContinue,
+    DebugNext,
+    DebugStepIn,
+    DebugStepOut,
+    DebugStop,
+    DebugToggleBreakpoint,
 }
 
 /// Parse the argument of `:set <opt>` for a boolean option. Accepts `number`
@@ -1068,6 +1076,10 @@ pub struct App {
     messages_filter_level: Option<ruster_core::message::MessageLevel>,
     /// State for cmdline path completion (Tab/Shift-Tab cycling).
     cmdline_completion: Option<CmdlineCompletion>,
+    /// Active DAP debug session, if any.
+    debug_session: Option<ruster_dap::session::DebugSession>,
+    /// File-local breakpoints: (canonical path, line number).
+    debug_breakpoints: std::collections::HashMap<PathBuf, Vec<u16>>,
 }
 
 /// What a background run is, so its output is parsed appropriately on completion.
@@ -1414,6 +1426,8 @@ impl App {
             messages_filter_source: None,
             messages_filter_level: None,
             cmdline_completion: None,
+            debug_session: None,
+            debug_breakpoints: std::collections::HashMap::new(),
         };
         // Create background buffers (pinned, not navigated to).
         app.ensure_dashboard_buffer();
@@ -1674,7 +1688,7 @@ impl App {
                 return;
             }
         }
-        // F-key dispatch for build/test/task.
+        // F-key dispatch for build/test/task and debug.
         match ck.code {
             KeyCode::F(7) => {
                 self.run_build();
@@ -1686,6 +1700,26 @@ impl App {
             }
             KeyCode::F(9) => {
                 self.open_task_picker();
+                return;
+            }
+            KeyCode::F(2) => {
+                self.debug_toggle_breakpoint();
+                return;
+            }
+            KeyCode::F(5) if !ck.modifiers.contains(crossterm::event::KeyModifiers::SHIFT) => {
+                self.debug_continue();
+                return;
+            }
+            KeyCode::F(5) => {
+                self.debug_stop();
+                return;
+            }
+            KeyCode::F(10) => {
+                self.debug_step_over();
+                return;
+            }
+            KeyCode::F(11) => {
+                self.debug_step_in();
                 return;
             }
             _ => {}
@@ -2877,6 +2911,7 @@ impl App {
     fn render(&mut self) {
         self.drain_pending_results();
         self.drain_build_runner();
+        self.drain_debug_events();
         self.update_lsp();
         let (cols, rows) = self.renderer.viewport_cells();
         // Reserve a bottom row for the cmdline/message only while one is shown,
@@ -3125,6 +3160,21 @@ impl App {
                             }
                         }
                     }
+                    if !self.debug_breakpoints.is_empty() {
+                        if let Some(p) =
+                            self.ws.borrow().buffers.get(buf_id).and_then(|d| d.file_path.clone())
+                        {
+                            let key = p.canonicalize().unwrap_or(p);
+                            if let Some(bps) = self.debug_breakpoints.get(&key) {
+                                s.width = s.width.max(1);
+                                let bp_signs: Vec<(u16, char, ruster_render::Color)> = bps
+                                    .iter()
+                                    .map(|&l| (l, '●', ruster_render::Color::Rgb(255, 50, 50)))
+                                    .collect();
+                                s.signs.extend(bp_signs);
+                            }
+                        }
+                    }
                     s
                 };
                 views.push(WindowView {
@@ -3282,6 +3332,7 @@ impl App {
             settings: self.settings.as_ref().map(|s| s.view()),
             welcome: welcome_view,
             theme: self.theme_palette(),
+            debug_overlay: self.build_debug_overlay(),
         };
         self.renderer.render_frame(&state);
     }
@@ -3385,6 +3436,13 @@ impl App {
                 }
             }
             _ if trimmed == "projects" => Ok(CmdAction::Projects),
+            "db" | "debug" => Ok(CmdAction::DebugStart),
+            "db_continue" | "continue" if self.debug_session.is_some() => Ok(CmdAction::DebugContinue),
+            "db_next" | "n" if self.debug_session.is_some() => Ok(CmdAction::DebugNext),
+            "db_stepin" | "s" if self.debug_session.is_some() => Ok(CmdAction::DebugStepIn),
+            "db_stepout" | "finish" if self.debug_session.is_some() => Ok(CmdAction::DebugStepOut),
+            "db_stop" if self.debug_session.is_some() => Ok(CmdAction::DebugStop),
+            "db_toggle" | "B" => Ok(CmdAction::DebugToggleBreakpoint),
             _ if trimmed == "sidebar" => Ok(CmdAction::Sidebar),
             _ if let Some(n) = trimmed.strip_prefix("sidebar resize ").and_then(|s| s.trim().parse::<u16>().ok()) => Ok(CmdAction::SidebarResize(n)),
             _ if trimmed.starts_with("set editmode") || trimmed == "set editmode" => {
@@ -3485,6 +3543,13 @@ impl App {
             CmdAction::SidebarResize(n) => {
                 self.sidebar_width = n.max(16).min(60);
             }
+            CmdAction::DebugStart => self.debug_start(),
+            CmdAction::DebugContinue => self.debug_continue(),
+            CmdAction::DebugNext => self.debug_step_over(),
+            CmdAction::DebugStepIn => self.debug_step_in(),
+            CmdAction::DebugStepOut => self.debug_step_out(),
+            CmdAction::DebugStop => self.debug_stop(),
+            CmdAction::DebugToggleBreakpoint => self.debug_toggle_breakpoint(),
             CmdAction::OpenFile(path) => {
                 let base = self.ws.borrow()
                     .active_doc()
@@ -5386,6 +5451,51 @@ impl App {
         self.message = Some(format!("{label}: {cmd}"));
     }
 
+    /// Poll the active debug session (if any) for DAP events, updating state.
+    fn drain_debug_events(&mut self) {
+        let Some(session) = &mut self.debug_session else { return };
+        for ev in session.poll_events() {
+            match ev {
+                ruster_dap::session::DapEvent::Stopped { reason: _, thread_id } => {
+                    session.get_stack(thread_id).ok();
+                    session.state = ruster_dap::session::SessionState::Paused;
+                }
+                ruster_dap::session::DapEvent::Terminated => {
+                    self.debug_session = None;
+                    self.debug_breakpoints.clear();
+                    return;
+                }
+                _ => {}
+            }
+        }
+        if session.stopped() && session.scopes.is_empty() && !session.stack_frames.is_empty() {
+            if let Some(frame) = session.stack_frames.first() {
+                session.get_scopes(frame.id as u64).ok();
+            }
+        }
+        let scopes = session.scopes.clone();
+        if !scopes.is_empty() && session.variables.is_empty() {
+            for scope in &scopes {
+                if scope.variables_reference > 0 {
+                    session.get_variables(scope.variables_reference as u64).ok();
+                }
+            }
+        }
+        let vars: Vec<(String, Vec<(String, String)>)> = {
+            let scopes = &session.scopes;
+            let cache = &session.variable_cache;
+            scopes.iter().filter(|s| s.variables_reference > 0).map(|scope| {
+                let pairs = cache
+                    .iter()
+                    .filter(|(&k, _)| k == scope.variables_reference as u64)
+                    .map(|(_, v)| (v.name.clone(), v.value.clone()))
+                    .collect();
+                (scope.name.clone(), pairs)
+            }).collect()
+        };
+        session.variables = vars;
+    }
+
     /// Drain the running command's output into its results buffer; on completion
     /// parse it (build → diagnostics; test → results + ✓/✗ signs) into the
     /// quickfix list. Called once per frame.
@@ -5606,6 +5716,121 @@ impl App {
                 self.message = Some(format!("Saved: {}", path));
             }
             Err(e) => self.message = Some(format!("Error: {}", e)),
+        }
+    }
+
+    fn build_debug_overlay(&self) -> Option<ruster_render::DebugOverlayView> {
+        let session = self.debug_session.as_ref()?;
+        let status = if session.stopped() { "PAUSED" } else { "RUNNING" };
+        let toolbar = format!("[Debug: {}] F5:Continue F10:Next F11:StepIn S-F5:Stop", status);
+        let stack: Vec<(u16, String, String)> = session
+            .stack_frames
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
+                let loc = f.source.as_ref().and_then(|s| s.path.as_deref()).unwrap_or("?");
+                (i as u16, f.name.clone(), format!("{}:{}", loc, f.line))
+            })
+            .collect();
+        let scopes: Vec<(String, Vec<(String, String)>)> = session
+            .variables
+            .iter()
+            .map(|(scope_name, vars)| {
+                let vars: Vec<(String, String)> = vars.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                (scope_name.clone(), vars)
+            })
+            .collect();
+        Some(ruster_render::DebugOverlayView { toolbar, stack, scopes })
+    }
+
+    fn debug_start(&mut self) {
+        if self.debug_session.is_some() {
+            self.message = Some("Debug session already active".into());
+            return;
+        }
+        let root = self.project_root.as_deref().unwrap_or(std::path::Path::new("."));
+        let cfg = ruster_dap::config::detect_config("rust", root, None);
+        let cfg = match cfg {
+            Some(c) => c,
+            None => {
+                self.message = Some("No debug config detected for this project".into());
+                return;
+            }
+        };
+        match ruster_dap::session::DebugSession::start(&cfg, root) {
+            Ok(mut session) => {
+                session.send_initialize().ok();
+                session.send_launch(serde_json::json!({})).ok();
+                self.debug_session = Some(session);
+                self.message = Some(format!("Debug started: {}", cfg.name));
+            }
+            Err(e) => self.message = Some(format!("Debug start failed: {}", e)),
+        }
+    }
+
+    fn debug_stop(&mut self) {
+        if let Some(mut session) = self.debug_session.take() {
+            session.disconnect().ok();
+            self.debug_breakpoints.clear();
+        }
+    }
+
+    fn debug_continue(&mut self) {
+        if let Some(session) = &mut self.debug_session {
+            session.continue_exec().ok();
+        }
+    }
+
+    fn debug_step_over(&mut self) {
+        if let Some(session) = &mut self.debug_session {
+            session.step_over().ok();
+        }
+    }
+
+    fn debug_step_in(&mut self) {
+        if let Some(session) = &mut self.debug_session {
+            session.step_into().ok();
+        }
+    }
+
+    fn debug_step_out(&mut self) {
+        if let Some(session) = &mut self.debug_session {
+            session.step_out().ok();
+        }
+    }
+
+    fn debug_toggle_breakpoint(&mut self) {
+        let (path, line) = {
+            let w = self.ws.borrow();
+            let doc = w.active_doc();
+            let path = match doc.file_path.as_ref() {
+                Some(p) => p.canonicalize().unwrap_or_else(|_| p.clone()),
+                None => {
+                    self.message = Some("No file path for breakpoint".into());
+                    return;
+                }
+            };
+            let head = w.primary_head();
+            let buf = w.buffer();
+            let line = buf.char_to_line(head) as u16;
+            (path, line)
+        };
+        let lines = self.debug_breakpoints.entry(path.clone()).or_default();
+        if let Some(pos) = lines.iter().position(|&l| l == line) {
+            lines.remove(pos);
+            if lines.is_empty() {
+                self.debug_breakpoints.remove(&path);
+            }
+        } else {
+            lines.push(line);
+            lines.sort();
+        }
+        if let Some(session) = &mut self.debug_session {
+            let file_bps: Vec<(PathBuf, Vec<u16>)> = self.debug_breakpoints
+                .iter()
+                .map(|(p, ls)| (p.clone(), ls.clone()))
+                .collect();
+            session.set_breakpoints_all(file_bps).ok();
         }
     }
 }

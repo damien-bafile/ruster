@@ -533,6 +533,19 @@ pub struct FrameState<'a> {
     /// The theme palette for this frame. Used by both the TUI and GUI backends
     /// so that every widget and overlay reads a consistent set of colours.
     pub theme: Theme,
+    /// Debugger overlay (toolbar + stack/variables), shown while a debug
+    /// session is active.
+    pub debug_overlay: Option<DebugOverlayView>,
+}
+
+/// Debugger overlay rendered above the window area.
+pub struct DebugOverlayView {
+    /// Toolbar row: status + action hints.
+    pub toolbar: String,
+    /// Stack frames: (depth, name, file:line) tuples.
+    pub stack: Vec<(u16, String, String)>,
+    /// Visible scopes and their variables.
+    pub scopes: Vec<(String, Vec<(String, String)>)>,
 }
 
 pub trait Renderer {
@@ -666,6 +679,7 @@ mod tests {
             settings: None,
             welcome: None,
             theme: Theme::default(),
+            debug_overlay: None,
         };
         let mut r = TestRenderer;
         r.render_frame(&state);
