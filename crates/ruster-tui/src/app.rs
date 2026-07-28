@@ -1481,10 +1481,12 @@ impl App {
             }
         }
 
-        // A focused sidebar captures navigation keys.
+        // A focused sidebar captures navigation keys. Unhandled keys (e.g.
+        // Space for the leader prefix) fall through to the main handler.
         if self.sidebar.is_some() && self.sidebar_focused {
-            self.handle_sidebar_key(ck);
-            return;
+            if self.handle_sidebar_key(ck) {
+                return;
+            }
         }
 
         // Dired claims its action keys, but only while at rest — never while a
@@ -4240,6 +4242,7 @@ impl App {
     fn toggle_sidebar(&mut self) {
         if self.sidebar.is_some() {
             self.sidebar = None;
+            self.sidebar_focused = false;
             self.message = Some("Sidebar closed".to_string());
         } else {
             let root = self.project_root
@@ -4289,42 +4292,65 @@ impl App {
     }
 
     /// Handle keyboard input while the sidebar is focused.
-    fn handle_sidebar_key(&mut self, ck: crossterm::event::KeyEvent) {
+    /// Handle keyboard input while the sidebar is focused.
+    /// Returns `true` if the key was consumed, `false` otherwise (unhandled keys
+    /// fall through to the main handler, e.g. for `SPC e` to close the sidebar).
+    fn handle_sidebar_key(&mut self, ck: crossterm::event::KeyEvent) -> bool {
+        // Handle q specially: it needs to close the sidebar, so we handle it
+        // before borrowing `tree` to avoid a mutable borrow conflict.
+        if matches!(ck.code, KeyCode::Char('q')) && ck.modifiers.is_empty() {
+            self.close_sidebar();
+            return true;
+        }
+        // Enter on a file opens it — borrow path before tree.
+        if matches!(ck.code, KeyCode::Enter) && ck.modifiers.is_empty() {
+            if let Some(path) = self.sidebar.as_ref().and_then(|t| {
+                let rows = t.rows();
+                if rows.is_empty() { None }
+                else {
+                    let r = &rows[self.sidebar_selected.min(rows.len().saturating_sub(1))];
+                    (!r.is_dir).then(|| r.path.clone())
+                }
+            }) {
+                self.sidebar_focused = false;
+                self.open_path(&path, None);
+                return true;
+            }
+        }
+
         let tree = match self.sidebar.as_mut() {
             Some(t) => t,
-            None => return,
+            None => return false,
         };
         let rows = tree.rows();
         if rows.is_empty() {
             self.sidebar_focused = false;
-            return;
+            return false;
         }
-        match ck.code {
+        let handled = match ck.code {
             KeyCode::Char('j') | KeyCode::Down if ck.modifiers.is_empty() => {
                 if self.sidebar_selected + 1 < rows.len() {
                     self.sidebar_selected += 1;
                 }
+                true
             }
             KeyCode::Char('k') | KeyCode::Up if ck.modifiers.is_empty() => {
                 self.sidebar_selected = self.sidebar_selected.saturating_sub(1);
+                true
             }
             KeyCode::Enter if ck.modifiers.is_empty() => {
+                // Directory toggle (file case handled above).
                 let row = &rows[self.sidebar_selected];
                 if row.is_dir {
                     tree.toggle(&row.path);
-                } else {
-                    let path = row.path.clone();
-                    self.sidebar_focused = false;
-                    self.open_path(&path, None);
-                    return;
                 }
+                true
             }
             KeyCode::Char('h') | KeyCode::Left if ck.modifiers.is_empty() => {
                 let row = &rows[self.sidebar_selected];
                 if row.is_dir && row.expanded {
                     tree.collapse(&row.path);
                 } else {
-                    // Move selection to parent directory
                     if let Some(parent_depth) = row.depth.checked_sub(1) {
                         for i in (0..self.sidebar_selected).rev() {
                             if rows[i].depth == parent_depth {
@@ -4334,27 +4360,30 @@ impl App {
                         }
                     }
                 }
+                true
             }
             KeyCode::Char('l') | KeyCode::Right if ck.modifiers.is_empty() => {
                 let row = &rows[self.sidebar_selected];
                 if row.is_dir {
                     tree.expand(&row.path);
                 }
+                true
             }
             KeyCode::Esc | KeyCode::Char('c') if ck.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
                 self.sidebar_focused = false;
+                true
             }
             KeyCode::Tab => {
                 self.sidebar_focused = false;
+                true
             }
             KeyCode::Char('h') if ck.modifiers == crossterm::event::KeyModifiers::CONTROL => {
                 self.sidebar_focused = false;
+                true
             }
             KeyCode::Char('l') if ck.modifiers == crossterm::event::KeyModifiers::CONTROL => {
                 self.sidebar_focused = false;
-            }
-            KeyCode::Char('q') if ck.modifiers.is_empty() => {
-                return self.close_sidebar();
+                true
             }
             KeyCode::Char('a') if ck.modifiers.is_empty() => {
                 if !rows.is_empty() {
@@ -4363,6 +4392,7 @@ impl App {
                     self.sidebar_prompt_dir = Some(dir);
                     self.dired_prompt = Some(DiredPrompt { kind: DiredPromptKind::Create, input: String::new() });
                 }
+                true
             }
             KeyCode::Char('r') if ck.modifiers.is_empty() => {
                 if !rows.is_empty() {
@@ -4372,6 +4402,7 @@ impl App {
                     self.sidebar_prompt_dir = Some(dir);
                     self.dired_prompt = Some(DiredPrompt { kind: DiredPromptKind::Rename(name.clone()), input: name });
                 }
+                true
             }
             KeyCode::Char('d') if ck.modifiers.is_empty() => {
                 if !rows.is_empty() {
@@ -4379,14 +4410,16 @@ impl App {
                     self.sidebar_prompt_dir = row.path.parent().map(|p| p.to_path_buf());
                     self.dired_prompt = Some(DiredPrompt { kind: DiredPromptKind::Delete(row.path.clone()), input: String::new() });
                 }
+                true
             }
-            _ => {}
-        }
+            _ => false,
+        };
         // Clamp selection and scroll to keep it visible.
         let rows = tree.rows();
         if !rows.is_empty() {
             self.sidebar_selected = self.sidebar_selected.min(rows.len().saturating_sub(1));
         }
+        handled
     }
 
     /// Open the buffer-list picker over every open buffer.
