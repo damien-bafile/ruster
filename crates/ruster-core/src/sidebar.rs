@@ -73,6 +73,23 @@ impl SidebarTree {
         }
     }
 
+    pub fn set_show_hidden(&mut self, v: bool) {
+        self.show_hidden = v;
+    }
+
+    pub fn show_hidden(&self) -> bool {
+        self.show_hidden
+    }
+
+    /// Discard expanded-state cache so the tree re-reads from disk on the
+    /// next [`rows()`](Self::rows) call. Call after file-system mutations.
+    pub fn refresh(&mut self) {
+        self.expanded.clear();
+        // Re-expand root so the top level is visible.
+        let root = self.root.clone();
+        self.expand(&root);
+    }
+
     /// The visible rows, depth-first: the root's entries, recursing into expanded
     /// directories. Directories sort before files (via [`dired::list`]); the `..`
     /// entry is omitted (the sidebar is rooted).
