@@ -474,6 +474,17 @@ impl Renderer for RaylibRenderer {
                     // then draw same-color runs — safe for multibyte lines.
                     let chars: Vec<char> = line.text.chars().collect();
                     let nchars = chars.len();
+                    // Draw highlight backgrounds first.
+                    for &(offset, len, ref style) in &line.highlights {
+                        if let ruster_render::Color::Rgb(r, g, b) = style.bg {
+                            let end = (offset + len).min(nchars);
+                            if offset < end {
+                                let sx = text_x as f32 + offset as f32 * char_w;
+                                let sw = (end - offset) as f32 * char_w;
+                                s.draw_rectangle(sx as i32, gy, sw as i32, line_h, Color::new(r, g, b, 255));
+                            }
+                        }
+                    }
                     let mut char_colors: Vec<Color> = vec![default_color; nchars];
                     for &(offset, len, ref style) in &line.highlights {
                         let fg = match style.fg {
