@@ -1055,6 +1055,8 @@ pub struct App {
     sidebar_width: u16,
     /// Directory override for sidebar-initiated dired prompts.
     sidebar_prompt_dir: Option<PathBuf>,
+    /// Pending state for the `gg` double-press jump-to-top.
+    sidebar_pending_g: bool,
     /// The message log for editor/plugin messages.
     messages: ruster_core::message::MessageLog,
     /// The pinned messages buffer, once created.
@@ -1404,6 +1406,7 @@ impl App {
             sidebar_focused: false,
             sidebar_width: 30,
             sidebar_prompt_dir: None,
+            sidebar_pending_g: false,
             messages: ruster_core::message::MessageLog::new(),
             messages_buf: None,
             messages_filter_source: None,
@@ -4663,8 +4666,34 @@ impl App {
                 }
                 true
             }
+            KeyCode::Char('g') if ck.modifiers.is_empty() => {
+                if self.sidebar_pending_g {
+                    self.sidebar_selected = 0;
+                    self.sidebar_pending_g = false;
+                } else {
+                    self.sidebar_pending_g = true;
+                }
+                true
+            }
+            KeyCode::Char('G') if ck.modifiers.is_empty() => {
+                self.sidebar_selected = rows.len().saturating_sub(1);
+                self.sidebar_pending_g = false;
+                true
+            }
+            KeyCode::Char('.') if ck.modifiers.is_empty() => {
+                tree.set_show_hidden(!tree.show_hidden());
+                true
+            }
+            KeyCode::Char('R') if ck.modifiers.is_empty() => {
+                tree.refresh();
+                true
+            }
             _ => false,
         };
+        // Reset gg-pending state on any non-g key.
+        if !matches!(ck.code, KeyCode::Char('g')) {
+            self.sidebar_pending_g = false;
+        }
         // Clamp selection and scroll to keep it visible.
         let rows = tree.rows();
         if !rows.is_empty() {
