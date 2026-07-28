@@ -327,6 +327,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
+name = "dap"
+version = "0.4.1-alpha1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35c7fc89d334ab745ba679f94c7314c9b17ecdcd923c111df6206e9fd7729fa9"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "darling"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1273,6 +1284,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ruster-dap"
+version = "0.1.0"
+dependencies = [
+ "dap",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "ruster-lsp"
 version = "0.1.0"
 dependencies = [
@@ -1353,6 +1374,7 @@ dependencies = [
  "nucleo-matcher",
  "ratatui",
  "ruster-core",
+ "ruster-dap",
  "ruster-lsp",
  "ruster-lua",
  "ruster-project",

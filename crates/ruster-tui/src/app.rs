@@ -1355,6 +1355,12 @@ impl App {
             ))
         };
         let project_root = ruster_project::project_root(&file_path);
+        // Fall back to the most recent project if no root found.
+        let project_root = project_root.or_else(|| {
+            ruster_config_dir().and_then(|d| {
+                ruster_project::recent_projects(&d).into_iter().next().filter(|p| p.exists())
+            })
+        });
         if let Some(ref state_dir) = ruster_config_dir() {
             if let Some(ref root) = project_root {
                 ruster_project::record_recent(state_dir, root, 30);
@@ -4672,6 +4678,13 @@ impl App {
         self.picker = Some(PickerState::new("Projects", items));
     }
 
+    /// Record the current project root in the recent-projects list.
+    fn record_current_project(&self) {
+        if let (Some(ref state_dir), Some(ref root)) = (ruster_config_dir(), self.project_root.as_ref()) {
+            ruster_project::record_recent(state_dir, root, 30);
+        }
+    }
+
     /// Toggle the file-explorer sidebar on/off. Creates the tree lazily on first
     /// enable using the project root (or current directory as fallback).
     fn toggle_sidebar(&mut self) {
@@ -4689,6 +4702,7 @@ impl App {
             self.sidebar_selected = 0;
             self.sidebar_scroll = 0;
             self.sidebar_focused = true;
+            self.record_current_project();
             self.message = Some("Sidebar opened".to_string());
         }
     }
