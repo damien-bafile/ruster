@@ -283,7 +283,6 @@ In Emacs mode every printable key self-inserts; `Ctrl`/`Alt` chords are commands
 | `C-u <n>` | Universal argument: repeat the next command `n` times |
 | `C-/` or `C-_` | Undo |
 | `C-s` / `C-r` | Incremental search forward / backward (repeat to jump) |
-| `M-x` | Run a command (opens the command palette) |
 | `C-g` | Cancel — clear the mark / prefix |
 | `C-x C-s` | Save the file |
 | `C-x C-c` | Quit |
@@ -329,7 +328,7 @@ the listing while its own keys above take priority:
 | `:` … | Any `:` command (`:q`, `:Files`, …) |
 | `gg` / `G` | Top / bottom of the listing |
 | `SPC` … | The Space leader / which-key menu |
-| (Emacs mode) `C-s` `C-r`, `M-x` | Incremental search, run a command |
+| (Emacs mode) `C-s` `C-r` | Incremental search |
 
 Editing keys (`i`, `x`, `dd`-as-delete-line, …) are inert — the listing can't be
 typed into. Copy/cut/paste refuse to overwrite an existing name, and a cut is

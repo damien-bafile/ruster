@@ -1732,21 +1732,24 @@ impl App {
                 if self.cmdline_completion.is_none() {
                     // First Tab press: generate candidates
                     let candidates = self.generate_completion_candidates(&path_part);
-                    if !candidates.is_empty() {
-                        let prefix = raw
-                            .split_once(' ')
-                            .map(|x| format!("{} ", x.0))
-                            .unwrap_or_else(|| ":e ".to_string());
-                        self.cmdline_completion = Some(CmdlineCompletion {
-                            original: path_part,
-                            candidates,
-                            index: 0,
-                            prefix: prefix.clone(),
-                        });
-                        if let Some(ref comp) = self.cmdline_completion {
-                            let candidate = comp.candidates[0].clone();
-                            self.vim.set_cmdline(&format!("{}{}", comp.prefix, candidate));
-                        }
+                    if candidates.is_empty() {
+                        self.message =
+                            Some(format!("No matches for '{}'", path_part));
+                        return;
+                    }
+                    let prefix = raw
+                        .split_once(' ')
+                        .map(|x| format!("{} ", x.0))
+                        .unwrap_or_else(|| ":e ".to_string());
+                    self.cmdline_completion = Some(CmdlineCompletion {
+                        original: path_part,
+                        candidates,
+                        index: 0,
+                        prefix: prefix.clone(),
+                    });
+                    if let Some(ref comp) = self.cmdline_completion {
+                        let candidate = comp.candidates[0].clone();
+                        self.vim.set_cmdline(&format!("{}{}", comp.prefix, candidate));
                     }
                 } else if let Some(ref mut comp) = self.cmdline_completion {
                     // Subsequent Tab press: cycle to next candidate
@@ -1838,6 +1841,7 @@ impl App {
                 }
                 Action::CmdlineResult(cmd) => {
                     self.message = None;
+                    self.cmdline_completion = None;
                     match self.parse_cmdline(&cmd) {
                         Ok(a) => self.apply_cmd(a),
                         Err(e) => self.message = Some(e),
@@ -1847,6 +1851,10 @@ impl App {
             }
         }
         if self.vim.mode != prev_mode {
+            // Clear cmdline completion when leaving Cmdline mode
+            if prev_mode == VimMode::Cmdline {
+                self.cmdline_completion = None;
+            }
             let mode_str = format!("{:?}", self.vim.mode);
             self.lua.set_mode(&mode_str);
             self.lua.fire_event_str("ModeChanged", &[&mode_str]);
