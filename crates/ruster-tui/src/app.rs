@@ -548,6 +548,8 @@ enum CmdAction {
     Projects,
     /// Toggle the file-explorer sidebar (`:sidebar`).
     Sidebar,
+    /// Resize the sidebar to N columns (`:Sidebar resize N`).
+    SidebarResize(u16),
     /// Open a file by path (`:e path` / `:edit path`).
     OpenFile(String),
 }
@@ -3359,6 +3361,7 @@ impl App {
             }
             _ if trimmed == "projects" => Ok(CmdAction::Projects),
             _ if trimmed == "sidebar" => Ok(CmdAction::Sidebar),
+            _ if let Some(n) = trimmed.strip_prefix("sidebar resize ").and_then(|s| s.trim().parse::<u16>().ok()) => Ok(CmdAction::SidebarResize(n)),
             _ if trimmed.starts_with("set editmode") || trimmed == "set editmode" => {
                 match trimmed.rsplit(' ').next().unwrap_or("") {
                     "emacs" => Ok(CmdAction::SetEditMode(EditMode::Emacs)),
@@ -3454,6 +3457,9 @@ impl App {
             CmdAction::MessagesFilter(filter) => self.apply_messages_filter(&filter),
             CmdAction::Projects => self.open_projects(),
             CmdAction::Sidebar => self.toggle_sidebar(),
+            CmdAction::SidebarResize(n) => {
+                self.sidebar_width = n.max(16).min(60);
+            }
             CmdAction::OpenFile(path) => {
                 let base = self.ws.borrow()
                     .active_doc()
