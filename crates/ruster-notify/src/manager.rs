@@ -49,25 +49,30 @@ impl NotificationManager {
         };
         notif.timeout = effective_timeout;
 
-        // All notifications go to Mini (the general list)
-        self.active
-            .get_mut(&BackendKind::Mini)
-            .unwrap()
-            .push(ActiveEntry {
-                notif: notif.clone(),
-                pushed_at: Instant::now(),
-            });
+        let kind = match notif.level {
+            MessageLevel::Error => BackendKind::Notify,
+            MessageLevel::Warning => BackendKind::Notify,
+            _ => BackendKind::Mini,
+        };
 
-        // Errors and warnings also go to Notify (for popup behavior)
-        if notif.level == MessageLevel::Error || notif.level == MessageLevel::Warning {
+        // Warning also goes to Mini
+        if notif.level == MessageLevel::Warning {
             self.active
-                .get_mut(&BackendKind::Notify)
+                .get_mut(&BackendKind::Mini)
                 .unwrap()
                 .push(ActiveEntry {
                     notif: notif.clone(),
                     pushed_at: Instant::now(),
                 });
         }
+
+        self.active
+            .get_mut(&kind)
+            .unwrap()
+            .push(ActiveEntry {
+                notif: notif.clone(),
+                pushed_at: Instant::now(),
+            });
 
         self.history.push(notif);
 
@@ -79,10 +84,7 @@ impl NotificationManager {
 
     pub fn dismiss(&mut self, id: u64) {
         for list in self.active.values_mut() {
-            if let Some(pos) = list.iter().position(|e| e.notif.id == id) {
-                list.remove(pos);
-                break;
-            }
+            list.retain(|e| e.notif.id != id);
         }
         if let Some(n) = self.history.iter_mut().find(|n| n.id == id) {
             n.dismissed = true;
@@ -195,7 +197,8 @@ mod tests {
         let n = Notification::new(MessageLevel::Error, MessageSource::System, "persistent");
         mgr.push(n);
         mgr.tick();
-        assert_eq!(mgr.active(BackendKind::Mini).len(), 1);
+        // Error routes to Notify backend; persistent means it survives tick
+        assert_eq!(mgr.active(BackendKind::Notify).len(), 1);
     }
 
     #[test]
