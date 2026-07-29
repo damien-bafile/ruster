@@ -201,6 +201,36 @@ const MOCHA: &[(&str, &str)] = &[
     ("mantle", "#181825"), ("crust", "#11111b"),
 ];
 
+const LATTE: &[(&str, &str)] = &[
+    ("rosewater", "#dc8a78"), ("flamingo", "#dd7878"), ("pink", "#ea76cb"), ("mauve", "#8839ef"),
+    ("red", "#d20f39"), ("maroon", "#e64553"), ("peach", "#fe640b"), ("yellow", "#df8e1d"),
+    ("green", "#40a02b"), ("teal", "#179299"), ("sky", "#04a5e5"), ("sapphire", "#209fb5"),
+    ("blue", "#1e66f5"), ("lavender", "#7287fd"), ("text", "#4c4f69"), ("subtext1", "#5c5f77"),
+    ("subtext0", "#6c6f85"), ("overlay2", "#7c7f93"), ("overlay1", "#8c8fa1"), ("overlay0", "#9ca0b0"),
+    ("surface2", "#acb0be"), ("surface1", "#bcc0cc"), ("surface0", "#ccd0da"), ("base", "#eff1f5"),
+    ("mantle", "#e6e9ef"), ("crust", "#dce0e8"),
+];
+
+const FRAPPE: &[(&str, &str)] = &[
+    ("rosewater", "#f2d5cf"), ("flamingo", "#eebebe"), ("pink", "#f4b8e4"), ("mauve", "#ca9ee6"),
+    ("red", "#e78284"), ("maroon", "#ea999c"), ("peach", "#ef9f76"), ("yellow", "#e5c890"),
+    ("green", "#a6d189"), ("teal", "#81c8be"), ("sky", "#99d1db"), ("sapphire", "#85c1dc"),
+    ("blue", "#8caaee"), ("lavender", "#babbf1"), ("text", "#c6d0f5"), ("subtext1", "#b5bfe2"),
+    ("subtext0", "#a5adce"), ("overlay2", "#949cbb"), ("overlay1", "#838ba7"), ("overlay0", "#737994"),
+    ("surface2", "#626880"), ("surface1", "#51576d"), ("surface0", "#414559"), ("base", "#303446"),
+    ("mantle", "#292c3c"), ("crust", "#232634"),
+];
+
+const MACCHIATO: &[(&str, &str)] = &[
+    ("rosewater", "#f4dbd6"), ("flamingo", "#f0c6c6"), ("pink", "#f5bde6"), ("mauve", "#c6a0f6"),
+    ("red", "#ed8796"), ("maroon", "#ee99a0"), ("peach", "#f5a97f"), ("yellow", "#eed49f"),
+    ("green", "#a6da95"), ("teal", "#8bd5ca"), ("sky", "#91d7e3"), ("sapphire", "#7dc4e4"),
+    ("blue", "#8aadf4"), ("lavender", "#b7bdf8"), ("text", "#cad3f5"), ("subtext1", "#b8c0e0"),
+    ("subtext0", "#a5adcb"), ("overlay2", "#939ab7"), ("overlay1", "#8087a2"), ("overlay0", "#6e738d"),
+    ("surface2", "#5b6078"), ("surface1", "#494d64"), ("surface0", "#363a4f"), ("base", "#24273a"),
+    ("mantle", "#1e2030"), ("crust", "#181926"),
+];
+
 /// Built-in themes written to `themes/` on first run and selectable via
 /// `general.theme`.
 pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
@@ -338,6 +368,72 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                     mode_visual_bg: Rgb::new(55, 35, 70), mode_visual_fg: Rgb::new(205, 214, 244),
                     mode_cmdline_bg: Rgb::new(49, 50, 68), mode_cmdline_fg: Rgb::new(205, 214, 244),
                     mode_emacs_bg: Rgb::new(40, 45, 60), mode_emacs_fg: Rgb::new(205, 214, 244),
+                },
+            },
+        ),
+        (
+            "catppuccin-latte",
+            Theme {
+                palette: palette(LATTE),
+                roles: ThemeColors {
+                    bg: Rgb::new(239, 241, 245), fg: Rgb::new(76, 79, 105),
+                    gutter: Rgb::new(156, 160, 176), gutter_bg: Rgb::new(239, 241, 245),
+                    cursor_bg: Rgb::new(220, 138, 120), cursor_fg: Rgb::new(239, 241, 245),
+                    selection_bg: Rgb::new(172, 176, 190), selection_fg: Rgb::new(76, 79, 105),
+                    divider: Rgb::new(204, 208, 218), statusline_fg: Rgb::new(76, 79, 105),
+                    statusline_bg: Rgb::new(230, 233, 239),
+                    accent: Rgb::new(136, 57, 239), accent_fg: Rgb::new(239, 241, 245),
+                    whichkey_bg: Rgb::new(239, 241, 245), whichkey_fg: Rgb::new(76, 79, 105),
+                    cmdline_bg: Rgb::new(239, 241, 245), cmdline_fg: Rgb::new(76, 79, 105),
+                    mode_normal_bg: Rgb::new(230, 233, 239), mode_normal_fg: Rgb::new(76, 79, 105),
+                    mode_insert_bg: Rgb::new(215, 235, 215), mode_insert_fg: Rgb::new(76, 79, 105),
+                    mode_visual_bg: Rgb::new(230, 215, 240), mode_visual_fg: Rgb::new(76, 79, 105),
+                    mode_cmdline_bg: Rgb::new(230, 233, 239), mode_cmdline_fg: Rgb::new(76, 79, 105),
+                    mode_emacs_bg: Rgb::new(215, 225, 240), mode_emacs_fg: Rgb::new(76, 79, 105),
+                },
+            },
+        ),
+        (
+            "catppuccin-frappe",
+            Theme {
+                palette: palette(FRAPPE),
+                roles: ThemeColors {
+                    bg: Rgb::new(48, 52, 70), fg: Rgb::new(198, 208, 245),
+                    gutter: Rgb::new(115, 121, 148), gutter_bg: Rgb::new(48, 52, 70),
+                    cursor_bg: Rgb::new(242, 213, 207), cursor_fg: Rgb::new(48, 52, 70),
+                    selection_bg: Rgb::new(98, 104, 128), selection_fg: Rgb::new(198, 208, 245),
+                    divider: Rgb::new(65, 69, 89), statusline_fg: Rgb::new(198, 208, 245),
+                    statusline_bg: Rgb::new(65, 69, 89),
+                    accent: Rgb::new(202, 158, 230), accent_fg: Rgb::new(48, 52, 70),
+                    whichkey_bg: Rgb::new(48, 52, 70), whichkey_fg: Rgb::new(198, 208, 245),
+                    cmdline_bg: Rgb::new(48, 52, 70), cmdline_fg: Rgb::new(198, 208, 245),
+                    mode_normal_bg: Rgb::new(65, 69, 89), mode_normal_fg: Rgb::new(198, 208, 245),
+                    mode_insert_bg: Rgb::new(48, 65, 55), mode_insert_fg: Rgb::new(198, 208, 245),
+                    mode_visual_bg: Rgb::new(65, 45, 75), mode_visual_fg: Rgb::new(198, 208, 245),
+                    mode_cmdline_bg: Rgb::new(65, 69, 89), mode_cmdline_fg: Rgb::new(198, 208, 245),
+                    mode_emacs_bg: Rgb::new(55, 60, 75), mode_emacs_fg: Rgb::new(198, 208, 245),
+                },
+            },
+        ),
+        (
+            "catppuccin-macchiato",
+            Theme {
+                palette: palette(MACCHIATO),
+                roles: ThemeColors {
+                    bg: Rgb::new(36, 39, 58), fg: Rgb::new(202, 211, 245),
+                    gutter: Rgb::new(110, 115, 141), gutter_bg: Rgb::new(36, 39, 58),
+                    cursor_bg: Rgb::new(244, 219, 214), cursor_fg: Rgb::new(36, 39, 58),
+                    selection_bg: Rgb::new(91, 96, 120), selection_fg: Rgb::new(202, 211, 245),
+                    divider: Rgb::new(54, 58, 79), statusline_fg: Rgb::new(202, 211, 245),
+                    statusline_bg: Rgb::new(54, 58, 79),
+                    accent: Rgb::new(198, 160, 246), accent_fg: Rgb::new(36, 39, 58),
+                    whichkey_bg: Rgb::new(36, 39, 58), whichkey_fg: Rgb::new(202, 211, 245),
+                    cmdline_bg: Rgb::new(36, 39, 58), cmdline_fg: Rgb::new(202, 211, 245),
+                    mode_normal_bg: Rgb::new(54, 58, 79), mode_normal_fg: Rgb::new(202, 211, 245),
+                    mode_insert_bg: Rgb::new(36, 55, 50), mode_insert_fg: Rgb::new(202, 211, 245),
+                    mode_visual_bg: Rgb::new(55, 40, 70), mode_visual_fg: Rgb::new(202, 211, 245),
+                    mode_cmdline_bg: Rgb::new(54, 58, 79), mode_cmdline_fg: Rgb::new(202, 211, 245),
+                    mode_emacs_bg: Rgb::new(45, 50, 65), mode_emacs_fg: Rgb::new(202, 211, 245),
                 },
             },
         ),
