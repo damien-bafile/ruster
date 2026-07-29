@@ -136,9 +136,8 @@ impl Renderer for TuiRenderer {
                     .with_theme(&state.theme);
                 frame.render_widget(cmd, cl_area);
             } else if let Some(lines) = &state.noice_notify {
-                let cl_area = Rect::new(0, area.height.saturating_sub(lines.len() as u16), area.width, lines.len() as u16);
                 for (i, line) in lines.iter().enumerate() {
-                    let row = Rect::new(0, area.height.saturating_sub(lines.len() as u16 - i as u16 + 1), area.width, 1);
+                    let row = Rect::new(0, area.height.saturating_sub(lines.len() as u16 - i as u16), area.width, 1);
                     let cmd = crate::widgets::CmdlineWidget::new(&line.text)
                         .with_message_style()
                         .with_theme(&state.theme);
@@ -146,11 +145,10 @@ impl Renderer for TuiRenderer {
                 }
             } else if !state.noice_mini.is_empty() {
                 let text = state.noice_mini.last().map(|s| s.as_str()).unwrap_or("");
-                let cl_area = Rect::new(0, area.height.saturating_sub(1), area.width, 1);
-                let cmd = crate::widgets::CmdlineWidget::new(text)
-                    .with_message_style()
+                let toast_area = Rect::new(0, area.height.saturating_sub(1), area.width, 1);
+                let toast = crate::widgets::noice_toast::NoiceToast::new(text)
                     .with_theme(&state.theme);
-                frame.render_widget(cmd, cl_area);
+                frame.render_widget(toast, toast_area);
             }
 
             if let Some(wk) = &state.whichkey {

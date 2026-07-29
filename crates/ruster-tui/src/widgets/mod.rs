@@ -1,3 +1,5 @@
+pub mod noice_toast;
+
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier};
