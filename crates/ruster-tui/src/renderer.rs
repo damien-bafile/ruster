@@ -135,12 +135,16 @@ impl Renderer for TuiRenderer {
                 let cmd = crate::widgets::CmdlineWidget::new(text)
                     .with_theme(&state.theme);
                 frame.render_widget(cmd, cl_area);
-            } else if !state.noice_mini.is_empty() {
-                let text = state.noice_mini.last().map(|s| s.as_str()).unwrap_or("");
-                let toast_area = Rect::new(0, area.height.saturating_sub(1), area.width, 1);
-                let toast = crate::widgets::noice_toast::NoiceToast::new(text)
-                    .with_theme(&state.theme);
-                frame.render_widget(toast, toast_area);
+            }
+            for (i, text) in state.noice_mini.iter().enumerate() {
+                let w = text.len() as u16;
+                let x = area.width.saturating_sub(w + 2);
+                let toast = crate::widgets::noice_toast::NoiceToast::new(
+                    text,
+                    ratatui::style::Color::Rgb(30, 30, 50),
+                    ratatui::style::Color::White,
+                );
+                frame.render_widget(toast, Rect::new(x, 1 + i as u16, w, 1));
             }
 
             if let Some(notify_lines) = &state.noice_notify {
