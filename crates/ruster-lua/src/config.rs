@@ -379,6 +379,31 @@ pub struct ColorOverrides {
 }
 
 #[derive(Debug, Clone)]
+pub struct NoiceConfig {
+    pub mini_enabled: bool,
+    pub notify_enabled: bool,
+    pub split_enabled: bool,
+    pub info_timeout_ms: u64,
+    pub success_timeout_ms: u64,
+    pub warning_timeout_ms: u64,
+    pub max_history: usize,
+}
+
+impl Default for NoiceConfig {
+    fn default() -> Self {
+        Self {
+            mini_enabled: true,
+            notify_enabled: true,
+            split_enabled: true,
+            info_timeout_ms: 2000,
+            success_timeout_ms: 2000,
+            warning_timeout_ms: 5000,
+            max_history: 1000,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Config {
     pub tabstop: u32,
     pub softtabstop: u32,
@@ -432,6 +457,7 @@ pub struct Config {
     pub dired_show_hidden: bool,
     /// Open the sidebar automatically on startup.
     pub sidebar_auto_open: bool,
+    pub noice: NoiceConfig,
     /// Per-language syntax color overrides: `lang key -> (group -> hex)`. Carried
     /// separately from the flat schema (edited via the Settings syntax editor).
     pub syntax_overrides: std::collections::HashMap<String, std::collections::HashMap<String, String>>,
@@ -599,6 +625,7 @@ impl Config {
                 mode_emacs_bg: st("colors", "mode_emacs_bg").unwrap_or_default(),
                 mode_emacs_fg: st("colors", "mode_emacs_fg").unwrap_or_default(),
             },
+            noice: NoiceConfig::default(),
         }
     }
 }
@@ -641,6 +668,7 @@ impl Default for Config {
             terminal_default_mode: "insert".into(),
             dired_show_hidden: false,
             sidebar_auto_open: false,
+            noice: NoiceConfig::default(),
             syntax_overrides: std::collections::HashMap::new(),
         }
     }
