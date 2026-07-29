@@ -37,8 +37,10 @@ impl Notification {
         self
     }
 
+    /// Marks the notification as persistent (never auto-dismissed).
+    /// `timeout == None` means no timeout.
     pub fn with_persistent(mut self) -> Self {
-        self.timeout = Some(Duration::from_secs(0));
+        self.timeout = None;
         self
     }
 }
