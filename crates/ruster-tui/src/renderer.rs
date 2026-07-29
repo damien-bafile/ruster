@@ -111,6 +111,20 @@ impl Renderer for TuiRenderer {
                     frame.render_widget(buf_widget, buf_area);
                 }
 
+                // Flash jump labels overlay.
+                for fl in &view.flash_labels {
+                    let y = view.rect.y + 1 + fl.row;
+                    let x = view.rect.x + fl.col;
+                    let fg_color = ruster_color_to_ratatui(&fl.color);
+                    let bg_color = ratatui::style::Color::Indexed(214);
+                    let style = ratatui::style::Style::default()
+                        .fg(fg_color)
+                        .bg(bg_color);
+                    let area = Rect::new(x, y, fl.text.len() as u16, 1);
+                    let line = ratatui::text::Line::from(ratatui::text::Span::styled(&fl.text, style));
+                    frame.render_widget(ratatui::widgets::Paragraph::new(line), area);
+                }
+
                 let sl = crate::widgets::StatuslineWidget::new(view.statusline.clone())
                     .with_theme(&state.theme);
                 frame.render_widget(sl, sl_area);

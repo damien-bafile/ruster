@@ -370,6 +370,15 @@ pub struct TermGridView {
     pub cursor: (usize, usize),
 }
 
+/// A single flash jump label to render at a screen position.
+#[derive(Debug, Clone)]
+pub struct FlashLabelRender {
+    pub row: u16,
+    pub col: u16,
+    pub text: String,
+    pub color: Color,
+}
+
 /// Everything needed to draw a single window into its rectangle.
 pub struct WindowView {
     pub rect: Rect,
@@ -395,6 +404,8 @@ pub struct WindowView {
     pub terminal: Option<TermGridView>,
     /// Panel header label shown in the window's top chrome row (e.g. filename).
     pub header: String,
+    /// Flash jump overlay labels rendered on top of the buffer text.
+    pub flash_labels: Vec<FlashLabelRender>,
 }
 
 /// One row of a floating picker overlay.
@@ -620,6 +631,7 @@ mod tests {
             selection: None,
             terminal: None,
             header: "test.txt".into(),
+            flash_labels: Vec::new(),
         }
     }
 

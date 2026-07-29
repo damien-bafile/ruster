@@ -19,8 +19,8 @@ use crossterm::event::{
 };
 use ruster_lua::{config::Config, LuaAction, LuaRuntime};
 use ruster_render::{
-    Color, CursorKind, FrameState, Rect as RRect, Renderer, SelectionView, StatuslineView,
-    StyledLine, SyntaxStyle, WelcomeView, WhichKeyView, WindowView,
+    Color, CursorKind, FlashLabelRender, FrameState, Rect as RRect, Renderer, SelectionView,
+    StatuslineView, StyledLine, SyntaxStyle, WelcomeView, WhichKeyView, WindowView,
 };
 use ruster_syntax::SyntaxEngine;
 use ruster_lsp::{LspManager, LspPosition, ServerMessage};
@@ -3188,6 +3188,7 @@ impl App {
         } else {
             None
         };
+        let flash_info = self.flash.as_ref().map(|f| (f.labels.clone(), f.pending));
         {
             let mut w = self.ws.borrow_mut();
             let active_id = w.windows.active();
@@ -3394,6 +3395,43 @@ impl App {
                     }
                     s
                 };
+                let flash_labels = if is_active {
+                    if let Some((ref labels, pending)) = flash_info {
+                        let buf_h = rect.height.saturating_sub(2) as usize;
+                        let mut result = Vec::new();
+                        if let Some(doc) = w.buffers.get(buf_id) {
+                            for fl in labels {
+                                let offset = fl.offset;
+                                let line_no = doc.buffer.char_to_line(offset);
+                                let line_start = doc.buffer.line_start_char(line_no);
+                                let col = offset.saturating_sub(line_start);
+                                let screen_row = line_no.saturating_sub(scroll);
+                                if screen_row >= buf_h { continue; }
+                                let (display_text, color) = if pending.is_some() {
+                                    let sub = if fl.label.len() > 1 {
+                                        fl.label[1..].to_string()
+                                    } else {
+                                        fl.label.clone()
+                                    };
+                                    (sub, Color::Rgb(255, 255, 0))
+                                } else {
+                                    (fl.label.clone(), Color::Rgb(0, 200, 255))
+                                };
+                                result.push(FlashLabelRender {
+                                    row: screen_row as u16,
+                                    col: col as u16,
+                                    text: display_text,
+                                    color,
+                                });
+                            }
+                        }
+                        result
+                    } else {
+                        vec![]
+                    }
+                } else {
+                    vec![]
+                };
                 views.push(WindowView {
                     rect: RRect::new(rect.x, rect.y, rect.width, rect.height),
                     header: name.clone(),
@@ -3410,6 +3448,7 @@ impl App {
                     active: is_active,
                     selection,
                     terminal,
+                    flash_labels,
                 });
             }
         }
@@ -3446,6 +3485,7 @@ impl App {
                 selection: None,
                 terminal: None,
                 header: String::new(),
+                flash_labels: Vec::new(),
             };
             views.insert(0, view);
         }
