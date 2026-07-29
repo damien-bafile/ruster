@@ -1,7 +1,9 @@
 pub mod backend;
+pub mod manager;
 pub mod notification;
 
 pub use backend::{BackendConfig, BackendKind};
+pub use manager::NotificationManager;
 pub use notification::Notification;
 
 #[cfg(test)]
