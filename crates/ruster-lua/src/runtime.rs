@@ -9,6 +9,7 @@ use crate::keymap::LuaKeymap;
 pub enum LuaAction {
     Cmd(String),
     Print(String),
+    Notify(u8, String),  // 0=Info, 1=Success, 2=Warning, 3=Error
 }
 
 /// Callbacks the app installs so Lua can query and manipulate buffers and

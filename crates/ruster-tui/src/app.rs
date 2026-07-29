@@ -18,7 +18,7 @@ use crossterm::event::{
     MouseEvent, MouseEventKind,
 };
 use ruster_lua::{config::Config, LuaAction, LuaRuntime};
-use ruster_notify::{BackendKind, NotificationManager};
+use ruster_notify::{BackendKind, Notification, NotificationManager};
 use ruster_render::{
     Color, CursorKind, FlashLabelRender, FrameState, Rect as RRect, Renderer, SelectionView,
     StatuslineView, StyledLine, SyntaxStyle, WelcomeView, WhichKeyView, WindowView,
@@ -542,6 +542,8 @@ enum CmdAction {
     SetEditMode(EditMode),
     /// Toggle a boolean option (`:set number`, `:set nonumber`, `:set number!`).
     SetOption(BoolOpt, SetVal),
+    /// Echo a message (`:echo text` / `:echom text` / `:echoe text`).
+    Echo(String, ruster_core::message::MessageLevel),
     /// Open an embedded terminal (`:term` / `:terminal`).
     Terminal,
     /// Show config load/validation errors (`:config-errors`).
@@ -2471,6 +2473,16 @@ impl App {
                     LuaAction::Print(msg) => {
                         self.message = Some(msg);
                     }
+                    LuaAction::Notify(level, text) => {
+                        use ruster_core::message::MessageLevel;
+                        let notif_level = match level {
+                            1 => MessageLevel::Success,
+                            2 => MessageLevel::Warning,
+                            3 => MessageLevel::Error,
+                            _ => MessageLevel::Info,
+                        };
+                        self.notify.push(Notification::new(notif_level, ruster_core::message::MessageSource::Echo, text));
+                    }
                 }
             }
 
@@ -3770,6 +3782,18 @@ impl App {
             _ if parse_substitute(trimmed).is_some() => {
                 Ok(parse_substitute(trimmed).expect("checked above"))
             }
+            _ if trimmed.starts_with("echo ") => {
+                let text = trimmed.strip_prefix("echo ").unwrap_or("").to_string();
+                Ok(CmdAction::Echo(text, ruster_core::message::MessageLevel::Info))
+            }
+            _ if trimmed.starts_with("echom ") => {
+                let text = trimmed.strip_prefix("echom ").unwrap_or("").to_string();
+                Ok(CmdAction::Echo(text, ruster_core::message::MessageLevel::Warning))
+            }
+            _ if trimmed.starts_with("echoe ") => {
+                let text = trimmed.strip_prefix("echoe ").unwrap_or("").to_string();
+                Ok(CmdAction::Echo(text, ruster_core::message::MessageLevel::Error))
+            }
             _ => Err(format!("Unknown command: {}", cmdline)),
         }
     }
@@ -3862,6 +3886,9 @@ impl App {
             CmdAction::DebugStepOut => self.debug_step_out(),
             CmdAction::DebugStop => self.debug_stop(),
             CmdAction::DebugToggleBreakpoint => self.debug_toggle_breakpoint(),
+            CmdAction::Echo(text, level) => {
+                self.notify.push(Notification::new(level, ruster_core::message::MessageSource::Echo, text));
+            }
             CmdAction::NoicePanel => self.show_noice_panel = !self.show_noice_panel,
             CmdAction::NoiceSplit => self.open_noice_split(),
             CmdAction::OpenFile(path) => {

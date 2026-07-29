@@ -264,6 +264,44 @@ pub fn create_table(runtime: &LuaRuntime) -> mlua::Result<Table> {
     })?;
     api.set("get_frame_delta", get_frame_delta)?;
 
+    // ruster.api.notify(text) — Info level
+    let rt = runtime as *const LuaRuntime;
+    let notify_fn = runtime.lua.create_function(move |_, text: String| {
+        unsafe { (*rt).pending.borrow_mut().push(runtime::LuaAction::Notify(0, text)); }
+        Ok(())
+    })?;
+    api.set("notify", notify_fn)?;
+
+    // ruster.api.notify_warn(text)
+    let rt = runtime as *const LuaRuntime;
+    let notify_warn = runtime.lua.create_function(move |_, text: String| {
+        unsafe { (*rt).pending.borrow_mut().push(runtime::LuaAction::Notify(2, text)); }
+        Ok(())
+    })?;
+    api.set("notify_warn", notify_warn)?;
+
+    // ruster.api.notify_error(text)
+    let rt = runtime as *const LuaRuntime;
+    let notify_error = runtime.lua.create_function(move |_, text: String| {
+        unsafe { (*rt).pending.borrow_mut().push(runtime::LuaAction::Notify(3, text)); }
+        Ok(())
+    })?;
+    api.set("notify_error", notify_error)?;
+
+    // ruster.api.notify_with({ text, level, timeout })
+    let rt = runtime as *const LuaRuntime;
+    let notify_with = runtime.lua.create_function(move |_, opts: mlua::Table| {
+        let text: String = opts.get("text").unwrap_or_default();
+        let level_str: String = opts.get("level").unwrap_or_else(|_| "info".to_string());
+        let level = match level_str.as_str() {
+            "success" => 1, "warning" => 2, "error" => 3,
+            _ => 0,
+        };
+        unsafe { (*rt).pending.borrow_mut().push(runtime::LuaAction::Notify(level, text)); }
+        Ok(())
+    })?;
+    api.set("notify_with", notify_with)?;
+
     t.set("api", api)?;
 
     Ok(t)
