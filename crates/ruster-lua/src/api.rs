@@ -272,6 +272,14 @@ pub fn create_table(runtime: &LuaRuntime) -> mlua::Result<Table> {
     })?;
     api.set("notify", notify_fn)?;
 
+    // ruster.api.notify_success(text)
+    let rt = runtime as *const LuaRuntime;
+    let notify_success = runtime.lua.create_function(move |_, text: String| {
+        unsafe { (*rt).pending.borrow_mut().push(runtime::LuaAction::Notify(1, text)); }
+        Ok(())
+    })?;
+    api.set("notify_success", notify_success)?;
+
     // ruster.api.notify_warn(text)
     let rt = runtime as *const LuaRuntime;
     let notify_warn = runtime.lua.create_function(move |_, text: String| {

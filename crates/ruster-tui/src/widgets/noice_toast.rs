@@ -7,7 +7,7 @@ fn dim(c: Color, bg: Color, factor: f32) -> Color {
     let lerp = |a: u8, b: u8| (a as f32 * factor + b as f32 * (1.0 - factor)) as u8;
     match (c, bg) {
         (Color::Rgb(_, _, _), _) if factor >= 1.0 => c,
-        (Color::Rgb(r, g, b), Color::Rgb(br, _, _)) => Color::Rgb(lerp(r, br), lerp(g, 0), lerp(b, 0)),
+        (Color::Rgb(r, g, b), Color::Rgb(br, bg_, bb)) => Color::Rgb(lerp(r, br), lerp(g, bg_), lerp(b, bb)),
         (Color::Rgb(r, g, b), _) => Color::Rgb(lerp(r, 0), lerp(g, 0), lerp(b, 0)),
         _ => c,
     }
