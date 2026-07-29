@@ -45,6 +45,15 @@ pub struct FlashState {
     pub pending: Option<char>,
 }
 
+/// Infinite iterator over adaptive labels: a-z, aa-az, ba-bz, …
+fn label_pool_iter() -> impl Iterator<Item = String> {
+    let single = ('a'..='z').map(|c| c.to_string());
+    let multi = ('a'..='z').flat_map(|first| {
+        ('a'..='z').map(move |second| format!("{}{}", first, second))
+    });
+    single.chain(multi)
+}
+
 /// The TUI needs a real terminal on stdin (event source) and stdout (rendering).
 /// On Unix `enable_raw_mode` already fails without a tty, but on Windows it can
 /// succeed against piped stdio and then the event loop blocks forever, so guard
@@ -1974,7 +1983,14 @@ impl App {
 
         // Flash jump mode (f replaces inline find).
         if ck.code == KeyCode::Char('f') && ck.modifiers.is_empty() && self.vim.is_normal_idle() {
-            self.message = Some("flash: f pressed".to_string());
+            let labels = self.compute_flash_labels();
+            if labels.is_empty() {
+                return;
+            }
+            self.flash = Some(FlashState {
+                labels,
+                pending: None,
+            });
             return;
         }
 
@@ -2033,6 +2049,48 @@ impl App {
             self.lua.set_mode(&mode_str);
             self.lua.fire_event_str("ModeChanged", &[&mode_str]);
         }
+    }
+
+    /// Generate flash jump labels for the visible range of the active window.
+    fn compute_flash_labels(&self) -> Vec<FlashLabel> {
+        let ws = match self.ws.try_borrow() {
+            Ok(w) => w,
+            Err(_) => return vec![],
+        };
+        let win = ws.active_window();
+        let buf = ws.buffer();
+        let scroll = win.scroll_top;
+        let visible_lines = if win.height == 0 { 24 } else { win.height };
+        let mut labels = Vec::new();
+        let mut label_pool = label_pool_iter();
+
+        for line_idx in 0..visible_lines {
+            let buf_line = scroll + line_idx;
+            if buf_line >= buf.line_count() { break; }
+            let line_start = buf.line_start_char(buf_line);
+            let line_end = buf.line_end_char(buf_line);
+            let text = buf.slice_string(line_start, line_end);
+            // Scan for word boundaries.
+            let bytes = text.as_bytes();
+            let mut pos = 0;
+            while pos < bytes.len() {
+                if bytes[pos].is_ascii_alphanumeric() || bytes[pos] == b'_' {
+                    let word_start = pos;
+                    while pos < bytes.len() && (bytes[pos].is_ascii_alphanumeric() || bytes[pos] == b'_') {
+                        pos += 1;
+                    }
+                    if let Some(label) = label_pool.next() {
+                        labels.push(FlashLabel {
+                            label,
+                            offset: line_start + word_start,
+                        });
+                    }
+                } else {
+                    pos += 1;
+                }
+            }
+        }
+        labels
     }
 
     /// Switch editing paradigm, resetting per-mode state and notifying Lua.
@@ -7241,5 +7299,29 @@ mod tests {
         assert_eq!(signs.at(9), None);
         // No diagnostics → no sign column.
         assert_eq!(diagnostics_to_signs(&[]).width, 0);
+    }
+
+    #[test]
+    fn flash_label_pool_starts_with_a() {
+        let mut pool = super::label_pool_iter();
+        assert_eq!(pool.next(), Some("a".to_string()));
+        assert_eq!(pool.next(), Some("b".to_string()));
+    }
+
+    #[test]
+    fn flash_label_pool_wraps_to_aa_after_z() {
+        let mut pool = super::label_pool_iter();
+        // Skip a-z
+        for _ in 0..26 { pool.next(); }
+        assert_eq!(pool.next(), Some("aa".to_string()));
+        assert_eq!(pool.next(), Some("ab".to_string()));
+    }
+
+    #[test]
+    fn flash_label_pool_ba_follows_az() {
+        let mut pool = super::label_pool_iter();
+        // Skip a-z, aa-az (26 + 26 = 52)
+        for _ in 0..52 { pool.next(); }
+        assert_eq!(pool.next(), Some("ba".to_string()));
     }
 }
