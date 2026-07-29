@@ -95,6 +95,50 @@ impl fmt::Display for ConfigError {
 }
 
 impl SettingKind {
+    /// Parse a raw string into a `SettingValue`, validating against this kind.
+    pub fn parse_value(&self, input: &str) -> Result<SettingValue, String> {
+        let trimmed = input.trim();
+        let val = match self {
+            SettingKind::Bool => match trimmed.to_lowercase().as_str() {
+                "true" | "on" | "1" | "yes" => SettingValue::Bool(true),
+                "false" | "off" | "0" | "no" => SettingValue::Bool(false),
+                _ => return Err(format!("expected true/false, got {trimmed:?}")),
+            },
+            SettingKind::Int { min, max } => {
+                let i: i64 = trimmed.parse().map_err(|_| format!("invalid integer {trimmed:?}"))?;
+                if i < *min || i > *max {
+                    return Err(format!("{i} is out of range {min}..{max}"));
+                }
+                SettingValue::Int(i)
+            }
+            SettingKind::Float { min, max } => {
+                let f: f64 = trimmed.parse().map_err(|_| format!("invalid number {trimmed:?}"))?;
+                if f < *min || f > *max {
+                    return Err(format!("{f} is out of range {min}..{max}"));
+                }
+                SettingValue::Float(f)
+            }
+            SettingKind::Text => SettingValue::Text(trimmed.to_string()),
+            SettingKind::Enum(opts) => {
+                if opts.contains(&trimmed) {
+                    SettingValue::Enum(trimmed.to_string())
+                } else {
+                    return Err(format!("expected one of {}, got {trimmed:?}", opts.join(", ")));
+                }
+            }
+            SettingKind::Color => {
+                if is_hex_color(trimmed) {
+                    SettingValue::Color(trimmed.to_string())
+                } else {
+                    return Err(format!("expected a #RRGGBB color, got {trimmed:?}"));
+                }
+            }
+        };
+        // Final sanity check should always pass if parse logic is correct.
+        self.check(&val).map_err(|e| format!("validation: {e}"))?;
+        Ok(val)
+    }
+
     /// A human-readable description of what this kind accepts (for errors/help).
     pub fn expected(&self) -> String {
         match self {
@@ -286,6 +330,11 @@ pub fn schema() -> Vec<SettingSpec> {
 /// Look up a spec by group + key.
 pub fn spec_for(group: &str, key: &str) -> Option<SettingSpec> {
     schema().into_iter().find(|s| s.group == group && s.key == key)
+}
+
+/// Look up a spec by key alone (keys are unique across groups).
+pub fn spec_by_key(key: &str) -> Option<SettingSpec> {
+    schema().into_iter().find(|s| s.key == key)
 }
 
 /// Generate the default `config.lua` text from the schema.

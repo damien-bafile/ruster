@@ -17,7 +17,7 @@ use crossterm::event::{
     DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEventKind, KeyModifiers, MouseButton,
     MouseEvent, MouseEventKind,
 };
-use ruster_lua::{config::Config, LuaAction, LuaRuntime};
+use ruster_lua::{config::Config, schema::{SettingKind, SettingValue}, LuaAction, LuaRuntime};
 use ruster_notify::{BackendKind, Notification, NotificationManager};
 use ruster_render::{
     Color, CursorKind, FlashLabelRender, FrameState, Rect as RRect, Renderer, SelectionView,
@@ -502,22 +502,15 @@ impl CursorAnim {
     }
 }
 
-/// A boolean editor option toggleable from the command line (`:set …`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BoolOpt {
-    Number,
-    RelativeNumber,
-}
-
-/// How a `:set` invocation changes a boolean option.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SetVal {
-    On,
-    Off,
+/// The value part of a general `:set` command. `Toggle` flips the current value
+/// of a boolean option; `Exact` sets any option to a specific parsed value.
+#[derive(Debug, Clone, PartialEq)]
+enum SetNamedVal {
+    Exact(SettingValue),
     Toggle,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 enum CmdAction {
     Save(bool),
     SaveAs(String),
@@ -540,8 +533,8 @@ enum CmdAction {
     CallHierarchy(bool),
     /// Switch editing paradigm (`:set editmode neovim|emacs`).
     SetEditMode(EditMode),
-    /// Toggle a boolean option (`:set number`, `:set nonumber`, `:set number!`).
-    SetOption(BoolOpt, SetVal),
+    /// General schema-backed `:set key[=value]`, `:set nokey`, `:set key!`.
+    SetNamed(String, SetNamedVal),
     /// Echo a message (`:echo text` / `:echom text` / `:echoe text`).
     Echo(String, ruster_core::message::MessageLevel),
     /// Open an embedded terminal (`:term` / `:terminal`).
@@ -595,29 +588,53 @@ enum CmdAction {
     DebugToggleBreakpoint,
 }
 
-/// Parse the argument of `:set <opt>` for a boolean option. Accepts `number`
-/// (and the `nu`/`rnu` abbreviations), the `no…` prefix to unset, and the `…!`
-/// suffix or `inv…` prefix to toggle. Returns a usage/unknown error otherwise.
-fn parse_set_option(arg: &str) -> Result<CmdAction, String> {
+/// Parse a general schema-backed `:set` command. Accepts:
+/// - `key=value`        — set any option to a parsed literal
+/// - `nokey`            — set a boolean option to false
+/// - `key!`             — toggle a boolean option
+/// - `key`              — set a boolean option to true
+fn parse_set_general(arg: &str) -> Result<CmdAction, String> {
     let tok = arg.trim();
     if tok.is_empty() {
-        return Err("Usage: :set number|relativenumber (no… to unset, …! to toggle)".to_string());
+        return Err("Usage: :set [no]key[!][=value]".to_string());
     }
-    let (val, base) = if let Some(rest) = tok.strip_prefix("inv") {
-        (SetVal::Toggle, rest)
-    } else if let Some(rest) = tok.strip_suffix('!') {
-        (SetVal::Toggle, rest)
+
+    let (key, named_val) = if let Some(rest) = tok.strip_suffix('!') {
+        let k = rest.trim();
+        let spec = ruster_lua::schema::spec_by_key(k)
+            .ok_or_else(|| format!("Unknown option: {k}"))?;
+        if !matches!(spec.kind, SettingKind::Bool) {
+            return Err(format!("{k}: only boolean options support toggle (!)"));
+        }
+        (k.to_string(), SetNamedVal::Toggle)
     } else if let Some(rest) = tok.strip_prefix("no") {
-        (SetVal::Off, rest)
+        let k = rest.trim();
+        let spec = ruster_lua::schema::spec_by_key(k)
+            .ok_or_else(|| format!("Unknown option: {k}"))?;
+        if !matches!(spec.kind, SettingKind::Bool) {
+            return Err(format!("{k}: only boolean options support the 'no' prefix"));
+        }
+        (k.to_string(), SetNamedVal::Exact(SettingValue::Bool(false)))
+    } else if let Some((k, v)) = tok.split_once('=') {
+        let k = k.trim();
+        let spec = ruster_lua::schema::spec_by_key(k)
+            .ok_or_else(|| format!("Unknown option: {k}"))?;
+        let parsed = spec.kind.parse_value(v)?;
+        (k.to_string(), SetNamedVal::Exact(parsed))
     } else {
-        (SetVal::On, tok)
+        let spec = ruster_lua::schema::spec_by_key(tok)
+            .ok_or_else(|| format!("Unknown option: {tok}"))?;
+        match spec.kind {
+            SettingKind::Bool => {
+                (tok.to_string(), SetNamedVal::Exact(SettingValue::Bool(true)))
+            }
+            _ => return Err(format!(
+                "{tok} requires a value (use {tok}=<value> or see :help for this option)"
+            )),
+        }
     };
-    let opt = match base {
-        "number" | "nu" => BoolOpt::Number,
-        "relativenumber" | "rnu" => BoolOpt::RelativeNumber,
-        _ => return Err(format!("Unknown option: {base}")),
-    };
-    Ok(CmdAction::SetOption(opt, val))
+
+    Ok(CmdAction::SetNamed(key, named_val))
 }
 
 /// Parse `s/pat/rep/flags` or `%s/pat/rep/flags` into a substitute action.
@@ -2152,24 +2169,72 @@ impl App {
         self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!("editmode: {}", name)));
     }
 
-    /// Apply a `:set number`/`:set relativenumber` toggle. The gutter rebuilds
-    /// from these config flags every frame, so the change takes effect at once.
-    fn set_bool_option(&mut self, opt: BoolOpt, val: SetVal) {
-        let field = match opt {
-            BoolOpt::Number => &mut self.config.number,
-            BoolOpt::RelativeNumber => &mut self.config.relativenumber,
+    /// Apply a general schema-backed `:set` command. Looks up the option by key,
+    /// resolves toggle from the current config value, validates, and rebuilds the
+    /// whole Config from the updated settings so every field stays consistent.
+    fn set_named_option(&mut self, key: &str, val: SetNamedVal) {
+        let spec = match ruster_lua::schema::spec_by_key(key) {
+            Some(s) => s,
+            None => {
+                self.notify.push(Notification::new(
+                    ruster_core::message::MessageLevel::Error, ruster_core::message::MessageSource::Echo,
+                    format!("E518: Unknown option: {key}"),
+                ));
+                return;
+            }
         };
-        let new = match val {
-            SetVal::On => true,
-            SetVal::Off => false,
-            SetVal::Toggle => !*field,
+
+        // Resolve the value (Toggle needs the current config).
+        let value = match val {
+            SetNamedVal::Exact(v) => v,
+            SetNamedVal::Toggle => {
+                let cur = self.config.to_settings().into_iter()
+                    .find(|((_g, k), _)| *k == key)
+                    .map(|(_, v)| v)
+                    .unwrap_or_else(|| spec.default.clone());
+                match cur {
+                    SettingValue::Bool(b) => SettingValue::Bool(!b),
+                    _ => {
+                        self.notify.push(Notification::new(
+                            ruster_core::message::MessageLevel::Error, ruster_core::message::MessageSource::Echo,
+                            format!("E548: {key} cannot be toggled"),
+                        ));
+                        return;
+                    }
+                }
+            }
         };
-        *field = new;
-        let name = match opt {
-            BoolOpt::Number => "number",
-            BoolOpt::RelativeNumber => "relativenumber",
-        };
-        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!("{}{}", if new { "" } else { "no" }, name)));
+
+        // Validate.
+        if let Err(e) = spec.kind.check(&value) {
+            self.notify.push(Notification::new(
+                ruster_core::message::MessageLevel::Error, ruster_core::message::MessageSource::Echo,
+                format!("E474: {key}: {e}"),
+            ));
+            return;
+        }
+
+        // Rebuild config with the new value.
+        let mut vals = self.config.to_settings();
+        if let Some(pos) = vals.iter_mut().find(|((_g, k), _)| *k == key) {
+            pos.1 = value.clone();
+        }
+        let old_editmode = self.config.editmode.clone();
+        self.config = Config::from_settings(&vals);
+
+        // If editmode changed, apply the switch.
+        if key == "editmode" && self.config.editmode != old_editmode {
+            let mode = match self.config.editmode.as_str() {
+                "emacs" => EditMode::Emacs,
+                _ => EditMode::Neovim,
+            };
+            self.set_editmode(mode);
+        }
+
+        self.notify.push(Notification::new(
+            ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo,
+            format!("{} = {}", key, value.display()),
+        ));
     }
 
     /// Handle a key in Emacs (modeless) mode. App-level chords — the `C-x`
@@ -3765,7 +3830,7 @@ impl App {
                     _ => Err(format!(":Noice subcommand '{}' unknown. Use :Noice (toggle panel) or :Noice split|history", sub)),
                 }
             }
-            _ if trimmed.starts_with("set editmode") || trimmed == "set editmode" => {
+            _ if trimmed.starts_with("set editmode ") => {
                 match trimmed.rsplit(' ').next().unwrap_or("") {
                     "emacs" => Ok(CmdAction::SetEditMode(EditMode::Emacs)),
                     "neovim" | "vim" | "nvim" => Ok(CmdAction::SetEditMode(EditMode::Neovim)),
@@ -3773,7 +3838,7 @@ impl App {
                 }
             }
             _ if trimmed.starts_with("set ") => {
-                parse_set_option(trimmed.strip_prefix("set ").unwrap_or(""))
+                parse_set_general(trimmed.strip_prefix("set ").unwrap_or(""))
             }
             _ if parse_substitute(trimmed).is_some() => {
                 Ok(parse_substitute(trimmed).expect("checked above"))
@@ -3864,7 +3929,7 @@ impl App {
             CmdAction::WorkspaceSymbol(q) => self.lsp_workspace_symbols(&q),
             CmdAction::CallHierarchy(incoming) => self.lsp_call_hierarchy(incoming),
             CmdAction::SetEditMode(mode) => self.set_editmode(mode),
-            CmdAction::SetOption(opt, val) => self.set_bool_option(opt, val),
+            CmdAction::SetNamed(key, named_val) => self.set_named_option(&key, named_val),
             CmdAction::Substitute { pattern, replacement, all, whole_buffer } => {
                 self.substitute(&pattern, &replacement, all, whole_buffer)
             }
@@ -6525,24 +6590,49 @@ mod tests {
 
     #[test]
     fn parse_set_option_variants() {
+        use ruster_lua::schema::SettingValue as SV;
         let a = App::new("x".into(), PathBuf::from("f.txt"));
-        assert_eq!(a.parse_cmdline(":set number"), Ok(CmdAction::SetOption(BoolOpt::Number, SetVal::On)));
-        assert_eq!(a.parse_cmdline(":set nu"), Ok(CmdAction::SetOption(BoolOpt::Number, SetVal::On)));
-        assert_eq!(a.parse_cmdline(":set nonumber"), Ok(CmdAction::SetOption(BoolOpt::Number, SetVal::Off)));
-        assert_eq!(a.parse_cmdline(":set number!"), Ok(CmdAction::SetOption(BoolOpt::Number, SetVal::Toggle)));
-        assert_eq!(a.parse_cmdline(":set invnumber"), Ok(CmdAction::SetOption(BoolOpt::Number, SetVal::Toggle)));
-        assert_eq!(a.parse_cmdline(":set relativenumber"), Ok(CmdAction::SetOption(BoolOpt::RelativeNumber, SetVal::On)));
-        assert_eq!(a.parse_cmdline(":set rnu"), Ok(CmdAction::SetOption(BoolOpt::RelativeNumber, SetVal::On)));
+        assert_eq!(
+            a.parse_cmdline(":set number"),
+            Ok(CmdAction::SetNamed("number".into(), SetNamedVal::Exact(SV::Bool(true))))
+        );
+        assert_eq!(
+            a.parse_cmdline(":set nonumber"),
+            Ok(CmdAction::SetNamed("number".into(), SetNamedVal::Exact(SV::Bool(false))))
+        );
+        assert_eq!(
+            a.parse_cmdline(":set number!"),
+            Ok(CmdAction::SetNamed("number".into(), SetNamedVal::Toggle))
+        );
+        assert_eq!(
+            a.parse_cmdline(":set relativenumber"),
+            Ok(CmdAction::SetNamed("relativenumber".into(), SetNamedVal::Exact(SV::Bool(true))))
+        );
+        assert_eq!(
+            a.parse_cmdline(":set expandtab"),
+            Ok(CmdAction::SetNamed("expandtab".into(), SetNamedVal::Exact(SV::Bool(true))))
+        );
+        assert_eq!(
+            a.parse_cmdline(":set tabstop=8"),
+            Ok(CmdAction::SetNamed("tabstop".into(), SetNamedVal::Exact(SV::Int(8))))
+        );
+        assert_eq!(
+            a.parse_cmdline(":set editmode=emacs"),
+            Ok(CmdAction::SetNamed("editmode".into(), SetNamedVal::Exact(SV::Enum("emacs".into()))))
+        );
         assert!(a.parse_cmdline(":set bogus").is_err());
+        assert!(a.parse_cmdline(":set tabstop=bogus").is_err());
+        assert!(a.parse_cmdline(":set no").is_err());  // "no" prefix with empty key
     }
 
     #[test]
-    fn set_number_toggles_config_live() {
+    fn set_named_toggles_config_live() {
+        use ruster_lua::schema::SettingValue as SV;
         let mut a = App::new("x".into(), PathBuf::from("f.txt"));
         assert!(!a.config.number);
-        a.apply_cmd(CmdAction::SetOption(BoolOpt::Number, SetVal::On));
+        a.apply_cmd(CmdAction::SetNamed("number".into(), SetNamedVal::Exact(SV::Bool(true))));
         assert!(a.config.number);
-        a.apply_cmd(CmdAction::SetOption(BoolOpt::Number, SetVal::Toggle));
+        a.apply_cmd(CmdAction::SetNamed("number".into(), SetNamedVal::Toggle));
         assert!(!a.config.number);
     }
 
