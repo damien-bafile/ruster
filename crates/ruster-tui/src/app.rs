@@ -2003,8 +2003,33 @@ impl App {
                     return;
                 }
                 KeyCode::Char(c) if c.is_ascii_lowercase() => {
-                    self.message = Some(format!("flash: key {c}"));
-                    return;
+                    let mut fs = self.flash.take().unwrap();
+                    match fs.pending {
+                        None => {
+                            let matching: Vec<FlashLabel> = fs.labels.into_iter()
+                                .filter(|l| l.label.starts_with(c))
+                                .collect();
+                            if matching.is_empty() {
+                                self.flash = None;
+                                return;
+                            }
+                            if matching.len() == 1 {
+                                self.ws.borrow_mut().execute(Action::Move(Motion::To(matching[0].offset)));
+                                self.flash = None;
+                                return;
+                            }
+                            fs.labels = matching;
+                            fs.pending = Some(c);
+                            self.flash = Some(fs);
+                        }
+                        Some(first) => {
+                            let target = format!("{}{}", first, c);
+                            if let Some(label) = fs.labels.iter().find(|l| l.label == target) {
+                                self.ws.borrow_mut().execute(Action::Move(Motion::To(label.offset)));
+                            }
+                            self.flash = None;
+                        }
+                    }
                 }
                 _ => {
                     // Cancel and replay the key.
