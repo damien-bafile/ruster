@@ -577,6 +577,10 @@ enum CmdAction {
     Sidebar,
     /// Resize the sidebar to N columns (`:Sidebar resize N`).
     SidebarResize(u16),
+    /// Toggle the Noice notification-stack panel (`:Noice`).
+    NoicePanel,
+    /// Open the Noice split history buffer (`:Noice split` / `:Noice history`).
+    NoiceSplit,
     /// Open a file by path (`:e path` / `:edit path`).
     OpenFile(String),
     /// Debug actions.
@@ -1111,6 +1115,8 @@ pub struct App {
     debug_session: Option<ruster_dap::session::DebugSession>,
     /// File-local breakpoints: (canonical path, line number).
     debug_breakpoints: std::collections::HashMap<PathBuf, Vec<u16>>,
+    /// When true, the Noice notification-stack panel is shown as a right-side bar.
+    pub show_noice_panel: bool,
 }
 
 /// What a background run is, so its output is parsed appropriately on completion.
@@ -1470,6 +1476,7 @@ impl App {
             cmdline_completion: None,
             debug_session: None,
             debug_breakpoints: std::collections::HashMap::new(),
+            show_noice_panel: false,
         };
         // Create background buffers (pinned, not navigated to).
         app.ensure_dashboard_buffer();
@@ -3599,7 +3606,7 @@ impl App {
             .into_iter()
             .map(|n| format!("{} {}", level_icon(n.level), n.text))
             .collect();
-        let noice_notify = {
+        let noice_notify = if self.show_noice_panel {
             let stack = self.notify.active(BackendKind::Notify);
             if stack.is_empty() {
                 None
@@ -3615,6 +3622,8 @@ impl App {
                     StyledLine { text, highlights: vec![(0, len, style)] }
                 }).collect())
             }
+        } else {
+            None
         };
         let state = FrameState {
             windows: views,
@@ -3740,6 +3749,14 @@ impl App {
             "db_toggle" | "B" => Ok(CmdAction::DebugToggleBreakpoint),
             _ if trimmed == "sidebar" => Ok(CmdAction::Sidebar),
             _ if let Some(n) = trimmed.strip_prefix("sidebar resize ").and_then(|s| s.trim().parse::<u16>().ok()) => Ok(CmdAction::SidebarResize(n)),
+            "Noice" | "noice" => Ok(CmdAction::NoicePanel),
+            _ if trimmed.starts_with("Noice ") || trimmed.starts_with("noice ") => {
+                let sub = trimmed.split_once(' ').map(|x| x.1).unwrap_or("").trim().to_string();
+                match sub.as_str() {
+                    "split" | "history" => Ok(CmdAction::NoiceSplit),
+                    _ => Err(format!(":Noice subcommand '{}' unknown. Use :Noice (toggle panel) or :Noice split|history", sub)),
+                }
+            }
             _ if trimmed.starts_with("set editmode") || trimmed == "set editmode" => {
                 match trimmed.rsplit(' ').next().unwrap_or("") {
                     "emacs" => Ok(CmdAction::SetEditMode(EditMode::Emacs)),
@@ -3845,6 +3862,8 @@ impl App {
             CmdAction::DebugStepOut => self.debug_step_out(),
             CmdAction::DebugStop => self.debug_stop(),
             CmdAction::DebugToggleBreakpoint => self.debug_toggle_breakpoint(),
+            CmdAction::NoicePanel => self.show_noice_panel = !self.show_noice_panel,
+            CmdAction::NoiceSplit => self.open_noice_split(),
             CmdAction::OpenFile(path) => {
                 let base = self.ws.borrow()
                     .active_doc()
@@ -4833,6 +4852,40 @@ impl App {
     fn open_messages(&mut self) {
         let id = self.ensure_messages_buffer();
         self.refresh_messages_buffer(id);
+        self.ws.borrow_mut().set_active_buffer(id);
+    }
+
+    /// Open or focus the pinned `*noice*` split buffer populated from history.
+    fn open_noice_split(&mut self) {
+        let buf_name = "*noice*";
+        let existing = self.ws.borrow().buffers.ids().iter().copied().find(|&id| {
+            self.ws.borrow().buffers.get(id).is_some_and(|d| d.name == buf_name)
+        });
+        if let Some(id) = existing {
+            self.ws.borrow_mut().set_active_buffer(id);
+            return;
+        }
+        let history = self.notify.history().to_vec();
+        let level_icon = |level: ruster_core::message::MessageLevel| -> &'static str {
+            match level {
+                ruster_core::message::MessageLevel::Info => "",
+                ruster_core::message::MessageLevel::Success => "✓",
+                ruster_core::message::MessageLevel::Warning => "⚠",
+                ruster_core::message::MessageLevel::Error => "✗",
+            }
+        };
+        let text: String = history.iter()
+            .map(|n| format!("[{}] {} {}", level_icon(n.level), n.source.label(), n.text))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let id = self.ws.borrow_mut().buffers.create_special(
+            ruster_core::document::SpecialKind::Message,
+            buf_name,
+        );
+        if let Some(doc) = self.ws.borrow_mut().buffers.get_mut(id) {
+            doc.pinned = true;
+            doc.buffer = ruster_core::buffer::Buffer::from_str(&text);
+        }
         self.ws.borrow_mut().set_active_buffer(id);
     }
 

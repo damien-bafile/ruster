@@ -135,20 +135,35 @@ impl Renderer for TuiRenderer {
                 let cmd = crate::widgets::CmdlineWidget::new(text)
                     .with_theme(&state.theme);
                 frame.render_widget(cmd, cl_area);
-            } else if let Some(lines) = &state.noice_notify {
-                for (i, line) in lines.iter().enumerate() {
-                    let row = Rect::new(0, area.height.saturating_sub(lines.len() as u16 - i as u16), area.width, 1);
-                    let cmd = crate::widgets::CmdlineWidget::new(&line.text)
-                        .with_message_style()
-                        .with_theme(&state.theme);
-                    frame.render_widget(cmd, row);
-                }
             } else if !state.noice_mini.is_empty() {
                 let text = state.noice_mini.last().map(|s| s.as_str()).unwrap_or("");
                 let toast_area = Rect::new(0, area.height.saturating_sub(1), area.width, 1);
                 let toast = crate::widgets::noice_toast::NoiceToast::new(text)
                     .with_theme(&state.theme);
                 frame.render_widget(toast, toast_area);
+            }
+
+            if let Some(notify_lines) = &state.noice_notify {
+                let panel_width = 40.min(area.width / 3);
+                let panel_area = Rect::new(
+                    area.width.saturating_sub(panel_width),
+                    0,
+                    panel_width,
+                    area.height,
+                );
+                let bg = ratatui::style::Style::default().bg(ratatui::style::Color::Rgb(30, 30, 50));
+                frame.render_widget(ratatui::widgets::Clear, panel_area);
+                for (i, line) in notify_lines.iter().enumerate() {
+                    if i as u16 >= panel_area.height {
+                        break;
+                    }
+                    frame.render_widget(
+                        ratatui::widgets::Paragraph::new(ratatui::text::Line::from(
+                            ratatui::text::Span::styled(&line.text, bg)
+                        )),
+                        Rect::new(panel_area.x, panel_area.y + i as u16, panel_width, 1),
+                    );
+                }
             }
 
             if let Some(wk) = &state.whichkey {
