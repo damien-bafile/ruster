@@ -31,6 +31,20 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
 
+/// A single flash jump label.
+#[derive(Debug, Clone)]
+pub struct FlashLabel {
+    pub label: String,
+    pub offset: usize,
+}
+
+/// Active flash jump mode state.
+#[derive(Debug)]
+pub struct FlashState {
+    pub labels: Vec<FlashLabel>,
+    pub pending: Option<char>,
+}
+
 /// The TUI needs a real terminal on stdin (event source) and stdout (rendering).
 /// On Unix `enable_raw_mode` already fails without a tty, but on Windows it can
 /// succeed against piped stdio and then the event loop blocks forever, so guard
@@ -968,6 +982,8 @@ pub struct App {
     /// When the current leader sequence started, so the which-key panel only
     /// pops after `Config.timeoutlen` (unless already visible).
     leader_since: Option<std::time::Instant>,
+    /// Active flash jump mode state, if any.
+    pub flash: Option<FlashState>,
     /// Active floating picker (buffer list, file finder, ...), if any.
     picker: Option<PickerState>,
     /// Streaming results for the active picker (`:Files` walk, `:Rg` output),
@@ -1377,6 +1393,7 @@ impl App {
             whichkey_cache: None,
             anim_clock: std::time::Instant::now(),
             leader_since: None,
+            flash: None,
             dired_dirs: std::collections::HashMap::new(),
             dired_styled: std::collections::HashMap::new(),
             dired_entries: std::collections::HashMap::new(),
@@ -1951,6 +1968,33 @@ impl App {
                             return;
                         }
                     }
+                }
+            }
+        }
+
+        // Flash jump mode (f replaces inline find).
+        if ck.code == KeyCode::Char('f') && ck.modifiers.is_empty() && self.vim.is_normal_idle() {
+            self.message = Some("flash: f pressed".to_string());
+            return;
+        }
+
+        // Flash mode active — intercept or cancel.
+        if self.flash.is_some() {
+            match ck.code {
+                KeyCode::Esc => {
+                    self.flash = None;
+                    self.message = None;
+                    return;
+                }
+                KeyCode::Char(c) if c.is_ascii_lowercase() => {
+                    self.message = Some(format!("flash: key {c}"));
+                    return;
+                }
+                _ => {
+                    // Cancel and replay the key.
+                    let ev = ck.clone();
+                    self.flash = None;
+                    // fall through to normal dispatch (don't return)
                 }
             }
         }
