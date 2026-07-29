@@ -535,6 +535,10 @@ enum CmdAction {
     SetEditMode(EditMode),
     /// General schema-backed `:set key[=value]`, `:set nokey`, `:set key!`.
     SetNamed(String, SetNamedVal),
+    /// Display current setting value (`:set key?` or bare `:set key` on non-bool).
+    ShowSetting(String),
+    /// Reset a setting to its schema default (`:set key&`).
+    ResetSetting(String),
     /// Echo a message (`:echo text` / `:echom text` / `:echoe text`).
     Echo(String, ruster_core::message::MessageLevel),
     /// Open an embedded terminal (`:term` / `:terminal`).
@@ -589,14 +593,37 @@ enum CmdAction {
 }
 
 /// Parse a general schema-backed `:set` command. Accepts:
+/// - `key?`             — show current value (any type)
+/// - `key&`             — reset to default
 /// - `key=value`        — set any option to a parsed literal
 /// - `nokey`            — set a boolean option to false
 /// - `key!`             — toggle a boolean option
-/// - `key`              — set a boolean option to true
+/// - `key` (bool)       — set true
+/// - `key` (non-bool)   — show current value (same as `key?`)
 fn parse_set_general(arg: &str) -> Result<CmdAction, String> {
     let tok = arg.trim();
     if tok.is_empty() {
-        return Err("Usage: :set [no]key[!][=value]".to_string());
+        return Err("Usage: :set [no]key[!?&=value]".to_string());
+    }
+
+    if tok.ends_with('?') {
+        let k = tok[..tok.len() - 1].trim();
+        if k.is_empty() {
+            return Err("Usage: :set key? — display a setting value".to_string());
+        }
+        let _ = ruster_lua::schema::spec_by_key(k)
+            .ok_or_else(|| format!("Unknown option: {k}"))?;
+        return Ok(CmdAction::ShowSetting(k.to_string()));
+    }
+
+    if tok.ends_with('&') {
+        let k = tok[..tok.len() - 1].trim();
+        if k.is_empty() {
+            return Err("Usage: :set key& — reset a setting to default".to_string());
+        }
+        let _ = ruster_lua::schema::spec_by_key(k)
+            .ok_or_else(|| format!("Unknown option: {k}"))?;
+        return Ok(CmdAction::ResetSetting(k.to_string()));
     }
 
     let (key, named_val) = if let Some(rest) = tok.strip_suffix('!') {
@@ -628,9 +655,7 @@ fn parse_set_general(arg: &str) -> Result<CmdAction, String> {
             SettingKind::Bool => {
                 (tok.to_string(), SetNamedVal::Exact(SettingValue::Bool(true)))
             }
-            _ => return Err(format!(
-                "{tok} requires a value (use {tok}=<value> or see :help for this option)"
-            )),
+            _ => return Ok(CmdAction::ShowSetting(tok.to_string())),
         }
     };
 
@@ -3947,6 +3972,45 @@ impl App {
             CmdAction::DebugStepOut => self.debug_step_out(),
             CmdAction::DebugStop => self.debug_stop(),
             CmdAction::DebugToggleBreakpoint => self.debug_toggle_breakpoint(),
+            CmdAction::ShowSetting(key) => {
+                let value = self.config.to_settings().into_iter()
+                    .find(|((_g, k), _)| *k == key)
+                    .map(|(_, v)| v.display())
+                    .unwrap_or_default();
+                let msg = match value.as_str() {
+                    "on" => key.to_string(),
+                    "off" => format!("no{}", key),
+                    _ => format!("{}={}", key, value),
+                };
+                self.notify.push(Notification::new(
+                    ruster_core::message::MessageLevel::Info,
+                    ruster_core::message::MessageSource::Echo,
+                    msg,
+                ));
+            }
+            CmdAction::ResetSetting(key) => {
+                let spec = match ruster_lua::schema::spec_by_key(&key) {
+                    Some(s) => s,
+                    None => {
+                        self.notify.push(Notification::new(
+                            ruster_core::message::MessageLevel::Error, ruster_core::message::MessageSource::Echo,
+                            format!("E518: Unknown option: {key}"),
+                        ));
+                        return;
+                    }
+                };
+                let default = spec.default;
+                let mut vals = self.config.to_settings();
+                if let Some(pos) = vals.iter_mut().find(|((_g, k), _)| *k == key) {
+                    pos.1 = default.clone();
+                }
+                self.config = Config::from_settings(&vals);
+                self.notify.push(Notification::new(
+                    ruster_core::message::MessageLevel::Info,
+                    ruster_core::message::MessageSource::Echo,
+                    format!("{} = {} (default)", key, default.display()),
+                ));
+            }
             CmdAction::Echo(text, level) => {
                 self.notify.push(Notification::new(level, ruster_core::message::MessageSource::Echo, text));
             }
@@ -6620,9 +6684,34 @@ mod tests {
             a.parse_cmdline(":set editmode=emacs"),
             Ok(CmdAction::SetNamed("editmode".into(), SetNamedVal::Exact(SV::Enum("emacs".into()))))
         );
+        // Bare non-bool key shows current value (like Vim).
+        assert_eq!(
+            a.parse_cmdline(":set tabstop"),
+            Ok(CmdAction::ShowSetting("tabstop".into()))
+        );
+        // ? suffix shows value for any type.
+        assert_eq!(
+            a.parse_cmdline(":set tabstop?"),
+            Ok(CmdAction::ShowSetting("tabstop".into()))
+        );
+        assert_eq!(
+            a.parse_cmdline(":set number?"),
+            Ok(CmdAction::ShowSetting("number".into()))
+        );
+        // & suffix resets to default.
+        assert_eq!(
+            a.parse_cmdline(":set tabstop&"),
+            Ok(CmdAction::ResetSetting("tabstop".into()))
+        );
+        assert_eq!(
+            a.parse_cmdline(":set number&"),
+            Ok(CmdAction::ResetSetting("number".into()))
+        );
         assert!(a.parse_cmdline(":set bogus").is_err());
         assert!(a.parse_cmdline(":set tabstop=bogus").is_err());
         assert!(a.parse_cmdline(":set no").is_err());  // "no" prefix with empty key
+        assert!(a.parse_cmdline(":set ?").is_err());   // ? with empty key
+        assert!(a.parse_cmdline(":set &").is_err());   // & with empty key
     }
 
     #[test]
