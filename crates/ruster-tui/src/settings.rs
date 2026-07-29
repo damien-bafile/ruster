@@ -56,6 +56,8 @@ pub struct SettingsState {
     selected: usize,
     /// In-edit text buffer for Text/Number fields (`None` = not editing).
     editing: Option<String>,
+    /// Live search filter string. Non-`None` means filter mode is active.
+    pub filter: Option<String>,
     /// Runtime picker options per spec row (theme/font/shell/color).
     dyn_opts: HashMap<usize, Vec<Opt>>,
     /// Each available theme's palette (name → `(color_name, hex)` pairs), used to
@@ -123,6 +125,7 @@ impl SettingsState {
             rows: Vec::new(),
             selected: 0,
             editing: None,
+            filter: None,
             dyn_opts,
             theme_palettes: theme_palettes.into_iter().collect(),
             theme_idx,
@@ -137,13 +140,23 @@ impl SettingsState {
     }
 
     /// Recompute the visible-row list from the schema + (un)folded languages.
-    fn rebuild_rows(&mut self) {
-        let mut rows: Vec<Row> = (0..self.specs.len()).map(Row::Spec).collect();
+    pub fn rebuild_rows(&mut self) {
+        let filter = self.filter.as_deref().unwrap_or("");
+        let matches = |label: &str, key: &str| {
+            filter.is_empty()
+                || label.to_lowercase().contains(filter)
+                || key.to_lowercase().contains(filter)
+        };
+        let mut rows: Vec<Row> = (0..self.specs.len())
+            .filter(|&i| matches(&self.specs[i].label, &self.specs[i].key))
+            .map(Row::Spec)
+            .collect();
         for (li, lang) in self.syntax.iter().enumerate() {
-            rows.push(Row::SyntaxLang(li));
-            if lang.expanded {
-                for gi in 0..lang.groups.len() {
-                    rows.push(Row::SyntaxGroup(li, gi));
+            if rows.is_empty() && !filter.is_empty() { break; }
+            if matches(&lang.key, &lang.key) {
+                rows.push(Row::SyntaxLang(li));
+                if lang.expanded {
+                    rows.extend((0..lang.groups.len()).map(|gi| Row::SyntaxGroup(li, gi)));
                 }
             }
         }
@@ -300,7 +313,7 @@ impl SettingsState {
                 } else if self.options_for(i).is_some() {
                     self.cycle_spec(i, 1);
                 } else {
-                    self.editing = Some(String::new());
+                    self.editing = Some(self.values[i].display());
                 }
             }
             Row::SyntaxLang(li) => {
@@ -567,8 +580,11 @@ impl SettingsState {
 
         let footer = if self.editing.is_some() {
             "type value · Enter commit · Esc cancel".to_string()
+        } else if let Some(ref f) = self.filter {
+            let num = self.rows.len();
+            format!("/{f} · {num} rows · Esc clear")
         } else {
-            "j/k move · gg/G top/bottom · Tab group · Space toggle/cycle · h/l adjust · Enter edit/expand · dd reset · :w save · q close".to_string()
+            "j/k move · gg/G top/bottom · Tab group · / filter · Space toggle/cycle · h/l adjust · Enter edit/expand · dd reset · :w save · q close".to_string()
         };
         SettingsView { groups, dirty: self.dirty, footer }
     }

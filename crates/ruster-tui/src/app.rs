@@ -1410,7 +1410,7 @@ impl App {
         }
         let mut app = App {
             ws, vim, renderer,
-            should_quit: false, message: None, syntax, syntax_tried, lua, config, timer, notify,
+            should_quit: false, syntax, syntax_tried, lua, config, timer, notify,
             has_smooth_cursor: false, cursor_anim, pending_ctrl_w: false, picker: None,
             leader_pending: None,
             pending_results: None,
@@ -1820,7 +1820,7 @@ impl App {
                 if let KeyCode::Char(reg) = ck.code {
                     if kind == 'q' {
                         self.macro_recording = Some((reg, Vec::new()));
-                        self.message = Some(format!("Recording @{}", reg));
+                        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!("Recording @{}", reg)));
                     } else {
                         self.replay_macro(reg);
                     }
@@ -1832,7 +1832,7 @@ impl App {
                     if let Some((reg, keys)) = self.macro_recording.take() {
                         let n = keys.len();
                         self.macros.insert(reg, keys);
-                        self.message = Some(format!("Recorded @{} ({} keys)", reg, n));
+                        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!("Recorded @{} ({} keys)", reg, n)));
                     } else {
                         self.pending_macro = Some('q');
                     }
@@ -1888,8 +1888,7 @@ impl App {
                     // First Tab press: generate candidates
                     let candidates = self.generate_completion_candidates(&path_part);
                     if candidates.is_empty() {
-                        self.message =
-                            Some(format!("No matches for '{}'", path_part));
+                        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Echo, format!("No matches for '{}'", path_part)));
                         return;
                     }
                     let prefix = raw
@@ -2017,7 +2016,7 @@ impl App {
             match ck.code {
                 KeyCode::Esc => {
                     self.flash = None;
-                    self.message = None;
+
                     return;
                 }
                 KeyCode::Char(c) if c.is_ascii_lowercase() => {
@@ -2073,11 +2072,11 @@ impl App {
                     }
                 }
                 Action::CmdlineResult(cmd) => {
-                    self.message = None;
+
                     self.cmdline_completion = None;
                     match self.parse_cmdline(&cmd) {
                         Ok(a) => self.apply_cmd(a),
-                        Err(e) => self.message = Some(e),
+                        Err(e) => { self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, e)); },
                     }
                 }
                 other => self.ws.borrow_mut().execute(other),
@@ -2150,7 +2149,7 @@ impl App {
             EditMode::Emacs => "emacs",
         };
         self.lua.set_editmode(name);
-        self.message = Some(format!("editmode: {}", name));
+        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!("editmode: {}", name)));
     }
 
     /// Apply a `:set number`/`:set relativenumber` toggle. The gutter rebuilds
@@ -2170,7 +2169,7 @@ impl App {
             BoolOpt::Number => "number",
             BoolOpt::RelativeNumber => "relativenumber",
         };
-        self.message = Some(format!("{}{}", if new { "" } else { "no" }, name));
+        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!("{}{}", if new { "" } else { "no" }, name)));
     }
 
     /// Handle a key in Emacs (modeless) mode. App-level chords — the `C-x`
@@ -2205,7 +2204,7 @@ impl App {
                 KeyCode::Char('1') => self.ws.borrow_mut().windows.only(),
                 KeyCode::Char('2') => self.ws.borrow_mut().split(SplitDir::Horizontal),
                 KeyCode::Char('3') => self.ws.borrow_mut().split(SplitDir::Vertical),
-                _ => self.message = Some("C-x undefined".to_string()),
+                _ => { self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Echo, "C-x undefined".to_string())); },
             }
             return;
         }
@@ -2218,7 +2217,7 @@ impl App {
             }
             KeyEvent::Ctrl('g') => {
                 self.emacs.cancel();
-                self.message = Some("Quit".to_string());
+                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, "Quit".to_string()));
                 return;
             }
             KeyEvent::Alt('x') => {
@@ -2241,7 +2240,7 @@ impl App {
         for action in actions {
             self.ws.borrow_mut().execute(action);
         }
-        self.message = None;
+
     }
 
     fn handle_mouse_event(&mut self, me: MouseEvent) {
@@ -2294,7 +2293,6 @@ impl App {
     /// Begin an Emacs incremental search in the given direction.
     fn start_isearch(&mut self, forward: bool) {
         self.emacs_isearch = Some((String::new(), forward));
-        self.message = Some(if forward { "I-search: ".into() } else { "I-search backward: ".into() });
     }
 
     /// Drive an active incremental search: printable keys extend the query and
@@ -2303,7 +2301,7 @@ impl App {
         let (mut query, mut forward) = self.emacs_isearch.take().unwrap();
         match ck.code {
             KeyCode::Enter | KeyCode::Esc => {
-                self.message = None;
+
                 return;
             }
             KeyCode::Backspace => {
@@ -2324,7 +2322,7 @@ impl App {
                 return;
             }
             KeyCode::Char('g') if ck.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                self.message = None;
+
                 return;
             }
             KeyCode::Char(c) => {
@@ -2339,8 +2337,6 @@ impl App {
     }
 
     fn set_isearch_message(&mut self, query: &str, forward: bool) {
-        let label = if forward { "I-search" } else { "I-search backward" };
-        self.message = Some(format!("{}: {}", label, query));
     }
 
     /// Move the cursor to the next/previous occurrence of `query`. `advance`
@@ -2469,11 +2465,11 @@ impl App {
                     LuaAction::Cmd(cmd) => {
                         match self.parse_cmdline(&cmd) {
                             Ok(a) => self.apply_cmd(a),
-                            Err(e) => self.message = Some(e),
+                            Err(e) => { self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, e)); },
                         }
                     }
                     LuaAction::Print(msg) => {
-                        self.message = Some(msg);
+                        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, msg));
                     }
                     LuaAction::Notify(level, text) => {
                         use ruster_core::message::MessageLevel;
@@ -2824,7 +2820,7 @@ impl App {
         let lang = match self.active_lsp_target() {
             Some((lang, _, _)) => lang,
             None => {
-                self.message = Some("No language server for this buffer".to_string());
+                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Lsp, "No language server for this buffer".to_string()));
                 return false;
             }
         };
@@ -2832,7 +2828,7 @@ impl App {
             self.lsp_pending.insert((lang, id), action);
             true
         } else {
-            self.message = Some("Language server still starting…".to_string());
+            self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Lsp, "Language server still starting…".to_string()));
             false
         }
     }
@@ -2914,7 +2910,7 @@ impl App {
                 if let Some(text) = ruster_lsp::parse_hover(&result) {
                     self.hover = Some(build_hover_lines(&text));
                 } else {
-                    self.message = Some("No hover info".to_string());
+                    self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Lsp, "No hover info".to_string()));
                 }
             }
             LspAction::Definition => {
@@ -2925,13 +2921,13 @@ impl App {
                         Some((loc.start.line as usize + 1, loc.start.character as usize + 1)),
                     );
                 } else {
-                    self.message = Some("No definition found".to_string());
+                    self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Lsp, "No definition found".to_string()));
                 }
             }
             LspAction::References => {
                 let locs = ruster_lsp::parse_locations(&result);
                 if locs.is_empty() {
-                    self.message = Some("No references".to_string());
+                    self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Lsp, "No references".to_string()));
                     return;
                 }
                 let items = locs
@@ -3018,15 +3014,13 @@ impl App {
                         let params = ruster_lsp::protocol::call_hierarchy_calls_params(&item);
                         self.lsp_request(method, params, LspAction::CallHierarchy(incoming));
                     }
-                    None => self.message = Some("No call hierarchy for symbol".to_string()),
+                    None => { self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Lsp, "No call hierarchy for symbol".to_string())); },
                 }
             }
             LspAction::CallHierarchy(incoming) => {
                 let calls = ruster_lsp::parse_call_hierarchy_calls(&result, incoming);
                 if calls.is_empty() {
-                    self.message = Some(
-                        if incoming { "No callers" } else { "No callees" }.to_string(),
-                    );
+                    self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Lsp, if incoming { "No callers" } else { "No callees" }.to_string(),));
                     return;
                 }
                 let title = if incoming { "Callers" } else { "Callees" };
@@ -3123,7 +3117,7 @@ impl App {
             })
             .collect();
         if count == 0 {
-            self.message = Some(format!("Pattern not found: {}", pattern));
+            self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Echo, format!("Pattern not found: {}", pattern)));
             return;
         }
         let mut text = new.join("\n");
@@ -3131,11 +3125,11 @@ impl App {
             text.push('\n');
         }
         self.replace_active_content(&text);
-        self.message = Some(format!(
+        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!(
             "{} substitution{}",
             count,
             if count == 1 { "" } else { "s" }
-        ));
+        )));
     }
 
     /// Replace the active buffer's entire content via a single undo batch.
@@ -3163,7 +3157,7 @@ impl App {
         // Reserve a bottom row for the cmdline/message only while one is shown,
         // so the statusline sits flush at the very bottom otherwise.
         let has_cmdline =
-            self.vim.mode == VimMode::Cmdline || self.message.is_some() || self.dired_prompt.is_some();
+            self.vim.mode == VimMode::Cmdline || self.emacs_isearch.is_some() || self.dired_prompt.is_some();
         let reserved = if has_cmdline { 1 } else { 0 };
         let mut buf_area = CoreRect::new(0, 0, cols, rows.saturating_sub(reserved));
 
@@ -3524,7 +3518,7 @@ impl App {
         } else {
             match mode {
                 VimMode::Cmdline => Some(crate::widgets::cmdline_label(self.vim.cmdline_buffer())),
-                _ => self.message.clone().or_else(|| self.current_line_diagnostic()),
+                _ => self.emacs_isearch.as_ref().map(|(q,f)| format!("{}: {}", if *f { "I-search" } else { "I-search backward" }, q)).or_else(|| self.current_line_diagnostic()),
             }
         };
         let picker_view = self.picker.as_mut().map(|p| p.view()).map(|mut v| {
@@ -3683,7 +3677,7 @@ impl App {
             "ls" | "buffers" | "ibuffer" => Ok(CmdAction::Ibuffer),
             "term" | "terminal" => Ok(CmdAction::Terminal),
             "config-errors" | "configerrors" => Ok(CmdAction::ConfigErrors),
-            "settings" | "config" => Ok(CmdAction::Settings),
+            "settings" | "config" | "RusterConfig" | "rusterconfig" => Ok(CmdAction::Settings),
             "build" | "make" => Ok(CmdAction::Build),
             "test" => Ok(CmdAction::Test),
             "task" | "tasks" => Ok(CmdAction::TaskPicker),
@@ -3844,7 +3838,7 @@ impl App {
             CmdAction::CloseWindow => {
                 let closed = self.ws.borrow_mut().windows.close_active();
                 if !closed {
-                    self.message = Some("E444: Cannot close last window".to_string());
+                    self.notify.push(Notification::new(ruster_core::message::MessageLevel::Error, ruster_core::message::MessageSource::Echo, "E444: Cannot close last window".to_string()));
                 }
             }
             CmdAction::Only => self.ws.borrow_mut().windows.only(),
@@ -3953,14 +3947,14 @@ impl App {
         {
             Ok(c) => c,
             Err(_) => {
-                self.message = Some("ripgrep (rg) not found in PATH".to_string());
+                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Error, ruster_core::message::MessageSource::Echo, "ripgrep (rg) not found in PATH".to_string()));
                 return;
             }
         };
         let stdout = match child.stdout.take() {
             Some(s) => s,
             None => {
-                self.message = Some("failed to capture rg output".to_string());
+                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Error, ruster_core::message::MessageSource::Echo, "failed to capture rg output".to_string()));
                 return;
             }
         };
@@ -4049,53 +4043,47 @@ impl App {
 
     /// Handle a key while the Settings page is open.
     fn handle_settings_key(&mut self, ck: crossterm::event::KeyEvent) {
-        // `changed` tracks value edits so we can live-apply (preview) after.
         let mut changed = false;
         let mut close = false;
         {
             let Some(s) = self.settings.as_mut() else { return };
             if s.is_editing() {
                 match ck.code {
-                    KeyCode::Enter => {
-                        s.edit_commit();
-                        changed = true;
-                    }
+                    KeyCode::Enter => { s.edit_commit(); changed = true; }
                     KeyCode::Esc => s.edit_cancel(),
                     KeyCode::Backspace => s.edit_backspace(),
                     KeyCode::Char(c) => s.edit_push(c),
                     _ => {}
                 }
+            } else if s.filter.is_some() {
+                match ck.code {
+                    KeyCode::Esc | KeyCode::Enter => { s.filter = None; s.rebuild_rows(); }
+                    KeyCode::Backspace => {
+                        let f = s.filter.as_mut().unwrap();
+                        f.pop();
+                        s.rebuild_rows();
+                    }
+                    KeyCode::Char(c) => {
+                        s.filter.as_mut().unwrap().push(c);
+                        s.rebuild_rows();
+                    }
+                    _ => {}
+                }
             } else {
-                // `dd`/`gg` are two-key prefixes; any other key cancels a
-                // half-typed one.
-                if !matches!(ck.code, KeyCode::Char('d')) {
-                    s.cancel_d();
-                }
-                if !matches!(ck.code, KeyCode::Char('g')) {
-                    s.cancel_g();
-                }
+                if !matches!(ck.code, KeyCode::Char('d')) { s.cancel_d(); }
+                if !matches!(ck.code, KeyCode::Char('g')) { s.cancel_g(); }
                 match ck.code {
                     KeyCode::Esc | KeyCode::Char('q') => close = true,
                     KeyCode::Char('j') | KeyCode::Down => s.move_down(),
                     KeyCode::Char('k') | KeyCode::Up => s.move_up(),
-                    KeyCode::Char('g') => {
-                        s.press_g();
-                    }
+                    KeyCode::Char('g') => { s.press_g(); }
                     KeyCode::Char('G') => s.move_to_bottom(),
                     KeyCode::Tab | KeyCode::Char(']') => s.next_group(),
                     KeyCode::BackTab | KeyCode::Char('[') => s.prev_group(),
-                    KeyCode::Char(' ') | KeyCode::Enter => {
-                        s.activate();
-                        changed = true;
-                    }
-                    KeyCode::Char('l') | KeyCode::Right => {
-                        s.adjust(1);
-                        changed = true;
-                    }
-                    KeyCode::Char('h') | KeyCode::Left => {
-                        s.adjust(-1);
-                        changed = true;
-                    }
+                    KeyCode::Char('/') => { s.filter = Some(String::new()); }
+                    KeyCode::Char(' ') | KeyCode::Enter => { s.activate(); changed = true; }
+                    KeyCode::Char('l') | KeyCode::Right => { s.adjust(1); changed = true; }
+                    KeyCode::Char('h') | KeyCode::Left => { s.adjust(-1); changed = true; }
                     KeyCode::Char('d') => changed = s.press_d(),
                     KeyCode::Delete => changed = s.reset_selected(),
                     _ => {}
@@ -4105,7 +4093,6 @@ impl App {
         if close {
             self.settings = None;
         } else if changed {
-            // Live preview: apply the edit immediately (persist only on :w).
             self.apply_settings_live();
         }
     }
@@ -4134,11 +4121,11 @@ impl App {
         if let Some(s) = self.settings.as_mut() {
             s.dirty = false;
         }
-        self.message = Some(if wrote {
+        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Error, ruster_core::message::MessageSource::Echo, if wrote {
             "Saved config.lua".to_string()
         } else {
             "Could not write config.lua".to_string()
-        });
+        }));
     }
 
     /// Push the config's per-language syntax colours into the highlighter and
@@ -4352,9 +4339,9 @@ impl App {
                 self.terminals.insert(id, session);
                 // Honor terminal.default_mode ("insert" focuses the shell).
                 self.terminal_focused = self.config.terminal_default_mode != "normal";
-                self.message = Some("terminal: Ctrl-\\ to leave, i to re-enter".to_string());
+                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::System, "terminal: Ctrl-\\ to leave, i to re-enter".to_string()));
             }
-            Err(e) => self.message = Some(format!("terminal: {e}")),
+            Err(e) => { self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::System, format!("terminal: {e}"))); },
         }
     }
 
@@ -4399,7 +4386,7 @@ impl App {
         }
         self.terminal_focused = false;
         self.vim = VimState::new();
-        self.message = Some("terminal: NORMAL — motions/visual/y to yank, i to resume".to_string());
+        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::System, "terminal: NORMAL — motions/visual/y to yank, i to resume".to_string()));
     }
 
     /// Handle a key in a dired buffer. Returns true if the key was consumed
@@ -4489,10 +4476,10 @@ impl App {
             KeyCode::Char('.') => {
                 self.dired_show_hidden = !self.dired_show_hidden;
                 self.dired_refresh_current();
-                self.message = Some(format!(
+                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!(
                     "Hidden files {}",
                     if self.dired_show_hidden { "shown" } else { "hidden" }
-                ));
+                )));
                 true
             }
             // `g` starts the dired prefix (`gg` top, `g?` help).
@@ -4513,13 +4500,13 @@ impl App {
         match self.dired_current_target() {
             Some((path, name)) => {
                 self.dired_clipboard = Some((path, cut));
-                self.message = Some(format!(
+                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!(
                     "{} '{}'",
                     if cut { "Cut" } else { "Copied" },
                     name
-                ));
+                )));
             }
-            None => self.message = Some("Nothing selected".to_string()),
+            None => { self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Echo, "Nothing selected".to_string())); },
         }
     }
 
@@ -4528,7 +4515,7 @@ impl App {
         let (src, cut) = match self.dired_clipboard.clone() {
             Some(s) => s,
             None => {
-                self.message = Some("Clipboard empty".to_string());
+                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, "Clipboard empty".to_string()));
                 return;
             }
         };
@@ -4543,7 +4530,7 @@ impl App {
         };
         let dest = dir.join(&name);
         if dest.exists() {
-            self.message = Some(format!("'{}' already exists", name.to_string_lossy()));
+            self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!("'{}' already exists", name.to_string_lossy())));
             return;
         }
         let result = if cut {
@@ -4569,16 +4556,16 @@ impl App {
         };
         match result {
             Ok(()) => {
-                self.message = Some(format!(
+                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!(
                     "{} '{}'",
                     if cut { "Moved" } else { "Pasted" },
                     name.to_string_lossy()
-                ));
+                )));
                 if cut {
                     self.dired_clipboard = None; // a cut is consumed by the paste
                 }
             }
-            Err(e) => self.message = Some(format!("Paste failed: {}", e)),
+            Err(e) => { self.notify.push(Notification::new(ruster_core::message::MessageLevel::Error, ruster_core::message::MessageSource::Echo, format!("Paste failed: {}", e))); },
         }
         self.dired_refresh_current();
     }
@@ -4622,10 +4609,10 @@ impl App {
                             .and_then(|n| n.to_str())
                             .unwrap_or("")
                             .to_string();
-                        self.message = Some(match result {
+                        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Error, ruster_core::message::MessageSource::Echo, match result {
                             Ok(()) => format!("Deleted '{}'", name),
                             Err(e) => format!("Delete failed for '{}': {}", name, e),
-                        });
+                        }));
                     }
                     }
                     _ => self.dired_prompt = None,
@@ -4666,11 +4653,11 @@ impl App {
                 let is_dir = input.ends_with('/');
                 let name = input.trim_end_matches('/').to_string();
                 if name.is_empty() {
-                    self.message = Some("No name given".to_string());
+                    self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Echo, "No name given".to_string()));
                 } else {
                     let target = dir.join(&name);
                     if target.exists() {
-                        self.message = Some(format!("'{}' already exists", name));
+                        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!("'{}' already exists", name)));
                     } else {
                         let result = if is_dir {
                             std::fs::create_dir_all(&target)
@@ -4680,23 +4667,23 @@ impl App {
                             }
                             std::fs::File::create(&target).map(|_| ())
                         };
-                        self.message = Some(match result {
+                        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Error, ruster_core::message::MessageSource::Echo, match result {
                             Ok(()) => format!(
                                 "Created {} '{}'",
                                 if is_dir { "directory" } else { "file" },
                                 name
                             ),
                             Err(e) => format!("Create failed: {}", e),
-                        });
+                        }));
                     }
                 }
             }
             DiredPromptKind::Rename(old) if !input.is_empty() => {
                 let target = dir.join(&input);
                 if target.exists() {
-                    self.message = Some(format!("'{}' already exists", input));
+                    self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!("'{}' already exists", input)));
                 } else if let Err(e) = std::fs::rename(dir.join(&old), &target) {
-                    self.message = Some(format!("Rename failed: {}", e));
+                    self.notify.push(Notification::new(ruster_core::message::MessageLevel::Error, ruster_core::message::MessageSource::Echo, format!("Rename failed: {}", e)));
                 }
             }
             _ => {}
@@ -4952,7 +4939,7 @@ impl App {
             .map(|d| ruster_project::recent_projects(&d))
             .unwrap_or_default();
         if recent.is_empty() {
-            self.message = Some("No recent projects".to_string());
+            self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Echo, "No recent projects".to_string()));
             return;
         }
         let items: Vec<PickerItem> = recent
@@ -4979,7 +4966,7 @@ impl App {
             self.sidebar = None;
             self.sidebar_focused = false;
             self.sidebar_pending_g = false;
-            self.message = Some("Sidebar closed".to_string());
+            self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, "Sidebar closed".to_string()));
         } else {
             let root = self.project_root
                 .clone()
@@ -4990,7 +4977,7 @@ impl App {
             self.sidebar_scroll = 0;
             self.sidebar_focused = true;
             self.record_current_project();
-            self.message = Some("Sidebar opened".to_string());
+            self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, "Sidebar opened".to_string()));
         }
     }
 
@@ -4999,7 +4986,7 @@ impl App {
         self.sidebar = None;
         self.sidebar_focused = false;
         self.sidebar_pending_g = false;
-        self.message = Some("Sidebar closed".to_string());
+        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, "Sidebar closed".to_string()));
     }
 
     /// Reveal `path` in the sidebar: expand all ancestors, select the matching
@@ -5216,7 +5203,7 @@ impl App {
             Some(o) => {
                 if w.buffers.get(cur).map(|d| d.modified).unwrap_or(false) {
                     drop(w);
-                    self.message = Some("E89: buffer modified (add ! to override)".to_string());
+                    self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Echo, "E89: buffer modified (add ! to override)".to_string()));
                     return;
                 }
                 w.set_active_buffer(o);
@@ -5224,7 +5211,7 @@ impl App {
             }
             None => {
                 drop(w);
-                self.message = Some("E514: cannot close last buffer".to_string());
+                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Echo, "E514: cannot close last buffer".to_string()));
             }
         }
     }
@@ -5238,7 +5225,7 @@ impl App {
         let keys = match self.macros.get(&reg) {
             Some(k) => k.clone(),
             None => {
-                self.message = Some(format!("No macro in @{}", reg));
+                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Echo, format!("No macro in @{}", reg)));
                 return;
             }
         };
@@ -5309,7 +5296,7 @@ impl App {
             }
             PickerAction::RunCmd(cmd) => match self.parse_cmdline(&cmd) {
                 Ok(a) => self.apply_cmd(a),
-                Err(e) => self.message = Some(e),
+                Err(e) => { self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, e)); },
             },
             PickerAction::RunTask(name) => self.run_task(&name),
         }
@@ -5466,7 +5453,7 @@ impl App {
             }
             LeaderAction::Rename => {
                 // Seed the cmdline with :rename for the new name.
-                self.message = Some("Use :rename <new-name>".to_string());
+                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, "Use :rename <new-name>".to_string()));
             }
             LeaderAction::DocumentSymbol => self.lsp_document_symbols(),
             LeaderAction::Diagnostics => self.open_diagnostics_picker(),
@@ -5477,16 +5464,16 @@ impl App {
             LeaderAction::Settings => self.open_settings(),
             LeaderAction::ToggleNumber => {
                 self.config.number = !self.config.number;
-                self.message = Some(format!("number: {}", self.config.number));
+                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!("number: {}", self.config.number)));
             }
             LeaderAction::ToggleRelative => {
                 self.config.relativenumber = !self.config.relativenumber;
-                self.message = Some(format!("relativenumber: {}", self.config.relativenumber));
+                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!("relativenumber: {}", self.config.relativenumber)));
             }
             LeaderAction::Grep => {
                 // Seed the cmdline for a ripgrep pattern.
                 self.vim.set_cmdline(":Rg ");
-                self.message = Some("Type a pattern and press Enter".to_string());
+                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, "Type a pattern and press Enter".to_string()));
             }
             LeaderAction::Build => self.run_build(),
             LeaderAction::Test => self.run_test(),
@@ -5563,7 +5550,7 @@ impl App {
         let path = self.ws.borrow().active_doc().file_path.clone();
         let diags = self.diagnostics.get(&active).cloned().unwrap_or_default();
         if diags.is_empty() {
-            self.message = Some("No diagnostics".to_string());
+            self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Echo, "No diagnostics".to_string()));
             return;
         }
         let path = match path {
@@ -5624,7 +5611,7 @@ impl App {
     fn open_quickfix(&mut self) {
         self.rebuild_quickfix_from_diagnostics();
         if self.quickfix.is_empty() {
-            self.message = Some("Quickfix list is empty".to_string());
+            self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Echo, "Quickfix list is empty".to_string()));
             return;
         }
         let items: Vec<PickerItem> = self
@@ -5664,12 +5651,12 @@ impl App {
                 self.quickfix.len(),
             ),
             None => {
-                self.message = Some("Quickfix list is empty".to_string());
+                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Echo, "Quickfix list is empty".to_string()));
                 return;
             }
         };
         self.open_path(&path, Some((line, col)));
-        self.message = Some(format!("({pos}/{total}) {msg}"));
+        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!("({pos}/{total}) {msg}")));
     }
 
     /// `:cnext` / `]q` — advance the quickfix selection and jump.
@@ -5721,7 +5708,7 @@ impl App {
         let root = self.project_root_for_run();
         let cfg = ruster_project::ProjectConfig::load(&root);
         if cfg.tasks.is_empty() {
-            self.message = Some("No tasks — add [tasks.<name>] to ruster.toml".to_string());
+            self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Echo, "No tasks — add [tasks.<name>] to ruster.toml".to_string()));
             return;
         }
         let items: Vec<PickerItem> = cfg
@@ -5753,7 +5740,7 @@ impl App {
         let root = self.project_root_for_run();
         let cfg = ruster_project::ProjectConfig::load(&root);
         let Some(task) = cfg.tasks.get(name) else {
-            self.message = Some(format!("No such task: {name}"));
+            self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Echo, format!("No such task: {name}")));
             return;
         };
         let cwd = match &task.cwd {
@@ -5787,9 +5774,9 @@ impl App {
                 self.ws.borrow_mut().set_active_buffer(id);
                 self.terminals.insert(id, session);
                 self.terminal_focused = self.config.terminal_default_mode != "normal";
-                self.message = Some(format!("task {name}: Ctrl-\\ to leave, i to re-enter"));
+                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::System, format!("task {name}: Ctrl-\\ to leave, i to re-enter")));
             }
-            Err(e) => self.message = Some(format!("task {name}: {e}")),
+            Err(e) => { self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Task, format!("task {name}: {e}"))); },
         }
     }
 
@@ -5814,11 +5801,11 @@ impl App {
             RunnerKind::Task => ("*task*", "task"),
         };
         if self.runner_rx.is_some() {
-            self.message = Some(format!("A {label} is already running"));
+            self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!("A {label} is already running")));
             return;
         }
         if cmd.is_empty() {
-            self.message = Some(format!("No {label} command for this project (set it in ruster.toml)"));
+            self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!("No {label} command for this project (set it in ruster.toml)")));
             return;
         }
         self.runner_kind = kind;
@@ -5833,7 +5820,7 @@ impl App {
             w.set_active_buffer(id);
         }
         self.runner_rx = Some(crate::runner::spawn_shell_command(&cmd, &root));
-        self.message = Some(format!("{label}: {cmd}"));
+        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!("{label}: {cmd}")));
     }
 
     /// Poll the active debug session (if any) for DAP events, updating state.
@@ -5938,7 +5925,7 @@ impl App {
                         ruster_core::message::MessageSource::Task,
                         status_text.clone(),
                     );
-                    self.message = Some(format!("task {status_text}"));
+                    self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Task, format!("task {status_text}")));
                 }
             }
         }
@@ -5963,7 +5950,7 @@ impl App {
             ruster_core::message::MessageSource::Build,
             msg.clone(),
         );
-        self.message = Some(msg);
+        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, msg));
     }
 
     fn finish_test(&mut self, code: Option<i32>) {
@@ -5998,7 +5985,7 @@ impl App {
             ruster_core::message::MessageSource::Test,
             msg.clone(),
         );
-        self.message = Some(msg);
+        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, msg));
     }
 
     /// Interpret the key following a `Ctrl-w` prefix.
@@ -6043,7 +6030,7 @@ impl App {
         let path = match path {
             Some(p) => p,
             None => {
-                self.message = Some("E32: No file name".to_string());
+                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Error, ruster_core::message::MessageSource::Echo, "E32: No file name".to_string()));
                 return;
             }
         };
@@ -6051,14 +6038,14 @@ impl App {
         match std::fs::write(&path, &content) {
             Ok(()) => {
                 self.ws.borrow_mut().active_doc_mut().modified = false;
-                self.message = Some(format!("Saved: {}", path.display()));
+                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Success, ruster_core::message::MessageSource::Echo, format!("Saved: {}", path.display())));
             }
             Err(_e) if force => {
                 let _ = std::fs::write(&path, &content);
                 self.ws.borrow_mut().active_doc_mut().modified = false;
-                self.message = Some(format!("Saved (forced): {}", path.display()));
+                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Success, ruster_core::message::MessageSource::Echo, format!("Saved (forced): {}", path.display())));
             }
-            Err(e) => self.message = Some(format!("Error: {}", e)),
+            Err(e) => { self.notify.push(Notification::new(ruster_core::message::MessageLevel::Error, ruster_core::message::MessageSource::Echo, format!("Error: {}", e))); },
         }
         self.lua.fire_event_str("BufWritePost", &[path.to_str().unwrap_or("")]);
     }
@@ -6098,9 +6085,9 @@ impl App {
                     doc.file_path = Some(PathBuf::from(path));
                     doc.modified = false;
                 }
-                self.message = Some(format!("Saved: {}", path));
+                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Success, ruster_core::message::MessageSource::Echo, format!("Saved: {}", path)));
             }
-            Err(e) => self.message = Some(format!("Error: {}", e)),
+            Err(e) => { self.notify.push(Notification::new(ruster_core::message::MessageLevel::Error, ruster_core::message::MessageSource::Echo, format!("Error: {}", e))); },
         }
     }
 
@@ -6130,7 +6117,7 @@ impl App {
 
     fn debug_start(&mut self) {
         if self.debug_session.is_some() {
-            self.message = Some("Debug session already active".into());
+            self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::System, "Debug session already active"));
             return;
         }
         let root = self.project_root.as_deref().unwrap_or(std::path::Path::new("."));
@@ -6138,7 +6125,7 @@ impl App {
         let cfg = match cfg {
             Some(c) => c,
             None => {
-                self.message = Some("No debug config detected for this project".into());
+                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::System, "No debug config detected for this project"));
                 return;
             }
         };
@@ -6147,9 +6134,9 @@ impl App {
                 session.send_initialize().ok();
                 session.send_launch(serde_json::json!({})).ok();
                 self.debug_session = Some(session);
-                self.message = Some(format!("Debug started: {}", cfg.name));
+                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::System, format!("Debug started: {}", cfg.name)));
             }
-            Err(e) => self.message = Some(format!("Debug start failed: {}", e)),
+            Err(e) => { self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::System, format!("Debug start failed: {}", e))); },
         }
     }
 
@@ -6191,7 +6178,7 @@ impl App {
             let path = match doc.file_path.as_ref() {
                 Some(p) => p.canonicalize().unwrap_or_else(|_| p.clone()),
                 None => {
-                    self.message = Some("No file path for breakpoint".into());
+                    self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Echo, "No file path for breakpoint"));
                     return;
                 }
             };
@@ -6378,7 +6365,7 @@ mod tests {
     fn substitute_reports_when_pattern_is_missing() {
         let mut a = App::new("hello\n".into(), PathBuf::from("f.txt"));
         a.apply_cmd(a.parse_cmdline(":s/zzz/x/").unwrap());
-        assert!(a.message.as_deref().unwrap_or("").contains("not found"));
+        assert!(a.notify.history().iter().any(|n| n.text.contains("not found")));
         assert_eq!(a.ws.borrow().buffer().to_string(), "hello\n");
     }
 
@@ -6897,7 +6884,7 @@ mod tests {
             a.handle_key(CtKey::new(KeyCode::Char(c), none));
         }
         a.handle_key(CtKey::new(KeyCode::Enter, none));
-        assert!(a.message.as_deref().unwrap_or("").contains("already exists"));
+        assert!(a.notify.history().iter().any(|n| n.text.contains("already exists")));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
