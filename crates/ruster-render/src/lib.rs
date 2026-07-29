@@ -169,6 +169,18 @@ impl Default for SyntaxStyle {
     }
 }
 
+impl SyntaxStyle {
+    pub fn error() -> Self {
+        SyntaxStyle { fg: Color::Rgb(243, 139, 168), bg: Color::Default, bold: false, italic: false }
+    }
+    pub fn warning() -> Self {
+        SyntaxStyle { fg: Color::Rgb(249, 226, 175), bg: Color::Default, bold: false, italic: false }
+    }
+    pub fn info() -> Self {
+        SyntaxStyle { fg: Color::Rgb(137, 180, 250), bg: Color::Default, bold: false, italic: false }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StyledLine {
     pub text: String,
@@ -532,7 +544,10 @@ impl Default for WelcomeView {
 pub struct FrameState<'a> {
     pub windows: Vec<WindowView>,
     pub cmdline: Option<&'a str>,
-    pub message: Option<&'a str>,
+    /// Mini toast overlay lines (one per visible notification).
+    pub noice_mini: Vec<String>,
+    /// Notify stacking panel view, if visible.
+    pub noice_notify: Option<Vec<StyledLine>>,
     pub picker: Option<PickerView>,
     pub whichkey: Option<WhichKeyView>,
     /// LSP hover popup lines (syntax-highlighted), in a floating box near the top.
@@ -684,7 +699,8 @@ mod tests {
         let state = FrameState {
             windows: vec![sample_window()],
             cmdline: None,
-            message: None,
+            noice_mini: vec![],
+            noice_notify: None,
             picker: None,
             whichkey: None,
             hover: None,

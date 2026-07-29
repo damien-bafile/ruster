@@ -18,6 +18,7 @@ use crossterm::event::{
     MouseEvent, MouseEventKind,
 };
 use ruster_lua::{config::Config, LuaAction, LuaRuntime};
+use ruster_notify::{BackendKind, NotificationManager};
 use ruster_render::{
     Color, CursorKind, FlashLabelRender, FrameState, Rect as RRect, Renderer, SelectionView,
     StatuslineView, StyledLine, SyntaxStyle, WelcomeView, WhichKeyView, WindowView,
@@ -993,6 +994,8 @@ pub struct App {
     leader_since: Option<std::time::Instant>,
     /// Active flash jump mode state, if any.
     pub flash: Option<FlashState>,
+    /// Noice notification manager.
+    pub notify: NotificationManager,
     /// Active floating picker (buffer list, file finder, ...), if any.
     picker: Option<PickerState>,
     /// Streaming results for the active picker (`:Files` walk, `:Rg` output),
@@ -1391,9 +1394,13 @@ impl App {
                 ruster_project::record_recent(state_dir, root, 30);
             }
         }
+        let notify = NotificationManager::with_max(
+            std::time::Duration::from_millis(config.noice.info_timeout_ms),
+            config.noice.max_history,
+        );
         let mut app = App {
             ws, vim, renderer,
-            should_quit: false, message: startup_message, syntax, syntax_tried, lua, config, timer,
+            should_quit: false, message: startup_message, syntax, syntax_tried, lua, config, timer, notify,
             has_smooth_cursor: false, cursor_anim, pending_ctrl_w: false, picker: None,
             leader_pending: None,
             pending_results: None,
@@ -3126,6 +3133,7 @@ impl App {
     }
 
     fn render(&mut self) {
+        self.notify.tick();
         self.drain_pending_results();
         self.drain_build_runner();
         self.drain_debug_events();
@@ -3579,10 +3587,40 @@ impl App {
             None
         };
 
+        let level_icon = |level: ruster_core::message::MessageLevel| -> &'static str {
+            match level {
+                ruster_core::message::MessageLevel::Info => "",
+                ruster_core::message::MessageLevel::Success => "✓",
+                ruster_core::message::MessageLevel::Warning => "⚠",
+                ruster_core::message::MessageLevel::Error => "✗",
+            }
+        };
+        let noice_mini: Vec<String> = self.notify.active(BackendKind::Mini)
+            .into_iter()
+            .map(|n| format!("{} {}", level_icon(n.level), n.text))
+            .collect();
+        let noice_notify = {
+            let stack = self.notify.active(BackendKind::Notify);
+            if stack.is_empty() {
+                None
+            } else {
+                Some(stack.into_iter().map(|n| {
+                    let style = match n.level {
+                        ruster_core::message::MessageLevel::Error => SyntaxStyle::error(),
+                        ruster_core::message::MessageLevel::Warning => SyntaxStyle::warning(),
+                        _ => SyntaxStyle::info(),
+                    };
+                    let text = format!("{} {}: {}", level_icon(n.level), n.source.label(), n.text);
+                    let len = text.len();
+                    StyledLine { text, highlights: vec![(0, len, style)] }
+                }).collect())
+            }
+        };
         let state = FrameState {
             windows: views,
             cmdline: cmdline.as_deref(),
-            message: None,
+            noice_mini,
+            noice_notify,
             picker: picker_view,
             whichkey,
             hover: self.hover.clone(),

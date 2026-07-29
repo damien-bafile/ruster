@@ -41,7 +41,7 @@ mod tests {
             terminal: None,
             flash_labels: Vec::new(),
         };
-        let state = FrameState { windows: vec![view], cmdline: None, message: None, picker: None, whichkey: None, hover: None, settings: None, welcome: None, theme: Default::default(), debug_overlay: None };
+        let state = FrameState { windows: vec![view], cmdline: None, noice_mini: vec![], noice_notify: None, picker: None, whichkey: None, hover: None, settings: None, welcome: None, theme: Default::default(), debug_overlay: None };
         // Dummy renderer has no terminal; this exercises the type wiring.
         r.render_frame(&state);
     }
