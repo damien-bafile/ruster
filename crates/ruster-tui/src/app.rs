@@ -972,7 +972,7 @@ pub struct App {
     pub vim: VimState,
     pub renderer: Box<dyn Renderer>,
     pub should_quit: bool,
-    message: Option<String>,
+
     /// Per-buffer tree-sitter syntax engines, created lazily the first time a
     /// buffer with a supported filetype is rendered. Buffers without a supported
     /// language (or without a file path) simply have no entry and render plain.
@@ -1381,15 +1381,6 @@ impl App {
         let dired_show_hidden = config.dired_show_hidden;
         let timer = FrameTimer::new();
         let cursor_anim = CursorAnim::new();
-        let startup_message = if config_errors.is_empty() {
-            None
-        } else {
-            Some(format!(
-                "config: {} problem(s) — {} (:config-errors for all)",
-                config_errors.len(),
-                config_errors[0]
-            ))
-        };
         let project_root = ruster_project::project_root(&file_path);
         // Fall back to the most recent project if no root found.
         let project_root = project_root.or_else(|| {
@@ -1402,13 +1393,24 @@ impl App {
                 ruster_project::record_recent(state_dir, root, 30);
             }
         }
-        let notify = NotificationManager::with_max(
+        let mut notify = NotificationManager::with_max(
             std::time::Duration::from_millis(config.noice.info_timeout_ms),
             config.noice.max_history,
         );
+        if !config_errors.is_empty() {
+            notify.push(Notification::new(
+                ruster_core::message::MessageLevel::Warning,
+                ruster_core::message::MessageSource::System,
+                format!(
+                    "config: {} problem(s) — {} (:config-errors for all)",
+                    config_errors.len(),
+                    config_errors[0]
+                )
+            ));
+        }
         let mut app = App {
             ws, vim, renderer,
-            should_quit: false, message: startup_message, syntax, syntax_tried, lua, config, timer, notify,
+            should_quit: false, message: None, syntax, syntax_tried, lua, config, timer, notify,
             has_smooth_cursor: false, cursor_anim, pending_ctrl_w: false, picker: None,
             leader_pending: None,
             pending_results: None,
