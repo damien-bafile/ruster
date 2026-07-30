@@ -95,6 +95,50 @@ impl fmt::Display for ConfigError {
 }
 
 impl SettingKind {
+    /// Parse a raw string into a `SettingValue`, validating against this kind.
+    pub fn parse_value(&self, input: &str) -> Result<SettingValue, String> {
+        let trimmed = input.trim();
+        let val = match self {
+            SettingKind::Bool => match trimmed.to_lowercase().as_str() {
+                "true" | "on" | "1" | "yes" => SettingValue::Bool(true),
+                "false" | "off" | "0" | "no" => SettingValue::Bool(false),
+                _ => return Err(format!("expected true/false, got {trimmed:?}")),
+            },
+            SettingKind::Int { min, max } => {
+                let i: i64 = trimmed.parse().map_err(|_| format!("invalid integer {trimmed:?}"))?;
+                if i < *min || i > *max {
+                    return Err(format!("{i} is out of range {min}..{max}"));
+                }
+                SettingValue::Int(i)
+            }
+            SettingKind::Float { min, max } => {
+                let f: f64 = trimmed.parse().map_err(|_| format!("invalid number {trimmed:?}"))?;
+                if f < *min || f > *max {
+                    return Err(format!("{f} is out of range {min}..{max}"));
+                }
+                SettingValue::Float(f)
+            }
+            SettingKind::Text => SettingValue::Text(trimmed.to_string()),
+            SettingKind::Enum(opts) => {
+                if opts.contains(&trimmed) {
+                    SettingValue::Enum(trimmed.to_string())
+                } else {
+                    return Err(format!("expected one of {}, got {trimmed:?}", opts.join(", ")));
+                }
+            }
+            SettingKind::Color => {
+                if is_hex_color(trimmed) {
+                    SettingValue::Color(trimmed.to_string())
+                } else {
+                    return Err(format!("expected a #RRGGBB color, got {trimmed:?}"));
+                }
+            }
+        };
+        // Final sanity check should always pass if parse logic is correct.
+        self.check(&val).map_err(|e| format!("validation: {e}"))?;
+        Ok(val)
+    }
+
     /// A human-readable description of what this kind accepts (for errors/help).
     pub fn expected(&self) -> String {
         match self {
@@ -189,6 +233,7 @@ pub const GROUPS: &[(&str, &str)] = &[
     ("lsp", "Language server features"),
     ("terminal", "Embedded terminal"),
     ("dired", "File explorer"),
+    ("sidebar", "Sidebar panel"),
     ("colors", "Per-element color overrides (empty = theme)"),
 ];
 
@@ -247,19 +292,37 @@ pub fn schema() -> Vec<SettingSpec> {
     // --- dired ---
     add("dired", "show_hidden", "Show hidden files", Bool, b(false), "Show dotfiles in the file explorer");
 
+    // --- sidebar ---
+    add("sidebar", "auto_open", "Auto-open sidebar", Bool, b(false), "Open the sidebar automatically on startup");
+
     // --- colors (overrides; empty = use the theme's color) ---
     add("colors", "bg", "Background", Text, t(""), "Override editor background");
     add("colors", "fg", "Foreground", Text, t(""), "Override default text color");
     add("colors", "gutter", "Gutter", Text, t(""), "Override line-number color");
     add("colors", "gutter_bg", "Gutter background", Text, t(""), "Override the gutter background");
-    add("colors", "selection", "Selection", Text, t(""), "Override selection highlight");
+    add("colors", "cursor_bg", "Cursor background", Text, t(""), "Block cursor background color");
+    add("colors", "selection_bg", "Selection background", Text, t(""), "Text selection highlight background");
     add("colors", "selection_fg", "Selection text", Text, t(""), "Override text drawn over the selection");
-    add("colors", "cursor", "Cursor", Text, t(""), "Override cursor color");
     add("colors", "cursor_fg", "Cursor text", Text, t(""), "Override the glyph under the block cursor");
-    add("colors", "divider", "Bars / divider", Text, t(""), "Override statusline bar + window divider");
-    add("colors", "statusline_fg", "Bar / divider text", Text, t(""), "Override statusline text color");
+    add("colors", "divider", "Window borders", Text, t(""), "Override window header lines and picker separators");
+    add("colors", "statusline_fg", "Statusline text", Text, t(""), "Override statusline text color");
+    add("colors", "statusline_bg", "Statusline background", Text, t(""), "Override statusline background");
     add("colors", "accent", "Accent", Text, t(""), "Override accent (titles, prompts)");
     add("colors", "accent_fg", "Accent text", Text, t(""), "Override text drawn on accent bars");
+    add("colors", "whichkey_bg", "Which-key background", Text, t(""), "Override the which-key panel background");
+    add("colors", "whichkey_fg", "Which-key text", Text, t(""), "Override the which-key panel text");
+    add("colors", "cmdline_bg", "Cmdline background", Text, t(""), "Override the cmdline background");
+    add("colors", "cmdline_fg", "Cmdline text", Text, t(""), "Override the cmdline text");
+    add("colors", "mode_normal_bg", "Normal mode bg", Text, t(""), "Statusline background in Normal mode");
+    add("colors", "mode_normal_fg", "Normal mode text", Text, t(""), "Statusline text color in Normal mode");
+    add("colors", "mode_insert_bg", "Insert mode bg", Text, t(""), "Statusline background in Insert mode");
+    add("colors", "mode_insert_fg", "Insert mode text", Text, t(""), "Statusline text color in Insert mode");
+    add("colors", "mode_visual_bg", "Visual mode bg", Text, t(""), "Statusline background in Visual mode");
+    add("colors", "mode_visual_fg", "Visual mode text", Text, t(""), "Statusline text color in Visual mode");
+    add("colors", "mode_cmdline_bg", "Cmdline mode bg", Text, t(""), "Statusline background in Cmdline mode");
+    add("colors", "mode_cmdline_fg", "Cmdline mode text", Text, t(""), "Statusline text color in Cmdline mode");
+    add("colors", "mode_emacs_bg", "Emacs mode bg", Text, t(""), "Statusline background in Emacs mode");
+    add("colors", "mode_emacs_fg", "Emacs mode text", Text, t(""), "Statusline text color in Emacs mode");
 
     s
 }
@@ -267,6 +330,11 @@ pub fn schema() -> Vec<SettingSpec> {
 /// Look up a spec by group + key.
 pub fn spec_for(group: &str, key: &str) -> Option<SettingSpec> {
     schema().into_iter().find(|s| s.group == group && s.key == key)
+}
+
+/// Look up a spec by key alone (keys are unique across groups).
+pub fn spec_by_key(key: &str) -> Option<SettingSpec> {
+    schema().into_iter().find(|s| s.key == key)
 }
 
 /// Generate the default `config.lua` text from the schema.

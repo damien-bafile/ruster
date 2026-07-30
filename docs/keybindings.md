@@ -138,6 +138,7 @@ Press `SPC` in Normal mode; the which-key panel lists continuations.
 | Sequence | Action |
 |----------|--------|
 | `SPC ,` | Open settings (also `SPC o s`) |
+| `SPC e` | Toggle sidebar (`:sidebar`) |
 | `SPC w h/j/k/l` | Focus window left/down/up/right |
 | `SPC w s` / `SPC w v` | Split below / right |
 | `SPC w c` / `SPC w q` | Close window |
@@ -161,7 +162,10 @@ Press `SPC` in Normal mode; the which-key panel lists continuations.
 | `SPC s f` / `SPC s g` | Search files / grep (ripgrep) |
 | `SPC s s` / `SPC s d` | Document symbols / diagnostics |
 | `SPC o t` / `SPC o s` / `SPC o e` | Open terminal / settings / explorer |
+| `SPC o d` | Open dashboard (`:dashboard`) |
+| `SPC o m` | Open messages buffer (`:messages`) |
 | `SPC o r` | Run a `ruster.toml` task (picker) |
+| `SPC p p` | Switch project (`:projects`) |
 | `SPC u n` / `SPC u r` | Toggle line / relative numbers |
 | `SPC q q` | Quit |
 | `SPC q w` | Save and quit |
@@ -200,6 +204,11 @@ Press `g` in Normal mode; the which-key panel lists the goto commands (LazyVim-s
 | `:bd` `:bdelete` | Delete the active buffer |
 | `:term` `:terminal` | Open an embedded terminal |
 | `:settings` `:config` | Open the settings page |
+| `:dashboard` | Open the dashboard (welcome screen with recent projects) |
+| `:messages` `:msgs` | Open the general-purpose messages buffer |
+| `:msgs/err` / `:msgs/warn` / `:msgs build` / `:msgs lsp` | Filter the messages buffer by level or source |
+| `:projects` | Switch to a recent project (picker) |
+| `:sidebar` | Toggle the file-explorer sidebar on/off |
 | `:config-errors` | Show config load/validation errors |
 
 ### Navigation
@@ -274,7 +283,6 @@ In Emacs mode every printable key self-inserts; `Ctrl`/`Alt` chords are commands
 | `C-u <n>` | Universal argument: repeat the next command `n` times |
 | `C-/` or `C-_` | Undo |
 | `C-s` / `C-r` | Incremental search forward / backward (repeat to jump) |
-| `M-x` | Run a command (opens the command palette) |
 | `C-g` | Cancel — clear the mark / prefix |
 | `C-x C-s` | Save the file |
 | `C-x C-c` | Quit |
@@ -320,7 +328,7 @@ the listing while its own keys above take priority:
 | `:` … | Any `:` command (`:q`, `:Files`, …) |
 | `gg` / `G` | Top / bottom of the listing |
 | `SPC` … | The Space leader / which-key menu |
-| (Emacs mode) `C-s` `C-r`, `M-x` | Incremental search, run a command |
+| (Emacs mode) `C-s` `C-r` | Incremental search |
 
 Editing keys (`i`, `x`, `dd`-as-delete-line, …) are inert — the listing can't be
 typed into. Copy/cut/paste refuse to overwrite an existing name, and a cut is
@@ -329,6 +337,31 @@ consumed by its paste (the original is removed only after a successful move).
 Entries are colored by type: **directories** blue (bold, with a trailing `/`),
 **executables** green, **symlinks** teal, and regular files in the default
 foreground.
+
+## Sidebar (file-explorer tree)
+
+| Key | Action |
+|-----|--------|
+| `:sidebar` / `SPC e` | Toggle the sidebar on/off |
+| `j` / `k` (`↓`/`↑`) | Move selection |
+| `<CR>` | Open the selected file or expand/collapse a directory |
+| `h` (`←`) | Collapse the current directory, or move to its parent |
+| `l` (`→`) | Expand the current directory |
+| `Esc` / `C-c` / `Tab` | Unfocus the sidebar (return keyboard to the editor) |
+| `C-h` | Move focus from sidebar back to the editor (also `C-l`) |
+| `C-h` (from editor) | Move focus from the leftmost window to the sidebar |
+| `q` | Close the sidebar entirely |
+| `a` | Create a new file (append `/` for a directory) |
+| `r` | Rename the selected entry |
+| `d` | Delete the selected entry (`y`/`n` to confirm) |
+| `gg` / `G` | Jump to first / last row |
+| `.` | Toggle hidden files |
+| `R` | Refresh the tree from disk |
+
+The sidebar is automatically created when toggled on, rooted at the project root
+(or the current directory if no project root is detected). Opening a file in the
+editor reveals it in the sidebar if the sidebar is visible. The selected row is
+highlighted with a dim background.
 
 ## Snippets
 

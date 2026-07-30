@@ -13,6 +13,7 @@ pub enum KeyEvent {
     Backspace,
     Delete,
     Tab,
+    BackTab,
     ShiftTab,
     Arrow(Arrow),
 }

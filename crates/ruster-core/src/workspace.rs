@@ -97,13 +97,17 @@ impl BufferStore {
     }
 
     /// Close a document. Refuses to close the last remaining document while it
-    /// is modified (returns `false`, leaving the store untouched).
+    /// is modified (returns `false`, leaving the store untouched). Also refuses
+    /// to close pinned documents.
     pub fn close(&mut self, id: BufferId) -> bool {
-        let modified = match self.docs.get(&id) {
-            Some(d) => d.modified,
+        let doc = match self.docs.get(&id) {
+            Some(d) => d,
             None => return false,
         };
-        if self.docs.len() == 1 && modified {
+        if doc.pinned {
+            return false;
+        }
+        if self.docs.len() == 1 && doc.modified {
             return false;
         }
         self.docs.remove(&id);
@@ -145,6 +149,18 @@ impl Workspace {
     pub fn from_file(path: PathBuf, content: String) -> Self {
         let mut buffers = BufferStore::new();
         let id = buffers.open_file(path, content);
+        let windows = WindowTree::single(id);
+        Workspace { buffers, windows }
+    }
+
+    /// Create a workspace with a single pinned Dashboard buffer (shows the
+    /// welcome screen).
+    pub fn scratch() -> Self {
+        let mut buffers = BufferStore::new();
+        let id = buffers.create_special(SpecialKind::Dashboard, "Dashboard");
+        if let Some(doc) = buffers.get_mut(id) {
+            doc.pinned = true;
+        }
         let windows = WindowTree::single(id);
         Workspace { buffers, windows }
     }
@@ -442,5 +458,25 @@ mod tests {
         assert!(!s.get(a).unwrap().modified);
         s.get_mut(a).unwrap().modified = true;
         assert!(s.get(a).unwrap().modified);
+    }
+
+    #[test]
+    fn refuses_to_close_pinned_document() {
+        let mut s = BufferStore::new();
+        let a = s.create_scratch("pinned_test");
+        s.get_mut(a).unwrap().pinned = true;
+        assert!(!s.close(a));
+        assert_eq!(s.len(), 1);
+    }
+
+    #[test]
+    fn unpinned_document_can_still_be_closed() {
+        let mut s = BufferStore::new();
+        let a = s.create_scratch("a");
+        let b = s.create_scratch("b");
+        s.get_mut(a).unwrap().pinned = true;
+        assert!(!s.close(a));
+        assert!(s.close(b));
+        assert_eq!(s.len(), 1);
     }
 }

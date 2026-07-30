@@ -1,3 +1,14 @@
+/// Editing mode for statusline coloring.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum UIMode {
+    #[default]
+    Normal,
+    Insert,
+    Visual,
+    Cmdline,
+    Emacs,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Color {
     Default,
@@ -12,18 +23,50 @@ pub struct Theme {
     pub gutter: Color,
     /// Gutter background (defaults to `bg` when a theme doesn't set it).
     pub gutter_bg: Color,
-    pub selection: Color,
-    /// Text over the selection highlight (defaults to `fg`).
-    pub selection_fg: Color,
-    pub cursor: Color,
-    /// Glyph under the block cursor (defaults to `bg`).
+    /// Block / bar cursor background.
+    pub cursor_bg: Color,
+    /// Text over the cursor block.
     pub cursor_fg: Color,
+    /// Selection highlight background.
+    pub selection_bg: Color,
+    /// Text over the selection highlight.
+    pub selection_fg: Color,
     pub divider: Color,
     /// Statusline / bar text (defaults to `fg`).
     pub statusline_fg: Color,
+    /// Statusline / bar background (defaults to `divider`).
+    pub statusline_bg: Color,
+    /// Statusline background in Normal mode (defaults to `statusline_bg`).
+    pub mode_normal_bg: Color,
+    /// Statusline text in Normal mode (defaults to `statusline_fg`).
+    pub mode_normal_fg: Color,
+    /// Statusline background in Insert mode (defaults to `statusline_bg`).
+    pub mode_insert_bg: Color,
+    /// Statusline text in Insert mode (defaults to `statusline_fg`).
+    pub mode_insert_fg: Color,
+    /// Statusline background in Visual mode (defaults to `statusline_bg`).
+    pub mode_visual_bg: Color,
+    /// Statusline text in Visual mode (defaults to `statusline_fg`).
+    pub mode_visual_fg: Color,
+    /// Statusline background in Cmdline mode (defaults to `statusline_bg`).
+    pub mode_cmdline_bg: Color,
+    /// Statusline text in Cmdline mode (defaults to `statusline_fg`).
+    pub mode_cmdline_fg: Color,
+    /// Statusline background in Emacs mode (defaults to `statusline_bg`).
+    pub mode_emacs_bg: Color,
+    /// Statusline text in Emacs mode (defaults to `statusline_fg`).
+    pub mode_emacs_fg: Color,
     pub accent: Color,
     /// Text on accent-colored bars (defaults to `bg`).
     pub accent_fg: Color,
+    /// Which-key panel background.
+    pub whichkey_bg: Color,
+    /// Which-key panel text.
+    pub whichkey_fg: Color,
+    /// Cmdline / mini-buffer background.
+    pub cmdline_bg: Color,
+    /// Cmdline / mini-buffer text.
+    pub cmdline_fg: Color,
 }
 
 impl Default for Theme {
@@ -33,14 +76,51 @@ impl Default for Theme {
             fg: Color::Rgb(205, 214, 244),
             gutter: Color::Rgb(108, 112, 134),
             gutter_bg: Color::Rgb(30, 30, 30),
-            selection: Color::Rgb(88, 91, 112),
-            selection_fg: Color::Rgb(205, 214, 244),
-            cursor: Color::Rgb(245, 224, 220),
+            cursor_bg: Color::Rgb(245, 224, 220),
             cursor_fg: Color::Rgb(30, 30, 30),
+            selection_bg: Color::Rgb(88, 91, 112),
+            selection_fg: Color::Rgb(205, 214, 244),
             divider: Color::Rgb(69, 71, 90),
             statusline_fg: Color::Rgb(205, 214, 244),
+            statusline_bg: Color::Rgb(69, 71, 90),
+            mode_normal_bg: Color::Rgb(69, 71, 90),
+            mode_normal_fg: Color::Rgb(205, 214, 244),
+            mode_insert_bg: Color::Rgb(40, 72, 50),
+            mode_insert_fg: Color::Rgb(205, 214, 244),
+            mode_visual_bg: Color::Rgb(72, 50, 80),
+            mode_visual_fg: Color::Rgb(205, 214, 244),
+            mode_cmdline_bg: Color::Rgb(60, 55, 40),
+            mode_cmdline_fg: Color::Rgb(205, 214, 244),
+            mode_emacs_bg: Color::Rgb(50, 50, 70),
+            mode_emacs_fg: Color::Rgb(205, 214, 244),
             accent: Color::Rgb(243, 139, 168),
             accent_fg: Color::Rgb(30, 30, 30),
+            whichkey_bg: Color::Rgb(30, 30, 46),
+            whichkey_fg: Color::Rgb(205, 214, 244),
+            cmdline_bg: Color::Rgb(30, 30, 30),
+            cmdline_fg: Color::Rgb(205, 214, 244),
+        }
+    }
+}
+
+impl Theme {
+    pub fn mode_bg(&self, mode: UIMode) -> Color {
+        match mode {
+            UIMode::Normal => self.mode_normal_bg,
+            UIMode::Insert => self.mode_insert_bg,
+            UIMode::Visual => self.mode_visual_bg,
+            UIMode::Cmdline => self.mode_cmdline_bg,
+            UIMode::Emacs => self.mode_emacs_bg,
+        }
+    }
+
+    pub fn mode_fg(&self, mode: UIMode) -> Color {
+        match mode {
+            UIMode::Normal => self.mode_normal_fg,
+            UIMode::Insert => self.mode_insert_fg,
+            UIMode::Visual => self.mode_visual_fg,
+            UIMode::Cmdline => self.mode_cmdline_fg,
+            UIMode::Emacs => self.mode_emacs_fg,
         }
     }
 }
@@ -89,18 +169,30 @@ impl Default for SyntaxStyle {
     }
 }
 
+impl SyntaxStyle {
+    pub fn error() -> Self {
+        SyntaxStyle { fg: Color::Rgb(243, 139, 168), bg: Color::Default, bold: false, italic: false }
+    }
+    pub fn warning() -> Self {
+        SyntaxStyle { fg: Color::Rgb(249, 226, 175), bg: Color::Default, bold: false, italic: false }
+    }
+    pub fn info() -> Self {
+        SyntaxStyle { fg: Color::Rgb(137, 180, 250), bg: Color::Default, bold: false, italic: false }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StyledLine {
     pub text: String,
     pub highlights: Vec<(usize, usize, SyntaxStyle)>,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum CursorKind { Block, Bar }
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
+pub enum CursorKind { #[default] Block, Bar }
 
 /// A rectangle in cell coordinates (origin top-left). Mirrors
 /// `ruster_core::windows::Rect`; kept local so this crate stays dependency-free.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Rect {
     pub x: u16,
     pub y: u16,
@@ -138,6 +230,60 @@ impl SignsView {
     /// higher-severity sign pushed last overrides a lower one on the same line.
     pub fn at(&self, line: u16) -> Option<(char, Color)> {
         self.signs.iter().rev().find(|(l, _, _)| *l == line).map(|(_, g, c)| (*g, *c))
+    }
+}
+
+/// Where a window's buffer text actually starts, and how much room it has.
+///
+/// A window's rect covers a header row, the text rows, and a statusline row;
+/// within the text area, columns are laid out sign column, then line-number
+/// gutter, then text. Every backend must agree on this, and so must mouse
+/// hit-testing — computing it by hand at each site is what previously put flash
+/// labels and click targets in the wrong column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextArea {
+    /// First column of buffer text (past the sign column and gutter).
+    pub x: u16,
+    /// First row of buffer text (past the header row).
+    pub y: u16,
+    /// Text columns available after the sign column and gutter.
+    pub width: u16,
+    /// Text rows available between the header and the statusline.
+    pub height: u16,
+}
+
+impl TextArea {
+    /// Derive the text area of a window from its rect and column widths.
+    /// `sign_width`/`gutter_width` are clamped to the rect, so an oversized
+    /// gutter yields a zero-width text area rather than an out-of-bounds origin.
+    pub fn of(rect: Rect, sign_width: u16, gutter_width: u16) -> Self {
+        let sign_w = sign_width.min(rect.width);
+        let gutter_w = gutter_width.min(rect.width - sign_w);
+        TextArea {
+            x: rect.x + sign_w + gutter_w,
+            // One header row above, one statusline row below.
+            y: rect.y + 1,
+            width: rect.width - sign_w - gutter_w,
+            height: rect.height.saturating_sub(2),
+        }
+    }
+
+    /// One past the last text column.
+    pub fn right(&self) -> u16 {
+        self.x + self.width
+    }
+
+    /// The (row, column) within the text area for a screen cell, or `None` when
+    /// the cell is outside it (in the header, statusline, sign column or gutter).
+    pub fn cell_at(&self, screen_x: u16, screen_y: u16) -> Option<(u16, u16)> {
+        if screen_x < self.x
+            || screen_x >= self.right()
+            || screen_y < self.y
+            || screen_y >= self.y + self.height
+        {
+            return None;
+        }
+        Some((screen_y - self.y, screen_x - self.x))
     }
 }
 
@@ -197,6 +343,7 @@ pub struct StatuslineView {
     pub center: String,
     pub right: String,
     pub active: bool,
+    pub mode: UIMode,
 }
 
 /// How a visual selection covers the lines it spans.
@@ -289,7 +436,21 @@ pub struct TermGridView {
     pub cursor: (usize, usize),
 }
 
+/// A single flash jump label to render at a screen position.
+#[derive(Debug, Clone)]
+pub struct FlashLabelRender {
+    pub row: u16,
+    pub col: u16,
+    pub text: String,
+    pub color: Color,
+}
+
 /// Everything needed to draw a single window into its rectangle.
+///
+/// `Default` exists so construction sites can fill in only what they care about
+/// with `..Default::default()`; adding a field here otherwise means editing every
+/// literal, which is how `flash_labels` came to be missing from some of them.
+#[derive(Default)]
 pub struct WindowView {
     pub rect: Rect,
     pub lines: Vec<StyledLine>,
@@ -314,6 +475,8 @@ pub struct WindowView {
     pub terminal: Option<TermGridView>,
     /// Panel header label shown in the window's top chrome row (e.g. filename).
     pub header: String,
+    /// Flash jump overlay labels rendered on top of the buffer text.
+    pub flash_labels: Vec<FlashLabelRender>,
 }
 
 /// One row of a floating picker overlay.
@@ -411,7 +574,7 @@ pub fn settings_scroll(prev: usize, selected: usize, viewport: usize, total: usi
     top.min(max)
 }
 
-/// The welcome/start screen ("Ready Room"), shown when no file is open. Rendered
+/// The welcome/start screen ("Dashboard"), shown when no file is open. Rendered
 /// as a centered panel in the first window when present.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WelcomeView {
@@ -437,18 +600,71 @@ impl Default for WelcomeView {
 /// A full frame: every visible window, the shared cmdline/message line, an
 /// optional centered picker overlay, optional bottom which-key panel, and an
 /// optional welcome screen.
+///
+/// `Default` gives an empty frame, so callers set only the fields they exercise.
+#[derive(Default)]
 pub struct FrameState<'a> {
     pub windows: Vec<WindowView>,
     pub cmdline: Option<&'a str>,
-    pub message: Option<&'a str>,
+    /// Mini toast overlay lines (one per visible notification).
+    pub noice_mini: Vec<String>,
+    /// Notify stacking panel view, if visible.
+    pub noice_notify: Option<Vec<StyledLine>>,
     pub picker: Option<PickerView>,
     pub whichkey: Option<WhichKeyView>,
     /// LSP hover popup lines (syntax-highlighted), in a floating box near the top.
     pub hover: Option<Vec<StyledLine>>,
     /// The settings page overlay, when open.
     pub settings: Option<SettingsView>,
-    /// Welcome/start screen ("Ready Room"), shown when no file is open.
+    /// Welcome/start screen ("Dashboard"), shown when no file is open.
     pub welcome: Option<WelcomeView>,
+    /// The theme palette for this frame. Used by both the TUI and GUI backends
+    /// so that every widget and overlay reads a consistent set of colours.
+    pub theme: Theme,
+    /// Debugger overlay (toolbar + stack/variables), shown while a debug
+    /// session is active.
+    pub debug_overlay: Option<DebugOverlayView>,
+}
+
+/// Debugger overlay rendered above the window area.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DebugOverlayView {
+    /// Toolbar row: status + action hints.
+    pub toolbar: String,
+    /// Stack frames: (depth, name, file:line) tuples.
+    pub stack: Vec<(u16, String, String)>,
+    /// Visible scopes and their variables.
+    pub scopes: Vec<(String, Vec<(String, String)>)>,
+}
+
+impl DebugOverlayView {
+    /// The overlay body as display rows: the call stack, then each scope with
+    /// its variables. Both backends draw the same text, so the flattening lives
+    /// here instead of being reimplemented per renderer.
+    ///
+    /// The toolbar is not included — it is drawn as a highlighted bar.
+    pub fn rows(&self) -> Vec<String> {
+        let mut rows = Vec::new();
+        if !self.stack.is_empty() {
+            rows.push("Call stack".to_string());
+            for (depth, name, loc) in &self.stack {
+                rows.push(format!("{:>2}  {}  {}", depth, name, loc));
+            }
+        }
+        for (scope, vars) in &self.scopes {
+            if !rows.is_empty() {
+                rows.push(String::new());
+            }
+            rows.push(scope.clone());
+            for (name, value) in vars {
+                rows.push(format!("  {} = {}", name, value));
+            }
+        }
+        if rows.is_empty() {
+            rows.push("(no frames)".to_string());
+        }
+        rows
+    }
 }
 
 pub trait Renderer {
@@ -472,13 +688,76 @@ pub trait Renderer {
 #[cfg(test)]
 mod tests {
     use crate::{
-        Color, CursorKind, FrameState, GutterView, Rect, Renderer, SelectionKind, SelectionView,
-        SignsView, StatuslineView, StyledLine, TermCellView, TermGridView, WindowView,
+        Color, FrameState, Rect, Renderer, SelectionKind, SelectionView, StatuslineView,
+        StyledLine, TermCellView, TermGridView, UIMode, WindowView,
     };
 
     struct TestRenderer;
     impl Renderer for TestRenderer {
         fn render_frame(&mut self, _state: &FrameState) {}
+    }
+
+    #[test]
+    fn debug_overlay_rows_lists_stack_then_scopes() {
+        use crate::DebugOverlayView;
+        let v = DebugOverlayView {
+            toolbar: "[Debug: PAUSED]".into(),
+            stack: vec![(0, "main".into(), "src/main.rs:12".into())],
+            scopes: vec![("Locals".into(), vec![("x".into(), "1".into())])],
+        };
+        let rows = v.rows();
+        assert_eq!(rows[0], "Call stack");
+        assert!(rows[1].contains("main") && rows[1].contains("src/main.rs:12"));
+        // A blank spacer separates the stack from the first scope.
+        assert_eq!(rows[2], "");
+        assert_eq!(rows[3], "Locals");
+        assert_eq!(rows[4], "  x = 1");
+        // The toolbar is drawn as a bar, not as a row.
+        assert!(!rows.iter().any(|r| r.contains("Debug: PAUSED")));
+    }
+
+    #[test]
+    fn debug_overlay_rows_never_empty() {
+        use crate::DebugOverlayView;
+        // A session that has started but not stopped yet has no frames; the
+        // panel still needs something to draw.
+        assert_eq!(DebugOverlayView::default().rows(), vec!["(no frames)".to_string()]);
+    }
+
+    #[test]
+    fn text_area_skips_header_statusline_and_columns() {
+        use crate::TextArea;
+        // 80x24 window, 1-wide sign column, 4-wide number gutter.
+        let t = TextArea::of(Rect::new(0, 0, 80, 24), 1, 4);
+        assert_eq!(t.x, 5, "past the sign column and gutter");
+        assert_eq!(t.y, 1, "past the header row");
+        assert_eq!(t.width, 75);
+        assert_eq!(t.height, 22, "header and statusline excluded");
+        assert_eq!(t.right(), 80);
+    }
+
+    #[test]
+    fn text_area_cell_at_rejects_cells_outside_the_text() {
+        use crate::TextArea;
+        let t = TextArea::of(Rect::new(10, 0, 40, 10), 0, 3);
+        // Origin maps to row 0, col 0.
+        assert_eq!(t.cell_at(13, 1), Some((0, 0)));
+        assert_eq!(t.cell_at(15, 3), Some((2, 2)));
+        // Header row, gutter column, statusline row, and the next split over.
+        assert_eq!(t.cell_at(13, 0), None, "header");
+        assert_eq!(t.cell_at(12, 1), None, "gutter");
+        assert_eq!(t.cell_at(13, 9), None, "statusline");
+        assert_eq!(t.cell_at(50, 1), None, "past the right edge");
+    }
+
+    #[test]
+    fn text_area_survives_columns_wider_than_the_window() {
+        use crate::TextArea;
+        // A gutter wider than the window must not push the origin out of bounds.
+        let t = TextArea::of(Rect::new(0, 0, 4, 5), 2, 99);
+        assert_eq!(t.width, 0);
+        assert_eq!(t.x, 4, "clamped to the window's right edge");
+        assert_eq!(t.cell_at(0, 1), None);
     }
 
     #[test]
@@ -503,24 +782,17 @@ mod tests {
         WindowView {
             rect: Rect::new(0, 0, 80, 24),
             lines: vec![StyledLine { text: "hello".to_string(), highlights: vec![] }],
-            cursor: (0, 0),
-            extra_cursors: Vec::new(),
-            cursor_kind: CursorKind::Block,
             cursor_visible: true,
-            cursor_smooth: None,
-            scroll_offset: 0,
-            gutter: GutterView::default(),
-            signs: SignsView::default(),
             statusline: StatuslineView {
                 left: "NORMAL".into(),
                 center: "test.txt".into(),
                 right: "1,1".into(),
                 active: true,
+                mode: UIMode::Normal,
             },
             active: true,
-            selection: None,
-            terminal: None,
             header: "test.txt".into(),
+            ..Default::default()
         }
     }
 
@@ -570,16 +842,7 @@ mod tests {
 
     #[test]
     fn renderer_trait_is_object_safe() {
-        let state = FrameState {
-            windows: vec![sample_window()],
-            cmdline: None,
-            message: None,
-            picker: None,
-            whichkey: None,
-            hover: None,
-            settings: None,
-            welcome: None,
-        };
+        let state = FrameState { windows: vec![sample_window()], ..Default::default() };
         let mut r = TestRenderer;
         r.render_frame(&state);
         assert_eq!(r.viewport_cells(), (80, 24));

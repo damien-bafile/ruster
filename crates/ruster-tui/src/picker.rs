@@ -67,7 +67,7 @@ impl PickerState {
         if self.filter.is_empty() {
             return (0..self.items.len()).collect();
         }
-        let pattern = Pattern::parse(&self.filter, CaseMatching::Ignore, Normalization::Smart);
+        let pattern = Pattern::parse(&self.filter, CaseMatching::Smart, Normalization::Smart);
         let mut buf: Vec<char> = Vec::new();
         let mut scored: Vec<(usize, u32)> = Vec::new();
         for (i, item) in self.items.iter().enumerate() {

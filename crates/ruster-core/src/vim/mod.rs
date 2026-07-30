@@ -225,7 +225,7 @@ impl VimState {
             if c.is_ascii_digit() {
                 if c == '0' && self.count.is_none() { return false; }
                 let d = c.to_digit(10).unwrap_or(0);
-                self.count = Some(self.count.map(|v| v * 10 + d).unwrap_or(d));
+                self.count = Some(self.count.map(|v| v.saturating_mul(10).saturating_add(d)).unwrap_or(d));
                 return true;
             }
             }

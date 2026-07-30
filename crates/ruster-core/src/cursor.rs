@@ -37,7 +37,7 @@ impl CursorSet {
     pub fn set_head(&mut self, at: usize, buffer: &Buffer) {
         let anchor = self.cursors[self.primary].anchor;
         self.cursors[self.primary] = Range { anchor, head: at };
-        let line = self.line_of(buffer, at);
+        let line = buffer.char_to_line(at);
         self.desired_col = at - buffer.line_start_char(line);
         self.collapse_at(at);
     }
@@ -51,25 +51,6 @@ impl CursorSet {
 
     fn collapse_at(&mut self, at: usize) {
         self.cursors[self.primary] = Range::caret(at);
-    }
-
-    fn line_of(&self, buffer: &Buffer, char_idx: usize) -> usize {
-        let mut acc = 0usize;
-        for line in 0..buffer.line_count() {
-            let start = buffer.line_start_char(line);
-            if start <= char_idx { acc = line; } else { break; }
-        }
-        acc
-    }
-
-    fn line_content_len(&self, buffer: &Buffer, line: usize) -> usize {
-        let end = buffer.line_end_char(line);
-        let start = buffer.line_start_char(line);
-        if end > start && buffer.char_at(end - 1) == '\n' {
-            end - start - 1
-        } else {
-            end - start
-        }
     }
 
     pub fn add_cursor(&mut self, at: usize) {
@@ -108,7 +89,7 @@ impl CursorSet {
 
     pub fn clear_extra(&mut self) {
         let original = self.cursors[0];
-        self.cursors.truncate(0);
+        self.cursors.clear();
         self.cursors.push(original);
         self.primary = 0;
     }
@@ -122,29 +103,56 @@ impl CursorSet {
         self.cursors.iter().map(|r| r.head)
     }
 
+    /// Step one grapheme cluster left or right of `from`, clamped at the ends of
+    /// the buffer.
+    ///
+    /// Only the cursor's own line is segmented, which keeps the cost independent
+    /// of buffer size. That is equivalent to segmenting the whole buffer because
+    /// a cluster never spans a `\n`: the in-memory buffer is always
+    /// LF-normalized (see [`crate::document::Document`]), so `\r\n` — the one
+    /// cluster that contains a newline — cannot occur.
     fn grapheme_step(&self, buffer: &Buffer, from: usize, dir: Dir) -> usize {
-        let text = buffer.to_string();
-        let graphemes: Vec<&str> = UnicodeSegmentation::graphemes(&*text, true).collect();
-        let mut char_pos = 0usize;
-        let mut gidx = 0usize;
-        for (i, g) in graphemes.iter().enumerate() {
-            if char_pos == from { gidx = i; break; }
-            char_pos += g.chars().count();
-            gidx = i + 1;
+        let from = from.min(buffer.len_chars());
+        // Crossing a line boundary always steps over exactly one `\n`, so the
+        // neighbouring line never has to be segmented.
+        if dir == Dir::Left {
+            if from == 0 {
+                return 0;
+            }
+            if from == buffer.line_start_char(buffer.char_to_line(from)) {
+                return from - 1;
+            }
         }
+
+        let line = buffer.char_to_line(from);
+        let line_start = buffer.line_start_char(line);
+        // Includes the line's trailing `\n`, so stepping right off the last
+        // character lands on the next line's first one.
+        let text = buffer.slice_string(line_start, buffer.line_end_char(line));
+
+        let mut pos = line_start;
+        let mut prev_start = None;
+        for g in UnicodeSegmentation::graphemes(text.as_str(), true) {
+            let end = pos + g.chars().count();
+            if from < end {
+                // `from` is at this cluster's start, or inside it — in which
+                // case snap to the enclosing boundary rather than landing
+                // mid-cluster again.
+                return match dir {
+                    Dir::Right => end,
+                    Dir::Left if from == pos => prev_start.unwrap_or(pos),
+                    Dir::Left => pos,
+                };
+            }
+            prev_start = Some(pos);
+            pos = end;
+        }
+        // `from` is past the last cluster — the end of a line with no trailing
+        // newline, i.e. the end of the buffer. Right is a fixed point; Left
+        // still has the final cluster to step back over.
         match dir {
-            Dir::Left => {
-                if gidx == 0 { from } else {
-                    let prev = graphemes[gidx - 1];
-                    from - prev.chars().count()
-                }
-            }
-            Dir::Right => {
-                if gidx >= graphemes.len() { from } else {
-                    let cur = graphemes[gidx];
-                    from + cur.chars().count()
-                }
-            }
+            Dir::Right => from,
+            Dir::Left => prev_start.unwrap_or(from),
         }
     }
 
@@ -157,7 +165,7 @@ impl CursorSet {
 
     pub fn move_line(&mut self, buffer: &Buffer, delta: i32) {
         let from = self.head();
-        let line = self.line_of(buffer, from);
+        let line = buffer.char_to_line(from);
         if self.desired_col == usize::MAX {
             self.desired_col = from - buffer.line_start_char(line);
         }
@@ -165,7 +173,7 @@ impl CursorSet {
         let last = buffer.line_count().saturating_sub(1);
         let target_line = target_line.min(last);
         let start = buffer.line_start_char(target_line);
-        let content_len = self.line_content_len(buffer, target_line);
+        let content_len = buffer.line_content_len(target_line);
         let col = self.desired_col.min(content_len);
         let new_head = start + col;
         let anchor = self.cursors[self.primary].anchor;
@@ -175,10 +183,10 @@ impl CursorSet {
 
     pub fn move_line_edge(&mut self, buffer: &Buffer, edge: Edge) {
         let from = self.head();
-        let line = self.line_of(buffer, from);
+        let line = buffer.char_to_line(from);
         let at = match edge {
             Edge::Start => buffer.line_start_char(line),
-            Edge::End => buffer.line_start_char(line) + self.line_content_len(buffer, line),
+            Edge::End => buffer.line_start_char(line) + buffer.line_content_len(line),
         };
         self.set_head(at, buffer);
     }
@@ -192,6 +200,135 @@ impl CursorSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Buffers that exercise the awkward cases for offset<->line mapping:
+    /// empty, no trailing newline, bare and repeated newlines, multi-byte
+    /// scalars, and grapheme clusters wider than one char.
+    const EDGE_CASE_BUFFERS: &[&str] = &[
+        "",
+        "a",
+        "a\n",
+        "\n",
+        "\n\n\n",
+        "abc\ndef\n",
+        "abc\ndef",
+        "héllo\nwörld\n",
+        "a\n\nb\n\n\nc",
+        "tab\there\ntrailing spaces   \n\n",
+        "e\u{0301}x\ncafe\u{0301}\n",
+        "👨‍👩‍👧 family\n🎉\n",
+    ];
+
+    /// The linear scan `CursorSet::line_of` used to perform, kept as a reference
+    /// so the rope-backed `Buffer::char_to_line` that replaced it stays honest.
+    fn line_of_by_scan(buffer: &Buffer, char_idx: usize) -> usize {
+        let mut acc = 0usize;
+        for line in 0..buffer.line_count() {
+            if buffer.line_start_char(line) <= char_idx { acc = line; } else { break; }
+        }
+        acc
+    }
+
+    /// The whole-buffer segmentation `grapheme_step` used to perform, kept as a
+    /// reference for the per-line rewrite.
+    fn grapheme_step_whole_buffer(buffer: &Buffer, from: usize, dir: Dir) -> usize {
+        let text = buffer.to_string();
+        let graphemes: Vec<&str> = UnicodeSegmentation::graphemes(&*text, true).collect();
+        let mut char_pos = 0usize;
+        let mut gidx = 0usize;
+        for (i, g) in graphemes.iter().enumerate() {
+            if char_pos == from { gidx = i; break; }
+            char_pos += g.chars().count();
+            gidx = i + 1;
+        }
+        match dir {
+            Dir::Left => {
+                if gidx == 0 { from } else { from - graphemes[gidx - 1].chars().count() }
+            }
+            Dir::Right => {
+                if gidx >= graphemes.len() { from } else { from + graphemes[gidx].chars().count() }
+            }
+        }
+    }
+
+    /// Every offset that sits on a grapheme boundary — i.e. every position a
+    /// cursor can actually hold.
+    fn boundary_offsets(content: &str) -> Vec<usize> {
+        let mut out = vec![0];
+        let mut pos = 0;
+        for g in UnicodeSegmentation::graphemes(content, true) {
+            pos += g.chars().count();
+            out.push(pos);
+        }
+        out
+    }
+
+    #[test]
+    fn grapheme_step_matches_whole_buffer_segmentation() {
+        let c = CursorSet::single(0);
+        for content in EDGE_CASE_BUFFERS {
+            let buf = Buffer::from_str(content);
+            for from in boundary_offsets(content) {
+                for dir in [Dir::Left, Dir::Right] {
+                    assert_eq!(
+                        c.grapheme_step(&buf, from, dir),
+                        grapheme_step_whole_buffer(&buf, from, dir),
+                        "{dir:?} from offset {from} of {content:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A head left mid-cluster (e.g. by a clamp or an external jump) snaps to the
+    /// enclosing boundary. The old whole-buffer version instead subtracted the
+    /// *buffer's* last cluster width, which was meaningless; this is deliberately
+    /// the one place the rewrite does not reproduce it.
+    #[test]
+    fn grapheme_step_snaps_out_of_a_cluster() {
+        let c = CursorSet::single(0);
+        // "e" + combining acute is one cluster spanning offsets 0..2.
+        let b = Buffer::from_str("e\u{0301}x");
+        assert_eq!(c.grapheme_step(&b, 1, Dir::Left), 0, "snap back to cluster start");
+        assert_eq!(c.grapheme_step(&b, 1, Dir::Right), 2, "snap forward to cluster end");
+    }
+
+    #[test]
+    fn grapheme_step_crosses_line_boundaries() {
+        let c = CursorSet::single(0);
+        let b = Buffer::from_str("ab\ncd");
+        // Right off the last char of line 0 lands on its newline, then line 1.
+        assert_eq!(c.grapheme_step(&b, 1, Dir::Right), 2);
+        assert_eq!(c.grapheme_step(&b, 2, Dir::Right), 3);
+        // Left from the start of line 1 steps back onto the newline.
+        assert_eq!(c.grapheme_step(&b, 3, Dir::Left), 2);
+        // Both ends of the buffer are fixed points.
+        assert_eq!(c.grapheme_step(&b, 0, Dir::Left), 0);
+        assert_eq!(c.grapheme_step(&b, 5, Dir::Right), 5);
+    }
+
+    #[test]
+    fn grapheme_step_treats_zwj_emoji_as_one_cluster() {
+        let c = CursorSet::single(0);
+        let b = Buffer::from_str("👨‍👩‍👧x");
+        // Three emoji joined by two ZWJs: five chars, one cluster.
+        assert_eq!(c.grapheme_step(&b, 0, Dir::Right), 5);
+        assert_eq!(c.grapheme_step(&b, 5, Dir::Left), 0);
+    }
+
+    #[test]
+    fn char_to_line_matches_linear_scan_at_every_offset() {
+        for content in EDGE_CASE_BUFFERS {
+            let buf = Buffer::from_str(content);
+            for idx in 0..=buf.len_chars() {
+                assert_eq!(
+                    buf.char_to_line(idx),
+                    line_of_by_scan(&buf, idx),
+                    "offset {idx} of {content:?}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn single_anchor_equals_head() {
