@@ -2058,9 +2058,12 @@ impl App {
             match ck.code {
                 KeyCode::Esc => {
                     self.flash = None;
-
                     return;
                 }
+                // A label key is consumed by flash mode — every path here must
+                // return, or the key also reaches the Vim state machine below
+                // (where `a` would open Insert mode and the next label key
+                // would be typed into the buffer).
                 KeyCode::Char(c) if c.is_ascii_lowercase() => {
                     let mut fs = self.flash.take().unwrap();
                     match fs.pending {
@@ -2069,14 +2072,14 @@ impl App {
                                 .filter(|l| l.label.starts_with(c))
                                 .collect();
                             if matching.is_empty() {
-                                self.flash = None;
                                 return;
                             }
                             if matching.len() == 1 {
                                 self.ws.borrow_mut().execute(Action::Move(Motion::To(matching[0].offset)));
-                                self.flash = None;
                                 return;
                             }
+                            // Ambiguous — keep the candidates and wait for the
+                            // disambiguating second char.
                             fs.labels = matching;
                             fs.pending = Some(c);
                             self.flash = Some(fs);
@@ -2086,15 +2089,13 @@ impl App {
                             if let Some(label) = fs.labels.iter().find(|l| l.label == target) {
                                 self.ws.borrow_mut().execute(Action::Move(Motion::To(label.offset)));
                             }
-                            self.flash = None;
                         }
                     }
+                    return;
                 }
                 _ => {
-                    // Cancel and replay the key.
-                    let ev = ck.clone();
+                    // Cancel and fall through to normal dispatch so the key is replayed.
                     self.flash = None;
-                    // fall through to normal dispatch (don't return)
                 }
             }
         }
@@ -2154,13 +2155,16 @@ impl App {
             let line_start = buf.line_start_char(buf_line);
             let line_end = buf.line_end_char(buf_line);
             let text = buf.slice_string(line_start, line_end);
-            // Scan for word boundaries.
-            let bytes = text.as_bytes();
+            // Scan for word boundaries. Indices must be *char* offsets, since
+            // line_start is a char offset and Motion::To takes one — walking
+            // bytes would skew every label on a line containing non-ASCII text.
+            let chars: Vec<char> = text.chars().collect();
+            let is_word = |c: char| c.is_alphanumeric() || c == '_';
             let mut pos = 0;
-            while pos < bytes.len() {
-                if bytes[pos].is_ascii_alphanumeric() || bytes[pos] == b'_' {
+            while pos < chars.len() {
+                if is_word(chars[pos]) {
                     let word_start = pos;
-                    while pos < bytes.len() && (bytes[pos].is_ascii_alphanumeric() || bytes[pos] == b'_') {
+                    while pos < chars.len() && is_word(chars[pos]) {
                         pos += 1;
                     }
                     if let Some(label) = label_pool.next() {
@@ -7670,5 +7674,104 @@ mod tests {
         // Skip a-z, aa-az (26 + 26 = 52)
         for _ in 0..52 { pool.next(); }
         assert_eq!(pool.next(), Some("ba".to_string()));
+    }
+
+    /// `f` in Normal mode labels every visible word, in reading order.
+    #[test]
+    fn flash_f_labels_visible_words_in_order() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let mut a = App::new("alpha beta\ngamma\n".into(), PathBuf::from("f.txt"));
+        a.handle_key(CtKey::new(KeyCode::Char('f'), KeyModifiers::NONE));
+        let fs = a.flash.as_ref().expect("flash mode active after f");
+        assert_eq!(fs.pending, None);
+        let labels: Vec<(&str, usize)> =
+            fs.labels.iter().map(|l| (l.label.as_str(), l.offset)).collect();
+        assert_eq!(labels, vec![("a", 0), ("b", 6), ("c", 11)]);
+    }
+
+    /// Label offsets are char offsets, so a multi-byte char earlier on the line
+    /// must not skew the words after it.
+    #[test]
+    fn flash_label_offsets_are_char_offsets_not_bytes() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        // "é" is one char but two bytes; "beta" starts at char 2, byte 3.
+        let mut a = App::new("é beta\n".into(), PathBuf::from("f.txt"));
+        a.handle_key(CtKey::new(KeyCode::Char('f'), KeyModifiers::NONE));
+        let fs = a.flash.as_ref().expect("flash mode active after f");
+        let labels: Vec<(&str, usize)> =
+            fs.labels.iter().map(|l| (l.label.as_str(), l.offset)).collect();
+        assert_eq!(labels, vec![("a", 0), ("b", 2)]);
+    }
+
+    /// A first keystroke matching exactly one label jumps without waiting.
+    #[test]
+    fn flash_single_match_jumps_immediately() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("alpha beta\n".into(), PathBuf::from("f.txt"));
+        a.handle_key(CtKey::new(KeyCode::Char('f'), none));
+        // Labels are a -> "alpha" (0) and b -> "beta" (6).
+        a.handle_key(CtKey::new(KeyCode::Char('b'), none));
+        assert!(a.flash.is_none(), "flash cleared after the jump");
+        assert_eq!(a.ws.borrow().primary_head(), 6);
+    }
+
+    /// With more words than single-char labels, the first key narrows and the
+    /// second key jumps.
+    #[test]
+    fn flash_two_char_label_jumps_on_second_key() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        // 30 two-char words on one line: word i starts at char 3*i.
+        let content = vec!["zz"; 30].join(" ") + "\n";
+        let mut a = App::new(content.clone(), PathBuf::from("f.txt"));
+        a.handle_key(CtKey::new(KeyCode::Char('f'), none));
+        assert_eq!(a.flash.as_ref().unwrap().labels.len(), 30);
+
+        // Labels: a..z for words 0..25, then aa, ab, ac, ad for words 26..29.
+        a.handle_key(CtKey::new(KeyCode::Char('a'), none));
+        let fs = a.flash.as_ref().expect("still active, waiting for second char");
+        assert_eq!(fs.pending, Some('a'));
+        assert_eq!(fs.labels.len(), 5, "a, aa, ab, ac, ad");
+
+        a.handle_key(CtKey::new(KeyCode::Char('b'), none));
+        assert!(a.flash.is_none());
+        assert_eq!(a.ws.borrow().primary_head(), 27 * 3, "label ab -> word 27");
+        // Label keys must never reach the Vim layer: `a` would open Insert mode
+        // and `b` would land in the buffer.
+        assert_eq!(a.ws.borrow().buffer().to_string(), content);
+        assert_eq!(a.vim.mode, VimMode::Normal);
+    }
+
+    /// Esc leaves flash mode without moving the cursor.
+    #[test]
+    fn flash_esc_cancels_without_moving() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("alpha beta gamma\n".into(), PathBuf::from("f.txt"));
+        let before = a.ws.borrow().primary_head();
+        a.handle_key(CtKey::new(KeyCode::Char('f'), none));
+        assert!(a.flash.is_some());
+        a.handle_key(CtKey::new(KeyCode::Esc, none));
+        assert!(a.flash.is_none());
+        assert_eq!(a.ws.borrow().primary_head(), before);
+    }
+
+    /// A key that can't be a label cancels flash and is replayed as a normal
+    /// key, rather than being swallowed.
+    #[test]
+    fn flash_non_label_key_cancels_and_replays() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("alpha beta\n".into(), PathBuf::from("f.txt"));
+        // Move off column 0 so the replayed `0` is observable.
+        a.handle_key(CtKey::new(KeyCode::Char('w'), none));
+        assert_eq!(a.ws.borrow().primary_head(), 6);
+
+        a.handle_key(CtKey::new(KeyCode::Char('f'), none));
+        assert!(a.flash.is_some());
+        a.handle_key(CtKey::new(KeyCode::Char('0'), none));
+        assert!(a.flash.is_none(), "non-label key cancels flash");
+        assert_eq!(a.ws.borrow().primary_head(), 0, "`0` still ran as a motion");
     }
 }

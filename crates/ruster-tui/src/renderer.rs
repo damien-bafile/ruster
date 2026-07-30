@@ -111,16 +111,30 @@ impl Renderer for TuiRenderer {
                     frame.render_widget(buf_widget, buf_area);
                 }
 
-                // Flash jump labels overlay.
+                // Flash jump labels overlay. Labels sit on top of the buffer
+                // text, so they use the same layout the BufferWidget does:
+                // sign column, then line-number gutter, then text.
+                let sign_w = view.signs.width.min(buf_area.width);
+                let gutter_w = view.gutter.width.min(buf_area.width.saturating_sub(sign_w));
+                let text_x = buf_area.x + sign_w + gutter_w;
                 for fl in &view.flash_labels {
-                    let y = view.rect.y + 1 + fl.row;
-                    let x = view.rect.x + fl.col;
+                    if fl.row >= buf_area.height {
+                        continue;
+                    }
+                    let y = buf_area.y + fl.row;
+                    let x = text_x + fl.col;
+                    // Clip labels that would spill past the window's right edge
+                    // into a neighbouring split.
+                    let w = fl.text.chars().count() as u16;
+                    if x >= buf_area.right() || x + w > buf_area.right() {
+                        continue;
+                    }
                     let fg_color = ruster_color_to_ratatui(&fl.color);
                     let bg_color = ratatui::style::Color::Indexed(214);
                     let style = ratatui::style::Style::default()
                         .fg(fg_color)
                         .bg(bg_color);
-                    let area = Rect::new(x, y, fl.text.len() as u16, 1);
+                    let area = Rect::new(x, y, w, 1);
                     let line = ratatui::text::Line::from(ratatui::text::Span::styled(&fl.text, style));
                     frame.render_widget(ratatui::widgets::Paragraph::new(line), area);
                 }
