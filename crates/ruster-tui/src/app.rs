@@ -2250,6 +2250,7 @@ impl App {
         }
         let old_editmode = self.config.editmode.clone();
         self.config = Config::from_settings(&vals);
+        self.config.colors = resolve_theme_colors(&self.lua, &self.config.theme, &self.config.color_overrides);
 
         // If editmode changed, apply the switch.
         if key == "editmode" && self.config.editmode != old_editmode {
@@ -4004,7 +4005,16 @@ impl App {
                 if let Some(pos) = vals.iter_mut().find(|((_g, k), _)| *k == key) {
                     pos.1 = default.clone();
                 }
+                let old_editmode = self.config.editmode.clone();
                 self.config = Config::from_settings(&vals);
+                self.config.colors = resolve_theme_colors(&self.lua, &self.config.theme, &self.config.color_overrides);
+                if key == "editmode" && self.config.editmode != old_editmode {
+                    let mode = match self.config.editmode.as_str() {
+                        "emacs" => EditMode::Emacs,
+                        _ => EditMode::Neovim,
+                    };
+                    self.set_editmode(mode);
+                }
                 self.notify.push(Notification::new(
                     ruster_core::message::MessageLevel::Info,
                     ruster_core::message::MessageSource::Echo,
