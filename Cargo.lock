@@ -1312,6 +1312,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ruster-notify"
+version = "0.1.0"
+dependencies = [
+ "ruster-core",
+]
+
+[[package]]
 name = "ruster-project"
 version = "0.1.0"
 dependencies = [
@@ -1321,7 +1328,7 @@ dependencies = [
 
 [[package]]
 name = "ruster-render"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "crossterm",
 ]
@@ -1366,7 +1373,7 @@ dependencies = [
 
 [[package]]
 name = "ruster-tui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "crossterm",
  "dirs",
@@ -1377,6 +1384,7 @@ dependencies = [
  "ruster-dap",
  "ruster-lsp",
  "ruster-lua",
+ "ruster-notify",
  "ruster-project",
  "ruster-render",
  "ruster-syntax",

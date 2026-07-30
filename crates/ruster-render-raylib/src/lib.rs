@@ -654,11 +654,6 @@ impl Renderer for RaylibRenderer {
             let cmd_y = pad_y + (rows - 1) * line_h;
             d.draw_rectangle(0, cmd_y, screen_w, screen_h - cmd_y, cmdline_bg);
             d.draw_text_ex(font, cmd, Vector2::new(pad_x as f32, cmd_y as f32), font_size as f32, 1.0, cmdline_fg);
-        } else if let Some(msg) = state.message {
-            let rows = ((screen_h - pad_y) / line_h).max(1);
-            let cmd_y = pad_y + (rows - 1) * line_h;
-            d.draw_rectangle(0, cmd_y, screen_w, screen_h - cmd_y, cmdline_bg);
-            d.draw_text_ex(font, msg, Vector2::new(pad_x as f32, cmd_y as f32), font_size as f32, 1.0, accent);
         }
 
         // Picker overlay: centered floating box, or a full-width strip docked at

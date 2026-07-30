@@ -95,8 +95,8 @@ impl MessageLog {
     ) -> Vec<&MessageEntry> {
         self.entries
             .iter()
-            .filter(|e| source.map_or(true, |s| e.source == s))
-            .filter(|e| level.map_or(true, |l| e.level == l))
+            .filter(|e| source.is_none_or(|s| e.source == s))
+            .filter(|e| level.is_none_or(|l| e.level == l))
             .collect()
     }
 

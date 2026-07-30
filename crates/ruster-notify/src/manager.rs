@@ -118,7 +118,7 @@ impl NotificationManager {
         for list in self.active.values_mut() {
             list.retain(|e| {
                 let should_dismiss =
-                    e.notif.timeout.map_or(false, |t| now - e.pushed_at >= t);
+                    e.notif.timeout.is_some_and(|t| now - e.pushed_at >= t);
                 if should_dismiss {
                     if let Some(h) = self.history.iter_mut().find(|hn| hn.id == e.notif.id) {
                         h.dismissed = true;
@@ -176,7 +176,7 @@ mod tests {
     #[test]
     fn test_tick_dismisses_expired() {
         let mut mgr = NotificationManager::new(Duration::from_secs(0));
-        let id = mgr.push(info_notif("x").with_timeout(Duration::from_secs(0)));
+        mgr.push(info_notif("x").with_timeout(Duration::from_secs(0)));
         assert_eq!(mgr.active(BackendKind::Mini).len(), 1);
         mgr.tick();
         assert_eq!(mgr.active(BackendKind::Mini).len(), 0);

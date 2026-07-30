@@ -2400,15 +2400,13 @@ impl App {
             KeyCode::Char('s') if ck.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
                 forward = true;
                 self.isearch_step(&query, true, true);
-                self.emacs_isearch = Some((query.clone(), forward));
-                self.set_isearch_message(&query, forward);
+                self.emacs_isearch = Some((query, forward));
                 return;
             }
             KeyCode::Char('r') if ck.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
                 forward = false;
                 self.isearch_step(&query, false, true);
-                self.emacs_isearch = Some((query.clone(), forward));
-                self.set_isearch_message(&query, forward);
+                self.emacs_isearch = Some((query, forward));
                 return;
             }
             KeyCode::Char('g') if ck.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
@@ -2421,12 +2419,10 @@ impl App {
             _ => {}
         }
         // Search from the current point for the (possibly extended) query.
+        // The "I-search: <query>" prompt is derived from `emacs_isearch` when
+        // the frame is built, so there is nothing to publish here.
         self.isearch_step(&query, forward, false);
-        self.set_isearch_message(&query, forward);
         self.emacs_isearch = Some((query, forward));
-    }
-
-    fn set_isearch_message(&mut self, query: &str, forward: bool) {
     }
 
     /// Move the cursor to the next/previous occurrence of `query`. `advance`
