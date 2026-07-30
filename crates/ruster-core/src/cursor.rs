@@ -37,7 +37,7 @@ impl CursorSet {
     pub fn set_head(&mut self, at: usize, buffer: &Buffer) {
         let anchor = self.cursors[self.primary].anchor;
         self.cursors[self.primary] = Range { anchor, head: at };
-        let line = self.line_of(buffer, at);
+        let line = buffer.char_to_line(at);
         self.desired_col = at - buffer.line_start_char(line);
         self.collapse_at(at);
     }
@@ -51,15 +51,6 @@ impl CursorSet {
 
     fn collapse_at(&mut self, at: usize) {
         self.cursors[self.primary] = Range::caret(at);
-    }
-
-    fn line_of(&self, buffer: &Buffer, char_idx: usize) -> usize {
-        let mut acc = 0usize;
-        for line in 0..buffer.line_count() {
-            let start = buffer.line_start_char(line);
-            if start <= char_idx { acc = line; } else { break; }
-        }
-        acc
     }
 
     fn line_content_len(&self, buffer: &Buffer, line: usize) -> usize {
@@ -108,7 +99,7 @@ impl CursorSet {
 
     pub fn clear_extra(&mut self) {
         let original = self.cursors[0];
-        self.cursors.truncate(0);
+        self.cursors.clear();
         self.cursors.push(original);
         self.primary = 0;
     }
@@ -157,7 +148,7 @@ impl CursorSet {
 
     pub fn move_line(&mut self, buffer: &Buffer, delta: i32) {
         let from = self.head();
-        let line = self.line_of(buffer, from);
+        let line = buffer.char_to_line(from);
         if self.desired_col == usize::MAX {
             self.desired_col = from - buffer.line_start_char(line);
         }
@@ -175,7 +166,7 @@ impl CursorSet {
 
     pub fn move_line_edge(&mut self, buffer: &Buffer, edge: Edge) {
         let from = self.head();
-        let line = self.line_of(buffer, from);
+        let line = buffer.char_to_line(from);
         let at = match edge {
             Edge::Start => buffer.line_start_char(line),
             Edge::End => buffer.line_start_char(line) + self.line_content_len(buffer, line),
@@ -192,6 +183,48 @@ impl CursorSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Buffers that exercise the awkward cases for offset<->line mapping:
+    /// empty, no trailing newline, bare and repeated newlines, multi-byte
+    /// scalars, and grapheme clusters wider than one char.
+    const EDGE_CASE_BUFFERS: &[&str] = &[
+        "",
+        "a",
+        "a\n",
+        "\n",
+        "\n\n\n",
+        "abc\ndef\n",
+        "abc\ndef",
+        "héllo\nwörld\n",
+        "a\n\nb\n\n\nc",
+        "tab\there\ntrailing spaces   \n\n",
+        "e\u{0301}x\ncafe\u{0301}\n",
+        "👨‍👩‍👧 family\n🎉\n",
+    ];
+
+    /// The linear scan `CursorSet::line_of` used to perform, kept as a reference
+    /// so the rope-backed `Buffer::char_to_line` that replaced it stays honest.
+    fn line_of_by_scan(buffer: &Buffer, char_idx: usize) -> usize {
+        let mut acc = 0usize;
+        for line in 0..buffer.line_count() {
+            if buffer.line_start_char(line) <= char_idx { acc = line; } else { break; }
+        }
+        acc
+    }
+
+    #[test]
+    fn char_to_line_matches_linear_scan_at_every_offset() {
+        for content in EDGE_CASE_BUFFERS {
+            let buf = Buffer::from_str(content);
+            for idx in 0..=buf.len_chars() {
+                assert_eq!(
+                    buf.char_to_line(idx),
+                    line_of_by_scan(&buf, idx),
+                    "offset {idx} of {content:?}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn single_anchor_equals_head() {
