@@ -112,21 +112,19 @@ impl Renderer for TuiRenderer {
                 }
 
                 // Flash jump labels overlay. Labels sit on top of the buffer
-                // text, so they use the same layout the BufferWidget does:
-                // sign column, then line-number gutter, then text.
-                let sign_w = view.signs.width.min(buf_area.width);
-                let gutter_w = view.gutter.width.min(buf_area.width.saturating_sub(sign_w));
-                let text_x = buf_area.x + sign_w + gutter_w;
+                // text, so they share the layout every backend and the mouse
+                // hit-test use.
+                let text_area = ruster_render::TextArea::of(view.rect, view.signs.width, view.gutter.width);
                 for fl in &view.flash_labels {
-                    if fl.row >= buf_area.height {
+                    if fl.row >= text_area.height {
                         continue;
                     }
-                    let y = buf_area.y + fl.row;
-                    let x = text_x + fl.col;
+                    let y = text_area.y + fl.row;
+                    let x = text_area.x + fl.col;
                     // Clip labels that would spill past the window's right edge
                     // into a neighbouring split.
                     let w = fl.text.chars().count() as u16;
-                    if x >= buf_area.right() || x + w > buf_area.right() {
+                    if x + w > text_area.right() {
                         continue;
                     }
                     let fg_color = ruster_color_to_ratatui(&fl.color);

@@ -233,6 +233,60 @@ impl SignsView {
     }
 }
 
+/// Where a window's buffer text actually starts, and how much room it has.
+///
+/// A window's rect covers a header row, the text rows, and a statusline row;
+/// within the text area, columns are laid out sign column, then line-number
+/// gutter, then text. Every backend must agree on this, and so must mouse
+/// hit-testing — computing it by hand at each site is what previously put flash
+/// labels and click targets in the wrong column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextArea {
+    /// First column of buffer text (past the sign column and gutter).
+    pub x: u16,
+    /// First row of buffer text (past the header row).
+    pub y: u16,
+    /// Text columns available after the sign column and gutter.
+    pub width: u16,
+    /// Text rows available between the header and the statusline.
+    pub height: u16,
+}
+
+impl TextArea {
+    /// Derive the text area of a window from its rect and column widths.
+    /// `sign_width`/`gutter_width` are clamped to the rect, so an oversized
+    /// gutter yields a zero-width text area rather than an out-of-bounds origin.
+    pub fn of(rect: Rect, sign_width: u16, gutter_width: u16) -> Self {
+        let sign_w = sign_width.min(rect.width);
+        let gutter_w = gutter_width.min(rect.width - sign_w);
+        TextArea {
+            x: rect.x + sign_w + gutter_w,
+            // One header row above, one statusline row below.
+            y: rect.y + 1,
+            width: rect.width - sign_w - gutter_w,
+            height: rect.height.saturating_sub(2),
+        }
+    }
+
+    /// One past the last text column.
+    pub fn right(&self) -> u16 {
+        self.x + self.width
+    }
+
+    /// The (row, column) within the text area for a screen cell, or `None` when
+    /// the cell is outside it (in the header, statusline, sign column or gutter).
+    pub fn cell_at(&self, screen_x: u16, screen_y: u16) -> Option<(u16, u16)> {
+        if screen_x < self.x
+            || screen_x >= self.right()
+            || screen_y < self.y
+            || screen_y >= self.y + self.height
+        {
+            return None;
+        }
+        Some((screen_y - self.y, screen_x - self.x))
+    }
+}
+
 /// Build the line-number gutter for a window.
 ///
 /// - `number` only → absolute line numbers
@@ -603,6 +657,42 @@ mod tests {
     struct TestRenderer;
     impl Renderer for TestRenderer {
         fn render_frame(&mut self, _state: &FrameState) {}
+    }
+
+    #[test]
+    fn text_area_skips_header_statusline_and_columns() {
+        use crate::TextArea;
+        // 80x24 window, 1-wide sign column, 4-wide number gutter.
+        let t = TextArea::of(Rect::new(0, 0, 80, 24), 1, 4);
+        assert_eq!(t.x, 5, "past the sign column and gutter");
+        assert_eq!(t.y, 1, "past the header row");
+        assert_eq!(t.width, 75);
+        assert_eq!(t.height, 22, "header and statusline excluded");
+        assert_eq!(t.right(), 80);
+    }
+
+    #[test]
+    fn text_area_cell_at_rejects_cells_outside_the_text() {
+        use crate::TextArea;
+        let t = TextArea::of(Rect::new(10, 0, 40, 10), 0, 3);
+        // Origin maps to row 0, col 0.
+        assert_eq!(t.cell_at(13, 1), Some((0, 0)));
+        assert_eq!(t.cell_at(15, 3), Some((2, 2)));
+        // Header row, gutter column, statusline row, and the next split over.
+        assert_eq!(t.cell_at(13, 0), None, "header");
+        assert_eq!(t.cell_at(12, 1), None, "gutter");
+        assert_eq!(t.cell_at(13, 9), None, "statusline");
+        assert_eq!(t.cell_at(50, 1), None, "past the right edge");
+    }
+
+    #[test]
+    fn text_area_survives_columns_wider_than_the_window() {
+        use crate::TextArea;
+        // A gutter wider than the window must not push the origin out of bounds.
+        let t = TextArea::of(Rect::new(0, 0, 4, 5), 2, 99);
+        assert_eq!(t.width, 0);
+        assert_eq!(t.x, 4, "clamped to the window's right edge");
+        assert_eq!(t.cell_at(0, 1), None);
     }
 
     #[test]
