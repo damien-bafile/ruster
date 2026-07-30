@@ -46,6 +46,21 @@ pub struct FlashState {
     pub pending: Option<char>,
 }
 
+/// Where one window's buffer text was drawn in the last rendered frame.
+///
+/// Mouse hit-testing resolves clicks against this rather than recomputing the
+/// layout, so it cannot disagree with what the user is looking at — the sidebar
+/// column, the conditionally reserved cmdline row, the window header and the
+/// sign/number gutter are all already accounted for.
+#[derive(Debug, Clone, Copy)]
+pub struct WindowLayout {
+    pub window: ruster_core::windows::WindowId,
+    pub buffer: BufferId,
+    pub text: ruster_render::TextArea,
+    /// First visible buffer line, so a screen row maps back to a buffer line.
+    pub scroll_top: usize,
+}
+
 /// Infinite iterator over adaptive labels: a-z, aa-az, ba-bz, …
 fn label_pool_iter() -> impl Iterator<Item = String> {
     let single = ('a'..='z').map(|c| c.to_string());
@@ -1042,6 +1057,8 @@ pub struct App {
     leader_since: Option<std::time::Instant>,
     /// Active flash jump mode state, if any.
     pub flash: Option<FlashState>,
+    /// Window geometry from the last rendered frame, for mouse hit-testing.
+    last_layout: Vec<WindowLayout>,
     /// Noice notification manager.
     pub notify: NotificationManager,
     /// Active floating picker (buffer list, file finder, ...), if any.
@@ -1462,6 +1479,7 @@ impl App {
             anim_clock: std::time::Instant::now(),
             leader_since: None,
             flash: None,
+            last_layout: Vec::new(),
             dired_dirs: std::collections::HashMap::new(),
             dired_styled: std::collections::HashMap::new(),
             dired_entries: std::collections::HashMap::new(),
@@ -2339,50 +2357,47 @@ impl App {
     }
 
     fn handle_mouse_event(&mut self, me: MouseEvent) {
-        if me.kind == MouseEventKind::Down(MouseButton::Left)
-            && me.modifiers.contains(KeyModifiers::ALT)
+        if me.kind != MouseEventKind::Down(MouseButton::Left)
+            || !me.modifiers.contains(KeyModifiers::ALT)
         {
-            let row = me.row as usize;
-            let col = me.column as usize;
-            let (cols, rows) = self.renderer.viewport_cells();
-            let buf_area = CoreRect::new(0, 0, cols, rows.saturating_sub(1));
-            let w = self.ws.borrow();
-            let mut target: Option<(ruster_core::windows::WindowId, usize)> = None;
-            for (wid, rect) in w.windows.compute_rects(buf_area) {
-                if row >= rect.y as usize && row < (rect.y + rect.height) as usize
-                    && col >= rect.x as usize && col < (rect.x + rect.width) as usize
-                {
-                    let win = match w.windows.window(wid) {
-                        Some(win) => win,
-                        None => continue,
-                    };
-                    let win_row = row - rect.y as usize;
-                    let buf_line = win_row + win.scroll_top;
-                    let doc = match w.buffers.get(win.buffer) {
-                        Some(d) => d,
-                        None => continue,
-                    };
-                    let line_start = doc.buffer.line_start_char(buf_line);
-                    let line_end = doc.buffer.line_end_char(buf_line);
-                    let line_len = if line_end > line_start
-                        && doc.buffer.char_at(line_end - 1) == '\n'
-                    {
-                        line_end - line_start - 1
-                    } else {
-                        line_end - line_start
-                    };
-                    let col_clamped = (col - rect.x as usize).min(line_len.saturating_sub(1));
-                    target = Some((wid, line_start + col_clamped));
-                    break;
-                }
-            }
-            drop(w);
-            if let Some((wid, offset)) = target {
-                if let Some(win) = self.ws.borrow_mut().windows.window_mut(wid) {
-                    win.cursors.add_cursor(offset);
-                }
+            return;
+        }
+        if let Some((wid, offset)) = self.buffer_offset_at(me.column, me.row) {
+            if let Some(win) = self.ws.borrow_mut().windows.window_mut(wid) {
+                win.cursors.add_cursor(offset);
             }
         }
+    }
+
+    /// Resolve a screen cell to a buffer offset, using the geometry of the last
+    /// rendered frame (`last_layout`) rather than recomputing it.
+    ///
+    /// `None` when the cell is not over buffer text: window chrome, the sign or
+    /// number gutter, the sidebar, or past the buffer's last line. That last case
+    /// matters — indexing the rope beyond the final line panics.
+    fn buffer_offset_at(
+        &self,
+        col: u16,
+        row: u16,
+    ) -> Option<(ruster_core::windows::WindowId, usize)> {
+        let w = self.ws.borrow();
+        for l in &self.last_layout {
+            let Some((text_row, text_col)) = l.text.cell_at(col, row) else {
+                continue;
+            };
+            let doc = w.buffers.get(l.buffer)?;
+            let buf_line = l.scroll_top + text_row as usize;
+            if buf_line >= doc.buffer.line_count() {
+                return None;
+            }
+            // Clamp into the line's own text, as normal mode does: clicking past
+            // the end of a line lands on its last character.
+            let content_len = doc.buffer.line_content_len(buf_line);
+            let offset = doc.buffer.line_start_char(buf_line)
+                + (text_col as usize).min(content_len.saturating_sub(1));
+            return Some((l.window, offset));
+        }
+        None
     }
 
     /// Begin an Emacs incremental search in the given direction.
@@ -2459,48 +2474,11 @@ impl App {
         }
     }
 
-    pub fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        require_terminal()?;
-        crossterm::terminal::enable_raw_mode()?;
-        let mut stdout = std::io::stdout();
-        crossterm::execute!(stdout, crossterm::terminal::EnterAlternateScreen)?;
-        self.renderer = Box::new(TuiRenderer::new()?);
-        crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
-
-        loop {
-            let dt = self.timer.tick();
-            let secs = dt.as_secs_f64();
-            self.lua.set_frame_dt(secs);
-            if self.has_smooth_cursor {
-                let (line, col) = self.cursor_line_col();
-                self.cursor_anim.update(dt, col, line, self.config.cursor_anim_enabled, self.config.cursor_anim_speed);
-            }
-            self.render();
-            if self.should_quit { break; }
-            let ev = crossterm::event::read()?;
-            let ck = match ev {
-                crossterm::event::Event::Key(k) => k,
-                crossterm::event::Event::Mouse(me) => {
-                    self.handle_mouse_event(me);
-                    continue;
-                }
-                _ => continue,
-            };
-            self.handle_key(ck);
-        }
-
-        self.terminals.clear();
-        self.lsp.shutdown_all();
-        crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
-        crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen)?;
-        crossterm::terminal::disable_raw_mode()?;
-        Ok(())
-    }
-
     pub fn run_async(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         require_terminal()?;
         crossterm::terminal::enable_raw_mode()?;
         crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen)?;
+        crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
         self.renderer = Box::new(TuiRenderer::new()?);
 
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -2516,6 +2494,7 @@ impl App {
         self.lsp.shutdown_all();
         rt.shutdown_background();
 
+        crossterm::execute!(std::io::stdout(), DisableMouseCapture)?;
         crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen)?;
         crossterm::terminal::disable_raw_mode()?;
         result
@@ -2541,9 +2520,11 @@ impl App {
             tokio::select! {
                 event = rx.recv() => {
                     match event {
-                        Some(AppEvent::Input(ev)) => {
-                            if let crossterm::event::Event::Key(k) = ev { self.handle_key(k) }
-                        }
+                        Some(AppEvent::Input(ev)) => match ev {
+                            crossterm::event::Event::Key(k) => self.handle_key(k),
+                            crossterm::event::Event::Mouse(me) => self.handle_mouse_event(me),
+                            _ => {}
+                        },
                         None => break,
                     }
                 }
@@ -3293,6 +3274,9 @@ impl App {
         };
 
         let mut views: Vec<WindowView> = Vec::new();
+        // Rebuilt below from the geometry actually used to draw this frame; the
+        // mouse hit-test reads it back.
+        self.last_layout.clear();
         let sidebar_rect = if self.sidebar.is_some() {
             let w = self.sidebar_width.min(buf_area.width.saturating_sub(4));
             let sidebar = CoreRect::new(buf_area.x, buf_area.y, w, buf_area.height);
@@ -3546,8 +3530,19 @@ impl App {
                 } else {
                     vec![]
                 };
+                let rrect = RRect::new(rect.x, rect.y, rect.width, rect.height);
+                // A terminal window draws its own grid, so there is no buffer
+                // text to click into.
+                if terminal.is_none() {
+                    self.last_layout.push(WindowLayout {
+                        window: wid,
+                        buffer: buf_id,
+                        text: ruster_render::TextArea::of(rrect, signs.width, gutter.width),
+                        scroll_top: scroll,
+                    });
+                }
                 views.push(WindowView {
-                    rect: RRect::new(rect.x, rect.y, rect.width, rect.height),
+                    rect: rrect,
                     header: name.clone(),
                     lines,
                     cursor: (cline as u16, ccol as u16),
@@ -7783,5 +7778,69 @@ mod tests {
         a.handle_key(CtKey::new(KeyCode::Char('0'), none));
         assert!(a.flash.is_none(), "non-label key cancels flash");
         assert_eq!(a.ws.borrow().primary_head(), 0, "`0` still ran as a motion");
+    }
+
+    /// Lay out a frame and hand back the active window's text area, so hit-test
+    /// assertions are relative to the real geometry rather than to a guess about
+    /// the viewport size.
+    fn rendered_text_area(a: &mut App) -> ruster_render::TextArea {
+        a.render();
+        a.last_layout.first().expect("one window was laid out").text
+    }
+
+    #[test]
+    fn mouse_hit_test_maps_clicks_to_buffer_offsets() {
+        let mut a = App::new("alpha\nbravo\ncharlie\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let text = rendered_text_area(&mut a);
+        // Top-left text cell is the first char of the buffer.
+        assert_eq!(a.buffer_offset_at(text.x, text.y).map(|(_, o)| o), Some(0));
+        // Second row, third column: 'a' of "bravo", which starts at offset 6.
+        assert_eq!(a.buffer_offset_at(text.x + 2, text.y + 1).map(|(_, o)| o), Some(8));
+    }
+
+    /// The header row and the number gutter are not buffer text. Getting this
+    /// wrong shifted every click by a row and by the gutter width.
+    #[test]
+    fn mouse_hit_test_rejects_window_chrome_and_gutter() {
+        let mut a = App::new("alpha\nbravo\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let text = rendered_text_area(&mut a);
+        assert!(text.x > 0, "the number gutter reserves columns");
+        assert!(text.y > 0, "the header row sits above the text");
+        assert_eq!(a.buffer_offset_at(text.x, text.y - 1), None, "header row");
+        assert_eq!(a.buffer_offset_at(text.x - 1, text.y), None, "gutter column");
+    }
+
+    /// Clicking the blank space below a short buffer used to index the rope past
+    /// its last line, which panics inside ropey and took the editor down.
+    #[test]
+    fn mouse_hit_test_below_last_line_is_none() {
+        let mut a = App::new("alpha\nbravo\n".into(), PathBuf::from("f.txt"));
+        let text = rendered_text_area(&mut a);
+        assert!(text.height > 3, "need blank rows below the text");
+        assert_eq!(a.buffer_offset_at(text.x, text.y + text.height - 1), None);
+    }
+
+    #[test]
+    fn mouse_hit_test_clamps_past_end_of_line() {
+        let mut a = App::new("ab\nlonger line\n".into(), PathBuf::from("f.txt"));
+        let text = rendered_text_area(&mut a);
+        // Column 9 is past the end of "ab", so it lands on 'b'.
+        assert_eq!(a.buffer_offset_at(text.x + 9, text.y).map(|(_, o)| o), Some(1));
+    }
+
+    /// With the sidebar open every window shifts right; the hit-test reads the
+    /// layout that was drawn, so it follows automatically.
+    #[test]
+    fn mouse_hit_test_follows_the_sidebar_offset() {
+        let mut a = App::new("alpha\nbravo\n".into(), PathBuf::from("f.txt"));
+        let before = rendered_text_area(&mut a).x;
+        a.toggle_sidebar();
+        let after = rendered_text_area(&mut a);
+        assert!(after.x > before, "sidebar pushes the text area right");
+        assert_eq!(a.buffer_offset_at(after.x, after.y).map(|(_, o)| o), Some(0));
+        // A click in the sidebar column is not buffer text.
+        assert_eq!(a.buffer_offset_at(before, after.y), None);
     }
 }
