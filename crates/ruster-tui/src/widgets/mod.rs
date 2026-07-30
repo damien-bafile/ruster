@@ -1,3 +1,4 @@
+pub mod debug_overlay;
 pub mod noice_toast;
 
 use ratatui::buffer::Buffer;

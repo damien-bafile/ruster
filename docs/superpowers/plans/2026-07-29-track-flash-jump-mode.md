@@ -462,18 +462,18 @@ git commit -m "feat(flash): render flash jump labels as overlay in TUI"
 
 ---
 
-### Task 5: (Optional) Raylib renderer support — SKIPPED
+### Task 5: (Optional) Raylib renderer support — DONE
 
-**Status:** Not implemented. The TUI is the actively used renderer; flash labels
-are TUI-only for now. `WindowView.flash_labels` is populated regardless, so the
-Raylib side is a drop-in addition whenever that renderer becomes primary.
+**Status:** Implemented (2026-07-30). Labels are drawn in the Raylib window loop
+using its existing `text_x` origin and `content_y + row * line_h`, so both
+backends now consume `WindowView.flash_labels`.
 
 **Files:**
 - Modify: `crates/ruster-render-raylib/src/lib.rs`
 
 Skip this task if the Raylib renderer is not actively being used. If it is, add equivalent flash label rendering using Raylib's drawing primitives, reading `WindowView.flash_labels` the same way.
 
-- [ ] **Step 1: Add flash label drawing in raylib renderer**
+- [x] **Step 1: Add flash label drawing in raylib renderer**
 
 Search for where `WindowView` lines are drawn in the raylib renderer. After rendering styled lines, add:
 
@@ -494,12 +494,12 @@ for fl in &window.flash_labels {
 
 Adjust types to match the actual raylib renderer's API and available functions.
 
-- [ ] **Step 2: Build to verify**
+- [x] **Step 2: Build to verify**
 
 Run: `cargo build -p ruster-render-raylib 2>&1 | tail -5`
 Expected: clean build
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/ruster-render-raylib/src/lib.rs
@@ -535,3 +535,8 @@ a buffer-unchanged assertion, Esc cancel, and non-label cancel-and-replay.
 routes Emacs earlier); operator-pending `df`/`cf` still use Vim's inline find
 since the trigger requires `is_normal_idle()`; label colors are hardcoded rather
 than theme-driven.
+
+**Follow-up (2026-07-30):** the TUI overlay's hand-rolled column arithmetic was
+replaced by the shared `ruster_render::TextArea`, which both backends and the
+mouse hit-test now use — the "labels drawn over the line numbers" bug came from
+each site computing the text origin itself.

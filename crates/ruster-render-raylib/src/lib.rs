@@ -603,6 +603,22 @@ impl Renderer for RaylibRenderer {
                         s.draw_rectangle(cx as i32, cy, char_w as i32, line_h, Color::new(cur_r, cur_g, cur_b, 140));
                     }
                 }
+
+                // Flash jump labels, painted over the text they target.
+                for fl in &view.flash_labels {
+                    if fl.row as usize >= buf_rows {
+                        continue;
+                    }
+                    let lx = text_x + (fl.col as f32 * char_w) as i32;
+                    let ly = content_y + fl.row as i32 * line_h;
+                    let lw = (measure(&fl.text) as i32).max(char_w as i32);
+                    let color = match fl.color {
+                        ruster_render::Color::Rgb(r, g, b) => Color::new(r, g, b, 255),
+                        ruster_render::Color::Default => default_color,
+                    };
+                    s.draw_rectangle(lx, ly, lw, line_h, accent);
+                    s.draw_text_ex(font, &fl.text, Vector2::new(lx as f32, ly as f32), font_size as f32, 1.0, color);
+                }
                 } // end: buffer vs. terminal drawing
 
                 // Per-window statusline on its bottom row (below header + content).
@@ -749,6 +765,61 @@ impl Renderer for RaylibRenderer {
                         x_off += measure(&seg);
                     }
                 }
+            }
+        }
+
+        // Noice mini toasts, stacked down the top-right corner.
+        for (i, text) in state.noice_mini.iter().enumerate() {
+            let tw = measure(text) as i32 + 12;
+            let tx = screen_w - tw - pad_x;
+            let ty = pad_y + i as i32 * line_h;
+            if ty + line_h > screen_h {
+                break;
+            }
+            d.draw_rectangle(tx, ty, tw, line_h, whichkey_bg);
+            d.draw_rectangle(tx, ty, 2, line_h, accent);
+            d.draw_text_ex(font, text, Vector2::new((tx + 6) as f32, ty as f32), font_size as f32, 1.0, whichkey_fg);
+        }
+
+        // Noice notify panel: the notification history, docked right.
+        if let Some(lines) = &state.noice_notify {
+            let panel_w = (screen_w / 3).min(420);
+            let panel_x = screen_w - panel_w;
+            d.draw_rectangle(panel_x, 0, panel_w, screen_h, whichkey_bg);
+            d.draw_rectangle(panel_x, 0, 2, screen_h, accent);
+            let mut s = d.begin_scissor_mode(panel_x, 0, panel_w, screen_h);
+            for (i, line) in lines.iter().enumerate() {
+                let ly = pad_y + i as i32 * line_h;
+                if ly + line_h > screen_h {
+                    break;
+                }
+                s.draw_text_ex(font, &line.text, Vector2::new((panel_x + 6) as f32, ly as f32), font_size as f32, 1.0, whichkey_fg);
+            }
+        }
+
+        // Debugger panel, docked right so it doesn't cover the stopped line.
+        if let Some(dbg) = &state.debug_overlay {
+            let rows = dbg.rows();
+            let panel_w = (screen_w / 3).min(460);
+            let panel_x = screen_w - panel_w;
+            let panel_h = ((rows.len() as i32 + 1) * line_h + 8).min(screen_h);
+            d.draw_rectangle(panel_x, 0, panel_w, panel_h, whichkey_bg);
+            // Toolbar bar across the top of the panel.
+            d.draw_rectangle(panel_x, 0, panel_w, line_h, accent);
+            let mut s = d.begin_scissor_mode(panel_x, 0, panel_w, panel_h);
+            s.draw_text_ex(font, &dbg.toolbar, Vector2::new((panel_x + 6) as f32, 0.0), font_size as f32, 1.0, accent_fg);
+            for (i, row) in rows.iter().enumerate() {
+                let ry = (i as i32 + 1) * line_h + 4;
+                if ry + line_h > panel_h {
+                    break;
+                }
+                // Detail rows are dimmed so section headings stand out.
+                let color = if row.starts_with(' ') || row.starts_with(|c: char| c.is_ascii_digit()) {
+                    gutter_color
+                } else {
+                    whichkey_fg
+                };
+                s.draw_text_ex(font, row, Vector2::new((panel_x + 6) as f32, ry as f32), font_size as f32, 1.0, color);
             }
         }
 

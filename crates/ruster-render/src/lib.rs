@@ -619,6 +619,7 @@ pub struct FrameState<'a> {
 }
 
 /// Debugger overlay rendered above the window area.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DebugOverlayView {
     /// Toolbar row: status + action hints.
     pub toolbar: String,
@@ -626,6 +627,36 @@ pub struct DebugOverlayView {
     pub stack: Vec<(u16, String, String)>,
     /// Visible scopes and their variables.
     pub scopes: Vec<(String, Vec<(String, String)>)>,
+}
+
+impl DebugOverlayView {
+    /// The overlay body as display rows: the call stack, then each scope with
+    /// its variables. Both backends draw the same text, so the flattening lives
+    /// here instead of being reimplemented per renderer.
+    ///
+    /// The toolbar is not included — it is drawn as a highlighted bar.
+    pub fn rows(&self) -> Vec<String> {
+        let mut rows = Vec::new();
+        if !self.stack.is_empty() {
+            rows.push("Call stack".to_string());
+            for (depth, name, loc) in &self.stack {
+                rows.push(format!("{:>2}  {}  {}", depth, name, loc));
+            }
+        }
+        for (scope, vars) in &self.scopes {
+            if !rows.is_empty() {
+                rows.push(String::new());
+            }
+            rows.push(scope.clone());
+            for (name, value) in vars {
+                rows.push(format!("  {} = {}", name, value));
+            }
+        }
+        if rows.is_empty() {
+            rows.push("(no frames)".to_string());
+        }
+        rows
+    }
 }
 
 pub trait Renderer {
@@ -657,6 +688,33 @@ mod tests {
     struct TestRenderer;
     impl Renderer for TestRenderer {
         fn render_frame(&mut self, _state: &FrameState) {}
+    }
+
+    #[test]
+    fn debug_overlay_rows_lists_stack_then_scopes() {
+        use crate::DebugOverlayView;
+        let v = DebugOverlayView {
+            toolbar: "[Debug: PAUSED]".into(),
+            stack: vec![(0, "main".into(), "src/main.rs:12".into())],
+            scopes: vec![("Locals".into(), vec![("x".into(), "1".into())])],
+        };
+        let rows = v.rows();
+        assert_eq!(rows[0], "Call stack");
+        assert!(rows[1].contains("main") && rows[1].contains("src/main.rs:12"));
+        // A blank spacer separates the stack from the first scope.
+        assert_eq!(rows[2], "");
+        assert_eq!(rows[3], "Locals");
+        assert_eq!(rows[4], "  x = 1");
+        // The toolbar is drawn as a bar, not as a row.
+        assert!(!rows.iter().any(|r| r.contains("Debug: PAUSED")));
+    }
+
+    #[test]
+    fn debug_overlay_rows_never_empty() {
+        use crate::DebugOverlayView;
+        // A session that has started but not stopped yet has no frames; the
+        // panel still needs something to draw.
+        assert_eq!(DebugOverlayView::default().rows(), vec!["(no frames)".to_string()]);
     }
 
     #[test]

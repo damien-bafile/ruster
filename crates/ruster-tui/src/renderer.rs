@@ -231,6 +231,19 @@ impl Renderer for TuiRenderer {
                 );
             }
 
+            // Debugger panel, docked right so it doesn't cover the stopped line.
+            if let Some(dbg) = &state.debug_overlay {
+                let dw = 44.min(area.width / 2).max(1);
+                let dh = (dbg.rows().len() as u16 + 1).min(area.height);
+                let darea = Rect::new(area.width.saturating_sub(dw), area.y, dw, dh);
+                frame.render_widget(ratatui::widgets::Clear, darea);
+                frame.render_widget(
+                    crate::widgets::debug_overlay::DebugOverlayWidget::new(dbg)
+                        .with_theme(&state.theme),
+                    darea,
+                );
+            }
+
             if let Some(settings) = &state.settings {
                 let sw = (area.width * 8 / 10).clamp(30, area.width.saturating_sub(2));
                 let sh = (area.height * 9 / 10).clamp(6, area.height.saturating_sub(1));
