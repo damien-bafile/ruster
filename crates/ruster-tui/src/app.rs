@@ -2531,30 +2531,7 @@ impl App {
                 _ = interval.tick() => {}
             }
 
-            // Process queued Lua actions
-            for action in self.lua.drain_actions() {
-                match action {
-                    LuaAction::Cmd(cmd) => {
-                        match self.parse_cmdline(&cmd) {
-                            Ok(a) => self.apply_cmd(a),
-                            Err(e) => { self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, e)); },
-                        }
-                    }
-                    LuaAction::Print(msg) => {
-                        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, msg));
-                    }
-                    LuaAction::Notify(level, text) => {
-                        use ruster_core::message::MessageLevel;
-                        let notif_level = match level {
-                            1 => MessageLevel::Success,
-                            2 => MessageLevel::Warning,
-                            3 => MessageLevel::Error,
-                            _ => MessageLevel::Info,
-                        };
-                        self.notify.push(Notification::new(notif_level, ruster_core::message::MessageSource::Echo, text));
-                    }
-                }
-            }
+            self.drain_lua_actions();
 
             let dt = self.timer.tick();
             let secs = dt.as_secs_f64();
@@ -2570,12 +2547,50 @@ impl App {
         Ok(())
     }
 
+    /// Run whatever Lua queued since the last frame: `vim.cmd()`, `print()` and
+    /// `noice.notify()` all land here. Every event loop must call this, or those
+    /// callbacks pile up and never execute.
+    fn drain_lua_actions(&mut self) {
+        use ruster_core::message::{MessageLevel, MessageSource};
+        for action in self.lua.drain_actions() {
+            match action {
+                LuaAction::Cmd(cmd) => match self.parse_cmdline(&cmd) {
+                    Ok(a) => self.apply_cmd(a),
+                    Err(e) => {
+                        self.notify.push(Notification::new(
+                            MessageLevel::Info,
+                            MessageSource::Echo,
+                            e,
+                        ));
+                    }
+                },
+                LuaAction::Print(msg) => {
+                    self.notify.push(Notification::new(
+                        MessageLevel::Info,
+                        MessageSource::Echo,
+                        msg,
+                    ));
+                }
+                LuaAction::Notify(level, text) => {
+                    let notif_level = match level {
+                        1 => MessageLevel::Success,
+                        2 => MessageLevel::Warning,
+                        3 => MessageLevel::Error,
+                        _ => MessageLevel::Info,
+                    };
+                    self.notify.push(Notification::new(notif_level, MessageSource::Echo, text));
+                }
+            }
+        }
+    }
+
     pub fn run_gui(&mut self) {
         loop {
             let dt = self.timer.tick();
             while let Some(key) = self.renderer.poll_input() {
                 self.handle_key(key);
             }
+            self.drain_lua_actions();
             let secs = dt.as_secs_f64();
             self.lua.set_frame_dt(secs);
 
@@ -2583,7 +2598,9 @@ impl App {
             self.cursor_anim.update(dt, col, line, self.config.cursor_anim_enabled, self.config.cursor_anim_speed);
             self.render();
             if self.renderer.should_close() || self.should_quit { break; }
-            std::thread::sleep(Duration::from_millis(16));
+            // No sleep here: raylib paces the loop from `gui.target_fps`
+            // (see RaylibRenderer::set_gui_config). A fixed sleep on top of
+            // that pinned the GUI to ~60fps whatever the setting said.
         }
         self.terminals.clear();
         self.lsp.shutdown_all();
