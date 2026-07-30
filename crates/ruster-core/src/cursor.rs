@@ -113,29 +113,56 @@ impl CursorSet {
         self.cursors.iter().map(|r| r.head)
     }
 
+    /// Step one grapheme cluster left or right of `from`, clamped at the ends of
+    /// the buffer.
+    ///
+    /// Only the cursor's own line is segmented, which keeps the cost independent
+    /// of buffer size. That is equivalent to segmenting the whole buffer because
+    /// a cluster never spans a `\n`: the in-memory buffer is always
+    /// LF-normalized (see [`crate::document::Document`]), so `\r\n` — the one
+    /// cluster that contains a newline — cannot occur.
     fn grapheme_step(&self, buffer: &Buffer, from: usize, dir: Dir) -> usize {
-        let text = buffer.to_string();
-        let graphemes: Vec<&str> = UnicodeSegmentation::graphemes(&*text, true).collect();
-        let mut char_pos = 0usize;
-        let mut gidx = 0usize;
-        for (i, g) in graphemes.iter().enumerate() {
-            if char_pos == from { gidx = i; break; }
-            char_pos += g.chars().count();
-            gidx = i + 1;
+        let from = from.min(buffer.len_chars());
+        // Crossing a line boundary always steps over exactly one `\n`, so the
+        // neighbouring line never has to be segmented.
+        if dir == Dir::Left {
+            if from == 0 {
+                return 0;
+            }
+            if from == buffer.line_start_char(buffer.char_to_line(from)) {
+                return from - 1;
+            }
         }
+
+        let line = buffer.char_to_line(from);
+        let line_start = buffer.line_start_char(line);
+        // Includes the line's trailing `\n`, so stepping right off the last
+        // character lands on the next line's first one.
+        let text = buffer.slice_string(line_start, buffer.line_end_char(line));
+
+        let mut pos = line_start;
+        let mut prev_start = None;
+        for g in UnicodeSegmentation::graphemes(text.as_str(), true) {
+            let end = pos + g.chars().count();
+            if from < end {
+                // `from` is at this cluster's start, or inside it — in which
+                // case snap to the enclosing boundary rather than landing
+                // mid-cluster again.
+                return match dir {
+                    Dir::Right => end,
+                    Dir::Left if from == pos => prev_start.unwrap_or(pos),
+                    Dir::Left => pos,
+                };
+            }
+            prev_start = Some(pos);
+            pos = end;
+        }
+        // `from` is past the last cluster — the end of a line with no trailing
+        // newline, i.e. the end of the buffer. Right is a fixed point; Left
+        // still has the final cluster to step back over.
         match dir {
-            Dir::Left => {
-                if gidx == 0 { from } else {
-                    let prev = graphemes[gidx - 1];
-                    from - prev.chars().count()
-                }
-            }
-            Dir::Right => {
-                if gidx >= graphemes.len() { from } else {
-                    let cur = graphemes[gidx];
-                    from + cur.chars().count()
-                }
-            }
+            Dir::Right => from,
+            Dir::Left => prev_start.unwrap_or(from),
         }
     }
 
@@ -210,6 +237,93 @@ mod tests {
             if buffer.line_start_char(line) <= char_idx { acc = line; } else { break; }
         }
         acc
+    }
+
+    /// The whole-buffer segmentation `grapheme_step` used to perform, kept as a
+    /// reference for the per-line rewrite.
+    fn grapheme_step_whole_buffer(buffer: &Buffer, from: usize, dir: Dir) -> usize {
+        let text = buffer.to_string();
+        let graphemes: Vec<&str> = UnicodeSegmentation::graphemes(&*text, true).collect();
+        let mut char_pos = 0usize;
+        let mut gidx = 0usize;
+        for (i, g) in graphemes.iter().enumerate() {
+            if char_pos == from { gidx = i; break; }
+            char_pos += g.chars().count();
+            gidx = i + 1;
+        }
+        match dir {
+            Dir::Left => {
+                if gidx == 0 { from } else { from - graphemes[gidx - 1].chars().count() }
+            }
+            Dir::Right => {
+                if gidx >= graphemes.len() { from } else { from + graphemes[gidx].chars().count() }
+            }
+        }
+    }
+
+    /// Every offset that sits on a grapheme boundary — i.e. every position a
+    /// cursor can actually hold.
+    fn boundary_offsets(content: &str) -> Vec<usize> {
+        let mut out = vec![0];
+        let mut pos = 0;
+        for g in UnicodeSegmentation::graphemes(content, true) {
+            pos += g.chars().count();
+            out.push(pos);
+        }
+        out
+    }
+
+    #[test]
+    fn grapheme_step_matches_whole_buffer_segmentation() {
+        let c = CursorSet::single(0);
+        for content in EDGE_CASE_BUFFERS {
+            let buf = Buffer::from_str(content);
+            for from in boundary_offsets(content) {
+                for dir in [Dir::Left, Dir::Right] {
+                    assert_eq!(
+                        c.grapheme_step(&buf, from, dir),
+                        grapheme_step_whole_buffer(&buf, from, dir),
+                        "{dir:?} from offset {from} of {content:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A head left mid-cluster (e.g. by a clamp or an external jump) snaps to the
+    /// enclosing boundary. The old whole-buffer version instead subtracted the
+    /// *buffer's* last cluster width, which was meaningless; this is deliberately
+    /// the one place the rewrite does not reproduce it.
+    #[test]
+    fn grapheme_step_snaps_out_of_a_cluster() {
+        let c = CursorSet::single(0);
+        // "e" + combining acute is one cluster spanning offsets 0..2.
+        let b = Buffer::from_str("e\u{0301}x");
+        assert_eq!(c.grapheme_step(&b, 1, Dir::Left), 0, "snap back to cluster start");
+        assert_eq!(c.grapheme_step(&b, 1, Dir::Right), 2, "snap forward to cluster end");
+    }
+
+    #[test]
+    fn grapheme_step_crosses_line_boundaries() {
+        let c = CursorSet::single(0);
+        let b = Buffer::from_str("ab\ncd");
+        // Right off the last char of line 0 lands on its newline, then line 1.
+        assert_eq!(c.grapheme_step(&b, 1, Dir::Right), 2);
+        assert_eq!(c.grapheme_step(&b, 2, Dir::Right), 3);
+        // Left from the start of line 1 steps back onto the newline.
+        assert_eq!(c.grapheme_step(&b, 3, Dir::Left), 2);
+        // Both ends of the buffer are fixed points.
+        assert_eq!(c.grapheme_step(&b, 0, Dir::Left), 0);
+        assert_eq!(c.grapheme_step(&b, 5, Dir::Right), 5);
+    }
+
+    #[test]
+    fn grapheme_step_treats_zwj_emoji_as_one_cluster() {
+        let c = CursorSet::single(0);
+        let b = Buffer::from_str("👨‍👩‍👧x");
+        // Three emoji joined by two ZWJs: five chars, one cluster.
+        assert_eq!(c.grapheme_step(&b, 0, Dir::Right), 5);
+        assert_eq!(c.grapheme_step(&b, 5, Dir::Left), 0);
     }
 
     #[test]
