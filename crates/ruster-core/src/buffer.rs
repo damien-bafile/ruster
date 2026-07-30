@@ -45,6 +45,19 @@ impl Buffer {
         self.rope.char_to_line(char_idx)
     }
 
+    /// Length of a line in chars, excluding its trailing newline. This is the
+    /// number of columns a cursor can occupy on the line, so it is what column
+    /// clamping and end-of-line motions want.
+    pub fn line_content_len(&self, line_idx: usize) -> usize {
+        let start = self.line_start_char(line_idx);
+        let end = self.line_end_char(line_idx);
+        if end > start && self.char_at(end - 1) == '\n' {
+            end - start - 1
+        } else {
+            end - start
+        }
+    }
+
     pub fn insert(&mut self, at: usize, text: &str) -> Change {
         self.rope.insert(at, text);
         Change { at, deleted: String::new(), inserted: text.to_string() }

@@ -53,16 +53,6 @@ impl CursorSet {
         self.cursors[self.primary] = Range::caret(at);
     }
 
-    fn line_content_len(&self, buffer: &Buffer, line: usize) -> usize {
-        let end = buffer.line_end_char(line);
-        let start = buffer.line_start_char(line);
-        if end > start && buffer.char_at(end - 1) == '\n' {
-            end - start - 1
-        } else {
-            end - start
-        }
-    }
-
     pub fn add_cursor(&mut self, at: usize) {
         self.cursors.push(Range::caret(at));
         self.primary = self.cursors.len() - 1;
@@ -183,7 +173,7 @@ impl CursorSet {
         let last = buffer.line_count().saturating_sub(1);
         let target_line = target_line.min(last);
         let start = buffer.line_start_char(target_line);
-        let content_len = self.line_content_len(buffer, target_line);
+        let content_len = buffer.line_content_len(target_line);
         let col = self.desired_col.min(content_len);
         let new_head = start + col;
         let anchor = self.cursors[self.primary].anchor;
@@ -196,7 +186,7 @@ impl CursorSet {
         let line = buffer.char_to_line(from);
         let at = match edge {
             Edge::Start => buffer.line_start_char(line),
-            Edge::End => buffer.line_start_char(line) + self.line_content_len(buffer, line),
+            Edge::End => buffer.line_start_char(line) + buffer.line_content_len(line),
         };
         self.set_head(at, buffer);
     }

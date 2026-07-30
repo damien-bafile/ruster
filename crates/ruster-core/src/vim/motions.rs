@@ -52,12 +52,7 @@ pub fn last_printable_in_line(editor: &dyn EditorView) -> usize {
     let head = editor.primary_head();
     let line = char_to_line(editor, head);
     let start = editor.buffer().line_start_char(line);
-    let end = editor.buffer().line_end_char(line);
-    let content_len = if end > start && editor.buffer().char_at(end - 1) == '\n' {
-        end - start - 1
-    } else {
-        end - start
-    };
+    let content_len = editor.buffer().line_content_len(line);
     if content_len > 0 { start + content_len - 1 } else { start }
 }
 
@@ -65,13 +60,7 @@ pub fn last_printable_in_line(editor: &dyn EditorView) -> usize {
 /// `A` starts appending and where `$`-style operators stop.
 pub fn line_content_end(editor: &dyn EditorView, line: usize) -> usize {
     let buf = editor.buffer();
-    let start = buf.line_start_char(line);
-    let end = buf.line_end_char(line);
-    if end > start && buf.char_at(end - 1) == '\n' {
-        end - 1
-    } else {
-        end
-    }
+    buf.line_start_char(line) + buf.line_content_len(line)
 }
 
 /// First non-blank character on `line` — where `I` starts inserting.
