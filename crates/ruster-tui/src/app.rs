@@ -3595,23 +3595,14 @@ impl App {
                 };
                 StyledLine { text, highlights }
             }).collect();
+            // The sidebar is a window view without a cursor, gutter or flash
+            // labels — everything it doesn't use comes from Default.
             let view = WindowView {
                 rect: RRect::new(srect.x, srect.y, srect.width, srect.height),
                 lines,
-                cursor: (0, 0),
-                extra_cursors: vec![],
-                cursor_kind: CursorKind::Block,
-                cursor_visible: false,
-                cursor_smooth: None,
-                scroll_offset: 0,
-                gutter: ruster_render::GutterView { width: 0, rows: vec![] },
-                signs: ruster_render::SignsView::default(),
                 statusline: StatuslineView { left: "Sidebar".into(), center: String::new(), right: format!("{} items", rows.len()), active: self.sidebar_focused, mode: vim_mode_to_ui_mode(self.vim.mode) },
                 active: self.sidebar_focused,
-                selection: None,
-                terminal: None,
-                header: String::new(),
-                flash_labels: Vec::new(),
+                ..Default::default()
             };
             views.insert(0, view);
         }

@@ -187,12 +187,12 @@ pub struct StyledLine {
     pub highlights: Vec<(usize, usize, SyntaxStyle)>,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum CursorKind { Block, Bar }
+#[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
+pub enum CursorKind { #[default] Block, Bar }
 
 /// A rectangle in cell coordinates (origin top-left). Mirrors
 /// `ruster_core::windows::Rect`; kept local so this crate stays dependency-free.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Rect {
     pub x: u16,
     pub y: u16,
@@ -446,6 +446,11 @@ pub struct FlashLabelRender {
 }
 
 /// Everything needed to draw a single window into its rectangle.
+///
+/// `Default` exists so construction sites can fill in only what they care about
+/// with `..Default::default()`; adding a field here otherwise means editing every
+/// literal, which is how `flash_labels` came to be missing from some of them.
+#[derive(Default)]
 pub struct WindowView {
     pub rect: Rect,
     pub lines: Vec<StyledLine>,
@@ -595,6 +600,9 @@ impl Default for WelcomeView {
 /// A full frame: every visible window, the shared cmdline/message line, an
 /// optional centered picker overlay, optional bottom which-key panel, and an
 /// optional welcome screen.
+///
+/// `Default` gives an empty frame, so callers set only the fields they exercise.
+#[derive(Default)]
 pub struct FrameState<'a> {
     pub windows: Vec<WindowView>,
     pub cmdline: Option<&'a str>,
@@ -680,9 +688,8 @@ pub trait Renderer {
 #[cfg(test)]
 mod tests {
     use crate::{
-        Color, CursorKind, FrameState, GutterView, Rect, Renderer, SelectionKind, SelectionView,
-        SignsView, StatuslineView, StyledLine, TermCellView, TermGridView, Theme, UIMode,
-        WindowView,
+        Color, FrameState, Rect, Renderer, SelectionKind, SelectionView, StatuslineView,
+        StyledLine, TermCellView, TermGridView, UIMode, WindowView,
     };
 
     struct TestRenderer;
@@ -775,14 +782,7 @@ mod tests {
         WindowView {
             rect: Rect::new(0, 0, 80, 24),
             lines: vec![StyledLine { text: "hello".to_string(), highlights: vec![] }],
-            cursor: (0, 0),
-            extra_cursors: Vec::new(),
-            cursor_kind: CursorKind::Block,
             cursor_visible: true,
-            cursor_smooth: None,
-            scroll_offset: 0,
-            gutter: GutterView::default(),
-            signs: SignsView::default(),
             statusline: StatuslineView {
                 left: "NORMAL".into(),
                 center: "test.txt".into(),
@@ -791,10 +791,8 @@ mod tests {
                 mode: UIMode::Normal,
             },
             active: true,
-            selection: None,
-            terminal: None,
             header: "test.txt".into(),
-            flash_labels: Vec::new(),
+            ..Default::default()
         }
     }
 
@@ -844,19 +842,7 @@ mod tests {
 
     #[test]
     fn renderer_trait_is_object_safe() {
-        let state = FrameState {
-            windows: vec![sample_window()],
-            cmdline: None,
-            noice_mini: vec![],
-            noice_notify: None,
-            picker: None,
-            whichkey: None,
-            hover: None,
-            settings: None,
-            welcome: None,
-            theme: Theme::default(),
-            debug_overlay: None,
-        };
+        let state = FrameState { windows: vec![sample_window()], ..Default::default() };
         let mut r = TestRenderer;
         r.render_frame(&state);
         assert_eq!(r.viewport_cells(), (80, 24));
