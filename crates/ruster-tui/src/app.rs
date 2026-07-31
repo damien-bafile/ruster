@@ -1,3 +1,4 @@
+use crate::dired::{DiredResponse, DiredState};
 use crate::file_prompt::{self, FilePrompt, PromptOrigin, PromptStep};
 use crate::key::crossterm_to_ruster_key;
 use crate::picker::{PickerAction, PickerItem, PickerState};
@@ -146,78 +147,6 @@ fn build_hover_lines(markdown: &str) -> Vec<StyledLine> {
     }
     out.truncate(24);
     out
-}
-
-/// Recursively copy a directory tree.
-fn copy_dir_recursive(src: &std::path::Path, dest: &std::path::Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dest)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let from = entry.path();
-        let to = dest.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
-            copy_dir_recursive(&from, &to)?;
-        } else {
-            std::fs::copy(&from, &to)?;
-        }
-    }
-    Ok(())
-}
-
-/// Color a directory listing by entry type: directories blue, executables
-/// green, symlinks teal, regular files default.
-fn dired_styled_lines(entries: &[ruster_core::dired::DirEntry]) -> Vec<StyledLine> {
-    use ruster_render::{Color, SyntaxStyle};
-    let style = |fg: Color, bold: bool| SyntaxStyle { fg, bg: Color::Default, bold, italic: false };
-    entries
-        .iter()
-        .map(|e| {
-            let text = if e.is_dir {
-                format!("{}/", e.name)
-            } else {
-                e.name.clone()
-            };
-            let s = if e.is_symlink {
-                style(Color::Rgb(137, 220, 235), false) // teal
-            } else if e.is_dir {
-                style(Color::Rgb(137, 180, 250), true) // blue, bold
-            } else if e.is_exec {
-                style(Color::Rgb(166, 227, 161), false) // green
-            } else {
-                style(Color::Default, false)
-            };
-            let len = text.chars().count();
-            let highlights = if matches!(s.fg, Color::Default) {
-                Vec::new()
-            } else {
-                vec![(0, len, s)]
-            };
-            StyledLine { text, highlights }
-        })
-        .collect()
-}
-
-/// The dired keymap, shown as a popup by `?`.
-fn dired_help_lines() -> Vec<StyledLine> {
-    let entries = [
-        "Enter / l    open file or enter directory",
-        "h / -        parent directory",
-        "j / k        move cursor",
-        "C-n / C-p    move cursor down / up",
-        "yy           copy entry",
-        "dd           cut entry",
-        "p            paste into this directory",
-        "R            rename entry",
-        "D            delete entry (confirm)",
-        "+            new file, or dir if name ends with /",
-        ".            toggle hidden files",
-        "/ ? n N      search the listing (as in a normal buffer)",
-        ": commands   run any :command",
-        "g?           this help",
-    ];
-    std::iter::once(StyledLine { text: " dired keys".to_string(), highlights: vec![] })
-        .chain(entries.iter().map(|e| StyledLine { text: format!("  {}", e), highlights: vec![] }))
-        .collect()
 }
 
 /// The identifier word immediately before char offset `head`.
@@ -1047,26 +976,11 @@ pub struct App {
     /// Cached highlighted contents of the file currently shown in the picker
     /// preview, so it isn't re-read and re-parsed every frame.
     preview_cache: Option<(PathBuf, Vec<StyledLine>)>,
-    /// Current directory for each open dired (file-explorer) buffer.
-    dired_dirs: std::collections::HashMap<BufferId, PathBuf>,
-    /// Colored listing lines for each dired buffer, rebuilt on refresh.
-    dired_styled: std::collections::HashMap<BufferId, Vec<StyledLine>>,
-    /// The entries backing each dired buffer, so the listing text, colors and
-    /// cursor→entry lookup always agree.
-    dired_entries: std::collections::HashMap<BufferId, Vec<ruster_core::dired::DirEntry>>,
-    /// Whether dired shows dot-files (toggled with `.`).
-    dired_show_hidden: bool,
-    /// An in-progress dired file operation awaiting mini-buffer input.
+    /// Per-buffer state for dired file-explorer buffers.
+    dired: DiredState,
     /// The in-progress file operation (create/rename/delete), driven by both
     /// dired and the sidebar.
     file_prompt: Option<FilePrompt>,
-    /// Path awaiting paste in dired, and whether it's a cut (`true` = move).
-    dired_clipboard: Option<(PathBuf, bool)>,
-    /// True after the first `y` (`yy` copy) or `d` (`dd` cut).
-    dired_pending_y: bool,
-    dired_pending_d: bool,
-    /// True after `g` in dired, awaiting `g` (top) or `?` (help).
-    dired_pending_g: bool,
     /// Language server manager (one server per language).
     lsp: LspManager,
     /// Per-buffer LSP document registration state.
@@ -1456,15 +1370,8 @@ impl App {
             leader_since: None,
             flash: None,
             last_layout: Vec::new(),
-            dired_dirs: std::collections::HashMap::new(),
-            dired_styled: std::collections::HashMap::new(),
-            dired_entries: std::collections::HashMap::new(),
-            dired_show_hidden,
+            dired: DiredState::new(dired_show_hidden),
             file_prompt: None,
-            dired_clipboard: None,
-            dired_pending_y: false,
-            dired_pending_d: false,
-            dired_pending_g: false,
             lsp,
             lsp_docs: std::collections::HashMap::new(),
             diagnostics: std::collections::HashMap::new(),
@@ -3360,9 +3267,9 @@ impl App {
                     win.height = buf_h;
                 }
 
-                let lines: Vec<StyledLine> = match self.dired_styled.get(&buf_id) {
+                let lines: Vec<StyledLine> = match self.dired.styled_lines(buf_id) {
                     // Dired listings are colored by entry type.
-                    Some(styled) => styled.clone(),
+                    Some(styled) => styled.to_vec(),
                     None => match self.syntax.get(&buf_id) {
                         Some(engine) => engine.styled_lines().to_vec(),
                         None => plain_lines(&content),
@@ -4063,45 +3970,11 @@ impl App {
             .filter(|s| !s.is_empty())
             .map(PathBuf::from)
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-        let path = path.canonicalize().unwrap_or(path);
-        let id = self
-            .ws
-            .borrow_mut()
-            .buffers
-            .create_special(SpecialKind::Dired, &path.to_string_lossy());
-        self.ws.borrow_mut().set_active_buffer(id);
-        self.refresh_dired(id, path);
-    }
-
-    /// Reload a dired buffer's listing for `path` and reset its window cursor.
-    fn refresh_dired(&mut self, id: BufferId, path: PathBuf) {
-        // List once, then derive the text, colors and lookup table from it.
-        let entries = ruster_core::dired::list(&path, self.dired_show_hidden);
-        let text = ruster_core::dired::render_entries(&entries);
-        self.dired_styled.insert(id, dired_styled_lines(&entries));
-        self.dired_entries.insert(id, entries);
-        {
-            let mut w = self.ws.borrow_mut();
-            if let Some(doc) = w.buffers.get_mut(id) {
-                doc.buffer = Buffer::from_str(&text);
-                doc.name = if ruster_core::dired::is_drives_view(&path) {
-                    "Drives".to_string()
-                } else {
-                    path.to_string_lossy().into_owned()
-                };
-                doc.modified = false;
-            }
-            if w.active_buffer() == id {
-                w.windows.active_window_mut().cursors = CursorSet::single(0);
-                w.windows.active_window_mut().scroll_top = 0;
-            }
-        }
-        self.dired_dirs.insert(id, path);
+        self.dired.open(&mut self.ws.borrow_mut(), path);
     }
 
     fn active_is_dired(&self) -> bool {
-        let w = self.ws.borrow();
-        matches!(w.active_doc().kind, DocKind::Special(SpecialKind::Dired))
+        DiredState::active_is_dired(&self.ws.borrow())
     }
 
     /// The active buffer id if it is a terminal with a live session.
@@ -4468,200 +4341,32 @@ impl App {
 
     /// Handle a key in a dired buffer. Returns true if the key was consumed
     /// (movement keys fall through to vim so j/k/gg/G still work).
+    /// Feed a key to the active dired listing, performing whatever it asks for.
+    /// Returns `false` for keys it did not claim, which must fall through to the
+    /// main handler so `:`, `/`, `n` and the leader keep working in a listing.
     fn handle_dired_key(&mut self, ck: crossterm::event::KeyEvent) -> bool {
-        let ctrl = ck.modifiers.contains(KeyModifiers::CONTROL);
-        // Pending `yy` copy / `dd` cut: a matching second key completes it.
-        if self.dired_pending_y {
-            self.dired_pending_y = false;
-            if ck.code == KeyCode::Char('y') {
-                self.dired_yank_under_cursor(false);
-                return true;
-            }
-        }
-        if self.dired_pending_d {
-            self.dired_pending_d = false;
-            if ck.code == KeyCode::Char('d') {
-                self.dired_yank_under_cursor(true);
-                return true;
-            }
-        }
-        // Pending `g`: `gg` jumps to the top, `g?` shows dired help. Handled
-        // locally (rather than falling through to vim) so `?` stays free for
-        // reverse-search. Any other key is a no-op that ends the prefix.
-        if self.dired_pending_g {
-            self.dired_pending_g = false;
-            match ck.code {
-                KeyCode::Char('g') => self.ws.borrow_mut().execute(Action::Move(Motion::To(0))),
-                KeyCode::Char('?') => self.hover = Some(dired_help_lines()),
-                _ => {}
-            }
-            return true;
-        }
-        if ctrl {
-            match ck.code {
-                KeyCode::Char('n') => {
-                    self.ws.borrow_mut().execute(Action::Move(Motion::Line(1)));
-                    return true;
-                }
-                KeyCode::Char('p') => {
-                    self.ws.borrow_mut().execute(Action::Move(Motion::Line(-1)));
-                    return true;
-                }
-                _ => {}
-            }
-        }
-        match ck.code {
-            KeyCode::Enter | KeyCode::Char('l') => {
-                self.dired_open_at_cursor();
-                true
-            }
-            KeyCode::Char('h') | KeyCode::Char('-') | KeyCode::Char('^') => {
-                self.dired_go_up();
-                true
-            }
-            KeyCode::Char('+') => {
-                let dir = self.dired_dir_of_active();
-                self.file_prompt = Some(FilePrompt::create(dir, PromptOrigin::Dired));
-                true
-            }
-            KeyCode::Char('R') => {
-                if let Some((_, name)) = self.dired_current_target() {
-                    let dir = self.dired_dir_of_active();
-                    self.file_prompt =
-                        Some(FilePrompt::rename(dir, name, PromptOrigin::Dired));
-                }
-                true
-            }
-            KeyCode::Char('D') => {
-                if let Some((path, _)) = self.dired_current_target() {
-                    self.file_prompt = Some(FilePrompt::delete(path, PromptOrigin::Dired));
-                }
-                true
-            }
-            KeyCode::Char('y') => {
-                self.dired_pending_y = true;
-                true
-            }
-            KeyCode::Char('d') => {
-                self.dired_pending_d = true;
-                true
-            }
-            KeyCode::Char('p') => {
-                self.dired_paste();
-                true
-            }
-            KeyCode::Char('.') => {
-                self.dired_show_hidden = !self.dired_show_hidden;
-                self.dired_refresh_current();
-                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!(
-                    "Hidden files {}",
-                    if self.dired_show_hidden { "shown" } else { "hidden" }
-                )));
-                true
-            }
-            // `g` starts the dired prefix (`gg` top, `g?` help).
-            KeyCode::Char('g') => {
-                self.dired_pending_g = true;
-                true
-            }
-            // Everything else falls through to normal handling. The buffer is
-            // read-only (edits are no-ops), so this safely enables `:` commands,
-            // `/`/`?`/`n`/`N` search, motions, the Space leader, and — in Emacs
-            // mode — `C-s`/`M-x`, all operating over the listing.
-            _ => false,
-        }
-    }
-
-    /// Record the entry under the cursor for a later paste. `cut` moves on paste.
-    fn dired_yank_under_cursor(&mut self, cut: bool) {
-        match self.dired_current_target() {
-            Some((path, name)) => {
-                self.dired_clipboard = Some((path, cut));
-                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!(
-                    "{} '{}'",
-                    if cut { "Cut" } else { "Copied" },
-                    name
-                )));
-            }
-            None => { self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Echo, "Nothing selected".to_string())); },
-        }
-    }
-
-    /// Paste the dired clipboard into the current directory (copy, or move for a cut).
-    fn dired_paste(&mut self) {
-        let (src, cut) = match self.dired_clipboard.clone() {
-            Some(s) => s,
-            None => {
-                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, "Clipboard empty".to_string()));
-                return;
-            }
+        // The workspace borrow is confined to this block: `open_path` and the
+        // refresh helpers below re-borrow it internally.
+        let resp = {
+            let mut w = self.ws.borrow_mut();
+            self.dired.handle_key(ck, &mut w, &mut self.notify)
         };
-        let id = self.ws.borrow().active_buffer();
-        let dir = match self.dired_dirs.get(&id) {
-            Some(d) => d.clone(),
-            None => return,
-        };
-        let name = match src.file_name() {
-            Some(n) => n.to_os_string(),
-            None => return,
-        };
-        let dest = dir.join(&name);
-        if dest.exists() {
-            self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!("'{}' already exists", name.to_string_lossy())));
-            return;
-        }
-        let result = if cut {
-            // Try a rename first; fall back to copy+remove across filesystems.
-            std::fs::rename(&src, &dest).or_else(|_| {
-                let copied = if src.is_dir() {
-                    copy_dir_recursive(&src, &dest)
-                } else {
-                    std::fs::copy(&src, &dest).map(|_| ())
-                };
-                copied.and_then(|()| {
-                    if src.is_dir() {
-                        std::fs::remove_dir_all(&src)
-                    } else {
-                        std::fs::remove_file(&src)
-                    }
-                })
-            })
-        } else if src.is_dir() {
-            copy_dir_recursive(&src, &dest)
-        } else {
-            std::fs::copy(&src, &dest).map(|_| ())
-        };
-        match result {
-            Ok(()) => {
-                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!(
-                    "{} '{}'",
-                    if cut { "Moved" } else { "Pasted" },
-                    name.to_string_lossy()
-                )));
-                if cut {
-                    self.dired_clipboard = None; // a cut is consumed by the paste
-                }
+        match resp {
+            DiredResponse::Ignored => false,
+            DiredResponse::Handled => true,
+            DiredResponse::ShowHelp => {
+                self.hover = Some(crate::dired::help_lines());
+                true
             }
-            Err(e) => { self.notify.push(Notification::new(ruster_core::message::MessageLevel::Error, ruster_core::message::MessageSource::Echo, format!("Paste failed: {}", e))); },
+            DiredResponse::Prompt(p) => {
+                self.file_prompt = Some(p);
+                true
+            }
+            DiredResponse::OpenFile(path) => {
+                self.open_path(&path, None);
+                true
+            }
         }
-        self.dired_refresh_current();
-    }
-
-    /// The (path, name) of the entry under the cursor in the active dired buffer,
-    /// or None for `..` / an empty listing.
-    fn dired_current_target(&self) -> Option<(PathBuf, String)> {
-        let id = self.ws.borrow().active_buffer();
-        let dir = self.dired_dirs.get(&id)?.clone();
-        let line = {
-            let w = self.ws.borrow();
-            w.buffer().char_to_line(w.primary_head())
-        };
-        let entries = self.dired_entries.get(&id)?;
-        let entry = entries.get(line)?;
-        if entry.name == ".." {
-            return None;
-        }
-        Some((dir.join(&entry.name), entry.name.clone()))
     }
 
     /// Handle a key while a dired file-operation prompt is active.
@@ -4695,66 +4400,9 @@ impl App {
         }
     }
 
-    /// The directory the active dired buffer is listing, for resolving a file
-    /// prompt against.
-    fn dired_dir_of_active(&self) -> PathBuf {
-        let id = self.ws.borrow().active_buffer();
-        self.dired_dirs.get(&id).cloned().unwrap_or_default()
-    }
-
     /// Reload the active dired buffer's listing (after a mutation).
     fn dired_refresh_current(&mut self) {
-        let id = self.ws.borrow().active_buffer();
-        if let Some(dir) = self.dired_dirs.get(&id).cloned() {
-            self.refresh_dired(id, dir);
-        }
-    }
-
-    fn dired_open_at_cursor(&mut self) {
-        let id = self.ws.borrow().active_buffer();
-        let dir = match self.dired_dirs.get(&id) {
-            Some(p) => p.clone(),
-            None => return,
-        };
-        let line = {
-            let w = self.ws.borrow();
-            w.buffer().char_to_line(w.primary_head())
-        };
-        let entry = match self.dired_entries.get(&id).and_then(|e| e.get(line)) {
-            Some(e) => e.clone(),
-            None => return,
-        };
-        // `..` ascends (and, at a drive root, reaches the drive picker).
-        if entry.name == ".." {
-            self.dired_go_up();
-            return;
-        }
-        let target = dir.join(&entry.name);
-        let target = target.canonicalize().unwrap_or(target);
-        if entry.is_dir {
-            self.refresh_dired(id, target);
-        } else {
-            self.open_path(&target, None);
-        }
-    }
-
-    fn dired_go_up(&mut self) {
-        let id = self.ws.borrow().active_buffer();
-        let dir = match self.dired_dirs.get(&id) {
-            Some(d) => d.clone(),
-            None => return,
-        };
-        if ruster_core::dired::is_drives_view(&dir) {
-            return; // already at the top
-        }
-        let target = match dir.parent() {
-            Some(parent) => parent.to_path_buf(),
-            // At a drive root (e.g. C:\, whose parent is None) on Windows,
-            // ascend to the drive picker instead of staying put.
-            None if cfg!(windows) => ruster_core::dired::drives_view(),
-            None => return,
-        };
-        self.refresh_dired(id, target);
+        self.dired.refresh_current(&mut self.ws.borrow_mut());
     }
 
     /// Open the `:`-Tab command palette, pre-filtered by `seed`.
@@ -6617,6 +6265,7 @@ mod tests {
 
     #[test]
     fn dired_opens_and_descends_into_subdir() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
         use ruster_core::document::{DocKind, SpecialKind};
         let tmp = std::env::temp_dir().join("ruster_app_dired");
         let _ = std::fs::remove_dir_all(&tmp);
@@ -6635,7 +6284,7 @@ mod tests {
             w.buffer().line_start_char(1)
         };
         a.ws.borrow_mut().execute(Action::Move(Motion::To(sub_line_start)));
-        a.dired_open_at_cursor();
+        a.handle_key(CtKey::new(KeyCode::Enter, KeyModifiers::NONE));
         let name = a.ws.borrow().active_doc().name.clone();
         assert!(name.ends_with("sub"), "descended into sub, got {name}");
 
@@ -6645,12 +6294,13 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn dired_ascends_from_drive_root_to_drive_picker() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
         let mut a = App::new(String::new(), PathBuf::from("f.txt"));
         a.apply_cmd(CmdAction::Dired(Some("C:\\".into())));
         // Ascend above the drive root: land in the drives view.
-        a.dired_go_up();
+        a.handle_key(CtKey::new(KeyCode::Char('h'), KeyModifiers::NONE));
         let id = a.ws.borrow().active_buffer();
-        assert!(ruster_core::dired::is_drives_view(a.dired_dirs.get(&id).unwrap()));
+        assert!(ruster_core::dired::is_drives_view(a.dired.dir_of(id).unwrap()));
         assert_eq!(a.ws.borrow().active_doc().name, "Drives");
         let content = a.ws.borrow().buffer().to_string();
         assert!(content.contains("C:"), "drives view lists C:, got {content:?}");
@@ -6659,9 +6309,9 @@ mod tests {
         let c_line = content.lines().position(|l| l.starts_with("C:")).unwrap();
         let start = a.ws.borrow().buffer().line_start_char(c_line);
         a.ws.borrow_mut().execute(Action::Move(Motion::To(start)));
-        a.dired_open_at_cursor();
+        a.handle_key(CtKey::new(KeyCode::Enter, KeyModifiers::NONE));
         let id2 = a.ws.borrow().active_buffer();
-        assert!(!ruster_core::dired::is_drives_view(a.dired_dirs.get(&id2).unwrap()));
+        assert!(!ruster_core::dired::is_drives_view(a.dired.dir_of(id2).unwrap()));
     }
 
     #[test]
@@ -6872,7 +6522,7 @@ mod tests {
         }
 
         let entries = ruster_core::dired::list(&tmp, true);
-        let styled = dired_styled_lines(&entries);
+        let styled = crate::dired::styled_lines(&entries);
         let fg_of = |name: &str| -> Option<Color> {
             styled
                 .iter()
@@ -6914,7 +6564,7 @@ mod tests {
 
         // '.' reveals them.
         a.handle_key(CtKey::new(KeyCode::Char('.'), none));
-        assert!(a.dired_show_hidden);
+        assert!(a.dired.show_hidden());
         let text = a.ws.borrow().buffer().to_string();
         assert!(text.contains(".hidden"), "dot-files shown after toggle");
 
@@ -6942,13 +6592,13 @@ mod tests {
         let line2 = a.ws.borrow().buffer().line_start_char(2);
         a.ws.borrow_mut().execute(Action::Move(Motion::To(line2)));
         a.handle_key(CtKey::new(KeyCode::Char('y'), none));
-        assert!(a.dired_pending_y, "first y is pending");
+        assert!(a.dired.pending_y(), "first y is pending");
         a.handle_key(CtKey::new(KeyCode::Char('y'), none));
-        assert_eq!(a.dired_clipboard.as_ref().map(|(_, cut)| *cut), Some(false));
+        assert_eq!(a.dired.clipboard().map(|(_, cut)| *cut), Some(false));
 
         // Descend into sub/ and paste.
         let dired_buf = a.ws.borrow().active_buffer();
-        a.refresh_dired(dired_buf, tmp.join("sub"));
+        a.dired.refresh(&mut a.ws.borrow_mut(), dired_buf, tmp.join("sub"));
         a.handle_key(CtKey::new(KeyCode::Char('p'), none));
         assert!(tmp.join("sub").join("a.txt").exists(), "file pasted into sub/");
         assert!(tmp.join("a.txt").exists(), "copy leaves the original");
@@ -6971,14 +6621,14 @@ mod tests {
         a.ws.borrow_mut().execute(Action::Move(Motion::To(line2)));
         a.handle_key(CtKey::new(KeyCode::Char('d'), none));
         a.handle_key(CtKey::new(KeyCode::Char('d'), none));
-        assert_eq!(a.dired_clipboard.as_ref().map(|(_, cut)| *cut), Some(true));
+        assert_eq!(a.dired.clipboard().map(|(_, cut)| *cut), Some(true));
 
         let dired_buf = a.ws.borrow().active_buffer();
-        a.refresh_dired(dired_buf, tmp.join("sub"));
+        a.dired.refresh(&mut a.ws.borrow_mut(), dired_buf, tmp.join("sub"));
         a.handle_key(CtKey::new(KeyCode::Char('p'), none));
         assert!(tmp.join("sub").join("b.txt").exists(), "moved into sub/");
         assert!(!tmp.join("b.txt").exists(), "cut removes the original");
-        assert!(a.dired_clipboard.is_none(), "cut is consumed by the paste");
+        assert!(a.dired.clipboard().is_none(), "cut is consumed by the paste");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
