@@ -202,18 +202,24 @@ impl DiredState {
                 _ => DiredResponse::Handled,
             };
         }
+        // Ctrl chords are decided here and never fall into the plain bindings
+        // below, which match on the bare character. Otherwise C-h would read as
+        // `h` (ascend a directory) instead of moving window focus, C-l as
+        // "open", and C-d as the start of a `dd` cut.
         if ctrl {
-            match ck.code {
+            return match ck.code {
                 KeyCode::Char('n') => {
                     ws.execute(Action::Move(Motion::Line(1)));
-                    return DiredResponse::Handled;
+                    DiredResponse::Handled
                 }
                 KeyCode::Char('p') => {
                     ws.execute(Action::Move(Motion::Line(-1)));
-                    return DiredResponse::Handled;
+                    DiredResponse::Handled
                 }
-                _ => {}
-            }
+                // Window focus (C-h/C-l), half-page scroll, C-w — all the main
+                // handler's business.
+                _ => DiredResponse::Ignored,
+            };
         }
 
         match ck.code {
@@ -667,6 +673,32 @@ mod tests {
                 "{c:?} must reach the main handler"
             );
         }
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The plain bindings match on the bare character, so a Ctrl chord used to
+    /// land on them: C-h read as `h` and ascended a directory instead of moving
+    /// window focus, making a dired buffer impossible to leave leftward.
+    #[test]
+    fn ctrl_chords_fall_through_to_the_main_handler() {
+        let root = fixture(&["sub/"]);
+        let (mut d, mut ws) = open_on(&root);
+        let mut n = notify();
+        let ctrl = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+
+        for c in ['h', 'l', 'd', 'w', 'u'] {
+            assert!(
+                matches!(d.handle_key(ctrl(c), &mut ws, &mut n), DiredResponse::Ignored),
+                "C-{c} must reach the main handler"
+            );
+        }
+        assert_eq!(d.dir_of(ws.active_buffer()), Some(&root), "C-h did not ascend");
+
+        // C-n / C-p remain dired's own line motions.
+        assert!(matches!(
+            d.handle_key(ctrl('n'), &mut ws, &mut n),
+            DiredResponse::Handled
+        ));
         std::fs::remove_dir_all(&root).ok();
     }
 
