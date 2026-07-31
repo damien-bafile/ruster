@@ -14,13 +14,29 @@ pub const ROOT_MARKERS: &[&str] =
 /// Walk up from `from` (a file or directory) to the nearest ancestor containing
 /// a [`ROOT_MARKERS`] entry. Returns `None` if none is found up to the filesystem
 /// root (callers typically fall back to the current directory).
+///
+/// `from` is resolved against the current directory first. A bare filename has
+/// an empty parent, and `Path::new("").join(marker)` quietly resolves against
+/// the cwd — so walking a relative path directly would "find" a root and return
+/// an empty path, which every caller then treats as a real directory.
 pub fn project_root(from: &Path) -> Option<PathBuf> {
-    let mut dir: &Path = if from.is_dir() { from } else { from.parent()? };
+    let abs = absolutize(from)?;
+    let mut dir: &Path = if abs.is_dir() { abs.as_path() } else { abs.parent()? };
     loop {
         if ROOT_MARKERS.iter().any(|m| dir.join(m).exists()) {
             return Some(dir.to_path_buf());
         }
         dir = dir.parent()?;
+    }
+}
+
+/// Make `path` absolute against the current directory, without requiring it to
+/// exist (so a not-yet-created file still resolves to the right parent).
+fn absolutize(path: &Path) -> Option<PathBuf> {
+    if path.is_absolute() {
+        Some(path.to_path_buf())
+    } else {
+        Some(std::env::current_dir().ok()?.join(path))
     }
 }
 
@@ -163,6 +179,20 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// A bare filename has an empty parent, and `Path::new("").join(marker)`
+    /// resolves against the cwd — so this used to "succeed" with `Some("")`.
+    /// Callers treated that as a real directory, which left the sidebar empty
+    /// and pointed `:Rg`, the pickers and tasks at nothing.
+    #[test]
+    fn a_relative_path_resolves_to_an_absolute_root() {
+        // Tests run with the cwd set to the crate root, which has a Cargo.toml.
+        let cwd = std::env::current_dir().unwrap();
+        let root = project_root(Path::new("Cargo.toml")).expect("cwd is a project root");
+        assert!(root.is_absolute(), "root must be absolute, got {root:?}");
+        assert!(!root.as_os_str().is_empty(), "root must not be the empty path");
+        assert_eq!(root.canonicalize().unwrap(), cwd.canonicalize().unwrap());
     }
 
     #[test]
