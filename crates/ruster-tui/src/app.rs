@@ -1452,10 +1452,15 @@ impl App {
                 ruster_project::record_recent(state_dir, root, 30);
             }
         }
-        let mut notify = NotificationManager::with_max(
-            std::time::Duration::from_millis(config.noice.info_timeout_ms),
-            config.noice.max_history,
-        );
+        let mut notify = NotificationManager::new(ruster_notify::NoiceSettings {
+            mini_enabled: config.noice.mini_enabled,
+            notify_enabled: config.noice.notify_enabled,
+            split_enabled: config.noice.split_enabled,
+            info_timeout: std::time::Duration::from_millis(config.noice.info_timeout_ms),
+            success_timeout: std::time::Duration::from_millis(config.noice.success_timeout_ms),
+            warning_timeout: std::time::Duration::from_millis(config.noice.warning_timeout_ms),
+            max_history: config.noice.max_history,
+        });
         if !config_errors.is_empty() {
             notify.push(Notification::new(
                 ruster_core::message::MessageLevel::Warning,
@@ -5013,6 +5018,14 @@ impl App {
 
     /// Open or focus the pinned `*noice*` split buffer populated from history.
     fn open_noice_split(&mut self) {
+        if !self.notify.split_enabled() {
+            self.notify.push(Notification::new(
+                ruster_core::message::MessageLevel::Warning,
+                ruster_core::message::MessageSource::Echo,
+                "noice.split is disabled".to_string(),
+            ));
+            return;
+        }
         let buf_name = "*noice*";
         let existing = self.ws.borrow().buffers.ids().iter().copied().find(|&id| {
             self.ws.borrow().buffers.get(id).is_some_and(|d| d.name == buf_name)

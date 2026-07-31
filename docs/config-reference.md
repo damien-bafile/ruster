@@ -143,8 +143,26 @@ Keys are addressed as `group.key`.
 | `terminal.scrollback` | integer | 10000 | Terminal scrollback lines |
 | `terminal.default_mode` | enum | "insert" | New terminal starts in `insert` or `normal` |
 | `dired.show_hidden` | boolean | false | Show dotfiles in the file explorer |
+| `sidebar.auto_open` | boolean | false | Open the sidebar automatically on startup |
+| `noice.mini` | boolean | true | Show transient toasts in the cmdline row |
+| `noice.notify` | boolean | true | Show the stacking panel for warnings and errors |
+| `noice.split` | boolean | true | Allow `:Noice split` to open the `*noice*` history buffer |
+| `noice.info_timeout` | integer | 2000 | Milliseconds an info toast stays up |
+| `noice.success_timeout` | integer | 2000 | Milliseconds a success toast stays up |
+| `noice.warning_timeout` | integer | 5000 | Milliseconds a warning stays up |
+| `noice.max_history` | integer | 1000 | Messages retained for `:messages` and `:Noice split` |
 
 > Colors are **not** listed here — they live in [themes](#themes).
+
+### Notifications (noice)
+
+Messages are routed by level: info and success go to the **mini** toast in the cmdline
+row, warnings go to the **notify** panel *and* mirror into the mini toast, and errors go
+to the notify panel only.
+
+Errors are **persistent** — they stay until dismissed, and no `noice.*_timeout` applies
+to them. Disabling a backend only suppresses its on-screen display; every message is
+still recorded in history, so `:messages` and `:Noice split` remain complete.
 
 ## GUI font & icons
 

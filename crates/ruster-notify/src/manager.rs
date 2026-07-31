@@ -1,13 +1,44 @@
 use crate::backend::BackendKind;
-use crate::notification::Notification;
+use crate::notification::{Notification, Timeout};
 use ruster_core::message::MessageLevel;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
+
+/// Runtime settings for the notification pipeline, mirroring the `noice` config
+/// group. A plain value type so `ruster-notify` keeps its single dependency on
+/// `ruster-core` and stays independent of the Lua config layer.
+#[derive(Debug, Clone)]
+pub struct NoiceSettings {
+    pub mini_enabled: bool,
+    pub notify_enabled: bool,
+    pub split_enabled: bool,
+    pub info_timeout: Duration,
+    pub success_timeout: Duration,
+    pub warning_timeout: Duration,
+    pub max_history: usize,
+}
+
+impl Default for NoiceSettings {
+    fn default() -> Self {
+        Self {
+            mini_enabled: true,
+            notify_enabled: true,
+            split_enabled: true,
+            info_timeout: Duration::from_millis(2000),
+            success_timeout: Duration::from_millis(2000),
+            warning_timeout: Duration::from_millis(5000),
+            max_history: 1000,
+        }
+    }
+}
 
 #[derive(Debug)]
 struct ActiveEntry {
     notif: Notification,
     pushed_at: Instant,
+    /// The notification's [`Timeout`] resolved against [`NoiceSettings`] at push
+    /// time. `None` means persistent.
+    timeout: Option<Duration>,
 }
 
 #[derive(Debug)]
@@ -15,26 +46,49 @@ pub struct NotificationManager {
     history: Vec<Notification>,
     active: BTreeMap<BackendKind, Vec<ActiveEntry>>,
     next_id: u64,
-    default_timeout: Duration,
-    max_history: usize,
+    settings: NoiceSettings,
 }
 
 impl NotificationManager {
-    pub fn new(default_timeout: Duration) -> Self {
-        Self::with_max(default_timeout, 1000)
-    }
-
-    pub fn with_max(default_timeout: Duration, max_history: usize) -> Self {
+    pub fn new(settings: NoiceSettings) -> Self {
         let mut active = BTreeMap::new();
         for kind in BackendKind::all() {
             active.insert(*kind, Vec::new());
         }
         Self {
-            history: Vec::with_capacity(max_history),
+            history: Vec::with_capacity(settings.max_history),
             active,
             next_id: 1,
-            default_timeout,
-            max_history,
+            settings,
+        }
+    }
+
+    /// Whether `:Noice split` may open the `*noice*` history buffer.
+    pub fn split_enabled(&self) -> bool {
+        self.settings.split_enabled
+    }
+
+    fn backend_enabled(&self, kind: BackendKind) -> bool {
+        match kind {
+            BackendKind::Mini => self.settings.mini_enabled,
+            BackendKind::Notify => self.settings.notify_enabled,
+            BackendKind::Split => self.settings.split_enabled,
+        }
+    }
+
+    /// Resolve an authored [`Timeout`] to a concrete duration. `Default` picks
+    /// the configured timeout for the notification's level; errors are
+    /// persistent so they can't scroll away before being read.
+    fn resolve_timeout(&self, notif: &Notification) -> Option<Duration> {
+        match notif.timeout {
+            Timeout::After(d) => Some(d),
+            Timeout::Persistent => None,
+            Timeout::Default => match notif.level {
+                MessageLevel::Error => None,
+                MessageLevel::Warning => Some(self.settings.warning_timeout),
+                MessageLevel::Success => Some(self.settings.success_timeout),
+                MessageLevel::Info => Some(self.settings.info_timeout),
+            },
         }
     }
 
@@ -43,40 +97,35 @@ impl NotificationManager {
         self.next_id += 1;
         notif.id = id;
 
-        let effective_timeout = match notif.timeout {
-            Some(d) if d == Duration::ZERO => Some(self.default_timeout),
-            other => other,
-        };
-        notif.timeout = effective_timeout;
+        let timeout = self.resolve_timeout(&notif);
 
-        let kind = match notif.level {
-            MessageLevel::Error => BackendKind::Notify,
-            MessageLevel::Warning => BackendKind::Notify,
+        // Errors and warnings go to the stacking panel; everything else to the
+        // mini toast. Warnings additionally mirror into the toast so they're
+        // seen without opening the panel.
+        let primary = match notif.level {
+            MessageLevel::Error | MessageLevel::Warning => BackendKind::Notify,
             _ => BackendKind::Mini,
         };
-
-        // Warning also goes to Mini
+        let mut targets = vec![primary];
         if notif.level == MessageLevel::Warning {
-            self.active
-                .get_mut(&BackendKind::Mini)
-                .unwrap()
-                .push(ActiveEntry {
-                    notif: notif.clone(),
-                    pushed_at: Instant::now(),
-                });
+            targets.push(BackendKind::Mini);
         }
 
-        self.active
-            .get_mut(&kind)
-            .unwrap()
-            .push(ActiveEntry {
-                notif: notif.clone(),
-                pushed_at: Instant::now(),
-            });
+        let now = Instant::now();
+        for kind in targets {
+            if !self.backend_enabled(kind) {
+                continue;
+            }
+            if let Some(list) = self.active.get_mut(&kind) {
+                list.push(ActiveEntry { notif: notif.clone(), pushed_at: now, timeout });
+            }
+        }
 
+        // History is kept regardless of which backends are enabled — `:messages`
+        // and `:Noice split` read it, not the active queues.
         self.history.push(notif);
 
-        while self.history.len() > self.max_history {
+        while self.history.len() > self.settings.max_history {
             self.history.remove(0);
         }
         id
@@ -117,8 +166,7 @@ impl NotificationManager {
         let now = Instant::now();
         for list in self.active.values_mut() {
             list.retain(|e| {
-                let should_dismiss =
-                    e.notif.timeout.is_some_and(|t| now - e.pushed_at >= t);
+                let should_dismiss = e.timeout.is_some_and(|t| now - e.pushed_at >= t);
                 if should_dismiss {
                     if let Some(h) = self.history.iter_mut().find(|hn| hn.id == e.notif.id) {
                         h.dismissed = true;
@@ -140,74 +188,143 @@ mod tests {
         Notification::new(MessageLevel::Info, MessageSource::Echo, text)
     }
 
+    fn mgr() -> NotificationManager {
+        NotificationManager::new(NoiceSettings::default())
+    }
+
+    /// A manager whose every level times out instantly, so `tick()` expires it.
+    fn instant_mgr() -> NotificationManager {
+        NotificationManager::new(NoiceSettings {
+            info_timeout: Duration::ZERO,
+            success_timeout: Duration::ZERO,
+            warning_timeout: Duration::ZERO,
+            ..Default::default()
+        })
+    }
+
     #[test]
     fn test_push_adds_to_history() {
-        let mut mgr = NotificationManager::new(Duration::from_secs(2));
-        mgr.push(info_notif("hello"));
-        assert_eq!(mgr.history().len(), 1);
+        let mut m = mgr();
+        m.push(info_notif("hello"));
+        assert_eq!(m.history().len(), 1);
     }
 
     #[test]
     fn test_push_adds_to_mini_active() {
-        let mut mgr = NotificationManager::new(Duration::from_secs(2));
-        let n = info_notif("hello").with_timeout(Duration::from_secs(2));
-        mgr.push(n);
-        assert_eq!(mgr.active(BackendKind::Mini).len(), 1);
+        let mut m = mgr();
+        m.push(info_notif("hello"));
+        assert_eq!(m.active(BackendKind::Mini).len(), 1);
     }
 
     #[test]
     fn test_dismiss_removes_from_active() {
-        let mut mgr = NotificationManager::new(Duration::from_secs(2));
-        let id = mgr.push(info_notif("hello").with_timeout(Duration::from_secs(2)));
-        assert_eq!(mgr.active(BackendKind::Mini).len(), 1);
-        mgr.dismiss(id);
-        assert_eq!(mgr.active(BackendKind::Mini).len(), 0);
+        let mut m = mgr();
+        let id = m.push(info_notif("hello"));
+        assert_eq!(m.active(BackendKind::Mini).len(), 1);
+        m.dismiss(id);
+        assert_eq!(m.active(BackendKind::Mini).len(), 0);
     }
 
     #[test]
     fn test_dismiss_all_clears_all_active() {
-        let mut mgr = NotificationManager::new(Duration::from_secs(2));
-        mgr.push(info_notif("a").with_timeout(Duration::from_secs(2)));
-        mgr.push(info_notif("b").with_timeout(Duration::from_secs(2)));
-        mgr.dismiss_all();
-        assert_eq!(mgr.active(BackendKind::Mini).len(), 0);
+        let mut m = mgr();
+        m.push(info_notif("a"));
+        m.push(info_notif("b"));
+        m.dismiss_all();
+        assert_eq!(m.active(BackendKind::Mini).len(), 0);
     }
 
     #[test]
     fn test_tick_dismisses_expired() {
-        let mut mgr = NotificationManager::new(Duration::from_secs(0));
-        mgr.push(info_notif("x").with_timeout(Duration::from_secs(0)));
-        assert_eq!(mgr.active(BackendKind::Mini).len(), 1);
-        mgr.tick();
-        assert_eq!(mgr.active(BackendKind::Mini).len(), 0);
-        assert!(mgr.history().iter().any(|n| n.dismissed));
+        let mut m = instant_mgr();
+        m.push(info_notif("x"));
+        assert_eq!(m.active(BackendKind::Mini).len(), 1);
+        m.tick();
+        assert_eq!(m.active(BackendKind::Mini).len(), 0);
+        assert!(m.history().iter().any(|n| n.dismissed));
+    }
+
+    /// The default-timeout path is what every caller uses: `Notification::new`
+    /// leaves `Timeout::Default`, which must resolve to the level's configured
+    /// duration rather than staying up forever.
+    #[test]
+    fn default_timeout_resolves_per_level() {
+        let mut m = NotificationManager::new(NoiceSettings {
+            info_timeout: Duration::ZERO,
+            warning_timeout: Duration::from_secs(60),
+            ..Default::default()
+        });
+        m.push(info_notif("info"));
+        m.push(Notification::new(MessageLevel::Warning, MessageSource::Echo, "warn"));
+        m.tick();
+        // Info used the zero timeout and expired; the warning's 60s has not.
+        assert_eq!(m.active(BackendKind::Mini).len(), 1);
+        assert_eq!(m.active(BackendKind::Notify).len(), 1);
     }
 
     #[test]
-    fn test_default_timeout_applied() {
-        let mut mgr = NotificationManager::new(Duration::from_secs(5));
-        let n = info_notif("default");
-        mgr.push(n);
-        assert_eq!(mgr.active(BackendKind::Mini).len(), 1);
+    fn explicit_timeout_overrides_the_level_default() {
+        let mut m = NotificationManager::new(NoiceSettings {
+            info_timeout: Duration::from_secs(60),
+            ..Default::default()
+        });
+        m.push(info_notif("quick").with_timeout(Duration::ZERO));
+        m.tick();
+        assert_eq!(m.active(BackendKind::Mini).len(), 0);
     }
 
     #[test]
-    fn test_persistent_notification_not_dismissed_by_tick() {
-        let mut mgr = NotificationManager::new(Duration::from_secs(1));
-        let n = Notification::new(MessageLevel::Error, MessageSource::System, "persistent");
-        mgr.push(n);
-        mgr.tick();
-        // Error routes to Notify backend; persistent means it survives tick
-        assert_eq!(mgr.active(BackendKind::Notify).len(), 1);
+    fn errors_are_persistent_by_default() {
+        let mut m = instant_mgr();
+        m.push(Notification::new(MessageLevel::Error, MessageSource::System, "boom"));
+        m.tick();
+        // Error routes to Notify and has no default timeout, so it survives.
+        assert_eq!(m.active(BackendKind::Notify).len(), 1);
+    }
+
+    #[test]
+    fn explicit_persistent_survives_a_zero_level_timeout() {
+        let mut m = instant_mgr();
+        m.push(info_notif("sticky").with_persistent());
+        m.tick();
+        assert_eq!(m.active(BackendKind::Mini).len(), 1);
+    }
+
+    #[test]
+    fn disabled_backend_drops_the_active_entry_but_keeps_history() {
+        let mut m = NotificationManager::new(NoiceSettings {
+            mini_enabled: false,
+            ..Default::default()
+        });
+        m.push(info_notif("unseen"));
+        assert_eq!(m.active(BackendKind::Mini).len(), 0);
+        assert_eq!(m.history().len(), 1, ":messages still records it");
+    }
+
+    /// A warning fans out to both backends, so disabling one must not suppress
+    /// the other.
+    fn warn(text: &str) -> Notification {
+        Notification::new(MessageLevel::Warning, MessageSource::Echo, text)
+    }
+
+    #[test]
+    fn disabling_notify_leaves_the_warning_mirror_in_mini() {
+        let mut m = NotificationManager::new(NoiceSettings {
+            notify_enabled: false,
+            ..Default::default()
+        });
+        m.push(warn("careful"));
+        assert_eq!(m.active(BackendKind::Notify).len(), 0);
+        assert_eq!(m.active(BackendKind::Mini).len(), 1);
     }
 
     #[test]
     fn test_history_respects_max() {
-        let mut mgr = NotificationManager::with_max(Duration::from_secs(2), 3);
-        mgr.push(info_notif("1"));
-        mgr.push(info_notif("2"));
-        mgr.push(info_notif("3"));
-        mgr.push(info_notif("4"));
-        assert_eq!(mgr.history().len(), 3);
+        let mut m = NotificationManager::new(NoiceSettings { max_history: 3, ..Default::default() });
+        m.push(info_notif("1"));
+        m.push(info_notif("2"));
+        m.push(info_notif("3"));
+        m.push(info_notif("4"));
+        assert_eq!(m.history().len(), 3);
     }
 }

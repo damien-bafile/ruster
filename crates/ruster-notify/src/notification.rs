@@ -1,6 +1,19 @@
 use ruster_core::message::{MessageLevel, MessageSource};
 use std::time::{Duration, SystemTime};
 
+/// How long an active notification stays up.
+///
+/// [`Default`](Self::Default) is the common case — the manager resolves it from
+/// the `noice` per-level timeouts when the notification is pushed, so callers
+/// don't have to know them. The other two override that per notification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Timeout {
+    Default,
+    After(Duration),
+    /// Never auto-dismissed; stays until dismissed explicitly.
+    Persistent,
+}
+
 #[derive(Debug, Clone)]
 pub struct Notification {
     pub id: u64,
@@ -9,7 +22,7 @@ pub struct Notification {
     pub title: Option<String>,
     pub text: String,
     pub created_at: SystemTime,
-    pub timeout: Option<Duration>,
+    pub timeout: Timeout,
     pub dismissed: bool,
 }
 
@@ -22,7 +35,7 @@ impl Notification {
             title: None,
             text: text.into(),
             created_at: SystemTime::now(),
-            timeout: None,
+            timeout: Timeout::Default,
             dismissed: false,
         }
     }
@@ -33,14 +46,13 @@ impl Notification {
     }
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
-        self.timeout = Some(timeout);
+        self.timeout = Timeout::After(timeout);
         self
     }
 
     /// Marks the notification as persistent (never auto-dismissed).
-    /// `timeout == None` means no timeout.
     pub fn with_persistent(mut self) -> Self {
-        self.timeout = None;
+        self.timeout = Timeout::Persistent;
         self
     }
 }

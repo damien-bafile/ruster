@@ -234,6 +234,7 @@ pub const GROUPS: &[(&str, &str)] = &[
     ("terminal", "Embedded terminal"),
     ("dired", "File explorer"),
     ("sidebar", "Sidebar panel"),
+    ("noice", "Notifications and messages"),
     ("colors", "Per-element color overrides (empty = theme)"),
 ];
 
@@ -294,6 +295,15 @@ pub fn schema() -> Vec<SettingSpec> {
 
     // --- sidebar ---
     add("sidebar", "auto_open", "Auto-open sidebar", Bool, b(false), "Open the sidebar automatically on startup");
+
+    // --- noice ---
+    add("noice", "mini", "Mini toasts", Bool, b(true), "Show transient toasts in the cmdline row");
+    add("noice", "notify", "Notify panel", Bool, b(true), "Show the stacking panel for warnings and errors");
+    add("noice", "split", "Split history", Bool, b(true), "Allow :Noice split to open the *noice* history buffer");
+    add("noice", "info_timeout", "Info timeout (ms)", Int { min: 0, max: 60000 }, i(2000), "How long info toasts stay up");
+    add("noice", "success_timeout", "Success timeout (ms)", Int { min: 0, max: 60000 }, i(2000), "How long success toasts stay up");
+    add("noice", "warning_timeout", "Warning timeout (ms)", Int { min: 0, max: 60000 }, i(5000), "How long warnings stay up; errors are persistent");
+    add("noice", "max_history", "History size", Int { min: 1, max: 100000 }, i(1000), "Messages retained for :messages and :Noice split");
 
     // --- colors (overrides; empty = use the theme's color) ---
     add("colors", "bg", "Background", Text, t(""), "Override editor background");

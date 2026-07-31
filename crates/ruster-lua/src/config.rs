@@ -719,7 +719,17 @@ impl Config {
                 mode_emacs_bg: st("colors", "mode_emacs_bg").unwrap_or_default(),
                 mode_emacs_fg: st("colors", "mode_emacs_fg").unwrap_or_default(),
             },
-            noice: NoiceConfig::default(),
+            noice: NoiceConfig {
+                mini_enabled: bl("noice", "mini", d.noice.mini_enabled),
+                notify_enabled: bl("noice", "notify", d.noice.notify_enabled),
+                split_enabled: bl("noice", "split", d.noice.split_enabled),
+                info_timeout_ms: u("noice", "info_timeout", d.noice.info_timeout_ms as u32) as u64,
+                success_timeout_ms: u("noice", "success_timeout", d.noice.success_timeout_ms as u32)
+                    as u64,
+                warning_timeout_ms: u("noice", "warning_timeout", d.noice.warning_timeout_ms as u32)
+                    as u64,
+                max_history: u("noice", "max_history", d.noice.max_history as u32) as usize,
+            },
         }
     }
 }
