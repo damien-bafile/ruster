@@ -1,4 +1,5 @@
 pub mod app;
+pub mod file_prompt;
 pub mod key;
 pub mod picker;
 pub mod quickfix;
