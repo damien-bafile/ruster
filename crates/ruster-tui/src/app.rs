@@ -351,9 +351,9 @@ fn vim_mode_to_ui_mode(mode: ruster_core::vim::VimMode) -> ruster_render::UIMode
 /// Expand leading `~` to the user's home directory and resolve relative paths
 /// against a base directory. Normalizes the result.
 fn resolve_path(raw: &str, base_dir: &std::path::Path) -> std::path::PathBuf {
-    let expanded = if raw.starts_with("~/") {
+    let expanded = if let Some(rest) = raw.strip_prefix("~/") {
         let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."));
-        home.join(&raw[2..])
+        home.join(rest)
     } else if raw == "~" {
         dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("."))
     } else {
@@ -621,8 +621,8 @@ fn parse_set_general(arg: &str) -> Result<CmdAction, String> {
         return Err("Usage: :set [no]key[!?&=value]".to_string());
     }
 
-    if tok.ends_with('?') {
-        let k = tok[..tok.len() - 1].trim();
+    if let Some(k) = tok.strip_suffix('?') {
+        let k = k.trim();
         if k.is_empty() {
             return Err("Usage: :set key? — display a setting value".to_string());
         }
@@ -631,8 +631,8 @@ fn parse_set_general(arg: &str) -> Result<CmdAction, String> {
         return Ok(CmdAction::ShowSetting(k.to_string()));
     }
 
-    if tok.ends_with('&') {
-        let k = tok[..tok.len() - 1].trim();
+    if let Some(k) = tok.strip_suffix('&') {
+        let k = k.trim();
         if k.is_empty() {
             return Err("Usage: :set key& — reset a setting to default".to_string());
         }
@@ -1732,10 +1732,8 @@ impl App {
 
         // A focused sidebar captures navigation keys. Unhandled keys (e.g.
         // Space for the leader prefix) fall through to the main handler.
-        if self.sidebar.is_some() && self.sidebar_focused {
-            if self.handle_sidebar_key(ck) {
-                return;
-            }
+        if self.sidebar.is_some() && self.sidebar_focused && self.handle_sidebar_key(ck) {
+            return;
         }
 
         // Dired claims its action keys, but only while at rest — never while a
@@ -2045,7 +2043,7 @@ impl App {
         {
             if let KeyEvent::Char(c) = key {
                 if let Some(d) = c.to_digit(10) {
-                    if d >= 1 && d <= 9 {
+                    if (1..=9).contains(&d) {
                         let recent: Vec<PathBuf> = ruster_config_dir()
                             .map(|d| ruster_project::recent_projects(&d))
                             .unwrap_or_default();
@@ -3582,7 +3580,7 @@ impl App {
             let tree = self.sidebar.as_ref().unwrap();
             let rows = tree.rows();
             let selected = self.sidebar_selected.min(rows.len().saturating_sub(1));
-            let scroll = self.sidebar_scroll.min(selected.saturating_sub((srect.height as usize).saturating_sub(2).max(0) / 2));
+            let scroll = self.sidebar_scroll.min(selected.saturating_sub((srect.height as usize).saturating_sub(2) / 2));
             let lines: Vec<StyledLine> = rows.iter().enumerate().skip(scroll).take(srect.height as usize).map(|(i, r)| {
                 let indent = "  ".repeat(r.depth);
                 let marker = if r.is_dir { if r.expanded { "▾ " } else { "▸ " } } else { "  " };
@@ -3967,7 +3965,7 @@ impl App {
             CmdAction::Projects => self.open_projects(),
             CmdAction::Sidebar => self.toggle_sidebar(),
             CmdAction::SidebarResize(n) => {
-                self.sidebar_width = n.max(16).min(60);
+                self.sidebar_width = n.clamp(16, 60);
             }
             CmdAction::DebugStart => self.debug_start(),
             CmdAction::DebugContinue => self.debug_continue(),
@@ -5096,7 +5094,7 @@ impl App {
 
     /// Record the current project root in the recent-projects list.
     fn record_current_project(&self) {
-        if let (Some(ref state_dir), Some(ref root)) = (ruster_config_dir(), self.project_root.as_ref()) {
+        if let (Some(ref state_dir), Some(root)) = (ruster_config_dir(), self.project_root.as_ref()) {
             ruster_project::record_recent(state_dir, root, 30);
         }
     }

@@ -41,3 +41,8 @@ jobs:
       run: cargo build --verbose
     - name: Run tests
       run: cargo test --verbose
+    # Lints aren't platform-specific, so one runner is enough. --all-targets
+    # covers test code too, where several past findings lived.
+    - name: Clippy
+      if: runner.os == 'Linux'
+      run: cargo clippy --workspace --all-targets -- -D warnings
