@@ -4754,10 +4754,21 @@ impl App {
                             .and_then(|n| n.to_str())
                             .unwrap_or("")
                             .to_string();
-                        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Error, ruster_core::message::MessageSource::Echo, match result {
-                            Ok(()) => format!("Deleted '{}'", name),
-                            Err(e) => format!("Delete failed for '{}': {}", name, e),
-                        }));
+                        let (level, msg) = match result {
+                            Ok(()) => (
+                                ruster_core::message::MessageLevel::Success,
+                                format!("Deleted '{}'", name),
+                            ),
+                            Err(e) => (
+                                ruster_core::message::MessageLevel::Error,
+                                format!("Delete failed for '{}': {}", name, e),
+                            ),
+                        };
+                        self.notify.push(Notification::new(
+                            level,
+                            ruster_core::message::MessageSource::Echo,
+                            msg,
+                        ));
                     }
                     }
                     _ => self.dired_prompt = None,
@@ -4812,14 +4823,25 @@ impl App {
                             }
                             std::fs::File::create(&target).map(|_| ())
                         };
-                        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Error, ruster_core::message::MessageSource::Echo, match result {
-                            Ok(()) => format!(
-                                "Created {} '{}'",
-                                if is_dir { "directory" } else { "file" },
-                                name
+                        let (level, msg) = match result {
+                            Ok(()) => (
+                                ruster_core::message::MessageLevel::Success,
+                                format!(
+                                    "Created {} '{}'",
+                                    if is_dir { "directory" } else { "file" },
+                                    name
+                                ),
                             ),
-                            Err(e) => format!("Create failed: {}", e),
-                        }));
+                            Err(e) => (
+                                ruster_core::message::MessageLevel::Error,
+                                format!("Create failed: {}", e),
+                            ),
+                        };
+                        self.notify.push(Notification::new(
+                            level,
+                            ruster_core::message::MessageSource::Echo,
+                            msg,
+                        ));
                     }
                 }
             }
