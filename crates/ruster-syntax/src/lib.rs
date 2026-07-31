@@ -13,12 +13,15 @@ pub use theme::{
 
 /// Canonical keys of the languages that have real syntax-group highlighting
 /// (a tree-sitter highlight query or the markup rules), in display order — the
-/// list shown in the Settings syntax editor. JS/TS parse but ship no highlight
-/// query yet, so they're omitted.
+/// list shown in the Settings syntax editor.
+///
+/// Every language `language_for_ext` accepts belongs here; a grammar without a
+/// bundled query parses into a tree and then highlights nothing, which is the
+/// gap `qcheck::every_parseable_language_has_a_highlight_query` now guards.
 pub fn highlighted_languages() -> &'static [&'static str] {
     &[
-        "rust", "python", "c", "lua", "json", "toml", "yaml", "scheme", "just",
-        "markdown", "org",
+        "rust", "python", "javascript", "typescript", "c", "lua", "json", "toml",
+        "yaml", "scheme", "just", "markdown", "org",
     ]
 }
 
@@ -241,6 +244,8 @@ fn query_files_for_lang(key: &str) -> (&'static str, &'static str) {
             include_str!("../queries/rust/textobjects.scm"),
         ),
         "python" => (include_str!("../queries/python/highlights.scm"), ""),
+        "javascript" => (include_str!("../queries/javascript/highlights.scm"), ""),
+        "typescript" => (include_str!("../queries/typescript/highlights.scm"), ""),
         "json" => (include_str!("../queries/json/highlights.scm"), ""),
         "lua" => (include_str!("../queries/lua/highlights.scm"), ""),
         "toml" => (include_str!("../queries/toml/highlights.scm"), ""),
@@ -479,3 +484,6 @@ mod tests {
         assert!(!bracket_highlights.is_empty(), "expected bracket highlights");
     }
 }
+
+#[cfg(test)]
+mod qcheck;
