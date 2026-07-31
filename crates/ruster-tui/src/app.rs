@@ -4,6 +4,7 @@ use crate::picker::{PickerAction, PickerItem, PickerState};
 use crate::quickfix::{QuickfixItem, QuickfixList};
 use crate::renderer::TuiRenderer;
 use crate::settings::{SettingsState, SyntaxSeed};
+use crate::sidebar::{SidebarResponse, SidebarState};
 use ruster_core::action::{Action, EditOp, Motion};
 use ruster_core::buffer::Buffer;
 use ruster_core::cursor::CursorSet;
@@ -1131,16 +1132,8 @@ pub struct App {
     runner_kind: RunnerKind,
     /// Per-file gutter signs from the last test run (✓/✗), merged with diagnostics.
     result_signs: std::collections::HashMap<PathBuf, ruster_render::SignsView>,
-    /// The file-explorer sidebar tree (`None` = hidden), its selected row, scroll,
-    /// and whether keyboard focus is in it.
-    sidebar: Option<ruster_core::sidebar::SidebarTree>,
-    sidebar_selected: usize,
-    sidebar_scroll: usize,
-    sidebar_focused: bool,
-    sidebar_width: u16,
-    /// Directory override for sidebar-initiated dired prompts.
-    /// Pending state for the `gg` double-press jump-to-top.
-    sidebar_pending_g: bool,
+    /// The file-explorer side panel.
+    sidebar: SidebarState,
     /// The message log for editor/plugin messages.
     messages: ruster_core::message::MessageLog,
     /// The pinned messages buffer, once created.
@@ -1509,12 +1502,7 @@ impl App {
             runner_output: String::new(),
             runner_kind: RunnerKind::Build,
             result_signs: std::collections::HashMap::new(),
-            sidebar: None,
-            sidebar_selected: 0,
-            sidebar_scroll: 0,
-            sidebar_focused: false,
-            sidebar_width: 30,
-            sidebar_pending_g: false,
+            sidebar: SidebarState::new(),
             messages: ruster_core::message::MessageLog::new(),
             messages_buf: None,
             messages_filter_source: None,
@@ -1714,7 +1702,7 @@ impl App {
 
         // A focused sidebar captures navigation keys. Unhandled keys (e.g.
         // Space for the leader prefix) fall through to the main handler.
-        if self.sidebar.is_some() && self.sidebar_focused && self.handle_sidebar_key(ck) {
+        if self.sidebar.is_open() && self.sidebar.is_focused() && self.handle_sidebar_key(ck) {
             return;
         }
 
@@ -1768,12 +1756,12 @@ impl App {
                 _ => None,
             };
             if let Some(dir) = dir {
-                if dir == FocusDir::Left && self.sidebar.is_some() && !self.sidebar_focused {
+                if dir == FocusDir::Left && self.sidebar.is_open() && !self.sidebar.is_focused() {
                     let before = self.ws.borrow().windows.active();
                     self.ws.borrow_mut().windows.focus(dir);
                     let after = self.ws.borrow().windows.active();
                     if before == after {
-                        self.sidebar_focused = true;
+                        self.sidebar.set_focused(true);
                     }
                 } else {
                     self.ws.borrow_mut().windows.focus(dir);
@@ -3274,15 +3262,7 @@ impl App {
         // Rebuilt below from the geometry actually used to draw this frame; the
         // mouse hit-test reads it back.
         self.last_layout.clear();
-        let sidebar_rect = if self.sidebar.is_some() {
-            let w = self.sidebar_width.min(buf_area.width.saturating_sub(4));
-            let sidebar = CoreRect::new(buf_area.x, buf_area.y, w, buf_area.height);
-            buf_area.x += w;
-            buf_area.width = buf_area.width.saturating_sub(w);
-            Some(sidebar)
-        } else {
-            None
-        };
+        let sidebar_rect = self.sidebar.carve(&mut buf_area);
         let flash_info = self.flash.as_ref().map(|f| (f.labels.clone(), f.pending));
         {
             let mut w = self.ws.borrow_mut();
@@ -3559,32 +3539,7 @@ impl App {
             }
         }
         if let Some(srect) = sidebar_rect {
-            let tree = self.sidebar.as_ref().unwrap();
-            let rows = tree.rows();
-            let selected = self.sidebar_selected.min(rows.len().saturating_sub(1));
-            let scroll = self.sidebar_scroll.min(selected.saturating_sub((srect.height as usize).saturating_sub(2) / 2));
-            let lines: Vec<StyledLine> = rows.iter().enumerate().skip(scroll).take(srect.height as usize).map(|(i, r)| {
-                let indent = "  ".repeat(r.depth);
-                let marker = if r.is_dir { if r.expanded { "▾ " } else { "▸ " } } else { "  " };
-                let text = format!("{}{}{}", indent, marker, r.name);
-                let highlights = if i == selected {
-                    let len = text.len();
-                    vec![(0, len, SyntaxStyle { fg: Color::Default, bg: Color::Rgb(80, 80, 100), bold: false, italic: false })]
-                } else {
-                    vec![]
-                };
-                StyledLine { text, highlights }
-            }).collect();
-            // The sidebar is a window view without a cursor, gutter or flash
-            // labels — everything it doesn't use comes from Default.
-            let view = WindowView {
-                rect: RRect::new(srect.x, srect.y, srect.width, srect.height),
-                lines,
-                statusline: StatuslineView { left: "Sidebar".into(), center: String::new(), right: format!("{} items", rows.len()), active: self.sidebar_focused, mode: vim_mode_to_ui_mode(self.vim.mode) },
-                active: self.sidebar_focused,
-                ..Default::default()
-            };
-            views.insert(0, view);
+            views.insert(0, self.sidebar.view(srect, vim_mode_to_ui_mode(self.vim.mode)));
         }
 
         let cmdline = if let Some(p) = &self.file_prompt {
@@ -3947,7 +3902,7 @@ impl App {
             CmdAction::Projects => self.open_projects(),
             CmdAction::Sidebar => self.toggle_sidebar(),
             CmdAction::SidebarResize(n) => {
-                self.sidebar_width = n.clamp(16, 60);
+                self.sidebar.set_width(n);
             }
             CmdAction::DebugStart => self.debug_start(),
             CmdAction::DebugContinue => self.debug_continue(),
@@ -4734,18 +4689,9 @@ impl App {
                 }
                 match prompt.origin {
                     PromptOrigin::Dired => self.dired_refresh_current(),
-                    PromptOrigin::Sidebar => self.refresh_sidebar_tree(),
+                    PromptOrigin::Sidebar => self.sidebar.refresh(),
                 }
             }
-        }
-    }
-
-    /// Re-read the sidebar tree from disk, keeping the selection in range.
-    fn refresh_sidebar_tree(&mut self) {
-        if let Some(ref mut tree) = self.sidebar {
-            tree.refresh();
-            let rows = tree.rows();
-            self.sidebar_selected = self.sidebar_selected.min(rows.len().saturating_sub(1));
         }
     }
 
@@ -5024,217 +4970,58 @@ impl App {
         }
     }
 
-    /// Toggle the file-explorer sidebar on/off. Creates the tree lazily on first
-    /// enable using the project root (or current directory as fallback).
+    /// Push a plain informational message.
+    fn echo(&mut self, msg: impl Into<String>) {
+        self.notify.push(Notification::new(
+            ruster_core::message::MessageLevel::Info,
+            ruster_core::message::MessageSource::Echo,
+            msg.into(),
+        ));
+    }
+
+    /// Toggle the file-explorer sidebar on/off, rooting it at the project root
+    /// (or the current directory) on first open.
     fn toggle_sidebar(&mut self) {
-        if self.sidebar.is_some() {
-            self.sidebar = None;
-            self.sidebar_focused = false;
-            self.sidebar_pending_g = false;
-            self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, "Sidebar closed".to_string()));
+        if self.sidebar.is_open() {
+            self.close_sidebar();
         } else {
-            let root = self.project_root
+            let root = self
+                .project_root
                 .clone()
                 .or_else(|| std::env::current_dir().ok())
                 .unwrap_or_else(|| PathBuf::from("."));
-            self.sidebar = Some(ruster_core::sidebar::SidebarTree::new(root, false));
-            self.sidebar_selected = 0;
-            self.sidebar_scroll = 0;
-            self.sidebar_focused = true;
+            self.sidebar.open(root);
             self.record_current_project();
-            self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, "Sidebar opened".to_string()));
+            self.echo("Sidebar opened");
         }
     }
 
     /// Close the sidebar and drop the tree.
     fn close_sidebar(&mut self) {
-        self.sidebar = None;
-        self.sidebar_focused = false;
-        self.sidebar_pending_g = false;
-        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, "Sidebar closed".to_string()));
+        self.sidebar.close();
+        self.echo("Sidebar closed");
     }
 
-    /// Reveal `path` in the sidebar: expand all ancestors, select the matching
-    /// entry, and scroll to keep it visible. No-op when the sidebar is hidden.
-    fn reveal_in_sidebar(&mut self, path: &std::path::Path) {
-        let tree = match self.sidebar.as_mut() {
-            Some(t) => t,
-            None => return,
-        };
-        // Canonicalize the path if it's relative.
-        let path = if path.is_relative() {
-            std::env::current_dir().ok().map(|cwd| cwd.join(path)).unwrap_or_else(|| path.to_path_buf())
-        } else {
-            path.to_path_buf()
-        };
-        // Only reveal paths under the sidebar root.
-        if !path.starts_with(&tree.root) {
-            return;
-        }
-        tree.reveal(&path);
-        // Find the row matching this path and select it.
-        let rows = tree.rows();
-        if let Some(idx) = rows.iter().position(|r| r.path == path) {
-            self.sidebar_selected = idx;
-            // Reset scroll so the selected row is visible (render loop centers it).
-            self.sidebar_scroll = idx.saturating_sub(8);
-        }
-    }
-
-    /// Handle keyboard input while the sidebar is focused.
-    /// Handle keyboard input while the sidebar is focused.
-    /// Returns `true` if the key was consumed, `false` otherwise (unhandled keys
-    /// fall through to the main handler, e.g. for `SPC e` to close the sidebar).
+    /// Feed a key to the focused sidebar, performing whatever it asks for.
+    /// Returns `false` for keys it did not claim, which must fall through to the
+    /// main handler (e.g. `SPC e` to close it).
     fn handle_sidebar_key(&mut self, ck: crossterm::event::KeyEvent) -> bool {
-        // Handle q specially: it needs to close the sidebar, so we handle it
-        // before borrowing `tree` to avoid a mutable borrow conflict.
-        if matches!(ck.code, KeyCode::Char('q')) && ck.modifiers.is_empty() {
-            self.close_sidebar();
-            return true;
-        }
-        // Enter on a file opens it — borrow path before tree.
-        if matches!(ck.code, KeyCode::Enter) && ck.modifiers.is_empty() {
-            if let Some(path) = self.sidebar.as_ref().and_then(|t| {
-                let rows = t.rows();
-                if rows.is_empty() { None }
-                else {
-                    let r = &rows[self.sidebar_selected.min(rows.len().saturating_sub(1))];
-                    (!r.is_dir).then(|| r.path.clone())
-                }
-            }) {
-                self.sidebar_focused = false;
+        match self.sidebar.handle_key(ck) {
+            SidebarResponse::Ignored => false,
+            SidebarResponse::Handled => true,
+            SidebarResponse::Close => {
+                self.close_sidebar();
+                true
+            }
+            SidebarResponse::Prompt(p) => {
+                self.file_prompt = Some(p);
+                true
+            }
+            SidebarResponse::OpenFile(path) => {
                 self.open_path(&path, None);
-                return true;
+                true
             }
         }
-
-        let tree = match self.sidebar.as_mut() {
-            Some(t) => t,
-            None => return false,
-        };
-        let rows = tree.rows();
-        if rows.is_empty() {
-            self.sidebar_focused = false;
-            return false;
-        }
-        let handled = match ck.code {
-            KeyCode::Char('j') | KeyCode::Down if ck.modifiers.is_empty() => {
-                if self.sidebar_selected + 1 < rows.len() {
-                    self.sidebar_selected += 1;
-                }
-                true
-            }
-            KeyCode::Char('k') | KeyCode::Up if ck.modifiers.is_empty() => {
-                self.sidebar_selected = self.sidebar_selected.saturating_sub(1);
-                true
-            }
-            KeyCode::Enter if ck.modifiers.is_empty() => {
-                // Directory toggle (file case handled above).
-                let row = &rows[self.sidebar_selected];
-                if row.is_dir {
-                    tree.toggle(&row.path);
-                }
-                true
-            }
-            KeyCode::Char('h') | KeyCode::Left if ck.modifiers.is_empty() => {
-                let row = &rows[self.sidebar_selected];
-                if row.is_dir && row.expanded {
-                    tree.collapse(&row.path);
-                } else {
-                    if let Some(parent_depth) = row.depth.checked_sub(1) {
-                        for i in (0..self.sidebar_selected).rev() {
-                            if rows[i].depth == parent_depth {
-                                self.sidebar_selected = i;
-                                break;
-                            }
-                        }
-                    }
-                }
-                true
-            }
-            KeyCode::Char('l') | KeyCode::Right if ck.modifiers.is_empty() => {
-                let row = &rows[self.sidebar_selected];
-                if row.is_dir {
-                    tree.expand(&row.path);
-                }
-                true
-            }
-            KeyCode::Esc | KeyCode::Char('c') if ck.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-                self.sidebar_focused = false;
-                true
-            }
-            KeyCode::Tab => {
-                self.sidebar_focused = false;
-                true
-            }
-            KeyCode::Char('h') if ck.modifiers == crossterm::event::KeyModifiers::CONTROL => {
-                self.sidebar_focused = false;
-                true
-            }
-            KeyCode::Char('l') if ck.modifiers == crossterm::event::KeyModifiers::CONTROL => {
-                self.sidebar_focused = false;
-                true
-            }
-            KeyCode::Char('a') if ck.modifiers.is_empty() => {
-                if !rows.is_empty() {
-                    let row = &rows[self.sidebar_selected.min(rows.len().saturating_sub(1))];
-                    let dir = if row.is_dir { row.path.clone() } else { row.path.parent().unwrap_or(&row.path).to_path_buf() };
-                    self.file_prompt = Some(FilePrompt::create(dir, PromptOrigin::Sidebar));
-                }
-                true
-            }
-            KeyCode::Char('r') if ck.modifiers.is_empty() => {
-                if !rows.is_empty() {
-                    let row = &rows[self.sidebar_selected.min(rows.len().saturating_sub(1))];
-                    let dir = row.path.parent().unwrap_or(&row.path).to_path_buf();
-                    let name = row.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-                    self.file_prompt =
-                        Some(FilePrompt::rename(dir, name, PromptOrigin::Sidebar));
-                }
-                true
-            }
-            KeyCode::Char('d') if ck.modifiers.is_empty() => {
-                if !rows.is_empty() {
-                    let row = &rows[self.sidebar_selected.min(rows.len().saturating_sub(1))];
-                    self.file_prompt =
-                        Some(FilePrompt::delete(row.path.clone(), PromptOrigin::Sidebar));
-                }
-                true
-            }
-            KeyCode::Char('g') if ck.modifiers.is_empty() => {
-                if self.sidebar_pending_g {
-                    self.sidebar_selected = 0;
-                    self.sidebar_pending_g = false;
-                } else {
-                    self.sidebar_pending_g = true;
-                }
-                true
-            }
-            KeyCode::Char('G') if ck.modifiers.is_empty() => {
-                self.sidebar_selected = rows.len().saturating_sub(1);
-                self.sidebar_pending_g = false;
-                true
-            }
-            KeyCode::Char('.') if ck.modifiers.is_empty() => {
-                tree.set_show_hidden(!tree.show_hidden());
-                true
-            }
-            KeyCode::Char('R') if ck.modifiers.is_empty() => {
-                tree.refresh();
-                true
-            }
-            _ => false,
-        };
-        // Reset gg-pending state on any non-g key.
-        if !matches!(ck.code, KeyCode::Char('g')) {
-            self.sidebar_pending_g = false;
-        }
-        // Clamp selection and scroll to keep it visible.
-        let rows = tree.rows();
-        if !rows.is_empty() {
-            self.sidebar_selected = self.sidebar_selected.min(rows.len().saturating_sub(1));
-        }
-        handled
     }
 
     /// Open the buffer-list picker over every open buffer.
@@ -5439,7 +5226,7 @@ impl App {
             };
             self.ws.borrow_mut().execute(Action::Move(Motion::To(pos)));
         }
-        self.reveal_in_sidebar(path);
+        self.sidebar.reveal(path);
     }
 
     /// Advance the pending Space-leader sequence with the next key.
@@ -7015,15 +6802,13 @@ mod tests {
         let (mut a, dired_dir) = dired_on_temp("ruster_leak_dired", &["other.txt"]);
 
         // Open the sidebar on `side`, focus it, and arm a delete prompt.
-        a.sidebar = Some(ruster_core::sidebar::SidebarTree::new(side.clone(), false));
-        a.sidebar_focused = true;
-        a.sidebar_selected = 0;
+        a.sidebar.open(side.clone());
         a.handle_key(CtKey::new(KeyCode::Char('d'), none));
         assert!(a.file_prompt.is_some(), "sidebar armed a delete prompt");
         // Cancel it — this is the path that used to leave the directory behind.
         a.handle_key(CtKey::new(KeyCode::Char('n'), none));
         assert!(a.file_prompt.is_none());
-        a.sidebar_focused = false;
+        a.sidebar.set_focused(false);
 
         // Now create a file from dired. It must land in the dired directory.
         a.handle_key(CtKey::new(KeyCode::Char('+'), none));
