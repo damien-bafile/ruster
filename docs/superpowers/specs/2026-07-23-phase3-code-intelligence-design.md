@@ -19,9 +19,15 @@ vim via `Action::Textobject` (`daf`, `cif`, …). So a good chunk of the Phase 3
 "tree-sitter" row is done.
 
 **Known gaps to fix first:**
-- `query_files_for_lang()` (`ruster-syntax/src/lib.rs:119`) **always returns the
-  Rust queries** regardless of language — so highlighting/textobjects are wrong for
-  Python/JS/etc. Only `queries/rust/` exists.
+- ~~`query_files_for_lang()` **always returns the Rust queries** regardless of
+  language — so highlighting/textobjects are wrong for Python/JS/etc. Only
+  `queries/rust/` exists.~~ **Fixed during Phase 3** — it now matches on the
+  language key and returns that language's queries.
+  - Follow-up (2026-07-31): JavaScript and TypeScript had grammars registered
+    and extensions mapped but no query files, so they parsed into a tree and
+    highlighted nothing. `queries/javascript/` and `queries/typescript/` now
+    exist, and `qcheck::every_parseable_language_has_a_highlight_query` fails
+    the build if a grammar is ever added without one again.
 - Syntax is bound to the **initially-opened file** (`App.syntax` + `syntax_buffer`);
   buffers opened later render as plain text (Phase 2 note). Needs to be per-buffer.
 

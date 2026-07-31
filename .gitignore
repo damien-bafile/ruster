@@ -1,2 +1,5 @@
 /target
 .DS_Store
+
+# graphify knowledge-graph output — generated, and large (~8MB)
+/graphify-out
