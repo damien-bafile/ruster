@@ -23,6 +23,15 @@ use crate::file_prompt::{FilePrompt, PromptOrigin};
 /// against the top edge.
 const REVEAL_CONTEXT: usize = 8;
 
+/// Whether `m` represents an unmodified keypress.
+///
+/// Terminals report an uppercase letter as the character *plus* SHIFT, so a
+/// literal `is_empty()` check silently rejects bindings like `G` and `R`. SHIFT
+/// is part of the character here, not a chord.
+fn is_plain(m: KeyModifiers) -> bool {
+    m.difference(KeyModifiers::SHIFT).is_empty()
+}
+
 /// What `App` must do after the sidebar has seen a key.
 pub enum SidebarResponse {
     /// Not claimed — the caller must fall through to the main key handler.
@@ -148,11 +157,11 @@ impl SidebarState {
 
     pub fn handle_key(&mut self, ck: KeyEvent) -> SidebarResponse {
         // `q` closes, which drops the tree — decided before borrowing it.
-        if matches!(ck.code, KeyCode::Char('q')) && ck.modifiers.is_empty() {
+        if matches!(ck.code, KeyCode::Char('q')) && is_plain(ck.modifiers) {
             return SidebarResponse::Close;
         }
         // Enter on a file opens it; Enter on a directory toggles it below.
-        if matches!(ck.code, KeyCode::Enter) && ck.modifiers.is_empty() {
+        if matches!(ck.code, KeyCode::Enter) && is_plain(ck.modifiers) {
             let target = self.tree.as_ref().and_then(|t| {
                 let rows = t.rows();
                 if rows.is_empty() {
@@ -176,24 +185,24 @@ impl SidebarState {
 
         let mut prompt = None;
         let handled = match ck.code {
-            KeyCode::Char('j') | KeyCode::Down if ck.modifiers.is_empty() => {
+            KeyCode::Char('j') | KeyCode::Down if is_plain(ck.modifiers) => {
                 if self.selected + 1 < rows.len() {
                     self.selected += 1;
                 }
                 true
             }
-            KeyCode::Char('k') | KeyCode::Up if ck.modifiers.is_empty() => {
+            KeyCode::Char('k') | KeyCode::Up if is_plain(ck.modifiers) => {
                 self.selected = self.selected.saturating_sub(1);
                 true
             }
-            KeyCode::Enter if ck.modifiers.is_empty() => {
+            KeyCode::Enter if is_plain(ck.modifiers) => {
                 let row = &rows[self.selected];
                 if row.is_dir {
                     tree.toggle(&row.path);
                 }
                 true
             }
-            KeyCode::Char('h') | KeyCode::Left if ck.modifiers.is_empty() => {
+            KeyCode::Char('h') | KeyCode::Left if is_plain(ck.modifiers) => {
                 let row = &rows[self.selected];
                 if row.is_dir && row.expanded {
                     tree.collapse(&row.path);
@@ -208,7 +217,7 @@ impl SidebarState {
                 }
                 true
             }
-            KeyCode::Char('l') | KeyCode::Right if ck.modifiers.is_empty() => {
+            KeyCode::Char('l') | KeyCode::Right if is_plain(ck.modifiers) => {
                 let row = &rows[self.selected];
                 if row.is_dir {
                     tree.expand(&row.path);
@@ -227,7 +236,7 @@ impl SidebarState {
                 self.focused = false;
                 true
             }
-            KeyCode::Char('a') if ck.modifiers.is_empty() => {
+            KeyCode::Char('a') if is_plain(ck.modifiers) => {
                 let row = &rows[self.selected.min(rows.len() - 1)];
                 // New entries land inside a directory, or beside a file.
                 let dir = if row.is_dir {
@@ -238,7 +247,7 @@ impl SidebarState {
                 prompt = Some(FilePrompt::create(dir, PromptOrigin::Sidebar));
                 true
             }
-            KeyCode::Char('r') if ck.modifiers.is_empty() => {
+            KeyCode::Char('r') if is_plain(ck.modifiers) => {
                 let row = &rows[self.selected.min(rows.len() - 1)];
                 let dir = row.path.parent().unwrap_or(&row.path).to_path_buf();
                 let name =
@@ -246,12 +255,12 @@ impl SidebarState {
                 prompt = Some(FilePrompt::rename(dir, name, PromptOrigin::Sidebar));
                 true
             }
-            KeyCode::Char('d') if ck.modifiers.is_empty() => {
+            KeyCode::Char('d') if is_plain(ck.modifiers) => {
                 let row = &rows[self.selected.min(rows.len() - 1)];
                 prompt = Some(FilePrompt::delete(row.path.clone(), PromptOrigin::Sidebar));
                 true
             }
-            KeyCode::Char('g') if ck.modifiers.is_empty() => {
+            KeyCode::Char('g') if is_plain(ck.modifiers) => {
                 if self.pending_g {
                     self.selected = 0;
                     self.pending_g = false;
@@ -260,16 +269,16 @@ impl SidebarState {
                 }
                 true
             }
-            KeyCode::Char('G') if ck.modifiers.is_empty() => {
+            KeyCode::Char('G') if is_plain(ck.modifiers) => {
                 self.selected = rows.len() - 1;
                 self.pending_g = false;
                 true
             }
-            KeyCode::Char('.') if ck.modifiers.is_empty() => {
+            KeyCode::Char('.') if is_plain(ck.modifiers) => {
                 tree.set_show_hidden(!tree.show_hidden());
                 true
             }
-            KeyCode::Char('R') if ck.modifiers.is_empty() => {
+            KeyCode::Char('R') if is_plain(ck.modifiers) => {
                 tree.refresh();
                 true
             }
@@ -456,6 +465,34 @@ mod tests {
         s.handle_key(key('j'));
         s.handle_key(key('g'));
         assert_ne!(s.selected, 0, "interrupted gg does not jump");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Terminals send an uppercase letter with SHIFT held, so a guard of
+    /// `modifiers.is_empty()` silently dropped `G` and `R`.
+    #[test]
+    fn shifted_keys_are_still_plain_keys() {
+        let root = fixture();
+        let mut s = open_on(&root);
+        let shifted = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT);
+
+        assert_eq!(s.selected, 0);
+        assert!(matches!(s.handle_key(shifted('G')), SidebarResponse::Handled));
+        assert_eq!(s.selected, 1, "G jumps to the last row even with SHIFT set");
+
+        // R (refresh) shares the guard; it must be claimed, not fall through.
+        assert!(matches!(s.handle_key(shifted('R')), SidebarResponse::Handled));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// SHIFT is part of the character, but a real chord is not: C-h belongs to
+    /// the window-focus handler.
+    #[test]
+    fn ctrl_chords_are_not_treated_as_plain_keys() {
+        let root = fixture();
+        let mut s = open_on(&root);
+        s.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL));
+        assert!(!s.is_focused(), "C-l moves focus out rather than expanding");
         std::fs::remove_dir_all(&root).ok();
     }
 
