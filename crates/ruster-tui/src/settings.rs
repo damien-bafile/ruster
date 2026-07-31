@@ -148,7 +148,7 @@ impl SettingsState {
                 || key.to_lowercase().contains(filter)
         };
         let mut rows: Vec<Row> = (0..self.specs.len())
-            .filter(|&i| matches(&self.specs[i].label, &self.specs[i].key))
+            .filter(|&i| matches(self.specs[i].label, self.specs[i].key))
             .map(Row::Spec)
             .collect();
         for (li, lang) in self.syntax.iter().enumerate() {

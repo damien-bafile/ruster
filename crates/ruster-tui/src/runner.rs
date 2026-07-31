@@ -130,10 +130,9 @@ fn make_item(root: &Path, path: &str, line: usize, col: usize, message: String, 
 fn rustc_header(s: &str) -> Option<(u8, String)> {
     let (kind, rest) = if let Some(r) = s.strip_prefix("error") {
         (1u8, r)
-    } else if let Some(r) = s.strip_prefix("warning") {
-        (2u8, r)
     } else {
-        return None;
+        let r = s.strip_prefix("warning")?;
+        (2u8, r)
     };
     // Skip an optional `[CODE]`, then require `: `.
     let rest = if let Some(open) = rest.strip_prefix('[') {

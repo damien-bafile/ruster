@@ -352,9 +352,7 @@ impl DebugSession {
                 Some(DapEvent::BreakpointValidated { id, verified })
             }
             Event::Module(body) => {
-                let id = match body.module.id {
-                    dap::types::ModuleId::Number | _ => 0,
-                };
+                let id = module_id_of(&body.module.id);
                 let name = body.module.name.clone();
                 Some(DapEvent::Module { id, name })
             }
@@ -365,5 +363,41 @@ impl DebugSession {
             }
             _ => None,
         }
+    }
+}
+
+/// A DAP module id as a number.
+///
+/// The `dap` crate models `ModuleId` as either `Number` — a *unit* variant that
+/// carries no payload — or an untagged `String`. So a numeric id only ever
+/// reaches us in the string form; there is genuinely nothing to read out of
+/// `Number`, and ids that aren't numeric fall back to 0.
+fn module_id_of(id: &dap::types::ModuleId) -> u64 {
+    match id {
+        dap::types::ModuleId::String(s) => s.parse().unwrap_or(0),
+        dap::types::ModuleId::Number => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dap::types::ModuleId;
+
+    /// Regression: this previously read `ModuleId::Number | _ => 0`, so the
+    /// wildcard swallowed every case and *every* module reported id 0.
+    #[test]
+    fn module_id_reads_the_string_form() {
+        assert_eq!(module_id_of(&ModuleId::String("42".into())), 42);
+        assert_eq!(module_id_of(&ModuleId::String("0".into())), 0);
+    }
+
+    #[test]
+    fn module_id_falls_back_to_zero_when_unreadable() {
+        // Non-numeric ids (adapters may send opaque handles) and the payload-less
+        // Number variant both have no number to report.
+        assert_eq!(module_id_of(&ModuleId::String("libc.so.6".into())), 0);
+        assert_eq!(module_id_of(&ModuleId::String(String::new())), 0);
+        assert_eq!(module_id_of(&ModuleId::Number), 0);
     }
 }

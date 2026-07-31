@@ -120,14 +120,12 @@ impl Theme {
     /// Serialize as a theme file: a Lua chunk returning the roles + palette.
     pub fn to_lua(&self) -> String {
         let r = &self.roles;
-        let mut s = String::from(
-            format!(
-                "-- ruster theme. `roles` colour the UI; `palette` are the named colours\n\
-                 -- the Settings page assigns to each element. Edit or copy freely.\n\
-                 -- ruster-theme-version: {}\n\
-                 return {{\n",
-                CURRENT_THEME_VERSION,
-            ),
+        let mut s = format!(
+            "-- ruster theme. `roles` colour the UI; `palette` are the named colours\n\
+             -- the Settings page assigns to each element. Edit or copy freely.\n\
+             -- ruster-theme-version: {}\n\
+             return {{\n",
+            CURRENT_THEME_VERSION,
         );
         s.push_str(&format!(
             "  bg = {:?}, fg = {:?}, gutter = {:?}, gutter_bg = {:?},\n  \
