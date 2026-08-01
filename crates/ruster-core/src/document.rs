@@ -25,6 +25,8 @@ pub enum SpecialKind {
     Build,
     /// The file-explorer sidebar (tree dired) in a persistent side column.
     Sidebar,
+    /// One pane of a side-by-side diff (`:Diffview`).
+    Diff,
     /// The `:Mason` external-tool listing.
     Mason,
     /// The Dashboard / welcome screen — a static page that cannot be closed.
