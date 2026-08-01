@@ -193,7 +193,8 @@ impl Renderer for TuiRenderer {
             // Picker overlay: a centered floating box, or a full-width strip
             // docked at the bottom (the command palette's "bottom" mode).
             if let Some(picker) = &state.picker {
-                let rows = (picker.rows.len() as u16 + 2).max(picker.preview.len() as u16);
+                // +3: title row, query row and the box's bottom edge.
+                let rows = (picker.rows.len() as u16 + 3).max(picker.preview.len() as u16 + 2);
                 let parea = if picker.placement == ruster_render::PickerPlacement::Bottom {
                     let ph = rows.clamp(3, area.height.saturating_sub(1)).min(area.height / 2);
                     Rect::new(area.x, area.height.saturating_sub(ph), area.width, ph)

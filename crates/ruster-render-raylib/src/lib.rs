@@ -38,6 +38,28 @@ fn draw_text_cells<D: RaylibDraw>(
     }
 }
 
+/// Draw a bordered overlay box whose top edge carries the title, with the sides
+/// meeting that rule rather than starting beneath it. The GUI counterpart of the
+/// TUI's `titled_box`.
+fn draw_titled_box<D: RaylibDraw>(
+    d: &mut D,
+    m: TextMetrics<'_>,
+    rect: (i32, i32, i32, i32),
+    line_h: i32,
+    label: &str,
+    label_fg: Color,
+    rule_fg: Color,
+) {
+    let (x, y, w, h) = rect;
+    draw_ruled_header(d, m, (x, y), w, label, label_fg, rule_fg);
+    // Sides start below the header so nothing runs under the rule.
+    let side_y = y + line_h;
+    let side_h = (h - line_h).max(0);
+    d.draw_rectangle(x, side_y, 1, side_h, rule_fg);
+    d.draw_rectangle(x + w - 1, side_y, 1, side_h, rule_fg);
+    d.draw_rectangle(x, y + h - 1, w, 1, rule_fg);
+}
+
 /// Draw the standard panel header — `─ label ─` then ruled to the full width.
 ///
 /// Shared by buffer windows, the picker and the settings page so every titled
@@ -747,16 +769,8 @@ impl Renderer for RaylibRenderer {
                 // Divider starts below the header, which rules across the top.
                 d.draw_rectangle(box_x + list_w, box_y + line_h, 1, box_h - line_h, accent);
             }
-            // Left, right and bottom edges only, and starting below the header:
-            // the ruled header *is* the top edge, so a rectangle outline would
-            // both double the line and run under the rule.
-            let side_y = box_y + line_h;
-            let side_h = (box_h - line_h).max(0);
-            d.draw_rectangle(box_x, side_y, 1, side_h, accent);
-            d.draw_rectangle(box_x + box_w - 1, side_y, 1, side_h, accent);
-            d.draw_rectangle(box_x, box_y + box_h - 1, box_w, 1, accent);
             // Drawn before the column scissors so it spans the whole box.
-            draw_ruled_header(&mut d, metrics, (box_x, box_y), box_w, &picker.title, accent, divider);
+            draw_titled_box(&mut d, metrics, (box_x, box_y, box_w, box_h), line_h, &picker.title, accent, divider);
             // List column — title, query, and rows, clipped to the list width
             // so long labels don't bleed across the divider into the preview.
             let list_clip_w = if has_preview { list_w } else { box_w };
@@ -903,7 +917,7 @@ impl Renderer for RaylibRenderer {
             let mut s = d.begin_scissor_mode(bx, by, bw, bh);
             s.draw_rectangle(bx, by, bw, bh, sbg);
             let title = format!("Settings{}", if settings.dirty { " [+]" } else { "" });
-            draw_ruled_header(&mut s, metrics, (bx, by), bw, &title, accent, divider);
+            draw_titled_box(&mut s, metrics, (bx, by, bw, bh), line_h, &title, accent, divider);
 
             // Flatten groups into header/row lines.
             let mut lines: Vec<(bool, String, Option<&SettingRowView>)> = Vec::new();
