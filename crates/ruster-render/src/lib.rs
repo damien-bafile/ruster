@@ -565,7 +565,10 @@ pub struct SettingsView {
 /// holds its position until the selection crosses an edge, then scrolls just
 /// enough to keep it on-screen — the behavior of a normal list widget. `prev`
 /// is the last frame's top line; returns the new top line.
-pub fn settings_scroll(prev: usize, selected: usize, viewport: usize, total: usize) -> usize {
+///
+/// Shared by the settings page and the picker; a wrapping selection relies on
+/// it to jump the view to the far end rather than leaving the cursor off-screen.
+pub fn list_scroll(prev: usize, selected: usize, viewport: usize, total: usize) -> usize {
     let viewport = viewport.max(1);
     let mut top = prev;
     if selected < top {
@@ -931,21 +934,40 @@ mod tests {
     }
 
     #[test]
-    fn settings_scroll_holds_until_edge_then_follows() {
-        use crate::settings_scroll;
+    fn list_scroll_holds_until_edge_then_follows() {
+        use crate::list_scroll;
         // 20 items, viewport 5. Moving down within view doesn't scroll.
-        assert_eq!(settings_scroll(0, 3, 5, 20), 0);
+        assert_eq!(list_scroll(0, 3, 5, 20), 0);
         // Crossing the bottom edge scrolls just enough to keep it visible.
-        assert_eq!(settings_scroll(0, 5, 5, 20), 1);
-        assert_eq!(settings_scroll(0, 6, 5, 20), 2);
+        assert_eq!(list_scroll(0, 5, 5, 20), 1);
+        assert_eq!(list_scroll(0, 6, 5, 20), 2);
         // Moving back up while still on-screen holds position (no re-center).
-        assert_eq!(settings_scroll(2, 4, 5, 20), 2);
+        assert_eq!(list_scroll(2, 4, 5, 20), 2);
         // Crossing the top edge scrolls up.
-        assert_eq!(settings_scroll(2, 1, 5, 20), 1);
+        assert_eq!(list_scroll(2, 1, 5, 20), 1);
         // Never scrolls past the end (max top = total - viewport).
-        assert_eq!(settings_scroll(99, 19, 5, 20), 15);
+        assert_eq!(list_scroll(99, 19, 5, 20), 15);
         // Fewer items than the viewport: no scroll.
-        assert_eq!(settings_scroll(3, 0, 5, 3), 0);
+        assert_eq!(list_scroll(3, 0, 5, 3), 0);
+    }
+
+    /// A picker wraps its selection from the first item to the last. The view
+    /// has to follow, or the cursor lands off-screen and the list looks stuck
+    /// at the top.
+    #[test]
+    fn list_scroll_follows_a_selection_that_wraps_to_the_end() {
+        use crate::list_scroll;
+        // 40 items, 10 visible, sitting at the top; selection wraps to the last.
+        let top = list_scroll(0, 39, 10, 40);
+        assert_eq!(top, 30, "scrolled so item 39 is the last visible row");
+        assert!(39 >= top && 39 < top + 10, "selection is on screen");
+    }
+
+    #[test]
+    fn list_scroll_follows_a_selection_that_wraps_back_to_the_start() {
+        use crate::list_scroll;
+        let top = list_scroll(30, 0, 10, 40);
+        assert_eq!(top, 0, "jumped back to the top with the selection");
     }
 
     fn sample_window() -> WindowView {

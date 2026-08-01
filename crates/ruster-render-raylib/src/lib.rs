@@ -51,13 +51,45 @@ fn draw_titled_box<D: RaylibDraw>(
     rule_fg: Color,
 ) {
     let (x, y, w, h) = rect;
-    draw_ruled_header(d, m, (x, y), w, label, label_fg, rule_fg);
-    // Sides start below the header so nothing runs under the rule.
-    let side_y = y + line_h;
-    let side_h = (h - line_h).max(0);
-    d.draw_rectangle(x, side_y, 1, side_h, rule_fg);
-    d.draw_rectangle(x + w - 1, side_y, 1, side_h, rule_fg);
-    d.draw_rectangle(x, y + h - 1, w, 1, rule_fg);
+    if w < 4 || h < 2 * line_h {
+        return;
+    }
+
+    // Every edge is a continuous 1px line, and the top one sits at the vertical
+    // middle of the header row — where a `─` glyph would render. Mixing the two
+    // (a glyph top rule, pixel sides) puts the horizontal half a row above where
+    // the verticals begin, so the corners never meet; drawing the sides as
+    // per-row `│` glyphs instead makes them a dashed line. Pixels for all four
+    // edges is the only combination that is both continuous and joined.
+    let rule_y = y + line_h / 2;
+    let bottom_y = y + h - 1;
+
+    // Title first, so its width is known and the top line can be split round it.
+    let label_x = x + (2.0 * m.char_w) as i32;
+    let label_w = m.font.measure_text(label, m.size as f32, 1.0).x as i32;
+    d.draw_text_ex(
+        m.font,
+        label,
+        Vector2::new(label_x as f32, y as f32),
+        m.size as f32,
+        1.0,
+        label_fg,
+    );
+
+    let pad = (m.char_w * 0.5) as i32;
+    let gap_start = label_x - pad;
+    let gap_end = (label_x + label_w + pad).min(x + w);
+    // Left stub, then the run past the title to the far corner.
+    d.draw_rectangle(x, rule_y, (gap_start - x).max(0), 1, rule_fg);
+    if gap_end < x + w {
+        d.draw_rectangle(gap_end, rule_y, x + w - gap_end, 1, rule_fg);
+    }
+
+    // Sides start on the rule, so the corners are a single joined pixel.
+    let side_h = (bottom_y - rule_y).max(0);
+    d.draw_rectangle(x, rule_y, 1, side_h, rule_fg);
+    d.draw_rectangle(x + w - 1, rule_y, 1, side_h, rule_fg);
+    d.draw_rectangle(x, bottom_y, w, 1, rule_fg);
 }
 
 /// Draw the standard panel header — `─ label ─` then ruled to the full width.
@@ -111,6 +143,7 @@ pub struct RaylibRenderer {
     /// Top visible line of the Settings overlay, persisted across frames so the
     /// list scrolls like a normal widget (holds until the selection hits an edge).
     settings_scroll: usize,
+    picker_scroll: usize,
     event_buffer: Vec<KeyEvent>,
 }
 
@@ -280,6 +313,7 @@ impl RaylibRenderer {
             theme: gui.theme,
             font_sig: (font_override.map(str::to_string), gui.font_size),
             settings_scroll: 0,
+            picker_scroll: 0,
             event_buffer: Vec::new(),
         }
     }
@@ -767,7 +801,9 @@ impl Renderer for RaylibRenderer {
             if has_preview {
                 d.draw_rectangle(box_x + list_w, box_y, box_w - list_w, box_h, bg);
                 // Divider starts below the header, which rules across the top.
-                d.draw_rectangle(box_x + list_w, box_y + line_h, 1, box_h - line_h, accent);
+                // Meets the top rule at its midpoint, like the outer edges.
+                let div_y = box_y + line_h / 2;
+                d.draw_rectangle(box_x + list_w, div_y, 1, box_h - line_h / 2, accent);
             }
             // Drawn before the column scissors so it spans the whole box.
             draw_titled_box(&mut d, metrics, (box_x, box_y, box_w, box_h), line_h, &picker.title, accent, divider);
@@ -783,7 +819,13 @@ impl Renderer for RaylibRenderer {
                 );
                 s.draw_text_ex(font, &format!(" > {}", picker.query), Vector2::new(box_x as f32 + 4.0, (box_y + line_h) as f32), font_size as f32, 1.0, default_color);
                 let max_visible = ((box_h - 2 * line_h) / line_h).max(0) as usize;
-                for (i, row) in picker.rows.iter().take(max_visible).enumerate() {
+                // Keep the selection on screen; a wrap to the last item has to
+                // take the view with it.
+                let sel = picker.rows.iter().position(|r| r.selected).unwrap_or(0);
+                self.picker_scroll = ruster_render::list_scroll(
+                    self.picker_scroll, sel, max_visible, picker.rows.len());
+                let pscroll = self.picker_scroll;
+                for (i, row) in picker.rows.iter().skip(pscroll).take(max_visible).enumerate() {
                     let ry = box_y + (2 + i as i32) * line_h;
                     if row.selected {
                         s.draw_rectangle(box_x, ry, list_clip_w, line_h, accent);
@@ -934,7 +976,7 @@ impl Renderer for RaylibRenderer {
             // overlap them; scroll like a normal list (hold until an edge).
             let body_rows = ((bh - 3 * line_h) / line_h).max(1) as usize;
             self.settings_scroll =
-                ruster_render::settings_scroll(self.settings_scroll, selected, body_rows, lines.len());
+                ruster_render::list_scroll(self.settings_scroll, selected, body_rows, lines.len());
             let scroll = self.settings_scroll;
             let value_x = (bx + (32.0 * char_w) as i32).min(bx + bw / 2);
 

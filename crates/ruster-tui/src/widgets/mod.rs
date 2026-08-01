@@ -745,17 +745,24 @@ fn draw_section_header(
 
 /// Renders a floating picker overlay (title, query line, selectable rows).
 pub struct PickerWidget {
+    /// First visible row, so a selection past the box stays on screen.
+    scroll: usize,
     view: ruster_render::PickerView,
     theme: Option<ruster_render::Theme>,
 }
 
 impl PickerWidget {
     pub fn new(view: ruster_render::PickerView) -> Self {
-        PickerWidget { view, theme: None }
+        PickerWidget { view, theme: None, scroll: 0 }
     }
 
     pub fn with_theme(mut self, theme: &ruster_render::Theme) -> Self {
         self.theme = Some(*theme);
+        self
+    }
+
+    pub fn with_scroll(mut self, scroll: usize) -> Self {
+        self.scroll = scroll;
         self
     }
 }
@@ -859,7 +866,7 @@ impl Widget for SettingsWidget<'_> {
         let body_top = area.y + 1;
         let body_h = area.height.saturating_sub(3) as usize; // title + footer + help
         *self.scroll =
-            ruster_render::settings_scroll(*self.scroll, selected, body_h, lines.len());
+            ruster_render::list_scroll(*self.scroll, selected, body_h, lines.len());
         let scroll = *self.scroll;
         let value_col = area.x + 32.min(area.width / 2);
 
@@ -952,7 +959,7 @@ impl Widget for PickerWidget {
             put(buf, area.x + 1 + i as u16, area.y + 1, ch, Color::White, bg);
         }
         // Item rows (clipped to the list column).
-        for (row, item) in self.view.rows.iter().enumerate() {
+        for (row, item) in self.view.rows.iter().skip(self.scroll).enumerate() {
             let y = area.y + 2 + row as u16;
             if y >= area.bottom().saturating_sub(1) { break; }
             let (row_fg, row_bg) = if item.selected {
