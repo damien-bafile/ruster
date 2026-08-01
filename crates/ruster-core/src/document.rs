@@ -29,6 +29,8 @@ pub enum SpecialKind {
     Diff,
     /// The `:Mason` external-tool listing.
     Mason,
+    /// The `:help` manual.
+    Help,
     /// The Dashboard / welcome screen — a static page that cannot be closed.
     Dashboard,
     /// A general-purpose message log (build, LSP, echo, etc.).

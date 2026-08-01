@@ -604,6 +604,8 @@ enum CmdAction {
     Sidebar,
     /// List external tools and their installed state (`:Mason`).
     Mason,
+    /// Open the manual, optionally jumping to a topic (`:help [topic]`).
+    Help(Option<String>),
     GitsignsToggle,
     TodoList,
     Trouble,
@@ -1791,6 +1793,13 @@ impl App {
         // hijacked. Unclaimed keys fall through to normal handling.
         // The problem list claims Enter/Tab/r/q the same way dired claims its
         // keys; everything else falls through so `:`, `/` and motions still work.
+        if self.active_is_help()
+            && self.vim.mode == VimMode::Normal
+            && self.emacs_isearch.is_none()
+            && self.handle_help_key(ck)
+        {
+            return;
+        }
         if self.active_is_mason()
             && self.vim.mode == VimMode::Normal
             && self.emacs_isearch.is_none()
@@ -3999,6 +4008,10 @@ impl App {
             "Themes" | "themes" | "theme" => Ok(CmdAction::Themes),
             _ if trimmed == "sidebar" => Ok(CmdAction::Sidebar),
             "Mason" | "mason" => Ok(CmdAction::Mason),
+            "help" | "h" | "Help" => Ok(CmdAction::Help(None)),
+            _ if let Some(t) = trimmed.strip_prefix("help ").or_else(|| trimmed.strip_prefix("h ")) => {
+                Ok(CmdAction::Help(Some(t.trim().to_string())))
+            }
             "SyntaxReload" | "syntaxreload" | "syntax reload" => Ok(CmdAction::SyntaxReload),
             "Diffview" | "diffview" | "Diff" | "diff" => Ok(CmdAction::Diffview),
             _ if let Some(n) = trimmed.strip_prefix("sidebar resize ").and_then(|s| s.trim().parse::<u16>().ok()) => Ok(CmdAction::SidebarResize(n)),
@@ -4139,6 +4152,7 @@ impl App {
             }
             CmdAction::Sidebar => self.toggle_sidebar(),
             CmdAction::Mason => self.open_mason(),
+            CmdAction::Help(topic) => self.open_help(topic.as_deref()),
             CmdAction::SyntaxReload => self.syntax_reload(),
             CmdAction::Diffview => self.open_diffview(),
             CmdAction::SidebarResize(n) => {
@@ -5962,6 +5976,66 @@ impl App {
             id
         };
         self.ws.borrow_mut().set_active_buffer(id);
+    }
+
+    /// Open the manual, jumping to `topic` when one was given.
+    ///
+    /// An unknown topic still opens the manual — at the top, with a note. That
+    /// is more useful than refusing: the reader is looking for something, and
+    /// the text they need is now in front of them and searchable with `/`.
+    fn open_help(&mut self, topic: Option<&str>) {
+        let doc = crate::help::document();
+        let line = topic.and_then(|t| crate::help::resolve(&doc, t));
+        let id = {
+            let mut w = self.ws.borrow_mut();
+            let existing = w
+                .buffers
+                .ids()
+                .iter()
+                .copied()
+                .find(|&id| w.buffers.get(id).is_some_and(|d| d.name == "*help*"));
+            let id = existing.unwrap_or_else(|| {
+                w.buffers.create_special(ruster_core::document::SpecialKind::Help, "*help*")
+            });
+            if let Some(d) = w.buffers.get_mut(id) {
+                d.buffer = Buffer::from_str(&doc);
+            }
+            id
+        };
+        self.ws.borrow_mut().set_active_buffer(id);
+
+        // Put the cursor on the topic's line and scroll it into view.
+        let offset = {
+            let w = self.ws.borrow();
+            w.buffers.get(id).map(|d| d.buffer.line_start_char(line.unwrap_or(0)))
+        };
+        if let Some(off) = offset {
+            let mut w = self.ws.borrow_mut();
+            let win = w.windows.active_window_mut();
+            win.cursors = ruster_core::cursor::CursorSet::single(off);
+            win.scroll_top = line.unwrap_or(0);
+        }
+
+        if let (Some(t), None) = (topic, line) {
+            self.echo_warn(format!("No help for '{t}' — showing the manual"));
+        }
+    }
+
+    fn active_is_help(&self) -> bool {
+        matches!(
+            self.ws.borrow().active_doc().kind,
+            DocKind::Special(ruster_core::document::SpecialKind::Help)
+        )
+    }
+
+    /// `q` closes the manual. Everything else falls through, so `/`, `n` and the
+    /// motions all work while reading.
+    fn handle_help_key(&mut self, ck: crossterm::event::KeyEvent) -> bool {
+        if ck.code == KeyCode::Char('q') && ck.modifiers.is_empty() {
+            self.delete_active_buffer();
+            return true;
+        }
+        false
     }
 
     fn active_is_mason(&self) -> bool {
@@ -8603,6 +8677,80 @@ mod tests {
         assert_eq!(a.buffer_offset_at(after.x, after.y).map(|(_, o)| o), Some(0));
         // A click in the sidebar column is not buffer text.
         assert_eq!(a.buffer_offset_at(before, after.y), None);
+    }
+
+    #[test]
+    fn help_parses_with_and_without_a_topic() {
+        let a = App::new("x".into(), PathBuf::from("f.rs"));
+        assert_eq!(a.parse_cmdline(":help"), Ok(CmdAction::Help(None)));
+        assert_eq!(a.parse_cmdline(":h"), Ok(CmdAction::Help(None)));
+        assert_eq!(
+            a.parse_cmdline(":help Mason"),
+            Ok(CmdAction::Help(Some("Mason".to_string())))
+        );
+        assert_eq!(a.parse_cmdline(":h :w"), Ok(CmdAction::Help(Some(":w".to_string()))));
+    }
+
+    #[test]
+    fn help_opens_the_manual_at_the_top() {
+        let mut a = App::new("x".into(), PathBuf::from("f.rs"));
+        a.apply_cmd(CmdAction::Help(None));
+        assert!(a.active_is_help());
+        let w = a.ws.borrow();
+        let text = w.active_doc().buffer.to_string();
+        assert!(text.starts_with("# ruster help"), "{}", &text[..40.min(text.len())]);
+        assert_eq!(w.primary_head(), 0, "at the top");
+    }
+
+    /// The useful bit: a topic puts the cursor on the right line, not line 0.
+    #[test]
+    fn a_topic_jumps_to_its_line() {
+        let mut a = App::new("x".into(), PathBuf::from("f.rs"));
+        a.apply_cmd(CmdAction::Help(Some("Mason".into())));
+        let w = a.ws.borrow();
+        let doc = w.active_doc();
+        let line = doc.buffer.char_to_line(w.primary_head());
+        assert!(line > 0, "jumped somewhere");
+        let text = doc.buffer.line_to_string(line);
+        assert!(text.contains("Mason"), "landed on a Mason line: {text:?}");
+        assert_eq!(
+            w.windows.active_window().scroll_top,
+            line,
+            "and scrolled there, so it is actually on screen"
+        );
+    }
+
+    /// An unknown topic must still show the manual — the reader is looking for
+    /// something, and refusing leaves them with nothing.
+    #[test]
+    fn an_unknown_topic_still_opens_the_manual_with_a_warning() {
+        let mut a = App::new("x".into(), PathBuf::from("f.rs"));
+        a.apply_cmd(CmdAction::Help(Some("nonsense-topic-zzz".into())));
+        assert!(a.active_is_help(), "the manual is open regardless");
+        assert_eq!(a.ws.borrow().primary_head(), 0, "at the top");
+        let last = a.notify.history().last().expect("a message");
+        assert!(last.text.contains("No help for"), "{:?}", last.text);
+    }
+
+    /// Reopening must not stack up `*help*` buffers.
+    #[test]
+    fn reopening_help_reuses_the_same_buffer() {
+        let mut a = App::new("x".into(), PathBuf::from("f.rs"));
+        a.apply_cmd(CmdAction::Help(None));
+        let n = a.ws.borrow().buffers.ids().len();
+        a.apply_cmd(CmdAction::Help(Some("Windows".into())));
+        assert_eq!(a.ws.borrow().buffers.ids().len(), n, "no second manual");
+    }
+
+    #[test]
+    fn q_closes_the_manual_and_other_keys_fall_through() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let mut a = App::new("x".into(), PathBuf::from("f.rs"));
+        a.apply_cmd(CmdAction::Help(None));
+        // `j` is not claimed, so reading still works.
+        assert!(!a.handle_help_key(CtKey::new(KeyCode::Char('j'), KeyModifiers::NONE)));
+        assert!(a.handle_help_key(CtKey::new(KeyCode::Char('q'), KeyModifiers::NONE)));
+        assert!(!a.active_is_help(), "closed");
     }
 
     #[test]

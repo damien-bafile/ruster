@@ -2,6 +2,7 @@ pub mod app;
 pub mod dialog;
 pub mod dired;
 pub mod file_prompt;
+pub mod help;
 pub mod key;
 pub mod mason;
 pub mod picker;
