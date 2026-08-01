@@ -549,6 +549,13 @@ pub struct Config {
     pub terminal_default_mode: String,
     /// Show dotfiles in dired by default.
     pub dired_show_hidden: bool,
+    /// `:build` command override; `None` = detect from the project type.
+    /// A project's `ruster.toml` still takes precedence over this.
+    pub build_command: Option<String>,
+    /// `:test` command override; `None` = detect from the project type.
+    pub test_command: Option<String>,
+    /// Debug adapter program; `None` = detect from the file's language.
+    pub dap_adapter: Option<String>,
     /// Open the sidebar automatically on startup.
     pub sidebar_auto_open: bool,
     pub noice: NoiceConfig,
@@ -686,6 +693,9 @@ impl Config {
             terminal_scrollback: u("terminal", "scrollback", d.terminal_scrollback),
             terminal_default_mode: st("terminal", "default_mode").unwrap_or(d.terminal_default_mode),
             dired_show_hidden: bl("dired", "show_hidden", d.dired_show_hidden),
+            build_command: ostr("build", "command"),
+            test_command: ostr("test", "command"),
+            dap_adapter: ostr("dap", "adapter"),
             sidebar_auto_open: bl("sidebar", "auto_open", d.sidebar_auto_open),
             // Not part of the flat schema; carried separately and merged by the
             // caller (runtime parse / Settings save).
@@ -771,6 +781,9 @@ impl Default for Config {
             terminal_scrollback: 10000,
             terminal_default_mode: "insert".into(),
             dired_show_hidden: false,
+            build_command: None,
+            test_command: None,
+            dap_adapter: None,
             sidebar_auto_open: false,
             noice: NoiceConfig::default(),
             syntax_overrides: std::collections::HashMap::new(),

@@ -667,6 +667,13 @@ const PALETTE_COMMANDS: &[(&str, &str)] = &[
 
 #[derive(Clone, Copy)]
 enum LeaderAction {
+    DebugStart,
+    DebugToggleBreakpoint,
+    DebugContinue,
+    DebugStepOver,
+    DebugStepIn,
+    DebugStepOut,
+    DebugStop,
     Focus(FocusDir),
     Split(SplitDir),
     CloseWindow,
@@ -769,6 +776,16 @@ static PROJECT_GROUP: &[(char, LeaderNode)] = &[
     ('p', LeaderNode::Action("switch project", LeaderAction::Projects)),
 ];
 
+static DEBUG_GROUP: &[(char, LeaderNode)] = &[
+    ('d', LeaderNode::Action("start debugging", LeaderAction::DebugStart)),
+    ('b', LeaderNode::Action("toggle breakpoint", LeaderAction::DebugToggleBreakpoint)),
+    ('c', LeaderNode::Action("continue", LeaderAction::DebugContinue)),
+    ('n', LeaderNode::Action("step over", LeaderAction::DebugStepOver)),
+    ('i', LeaderNode::Action("step into", LeaderAction::DebugStepIn)),
+    ('o', LeaderNode::Action("step out", LeaderAction::DebugStepOut)),
+    ('q', LeaderNode::Action("stop debugging", LeaderAction::DebugStop)),
+];
+
 static UI_GROUP: &[(char, LeaderNode)] = &[
     ('n', LeaderNode::Action("toggle line numbers", LeaderAction::ToggleNumber)),
     ('r', LeaderNode::Action("toggle relative numbers", LeaderAction::ToggleRelative)),
@@ -784,6 +801,7 @@ static LEADER_ROOT: &[(char, LeaderNode)] = &[
     ('c', LeaderNode::Group("code", CODE_GROUP)),
     ('o', LeaderNode::Group("open", OPEN_GROUP)),
     ('p', LeaderNode::Group("project", PROJECT_GROUP)),
+    ('d', LeaderNode::Group("debug", DEBUG_GROUP)),
     ('u', LeaderNode::Group("ui / toggle", UI_GROUP)),
     ('q', LeaderNode::Group("quit", QUIT_GROUP)),
 ];
@@ -1736,6 +1754,10 @@ impl App {
             }
             KeyCode::F(11) => {
                 self.debug_step_in();
+                return;
+            }
+            KeyCode::F(12) => {
+                self.debug_step_out();
                 return;
             }
             _ => {}
@@ -4980,6 +5002,13 @@ impl App {
             LeaderAction::Dashboard => self.open_dashboard(),
             LeaderAction::Messages => self.open_messages(),
             LeaderAction::Projects => self.open_projects(),
+            LeaderAction::DebugStart => self.debug_start(),
+            LeaderAction::DebugToggleBreakpoint => self.debug_toggle_breakpoint(),
+            LeaderAction::DebugContinue => self.debug_continue(),
+            LeaderAction::DebugStepOver => self.debug_step_over(),
+            LeaderAction::DebugStepIn => self.debug_step_in(),
+            LeaderAction::DebugStepOut => self.debug_step_out(),
+            LeaderAction::DebugStop => self.debug_stop(),
             LeaderAction::Sidebar => self.toggle_sidebar(),
         }
     }
@@ -5191,14 +5220,16 @@ impl App {
     /// `:build` / `SPC c b` — run the project's build command.
     fn run_build(&mut self) {
         let root = self.project_root_for_run();
-        let cmd = ruster_project::ProjectConfig::load(&root).build_command(&root);
+        let cmd = ruster_project::ProjectConfig::load(&root)
+            .build_command_with(&root, self.config.build_command.as_deref());
         self.start_run(RunnerKind::Build, cmd, root);
     }
 
     /// `:test` / `SPC c t` — run the project's test command.
     fn run_test(&mut self) {
         let root = self.project_root_for_run();
-        let cmd = ruster_project::ProjectConfig::load(&root).test_command(&root);
+        let cmd = ruster_project::ProjectConfig::load(&root)
+            .test_command_with(&root, self.config.test_command.as_deref());
         self.start_run(RunnerKind::Test, cmd, root);
     }
 
@@ -5620,13 +5651,40 @@ impl App {
             return;
         }
         let root = self.project_root.as_deref().unwrap_or(std::path::Path::new("."));
-        let cfg = ruster_dap::config::detect_config("rust", root, None);
+        // Pick the adapter from the file being edited, not a fixed language.
+        let lang = {
+            let w = self.ws.borrow();
+            match w.active_doc().file_path.as_deref() {
+                Some(p) => {
+                    // detect_config matches a language name or a bare extension.
+                    // Prefer the canonical name where syntax knows one (`rs` →
+                    // `rust`), and fall back to the extension where it doesn't
+                    // (`go` has no syntax key but is a valid adapter language).
+                    let ext = ruster_syntax::lang_ext_for_path(p);
+                    let key = ruster_syntax::lang_key(&ext);
+                    if key.is_empty() { ext } else { key.to_string() }
+                }
+                None => String::new(),
+            }
+        };
+        let cfg = ruster_dap::config::detect_config(&lang, root, None);
         let cfg = match cfg {
             Some(c) => c,
             None => {
-                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::System, "No debug config detected for this project"));
+                self.notify.push(Notification::new(
+                    ruster_core::message::MessageLevel::Warning,
+                    ruster_core::message::MessageSource::System,
+                    format!("No debug adapter for '{lang}' — set dap.adapter to override"),
+                ));
                 return;
             }
+        };
+        // A configured adapter overrides the detected program.
+        let cfg = match self.config.dap_adapter.as_deref() {
+            Some(prog) if !prog.is_empty() => {
+                ruster_dap::config::AdapterConfig { command: prog.to_string(), ..cfg }
+            }
+            _ => cfg,
         };
         match ruster_dap::session::DebugSession::start(&cfg, root) {
             Ok(mut session) => {
@@ -6784,6 +6842,16 @@ mod tests {
         assert!(matches!(
             leader_resolve(&['s', 's']),
             LeaderResolve::Action(LeaderAction::DocumentSymbol)
+        ));
+        // The debug group: `SPC d` is a prefix, `SPC d b` toggles a breakpoint.
+        assert!(matches!(leader_resolve(&['d']), LeaderResolve::Group));
+        assert!(matches!(
+            leader_resolve(&['d', 'b']),
+            LeaderResolve::Action(LeaderAction::DebugToggleBreakpoint)
+        ));
+        assert!(matches!(
+            leader_resolve(&['d', 'o']),
+            LeaderResolve::Action(LeaderAction::DebugStepOut)
         ));
         // Settings: top-level `SPC ,` and the `SPC o s` group entry.
         assert!(matches!(leader_resolve(&[',']), LeaderResolve::Action(LeaderAction::Settings)));

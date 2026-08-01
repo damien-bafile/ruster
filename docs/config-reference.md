@@ -151,8 +151,39 @@ Keys are addressed as `group.key`.
 | `noice.success_timeout` | integer | 2000 | Milliseconds a success toast stays up |
 | `noice.warning_timeout` | integer | 5000 | Milliseconds a warning stays up |
 | `noice.max_history` | integer | 1000 | Messages retained for `:messages` and `:Noice split` |
+| `build.command` | string | _(detect)_ | Command for `:build`; empty detects from the project type |
+| `test.command` | string | _(detect)_ | Command for `:test`; empty detects from the project type |
+| `dap.adapter` | string | _(detect)_ | Debug adapter program for `:debug`; empty detects from the file's language |
 
 > Colors are **not** listed here — they live in [themes](#themes).
+
+### Build, test & debug
+
+`:build` and `:test` resolve their command **most-specific first**:
+
+1. the project's `ruster.toml` (`[build] command` / `[test] command`),
+2. your `build.command` / `test.command` setting,
+3. a built-in default for the project type — `cargo build` / `cargo test` for a
+   `Cargo.toml`, `npm run build` / `npm test` for a `package.json`, `go build ./...`
+   / `go test ./...` for a `go.mod`, and `make` / `make test` for a `Makefile`.
+
+An empty setting means "unset", so it falls through to the next level rather than
+running an empty command.
+
+`ruster.toml` also defines named tasks, which `:task` lists:
+
+```toml
+[build]
+command = "cargo build --release"
+
+[tasks.serve]
+cmd = "python -m http.server"
+use_terminal = true
+```
+
+`dap.adapter` overrides the debug adapter program. Left empty, `:debug` picks one
+from the current file's language (`lldb-vscode`, `debugpy`, `dlv dap`). See
+[Commands & Keybindings](keybindings.md) for the debugger keys.
 
 ### Notifications (noice)
 

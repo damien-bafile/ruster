@@ -235,6 +235,9 @@ pub const GROUPS: &[(&str, &str)] = &[
     ("dired", "File explorer"),
     ("sidebar", "Sidebar panel"),
     ("noice", "Notifications and messages"),
+    ("build", "Build command"),
+    ("test", "Test command"),
+    ("dap", "Debug adapter"),
     ("colors", "Per-element color overrides (empty = theme)"),
 ];
 
@@ -304,6 +307,13 @@ pub fn schema() -> Vec<SettingSpec> {
     add("noice", "success_timeout", "Success timeout (ms)", Int { min: 0, max: 60000 }, i(2000), "How long success toasts stay up");
     add("noice", "warning_timeout", "Warning timeout (ms)", Int { min: 0, max: 60000 }, i(5000), "How long warnings stay up; errors are persistent");
     add("noice", "max_history", "History size", Int { min: 1, max: 100000 }, i(1000), "Messages retained for :messages and :Noice split");
+
+    // --- build / test / dap ---
+    // Empty means "work it out from the project"; a project's ruster.toml still
+    // wins over anything set here.
+    add("build", "command", "Build command", Text, t(""), "Command for :build; empty = detect from the project type");
+    add("test", "command", "Test command", Text, t(""), "Command for :test; empty = detect from the project type");
+    add("dap", "adapter", "Debug adapter", Text, t(""), "Adapter program for :debug; empty = detect from the file's language");
 
     // --- colors (overrides; empty = use the theme's color) ---
     add("colors", "bg", "Background", Text, t(""), "Override editor background");
