@@ -6,7 +6,7 @@
 //! tests run anywhere. [`diff_hunks`] is the thin shell-out that feeds it, and
 //! is deliberately the only part that touches the filesystem.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// What happened to a run of lines.
@@ -204,6 +204,228 @@ pub fn diff_hunks_two_sided(root: &Path, path: &Path) -> Option<Vec<DiffHunk>> {
     Some(parse_diff_hunks(&raw_diff(root, path)?))
 }
 
+/// What happened to a file, as one half of a `porcelain=v2` `XY` pair.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FileStatus {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+    Copied,
+    TypeChanged,
+    Untracked,
+    Unmerged,
+}
+
+impl FileStatus {
+    /// `.` means "nothing on this side", which is `None` rather than a status.
+    fn from_code(c: char) -> Option<FileStatus> {
+        Some(match c {
+            'M' => FileStatus::Modified,
+            'A' => FileStatus::Added,
+            'D' => FileStatus::Deleted,
+            'R' => FileStatus::Renamed,
+            'C' => FileStatus::Copied,
+            'T' => FileStatus::TypeChanged,
+            'U' => FileStatus::Unmerged,
+            _ => return None,
+        })
+    }
+
+    /// The single letter shown in the status list.
+    pub fn letter(self) -> char {
+        match self {
+            FileStatus::Added => 'A',
+            FileStatus::Modified => 'M',
+            FileStatus::Deleted => 'D',
+            FileStatus::Renamed => 'R',
+            FileStatus::Copied => 'C',
+            FileStatus::TypeChanged => 'T',
+            FileStatus::Untracked => '?',
+            FileStatus::Unmerged => 'U',
+        }
+    }
+}
+
+/// One file in `git status`.
+///
+/// `staged` and `unstaged` are independent: a file edited, staged, then edited
+/// again is `Some(Modified)` in **both**, and belongs in both sections of the
+/// status view. Collapsing them into one status is the classic way to get this
+/// wrong.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusEntry {
+    pub path: PathBuf,
+    /// The previous name, for a rename or copy.
+    pub orig_path: Option<PathBuf>,
+    /// `X` — what is staged for the next commit.
+    pub staged: Option<FileStatus>,
+    /// `Y` — what is changed in the working tree but not staged.
+    pub unstaged: Option<FileStatus>,
+}
+
+/// A parsed `git status --porcelain=v2 --branch`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Status {
+    pub branch: Option<String>,
+    pub upstream: Option<String>,
+    /// Commits ahead of / behind the upstream.
+    pub ahead: u32,
+    pub behind: u32,
+    pub entries: Vec<StatusEntry>,
+}
+
+impl Status {
+    /// Files with something staged, in path order.
+    pub fn staged(&self) -> Vec<&StatusEntry> {
+        self.entries.iter().filter(|e| e.staged.is_some()).collect()
+    }
+
+    /// Files with unstaged changes — tracked only; untracked files are their
+    /// own section because `git add` means something different for them.
+    pub fn unstaged(&self) -> Vec<&StatusEntry> {
+        self.entries
+            .iter()
+            .filter(|e| e.unstaged.is_some_and(|s| s != FileStatus::Untracked))
+            .collect()
+    }
+
+    pub fn untracked(&self) -> Vec<&StatusEntry> {
+        self.entries
+            .iter()
+            .filter(|e| e.unstaged == Some(FileStatus::Untracked))
+            .collect()
+    }
+
+    pub fn is_clean(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// Parse `git status --porcelain=v2 --branch`.
+///
+/// Line kinds: `#` header, `1` ordinary change, `2` rename/copy, `?` untracked,
+/// `u` unmerged. Unrecognised lines are skipped — git adds header fields over
+/// time and an unknown one must not lose the entries around it.
+pub fn parse_status(text: &str) -> Status {
+    let mut out = Status::default();
+    for line in text.lines() {
+        let Some((kind, rest)) = line.split_once(' ') else { continue };
+        match kind {
+            "#" => parse_header(rest, &mut out),
+            "1" => {
+                if let Some(e) = parse_ordinary(rest) {
+                    out.entries.push(e);
+                }
+            }
+            "2" => {
+                if let Some(e) = parse_rename(rest) {
+                    out.entries.push(e);
+                }
+            }
+            "u" => {
+                // An unmerged path is conflicted on both sides at once.
+                if let Some(path) = rest.split_whitespace().last() {
+                    out.entries.push(StatusEntry {
+                        path: PathBuf::from(path),
+                        orig_path: None,
+                        staged: Some(FileStatus::Unmerged),
+                        unstaged: Some(FileStatus::Unmerged),
+                    });
+                }
+            }
+            "?" => out.entries.push(StatusEntry {
+                path: PathBuf::from(rest),
+                orig_path: None,
+                staged: None,
+                unstaged: Some(FileStatus::Untracked),
+            }),
+            _ => {}
+        }
+    }
+    out.entries.sort_by(|a, b| a.path.cmp(&b.path));
+    out
+}
+
+fn parse_header(rest: &str, out: &mut Status) {
+    let Some((key, value)) = rest.split_once(' ') else { return };
+    match key {
+        "branch.head" if value != "(detached)" => out.branch = Some(value.to_string()),
+        "branch.upstream" => out.upstream = Some(value.to_string()),
+        "branch.ab" => {
+            // `+N -M`
+            for part in value.split_whitespace() {
+                match part.split_at(1) {
+                    ("+", n) => out.ahead = n.parse().unwrap_or(0),
+                    ("-", n) => out.behind = n.parse().unwrap_or(0),
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `1 XY sub mH mI mW hH hI path`
+fn parse_ordinary(rest: &str) -> Option<StatusEntry> {
+    let mut f = rest.splitn(8, ' ');
+    let xy = f.next()?;
+    let (x, y) = split_xy(xy)?;
+    // Skip sub, mH, mI, mW, hH, hI.
+    for _ in 0..6 {
+        f.next()?;
+    }
+    let path = f.next()?;
+    Some(StatusEntry {
+        path: PathBuf::from(path),
+        orig_path: None,
+        staged: x,
+        unstaged: y,
+    })
+}
+
+/// `2 XY sub mH mI mW hH hI score path<TAB>origPath`
+///
+/// The tab matters: a rename's two paths are **tab**-separated, so splitting on
+/// whitespace silently mangles every rename (and any path containing a space).
+fn parse_rename(rest: &str) -> Option<StatusEntry> {
+    let mut f = rest.splitn(9, ' ');
+    let (x, y) = split_xy(f.next()?)?;
+    for _ in 0..7 {
+        f.next()?; // sub, mH, mI, mW, hH, hI, score
+    }
+    let paths = f.next()?;
+    let (new, old) = paths.split_once('\t')?;
+    Some(StatusEntry {
+        path: PathBuf::from(new),
+        orig_path: Some(PathBuf::from(old)),
+        staged: x,
+        unstaged: y,
+    })
+}
+
+/// `XY` — X is the **staged** status, Y the **unstaged** one.
+fn split_xy(xy: &str) -> Option<(Option<FileStatus>, Option<FileStatus>)> {
+    let mut c = xy.chars();
+    let x = c.next()?;
+    let y = c.next()?;
+    Some((FileStatus::from_code(x), FileStatus::from_code(y)))
+}
+
+/// `git status --porcelain=v2 --branch` for `root`, or `None` when git is
+/// unavailable or this is not a repository.
+pub fn status(root: &Path) -> Option<Status> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["status", "--porcelain=v2", "--branch"])
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| parse_status(&String::from_utf8_lossy(&out.stdout)))
+}
+
 /// Whether `root` looks like a git working tree. Cheap enough to call on a
 /// buffer switch.
 pub fn is_repo(root: &Path) -> bool {
@@ -351,6 +573,122 @@ index 1..2 100644
         assert_eq!(prev_hunk(&h, 999).unwrap().start, 40);
         assert_eq!(prev_hunk(&h, 20).unwrap().start, 5, "strictly before the current line");
         assert_eq!(prev_hunk(&h, 0).unwrap().start, 40, "wraps to the last");
+    }
+
+    /// Captured verbatim from a real repository — the rename line's paths are
+    /// separated by a **tab**, which is the detail a whitespace-splitting parser
+    /// gets wrong.
+    const STATUS: &str = "\
+# branch.oid 76fd70c99b302a57e5c24987709af4b683e9c72e
+# branch.head main
+# branch.upstream origin/main
+# branch.ab +2 -1
+1 A. N... 000000 100644 100644 0000000 3e75765 staged.txt
+1 MM N... 100644 100644 100644 814f4a4 05b65e8 tracked.txt
+1 .D N... 100644 100644 000000 aaa1111 aaa1111 removed.txt
+2 R. N... 100644 100644 100644 7b26523 7b26523 R100 moved.txt\ttracked-old.txt
+u UU N... 100644 100644 100644 100644 df967b9 ba2906d e45c9c2 conflict.txt
+? untracked.txt
+";
+
+    #[test]
+    fn the_branch_header_is_parsed() {
+        let s = parse_status(STATUS);
+        assert_eq!(s.branch.as_deref(), Some("main"));
+        assert_eq!(s.upstream.as_deref(), Some("origin/main"));
+        assert_eq!((s.ahead, s.behind), (2, 1));
+    }
+
+    /// `XY` is staged-then-unstaged. Getting this backwards makes both sections
+    /// of the status view lie, and only shows up once someone stages half a file.
+    #[test]
+    fn xy_splits_into_staged_and_unstaged() {
+        let s = parse_status(STATUS);
+        let by = |n: &str| s.entries.iter().find(|e| e.path.ends_with(n)).unwrap().clone();
+
+        // `A.` — staged addition, nothing unstaged.
+        let a = by("staged.txt");
+        assert_eq!((a.staged, a.unstaged), (Some(FileStatus::Added), None));
+
+        // `MM` — modified, staged, then modified again. In *both* sections.
+        let m = by("tracked.txt");
+        assert_eq!(m.staged, Some(FileStatus::Modified));
+        assert_eq!(m.unstaged, Some(FileStatus::Modified));
+
+        // `.D` — deleted in the working tree, nothing staged.
+        let d = by("removed.txt");
+        assert_eq!((d.staged, d.unstaged), (None, Some(FileStatus::Deleted)));
+    }
+
+    #[test]
+    fn a_file_modified_and_restaged_appears_in_both_sections() {
+        let s = parse_status(STATUS);
+        assert!(s.staged().iter().any(|e| e.path.ends_with("tracked.txt")));
+        assert!(s.unstaged().iter().any(|e| e.path.ends_with("tracked.txt")));
+    }
+
+    /// A rename's two paths are tab-separated; splitting on spaces would take
+    /// the whole `new<TAB>old` blob as one path.
+    #[test]
+    fn a_rename_keeps_both_paths() {
+        let s = parse_status(STATUS);
+        let r = s.entries.iter().find(|e| e.staged == Some(FileStatus::Renamed)).expect("a rename");
+        assert_eq!(r.path, PathBuf::from("moved.txt"));
+        assert_eq!(r.orig_path, Some(PathBuf::from("tracked-old.txt")));
+    }
+
+    #[test]
+    fn untracked_and_unmerged_are_their_own_kinds() {
+        let s = parse_status(STATUS);
+        let u = s.untracked();
+        assert_eq!(u.len(), 1);
+        assert_eq!(u[0].path, PathBuf::from("untracked.txt"));
+        // An untracked file is not "unstaged" — `git add` means something
+        // different for it, so it gets its own section.
+        assert!(s.unstaged().iter().all(|e| !e.path.ends_with("untracked.txt")));
+
+        let c = s.entries.iter().find(|e| e.path.ends_with("conflict.txt")).unwrap();
+        assert_eq!(c.staged, Some(FileStatus::Unmerged));
+        assert_eq!(c.unstaged, Some(FileStatus::Unmerged));
+    }
+
+    #[test]
+    fn entries_are_sorted_by_path_so_the_list_is_stable() {
+        let s = parse_status(STATUS);
+        let paths: Vec<_> = s.entries.iter().map(|e| e.path.clone()).collect();
+        let mut sorted = paths.clone();
+        sorted.sort();
+        assert_eq!(paths, sorted);
+    }
+
+    #[test]
+    fn a_clean_repository_has_no_entries() {
+        let s = parse_status("# branch.oid abc\n# branch.head main\n");
+        assert!(s.is_clean());
+        assert_eq!(s.branch.as_deref(), Some("main"));
+        assert!(s.staged().is_empty() && s.unstaged().is_empty() && s.untracked().is_empty());
+    }
+
+    /// git grows new header fields over time; an unknown one must not take the
+    /// entries with it.
+    #[test]
+    fn unknown_lines_are_skipped_not_fatal() {
+        let s = parse_status(
+            "# branch.head main\n# some.future.field whatever\nx nonsense\n1 M. N... 1 1 1 a b keep.txt\n",
+        );
+        assert_eq!(s.entries.len(), 1);
+        assert_eq!(s.entries[0].path, PathBuf::from("keep.txt"));
+        assert_eq!(s.branch.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn a_detached_head_reports_no_branch() {
+        assert_eq!(parse_status("# branch.head (detached)\n").branch, None);
+    }
+
+    #[test]
+    fn empty_output_is_a_clean_status() {
+        assert_eq!(parse_status(""), Status::default());
     }
 
     #[test]
