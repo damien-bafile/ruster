@@ -1286,8 +1286,12 @@ diff --git a/tracked.txt b/tracked.txt
         let from_sub = repo_root(&sub).expect("found from a subdirectory");
         let from_top = repo_root(&dir).expect("found from the top");
         assert_eq!(from_sub, from_top, "both resolve to the same working tree");
-        // Canonicalised by git, so compare that way.
-        assert_eq!(from_sub, std::fs::canonicalize(&dir).unwrap());
+        // Compare by the directory name, not the whole path: git reports
+        // `C:/...` with forward slashes where `canonicalize` gives the UNC form
+        // `\\?\C:\...`, so an exact comparison passes on unix and fails on
+        // Windows for a difference that means nothing.
+        assert_eq!(from_sub.file_name(), dir.file_name());
+        assert!(from_sub.is_absolute(), "an absolute working-tree path");
 
         // The bug this exists to prevent: status from the subdirectory reports
         // `../..`-style paths, from the root it does not.
