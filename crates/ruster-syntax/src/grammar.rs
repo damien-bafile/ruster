@@ -21,6 +21,12 @@
 //!
 //! A refused grammar is a missing highlight. A wrong one is a crash. When in
 //! doubt this module refuses.
+//!
+//! The tests here cover the ABI predicate and the symbol lookup but never load a
+//! real grammar — that needs a C compiler and a tree-sitter CLI which CI does
+//! not have. `examples/load_runtime_grammar.rs` does, and documents how; it was
+//! run against real libraries at ABI 12, 13, 15 and 99 to confirm the boundary
+//! behaves as specified and that a refusal degrades rather than crashing.
 
 use std::path::{Path, PathBuf};
 
