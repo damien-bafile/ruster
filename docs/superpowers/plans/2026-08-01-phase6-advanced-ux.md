@@ -304,12 +304,12 @@ Completes the one partially-delivered Phase 6 item.
       Task 7 floating window. Never bundle binaries; never install without confirmation.
 - [ ] Tests: registry parsing and `PATH` probing with a stubbed lookup.
 
-### Task 14: Diff viewer
+### Task 14: Diff viewer ✅
 
-- [ ] `:Diffview` — side-by-side working-tree diff in a vertical split, reusing the Task 8
+- [x] `:Diffview` — side-by-side working-tree diff in a vertical split, reusing the Task 8
       hunk parser and the existing window tree.
-- [ ] Synchronised scrolling between the two panes.
-- [ ] Tests: pane alignment across an unbalanced hunk.
+- [x] Synchronised scrolling between the two panes.
+- [x] Tests: pane alignment across an unbalanced hunk.
 
 ### Task 15: Load highlight queries from a user directory ✅
 
