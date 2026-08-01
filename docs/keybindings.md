@@ -221,7 +221,9 @@ Press `g` in Normal mode; the which-key panel lists the goto commands (LazyVim-s
 | `:echo <text>` | Show a message as a mini toast |
 | `:echom <text>` | Show a warning — mini toast *and* the notification panel |
 | `:echoe <text>` | Show an error in the notification panel |
-| `:SyntaxReload` / `:syntax reload` | Re-read highlight queries from `~/.config/ruster/queries/` and rebuild all buffers |
+| `:Diffview` `:diff` | Side-by-side diff of the active file against HEAD, in a vertical split. Panes stay row-aligned and scroll together; `~` marks a line the other side does not have |
+| `:Mason` `:mason` | List the external tools ruster can use (LSP servers, debug adapters, formatters) and whether each is on `PATH` |
+| `:SyntaxReload` / `:syntax reload` | Re-read grammars and highlight queries from `~/.config/ruster/` and rebuild all buffers |
 | `:screenshot [path]` | Save a PNG of the window (GUI only). No path writes the next free `ruster-NNN.png` in the working directory; a directory writes a numbered file inside it; any other extension gains `.png` |
 | `:config-errors` `:configerrors` | Show config load/validation errors |
 

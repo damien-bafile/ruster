@@ -1,0 +1,41 @@
+# The tools :Mason knows about.
+#
+#   kind | name | binary | platform | install command
+#
+# kind      lsp, dap or fmt — what the tool is.
+# name      what the list shows.
+# binary    what is probed on PATH to decide "installed".
+# platform  any, macos, linux or windows. A tool may have one row per
+#           platform; the row matching the host wins, `any` is the fallback,
+#           and a tool with no row for this platform is not offered.
+# install   the tool's *own documented* install method, run verbatim in a
+#           shell after the user confirms it. ruster never bundles a binary
+#           and never runs one of these unprompted.
+#
+# Keep every command something a user would reasonably run themselves. If a
+# tool has no clean per-platform method, leave it out rather than guessing:
+# an absent entry is a missing convenience, a wrong one runs arbitrary
+# commands on someone's machine.
+
+# --- language servers ---
+lsp | rust-analyzer | rust-analyzer | any | rustup component add rust-analyzer
+lsp | pyright | pyright-langserver | any | npm install -g pyright
+lsp | typescript-language-server | typescript-language-server | any | npm install -g typescript-language-server typescript
+lsp | lua-language-server | lua-language-server | macos | brew install lua-language-server
+lsp | clangd | clangd | macos | brew install llvm
+lsp | clangd | clangd | linux | sudo apt-get install -y clangd
+lsp | json-languageserver | vscode-json-languageserver | any | npm install -g vscode-langservers-extracted
+lsp | yaml-language-server | yaml-language-server | any | npm install -g yaml-language-server
+lsp | taplo (TOML) | taplo | any | cargo install taplo-cli --locked --features lsp
+
+# --- debug adapters ---
+dap | debugpy | debugpy | any | python3 -m pip install --user debugpy
+dap | codelldb | codelldb | macos | brew install codelldb
+
+# --- formatters ---
+fmt | rustfmt | rustfmt | any | rustup component add rustfmt
+fmt | black | black | any | python3 -m pip install --user black
+fmt | prettier | prettier | any | npm install -g prettier
+fmt | stylua | stylua | any | cargo install stylua
+fmt | clang-format | clang-format | macos | brew install clang-format
+fmt | clang-format | clang-format | linux | sudo apt-get install -y clang-format

@@ -1,3 +1,4 @@
+pub mod grammar;
 pub mod highlighter;
 pub mod markup;
 pub mod theme;
@@ -65,13 +66,15 @@ impl SyntaxEngine {
     pub fn new(text: &str, file_ext: &str) -> Result<Self, SyntaxError> {
         let key = lang_key(file_ext);
         // Prefer a tree-sitter grammar; fall back to line-based markup.
-        if let Some(language) = language_for_ext(file_ext) {
+        let (resolved, grammar_warning) = resolve_language(file_ext);
+        if let Some(language) = resolved {
             let mut parser = tree_sitter::Parser::new();
             parser.set_language(&language).map_err(|_| SyntaxError::QueryError("set_language".into()))?;
             let tree = parser.parse(text, None).ok_or(SyntaxError::QueryError("parse".into()))?;
 
             let loaded = load_queries(user_query_dir().as_deref(), key);
             let mut warnings = loaded.warnings;
+            warnings.extend(grammar_warning);
 
             // A malformed *user* query must not leave the buffer unhighlighted:
             // report it and fall back to the built-in, the way a bad config.lua
@@ -373,6 +376,36 @@ pub fn lang_ext_for_path(path: &std::path::Path) -> String {
         .and_then(|n| n.to_str())
         .map(|n| n.to_lowercase().trim_start_matches('.').to_string())
         .unwrap_or_default()
+}
+
+/// The grammar to parse `file_ext` with, and any complaint worth surfacing.
+///
+/// A user grammar in `~/.config/ruster/grammars/` wins over the compiled-in
+/// one; anything wrong with it degrades to the built-in with a warning, the way
+/// a malformed user query already does.
+///
+/// [`language_for_ext`] deliberately keeps meaning *the compiled-in set only*.
+/// That is what `qcheck::every_parseable_language_has_a_highlight_query` asserts
+/// over its hardcoded list of 11 extensions, and that invariant is still exactly
+/// true — it is a statement about what ruster ships, which dynamic loading does
+/// not change. A user grammar with no query is a runtime condition, handled here
+/// by falling back rather than a build failure.
+pub fn resolve_language(file_ext: &str) -> (Option<tree_sitter::Language>, Option<String>) {
+    let key = lang_key(file_ext);
+    let builtin = language_for_ext(file_ext);
+    let Some(dir) = grammar::user_grammar_dir() else {
+        return (builtin, None);
+    };
+    match grammar::load_grammar(&dir, key) {
+        Ok(lang) => (Some(lang), None),
+        // Nothing installed for this language, which is the normal path.
+        Err(grammar::GrammarError::NotFound) => (builtin, None),
+        Err(e) if builtin.is_some() => {
+            (builtin, Some(format!("grammar {key}: {e} — using the built-in grammar")))
+        }
+        // No built-in to fall back to, so this language simply goes unparsed.
+        Err(e) => (None, Some(format!("grammar {key}: {e}"))),
+    }
 }
 
 /// Where the user's own queries live: `~/.config/ruster/queries/<lang>/`,

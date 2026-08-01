@@ -296,20 +296,23 @@ Completes the one partially-delivered Phase 6 item.
 
 ## Stage 3 — Ecosystem
 
-### Task 13: Mason-style tool installer
+### Task 13: Mason-style tool installer ✅
 
-- [ ] `:Mason` lists known LSP servers, DAP adapters and formatters with an installed/missing
+- [x] `:Mason` lists known LSP servers, DAP adapters and formatters with an installed/missing
       state, resolved by probing `PATH`.
-- [ ] Install by shelling out to the tool's own documented method, streamed through the
+- [x] Install by shelling out to the tool's own documented method, streamed through the
       Task 7 floating window. Never bundle binaries; never install without confirmation.
-- [ ] Tests: registry parsing and `PATH` probing with a stubbed lookup.
+- [x] Tests: registry parsing and `PATH` probing with a stubbed lookup.
+      Streamed through the existing runner (`RunnerKind::Install` → `*install*`)
+      rather than the Task 7 float: an install is a long command whose output
+      wants scrollback, which is exactly what the runner buffer already is.
 
-### Task 14: Diff viewer
+### Task 14: Diff viewer ✅
 
-- [ ] `:Diffview` — side-by-side working-tree diff in a vertical split, reusing the Task 8
+- [x] `:Diffview` — side-by-side working-tree diff in a vertical split, reusing the Task 8
       hunk parser and the existing window tree.
-- [ ] Synchronised scrolling between the two panes.
-- [ ] Tests: pane alignment across an unbalanced hunk.
+- [x] Synchronised scrolling between the two panes.
+- [x] Tests: pane alignment across an unbalanced hunk.
 
 ### Task 15: Load highlight queries from a user directory ✅
 
@@ -335,28 +338,34 @@ Task 16, because it costs far more.
 supported languages, touches no `unsafe`, and stays inside `ruster-syntax` — only
 `ruster-tui` depends on that crate, so the blast radius is one boundary.
 
-### Task 16: Load grammars at runtime
+### Task 16: Load grammars at runtime ✅
 
 Genuinely harder than Task 15, and worth keeping separate so the easy half isn't held up.
 `language_for_ext` is a `match` returning statically linked crates
 (`tree_sitter_rust::LANGUAGE.into()`), so this replaces compile-time linking with dynamic
 loading.
 
-- [ ] Load `libtree-sitter-<lang>.{so,dylib,dll}` from a user directory via `libloading`,
+- [x] Load `libtree-sitter-<lang>.{so,dylib,dll}` from a user directory via `libloading`,
       keeping the compiled-in grammars as the fallback.
-- [ ] **Check the ABI version before calling in.** This is the whole risk: the boundary is
+- [x] **Check the ABI version before calling in.** This is the whole risk: the boundary is
       `unsafe`, and a grammar built against a different `tree-sitter` than the 0.25 this
       workspace uses will segfault the editor rather than return an error. Verify
       `ts_language_abi_version` against the supported range and refuse politely on a
       mismatch — a refused grammar is a missing highlight, a wrong one is a crash.
-- [ ] Decide what a missing query means once grammars are dynamic.
+- [x] Decide what a missing query means once grammars are dynamic.
       `qcheck::every_parseable_language_has_a_highlight_query` asserts over a **hardcoded
       list of 11 extensions** that each has both a grammar and a non-empty query. That
       invariant only holds while the set is fixed at compile time. Once it isn't, a missing
       query stops being a build failure and becomes a runtime condition to degrade on —
       decide that deliberately rather than discovering it when the test blocks a change.
-- [ ] Tests: ABI mismatch is refused, not loaded; a missing library falls back to the
+- [x] Tests: ABI mismatch is refused, not loaded; a missing library falls back to the
       built-in grammar; the existing hardcoded-list check still guards the compiled-in set.
+
+**Decision on the qcheck invariant.** `language_for_ext` keeps meaning *the
+compiled-in set only*, and `resolve_language` is a new layer on top of it. So
+`every_parseable_language_has_a_highlight_query` is still exactly true and needed
+no change: it asserts what ruster *ships*, which dynamic loading does not alter.
+A user grammar with no query is a runtime condition, handled by falling back.
 
 **Where fetching belongs:** downloading and compiling grammars is Mason's job (Task 13),
 which currently only plans to install LSP and DAP binaries. Extend it there rather than
