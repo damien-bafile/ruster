@@ -6904,6 +6904,54 @@ mod tests {
         assert_eq!(a.ws.borrow().primary_head(), 0, "gg went to the top");
     }
 
+    /// Backspace closes the `g` menu explicitly rather than falling into the
+    /// replay arm. Both paths happen to end up here — vim clears `pending_g` on
+    /// the next key either way — so this is a characterization test pinning the
+    /// contract, not a fix for an observable bug.
+    #[test]
+    fn backspace_cancels_the_g_menu_without_replaying() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("aaa\nbbb\nccc\n".into(), PathBuf::from("f.txt"));
+        a.handle_key(CtKey::new(KeyCode::Char('G'), none));
+        let before = a.ws.borrow().primary_head();
+        assert!(before > 0);
+
+        a.handle_key(CtKey::new(KeyCode::Char('g'), none));
+        assert!(a.g_pending.is_some(), "g starts the menu");
+        a.handle_key(CtKey::new(KeyCode::Backspace, none));
+        assert!(a.g_pending.is_none(), "Backspace closes the menu");
+        assert_eq!(
+            a.ws.borrow().primary_head(),
+            before,
+            "cancelling must not replay g into vim and move the cursor"
+        );
+    }
+
+    /// Backspace steps back out of a pending leader sequence. The tree is only
+    /// one level deep today, so popping the single group key empties the
+    /// sequence and cancels — the same visible result as Esc. The pop only
+    /// starts to matter once a group nests; this pins the behaviour until then.
+    #[test]
+    fn backspace_steps_back_out_of_the_leader_sequence() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+
+        a.handle_key(CtKey::new(KeyCode::Char(' '), none));
+        assert_eq!(a.leader_pending.as_deref(), Some(&[][..]), "SPC arms the leader");
+        a.handle_key(CtKey::new(KeyCode::Char('c'), none));
+        assert_eq!(a.leader_pending.as_deref(), Some(&['c'][..]), "c opens the code group");
+
+        a.handle_key(CtKey::new(KeyCode::Backspace, none));
+        assert!(a.leader_pending.is_none(), "popping the last key leaves the leader");
+
+        // Backspace straight after SPC also leaves cleanly.
+        a.handle_key(CtKey::new(KeyCode::Char(' '), none));
+        a.handle_key(CtKey::new(KeyCode::Backspace, none));
+        assert!(a.leader_pending.is_none());
+    }
+
     #[test]
     fn leader_whichkey_shows_groups() {
         let (title, rows) = leader_whichkey(&[]).expect("root panel");
