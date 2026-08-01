@@ -22,6 +22,9 @@ pub enum PickerAction {
     RunCmd(String),
     /// Run a named `ruster.toml` task.
     RunTask(String),
+    /// Apply a theme by name. Previewed as the selection moves, committed on
+    /// accept.
+    SetTheme(String),
 }
 
 /// One selectable entry.

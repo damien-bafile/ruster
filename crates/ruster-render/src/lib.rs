@@ -624,6 +624,8 @@ pub struct FrameState<'a> {
     pub debug_overlay: Option<DebugOverlayView>,
     /// Floating boxes drawn above the window views, lowest `z` first.
     pub floats: Vec<FloatView>,
+    /// A modal form, drawn above everything else.
+    pub dialog: Option<DialogView>,
 }
 
 /// Where a float wants to sit. Resolved against the frame area by
@@ -752,6 +754,41 @@ pub fn floats_in_draw_order(floats: &[FloatView]) -> Vec<&FloatView> {
     let mut out: Vec<&FloatView> = floats.iter().collect();
     out.sort_by_key(|f| f.z);
     out
+}
+
+/// How a setting row's value is shown: `[x] on`, `< enum >`, or the raw text
+/// with a caret while editing.
+///
+/// Lives here, beside the type it formats, because both backends draw these
+/// rows and each previously kept an identical private copy — the sort of
+/// duplication that silently drifts.
+pub fn control_display(row: &SettingRowView) -> String {
+    match row.kind {
+        ControlKind::Toggle => {
+            if row.value == "on" { "[x] on".to_string() } else { "[ ] off".to_string() }
+        }
+        ControlKind::Enum => format!("< {} >", row.value),
+        ControlKind::Number | ControlKind::Text => {
+            if row.editing {
+                format!("{}▏", row.value)
+            } else {
+                row.value.clone()
+            }
+        }
+    }
+}
+
+/// A modal form: a title, rows built from the same [`SettingRowView`] the
+/// settings page uses, and a footer of key hints.
+///
+/// Deliberately the settings page's vocabulary rather than a new widget set —
+/// both backends already draw these rows, and a widget crate could only serve
+/// the ratatui half of the editor.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DialogView {
+    pub title: String,
+    pub rows: Vec<SettingRowView>,
+    pub footer: String,
 }
 
 /// Debugger overlay rendered above the window area.

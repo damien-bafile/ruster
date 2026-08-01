@@ -238,6 +238,18 @@ impl Renderer for TuiRenderer {
                 );
             }
 
+            // A modal dialog sits above the floats.
+            if let Some(dlg) = &state.dialog {
+                let dw = (area.width * 6 / 10).clamp(30, area.width.saturating_sub(4));
+                let dh = (dlg.rows.len() as u16 + 4).min(area.height.saturating_sub(2));
+                let dx = area.x + (area.width.saturating_sub(dw)) / 2;
+                let dy = area.y + (area.height.saturating_sub(dh)) / 2;
+                frame.render_widget(
+                    crate::widgets::DialogWidget::new(dlg.clone()).with_theme(&state.theme),
+                    Rect::new(dx, dy, dw, dh),
+                );
+            }
+
             // Floats sit above every other surface, lowest z first.
             for f in ruster_render::floats_in_draw_order(&state.floats) {
                 let r = Rect::new(f.rect.x, f.rect.y, f.rect.width, f.rect.height);

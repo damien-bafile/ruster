@@ -1,3 +1,4 @@
+use crate::dialog::{DialogResponse, DialogState};
 use crate::dired::{DiredResponse, DiredState};
 use crate::file_prompt::{self, FilePrompt, PromptOrigin, PromptStep};
 use crate::key::crossterm_to_ruster_key;
@@ -535,6 +536,7 @@ enum CmdAction {
     GitsignsToggle,
     TodoList,
     Trouble,
+    Themes,
     /// Resize the sidebar to N columns (`:Sidebar resize N`).
     SidebarResize(u16),
     /// Toggle the Noice notification-stack panel (`:Noice`).
@@ -1095,6 +1097,12 @@ pub struct App {
     /// Floating boxes drawn above the windows this frame. Rebuilt per frame by
     /// whatever owns them; empty most of the time.
     floats: Vec<ruster_render::FloatView>,
+    /// An open modal form, if any.
+    dialog: Option<DialogState>,
+    /// The theme in force before a theme picker opened, restored on cancel.
+    /// `Some` only while that picker is up, which is also how the picker knows
+    /// to preview as the selection moves.
+    theme_before_preview: Option<String>,
     /// The aggregated problem list, and its pinned buffer.
     trouble: TroubleState,
     trouble_buf: Option<BufferId>,
@@ -1468,6 +1476,8 @@ impl App {
             git_tx: git_tx_init,
             git_signs: git_signs_init,
             floats: Vec::new(),
+            dialog: None,
+            theme_before_preview: None,
             trouble: TroubleState::new(),
             trouble_buf: None,
             sidebar: SidebarState::new(),
@@ -1609,6 +1619,11 @@ impl App {
         self.hover = None;
 
         // A dired file-operation prompt captures input until confirmed/cancelled.
+        // A modal dialog is modal: it takes every key until it closes.
+        if self.dialog.is_some() {
+            self.handle_dialog_key(ck);
+            return;
+        }
         if self.file_prompt.is_some() {
             self.handle_file_prompt_key(ck);
             return;
@@ -2524,6 +2539,29 @@ impl App {
                         msg,
                     ));
                 }
+                LuaAction::Dialog { title, fields } => {
+                    let fields = fields
+                        .into_iter()
+                        .map(|(label, kind, value, options)| {
+                            let opts: Vec<&str> = options.iter().map(|s| s.as_str()).collect();
+                            match kind.as_str() {
+                                "toggle" => crate::dialog::Field::toggle(&label, value == "on"),
+                                "number" => crate::dialog::Field {
+                                    label,
+                                    kind: ruster_render::ControlKind::Number,
+                                    value,
+                                    options: Vec::new(),
+                                },
+                                "select" => crate::dialog::Field::select(&label, &opts, &value),
+                                // Anything unrecognised is a text field rather
+                                // than an error — a plugin typo should not stop
+                                // the dialog appearing.
+                                _ => crate::dialog::Field::text(&label, &value),
+                            }
+                        })
+                        .collect();
+                    self.dialog = Some(DialogState::new(title, fields));
+                }
                 LuaAction::Notify(level, text) => {
                     let notif_level = match level {
                         1 => MessageLevel::Success,
@@ -2578,7 +2616,9 @@ impl App {
                     None => return Vec::new(),
                 }
             }
-            PickerAction::RunCmd(_) | PickerAction::RunTask(_) => return Vec::new(),
+            PickerAction::RunCmd(_)
+            | PickerAction::RunTask(_)
+            | PickerAction::SetTheme(_) => return Vec::new(),
         };
 
         // Load + highlight the file, reusing the cache when the path is unchanged.
@@ -3691,6 +3731,7 @@ impl App {
             }
         }
         let state = FrameState {
+            dialog: self.dialog.as_ref().map(|d| d.view()),
             floats,
             windows: views,
             cmdline: cmdline.as_deref(),
@@ -3815,6 +3856,7 @@ impl App {
             "Gitsigns" | "gitsigns" => Ok(CmdAction::GitsignsToggle),
             "TodoList" | "todolist" | "todo" => Ok(CmdAction::TodoList),
             "Trouble" | "trouble" => Ok(CmdAction::Trouble),
+            "Themes" | "themes" | "theme" => Ok(CmdAction::Themes),
             _ if trimmed == "sidebar" => Ok(CmdAction::Sidebar),
             _ if let Some(n) = trimmed.strip_prefix("sidebar resize ").and_then(|s| s.trim().parse::<u16>().ok()) => Ok(CmdAction::SidebarResize(n)),
             "Noice" | "noice" => Ok(CmdAction::NoicePanel),
@@ -3933,6 +3975,7 @@ impl App {
             CmdAction::Projects => self.open_projects(),
             CmdAction::TodoList => self.open_todo_list(),
             CmdAction::Trouble => self.open_trouble(),
+            CmdAction::Themes => self.open_themes_picker(),
             CmdAction::GitsignsToggle => {
                 self.git_signs = !self.git_signs;
                 if self.git_signs {
@@ -4507,6 +4550,27 @@ impl App {
     }
 
     /// Handle a key while a dired file-operation prompt is active.
+    fn handle_dialog_key(&mut self, ck: crossterm::event::KeyEvent) {
+        let Some(d) = self.dialog.as_mut() else { return };
+        match d.handle_key(ck) {
+            DialogResponse::Pending => {}
+            DialogResponse::Cancelled => {
+                self.dialog = None;
+                self.echo("Cancelled");
+            }
+            DialogResponse::Submitted => {
+                let values = d.values();
+                self.dialog = None;
+                let summary = values
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                self.echo(format!("Submitted: {summary}"));
+            }
+        }
+    }
+
     /// Feed a key to the active file prompt, then commit or drop it.
     ///
     /// The refresh is dispatched on the prompt's recorded origin, so the surface
@@ -4997,50 +5061,113 @@ impl App {
     /// Route a key to the open picker: type to filter, arrows/Ctrl-n/p to move,
     /// Enter to accept, Esc to cancel.
     fn handle_picker_key(&mut self, ck: crossterm::event::KeyEvent) {
+        /// What the key did, decided while the picker is borrowed and acted on
+        /// after — a theme preview needs `&mut self`, which that borrow forbids.
+        enum Step {
+            /// Picker stays open; the selection may have moved.
+            Stay,
+            Cancel,
+            Accept(Option<PickerAction>),
+        }
+
         let ctrl = ck.modifiers.contains(KeyModifiers::CONTROL);
-        let action = {
+        // A theme picker repaints the editor as the selection moves, so the
+        // choice is judged against real content rather than a swatch.
+        let previewing = self.theme_before_preview.is_some();
+
+        let step = {
             let picker = match self.picker.as_mut() {
                 Some(p) => p,
                 None => return,
             };
             match ck.code {
-                KeyCode::Esc => {
-                    self.picker = None;
-                    return;
-                }
-                KeyCode::Enter => picker.accept(),
+                KeyCode::Esc => Step::Cancel,
+                KeyCode::Enter => Step::Accept(picker.accept()),
                 KeyCode::Up => {
                     picker.move_selection(-1);
-                    return;
+                    Step::Stay
                 }
                 KeyCode::Down => {
                     picker.move_selection(1);
-                    return;
+                    Step::Stay
                 }
                 KeyCode::Char('p') if ctrl => {
                     picker.move_selection(-1);
-                    return;
+                    Step::Stay
                 }
                 KeyCode::Char('n') if ctrl => {
                     picker.move_selection(1);
-                    return;
+                    Step::Stay
                 }
                 KeyCode::Backspace => {
                     picker.pop_char();
-                    return;
+                    Step::Stay
                 }
                 KeyCode::Char(c) if !ctrl => {
                     picker.push_char(c);
-                    return;
+                    Step::Stay
                 }
-                _ => return,
+                _ => Step::Stay,
             }
         };
-        // Enter was pressed: close the picker and dispatch the chosen action.
-        self.picker = None;
-        if let Some(action) = action {
-            self.dispatch_picker_action(action);
+
+        match step {
+            Step::Stay => {
+                if previewing {
+                    self.preview_selected_theme();
+                }
+            }
+            Step::Cancel => {
+                self.picker = None;
+                // Cancelling a preview puts the previous theme back.
+                if let Some(prev) = self.theme_before_preview.take() {
+                    self.apply_theme(&prev);
+                }
+            }
+            Step::Accept(action) => {
+                self.picker = None;
+                // Accepting keeps whatever is on screen, so there is nothing to
+                // restore.
+                self.theme_before_preview = None;
+                if let Some(action) = action {
+                    self.dispatch_picker_action(action);
+                }
+            }
         }
+    }
+
+    /// `:Themes` — pick a theme, previewing each as the selection moves.
+    fn open_themes_picker(&mut self) {
+        let items: Vec<PickerItem> = self
+            .available_themes()
+            .into_iter()
+            .map(|name| {
+                PickerItem::new(name.clone(), PickerAction::SetTheme(name))
+            })
+            .collect();
+        self.theme_before_preview = Some(self.config.theme.clone());
+        self.picker = Some(PickerState::new("Themes", items));
+        // Preview the row the picker opens on, so the list is live immediately.
+        self.preview_selected_theme();
+    }
+
+    /// Apply the theme under the picker's cursor without committing it.
+    fn preview_selected_theme(&mut self) {
+        let name = self.picker.as_mut().and_then(|p| match p.selected_action() {
+            Some(PickerAction::SetTheme(n)) => Some(n),
+            _ => None,
+        });
+        if let Some(name) = name {
+            self.apply_theme(&name);
+        }
+    }
+
+    /// Resolve `name` and repaint with it. Does not persist — `:w` in the
+    /// settings page or accepting the picker is what makes it stick.
+    fn apply_theme(&mut self, name: &str) {
+        self.config.theme = name.to_string();
+        self.config.colors =
+            resolve_theme_colors(&self.lua, &self.config.theme, &self.config.color_overrides);
     }
 
     fn dispatch_picker_action(&mut self, action: PickerAction) {
@@ -5051,6 +5178,12 @@ impl App {
             PickerAction::OpenPath(path) => self.open_path(&path, None),
             PickerAction::OpenLocation(path, line, col) => {
                 self.open_path(&path, Some((line, col)));
+            }
+            PickerAction::SetTheme(name) => {
+                // Preview already applied it; this makes the choice the one that
+                // `:w` in the settings page would persist.
+                self.apply_theme(&name);
+                self.echo(format!("Theme: {name}"));
             }
             PickerAction::RunCmd(cmd) => match self.parse_cmdline(&cmd) {
                 Ok(a) => self.apply_cmd(a),
@@ -6735,6 +6868,77 @@ mod tests {
         a.handle_key(CtKey::new(KeyCode::Char('['), none));
         a.handle_key(CtKey::new(KeyCode::Char('h'), none));
         assert_eq!(line_of(&a), 1, "[h goes back");
+    }
+
+    /// Moving the selection repaints immediately, and cancelling puts the
+    /// previous theme back — the picker must not leave the editor recoloured.
+    #[test]
+    fn theme_picker_previews_on_move_and_restores_on_cancel() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        let before_name = a.config.theme.clone();
+        let before_bg = a.config.colors.bg;
+
+        a.apply_cmd(CmdAction::Themes);
+        assert!(a.picker.is_some(), "picker opened");
+        assert_eq!(
+            a.theme_before_preview.as_deref(),
+            Some(before_name.as_str()),
+            "remembers what to restore"
+        );
+
+        // Step through until the palette actually differs from where we started.
+        let mut changed = false;
+        for _ in 0..6 {
+            a.handle_key(CtKey::new(KeyCode::Down, none));
+            if a.config.colors.bg != before_bg {
+                changed = true;
+                break;
+            }
+        }
+        assert!(changed, "moving the selection repainted the editor");
+
+        a.handle_key(CtKey::new(KeyCode::Esc, none));
+        assert!(a.picker.is_none());
+        assert_eq!(a.config.theme, before_name, "theme name restored");
+        assert_eq!(a.config.colors.bg, before_bg, "palette restored");
+        assert!(a.theme_before_preview.is_none(), "nothing left to restore");
+    }
+
+    #[test]
+    fn accepting_a_theme_keeps_it() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        let before_name = a.config.theme.clone();
+
+        a.apply_cmd(CmdAction::Themes);
+        for _ in 0..3 {
+            a.handle_key(CtKey::new(KeyCode::Down, none));
+        }
+        let previewed = a.config.theme.clone();
+        a.handle_key(CtKey::new(KeyCode::Enter, none));
+
+        assert!(a.picker.is_none());
+        assert_ne!(previewed, before_name, "moved off the starting theme");
+        assert_eq!(a.config.theme, previewed, "accept keeps what was previewed");
+        assert!(a.theme_before_preview.is_none(), "nothing to restore after accept");
+    }
+
+    /// The picker lists the built-ins, including all four Catppuccin variants.
+    #[test]
+    fn theme_discovery_lists_the_builtins() {
+        let a = App::new("x".into(), PathBuf::from("f.txt"));
+        let names = a.available_themes();
+        for want in [
+            "catppuccin-mocha",
+            "catppuccin-latte",
+            "catppuccin-frappe",
+            "catppuccin-macchiato",
+        ] {
+            assert!(names.iter().any(|n| n == want), "{want} missing from {names:?}");
+        }
     }
 
     #[test]

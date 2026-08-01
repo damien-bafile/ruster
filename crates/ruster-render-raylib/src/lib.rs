@@ -3,7 +3,7 @@ mod key;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use raylib::consts::KeyboardKey;
 use raylib::prelude::*;
-use ruster_render::{ControlKind, CursorKind, FrameState, GuiConfig, Renderer, SettingRowView};
+use ruster_render::{CursorKind, FrameState, GuiConfig, Renderer, SettingRowView};
 
 /// Draw `chars` on the cell grid, one `char_w` apart, colouring each by `colors`.
 ///
@@ -908,7 +908,6 @@ impl Renderer for RaylibRenderer {
         if let Some(settings) = &state.settings {
             let sbg = bg;
             let sel_bg = selection_bg;
-            let dim = gutter_color;
             let bar_bg = statusline_bg;
             let bw = screen_w * 8 / 10;
             let bh = screen_h * 9 / 10;
@@ -951,15 +950,7 @@ impl Renderer for RaylibRenderer {
                         s.draw_rectangle(bx, ry, bw, line_h, sel_bg);
                     }
                     s.draw_text_ex(font, label, Vector2::new((bx + 8) as f32, ry as f32), font_size as f32, 1.0, row_fg);
-                    let ctrl = match r.kind {
-                        ControlKind::Toggle => {
-                            if r.value == "on" { "[x] on".to_string() } else { "[ ] off".to_string() }
-                        }
-                        ControlKind::Enum => format!("< {} >", r.value),
-                        ControlKind::Number | ControlKind::Text => {
-                            if r.editing { format!("{}▏", r.value) } else { r.value.clone() }
-                        }
-                    };
+                    let ctrl = ruster_render::control_display(r);
                     let cc = if r.editing { accent } else { row_fg };
                     s.draw_text_ex(font, &ctrl, Vector2::new(value_x as f32, ry as f32), font_size as f32, 1.0, cc);
                     // A swatch after a hex color value, so the picker shows it.
@@ -974,12 +965,44 @@ impl Renderer for RaylibRenderer {
             // Selected help + footer.
             if let Some((_, _, Some(r))) = lines.get(selected) {
                 let hy = by + bh - 2 * line_h;
-                s.draw_text_ex(font, &r.help, Vector2::new((bx + 4) as f32, hy as f32), font_size as f32, 1.0, dim);
+                s.draw_text_ex(font, &r.help, Vector2::new((bx + 4) as f32, hy as f32), font_size as f32, 1.0, gutter_color);
             }
             let fy = by + bh - line_h;
             s.draw_rectangle(bx, fy, bw, line_h, bar_bg);
             // The footer is a bar, so its text uses the bar/divider text colour.
             s.draw_text_ex(font, &settings.footer, Vector2::new((bx + 4) as f32, fy as f32), font_size as f32, 1.0, statusline_fg);
+        }
+
+        // A modal dialog sits above the floats: same titled box and the same
+        // setting-row vocabulary the settings page uses.
+        if let Some(dlg) = &state.dialog {
+            let dw = (screen_w * 6 / 10).clamp(300.min(screen_w), screen_w - 40);
+            let dh = ((dlg.rows.len() as i32 + 4) * line_h).min(screen_h - 40);
+            let dx = (screen_w - dw) / 2;
+            let dy = (screen_h - dh) / 2;
+            d.draw_rectangle(dx, dy, dw, dh, bg);
+            draw_titled_box(&mut d, metrics, (dx, dy, dw, dh), line_h, &dlg.title, accent, divider);
+            let value_x = dx + (26.0 * char_w) as i32;
+            for (i, r) in dlg.rows.iter().enumerate() {
+                let ry = dy + (1 + i as i32) * line_h;
+                if ry > dy + dh - 2 * line_h {
+                    break;
+                }
+                let (rfg, rbg) = if r.selected {
+                    (selection_fg, Some(selection_bg))
+                } else {
+                    (default_color, None)
+                };
+                if let Some(b) = rbg {
+                    d.draw_rectangle(dx + 1, ry, dw - 2, line_h, b);
+                }
+                d.draw_text_ex(font, &r.label, Vector2::new((dx + 8) as f32, ry as f32), font_size as f32, 1.0, rfg);
+                let shown = ruster_render::control_display(r);
+                let vfg = if r.editing { accent } else { rfg };
+                d.draw_text_ex(font, &shown, Vector2::new(value_x as f32, ry as f32), font_size as f32, 1.0, vfg);
+            }
+            let fy = dy + dh - 2 * line_h;
+            d.draw_text_ex(font, &dlg.footer, Vector2::new((dx + 8) as f32, fy as f32), font_size as f32, 1.0, gutter_color);
         }
 
         // Floats sit above every other surface, lowest z first. The rects are
