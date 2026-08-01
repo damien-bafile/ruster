@@ -196,20 +196,6 @@ impl Renderer for TuiRenderer {
                 }
             }
 
-            if let Some(lines) = &state.hover {
-                if !lines.is_empty() {
-                    let w = lines.iter().map(|l| l.text.chars().count()).max().unwrap_or(0) as u16 + 2;
-                    let w = w.clamp(8, area.width.saturating_sub(2));
-                    let h = (lines.len() as u16 + 1).min(area.height.saturating_sub(2));
-                    let x = area.x + (area.width.saturating_sub(w)) / 2;
-                    let y = area.y + 1;
-                    frame.render_widget(
-                        crate::widgets::HoverWidget::new(lines.clone()).with_theme(&state.theme),
-                        Rect::new(x, y, w, h),
-                    );
-                }
-            }
-
             // Picker overlay: a centered floating box, or a full-width strip
             // docked at the bottom (the command palette's "bottom" mode).
             if let Some(picker) = &state.picker {
@@ -254,6 +240,15 @@ impl Renderer for TuiRenderer {
                     crate::widgets::SettingsWidget::new(settings.clone(), sscroll)
                         .with_theme(&state.theme),
                     sarea,
+                );
+            }
+
+            // Floats sit above every other surface, lowest z first.
+            for f in ruster_render::floats_in_draw_order(&state.floats) {
+                let r = Rect::new(f.rect.x, f.rect.y, f.rect.width, f.rect.height);
+                frame.render_widget(
+                    crate::widgets::FloatWidget::new(f.clone()).with_theme(&state.theme),
+                    r,
                 );
             }
         });

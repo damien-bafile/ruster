@@ -612,8 +612,6 @@ pub struct FrameState<'a> {
     pub noice_notify: Option<Vec<StyledLine>>,
     pub picker: Option<PickerView>,
     pub whichkey: Option<WhichKeyView>,
-    /// LSP hover popup lines (syntax-highlighted), in a floating box near the top.
-    pub hover: Option<Vec<StyledLine>>,
     /// The settings page overlay, when open.
     pub settings: Option<SettingsView>,
     /// Welcome/start screen ("Dashboard"), shown when no file is open.
@@ -624,6 +622,136 @@ pub struct FrameState<'a> {
     /// Debugger overlay (toolbar + stack/variables), shown while a debug
     /// session is active.
     pub debug_overlay: Option<DebugOverlayView>,
+    /// Floating boxes drawn above the window views, lowest `z` first.
+    pub floats: Vec<FloatView>,
+}
+
+/// Where a float wants to sit. Resolved against the frame area by
+/// [`FloatView::anchored`], which also clamps it on screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloatAnchor {
+    /// Centred in the frame.
+    Center,
+    /// Just below the given cell, flipping above it when there is no room —
+    /// how a completion or signature popup follows the caret.
+    Cursor { col: u16, row: u16 },
+    /// Pinned to a corner or edge, inset by one cell.
+    Edge(FloatEdge),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloatEdge {
+    Top,
+    Bottom,
+    TopRight,
+    BottomRight,
+}
+
+/// A floating box above the window views: popups, modals, confirmations.
+///
+/// The rect is resolved and clamped when the float is built, so a backend only
+/// has to draw it. Keeping the geometry here means one implementation, unit
+/// tested, rather than one per backend that can drift.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FloatView {
+    pub rect: Rect,
+    pub lines: Vec<StyledLine>,
+    pub title: Option<String>,
+    pub border: bool,
+    /// Draw order among floats; higher sits on top. Ties keep insertion order.
+    pub z: i32,
+}
+
+impl FloatView {
+    /// Size to `lines`, place per `anchor`, and clamp inside `area`.
+    ///
+    /// A bordered float reserves one cell on each side, so its content width is
+    /// `rect.width - 2`. When `area` is too small to hold the content the box is
+    /// truncated rather than pushed off screen.
+    pub fn anchored(area: Rect, anchor: FloatAnchor, lines: Vec<StyledLine>) -> Self {
+        Self::anchored_titled(area, anchor, lines, None)
+    }
+
+    pub fn anchored_titled(
+        area: Rect,
+        anchor: FloatAnchor,
+        lines: Vec<StyledLine>,
+        title: Option<String>,
+    ) -> Self {
+        let pad = 2; // border on both sides
+        let content_w = lines.iter().map(|l| l.text.chars().count()).max().unwrap_or(0);
+        let mut w = (content_w as u16).saturating_add(pad);
+        // The title sits on the top border, inset two cells from the left, so it
+        // needs its length plus that inset plus the closing corner — otherwise a
+        // title longer than the content is clipped by its own box.
+        if let Some(t) = &title {
+            w = w.max(t.chars().count() as u16 + 3);
+        }
+        let w = w.clamp(pad, area.width.max(pad));
+        let h = (lines.len() as u16 + pad).clamp(pad, area.height.max(pad));
+
+        let (x, y) = match anchor {
+            FloatAnchor::Center => (
+                area.x + (area.width.saturating_sub(w)) / 2,
+                area.y + (area.height.saturating_sub(h)) / 2,
+            ),
+            FloatAnchor::Cursor { col, row } => {
+                // Prefer below the cell; flip above when the bottom would clip.
+                let below = row.saturating_add(1);
+                let y = if below + h <= area.y + area.height {
+                    below
+                } else {
+                    row.saturating_sub(h)
+                };
+                (col, y)
+            }
+            FloatAnchor::Edge(edge) => {
+                let right = (area.x + area.width).saturating_sub(w + 1);
+                let bottom = (area.y + area.height).saturating_sub(h + 1);
+                match edge {
+                    FloatEdge::Top => (area.x + (area.width.saturating_sub(w)) / 2, area.y + 1),
+                    FloatEdge::Bottom => (area.x + (area.width.saturating_sub(w)) / 2, bottom),
+                    FloatEdge::TopRight => (right, area.y + 1),
+                    FloatEdge::BottomRight => (right, bottom),
+                }
+            }
+        };
+
+        // Clamp last, so every anchor lands on screen.
+        let max_x = (area.x + area.width).saturating_sub(w);
+        let max_y = (area.y + area.height).saturating_sub(h);
+        let x = x.clamp(area.x, max_x.max(area.x));
+        let y = y.clamp(area.y, max_y.max(area.y));
+
+        FloatView { rect: Rect::new(x, y, w, h), lines, title, border: true, z: 0 }
+    }
+
+    pub fn with_z(mut self, z: i32) -> Self {
+        self.z = z;
+        self
+    }
+
+    /// The inner area available to content, excluding the border.
+    pub fn inner(&self) -> Rect {
+        if self.border {
+            Rect::new(
+                self.rect.x + 1,
+                self.rect.y + 1,
+                self.rect.width.saturating_sub(2),
+                self.rect.height.saturating_sub(2),
+            )
+        } else {
+            self.rect
+        }
+    }
+}
+
+/// Sort floats into draw order: ascending `z`, stable so ties keep the order
+/// they were pushed in.
+pub fn floats_in_draw_order(floats: &[FloatView]) -> Vec<&FloatView> {
+    let mut out: Vec<&FloatView> = floats.iter().collect();
+    out.sort_by_key(|f| f.z);
+    out
 }
 
 /// Debugger overlay rendered above the window area.
@@ -688,8 +816,9 @@ pub trait Renderer {
 #[cfg(test)]
 mod tests {
     use crate::{
-        Color, FrameState, Rect, Renderer, SelectionKind, SelectionView, StatuslineView,
-        StyledLine, TermCellView, TermGridView, UIMode, WindowView,
+        floats_in_draw_order, Color, FloatAnchor, FloatEdge, FloatView, FrameState, Rect,
+        Renderer, SelectionKind, SelectionView, StatuslineView, StyledLine, TermCellView,
+        TermGridView, UIMode, WindowView,
     };
 
     struct TestRenderer;
@@ -900,5 +1029,131 @@ mod tests {
         let g = gutter_view(2, 3, 2, true, false, 5);
         assert_eq!(g.rows.len(), 1); // only line index 2 exists
         assert_eq!(g.rows[0].trim(), "3");
+    }
+
+    fn sl(t: &str) -> StyledLine {
+        StyledLine { text: t.to_string(), highlights: vec![] }
+    }
+
+    const AREA: Rect = Rect { x: 0, y: 0, width: 80, height: 24 };
+
+    #[test]
+    fn float_sizes_to_its_content_plus_border() {
+        let f = FloatView::anchored(AREA, FloatAnchor::Center, vec![sl("hello"), sl("hi")]);
+        assert_eq!(f.rect.width, 7, "widest line + 2 for the border");
+        assert_eq!(f.rect.height, 4, "2 lines + 2 for the border");
+        assert_eq!(f.inner().width, 5);
+        assert_eq!(f.inner().height, 2);
+    }
+
+    #[test]
+    fn a_title_widens_the_box_when_it_is_longer_than_the_content() {
+        let f = FloatView::anchored_titled(
+            AREA,
+            FloatAnchor::Center,
+            vec![sl("ok")],
+            Some("a much longer title".to_string()),
+        );
+        assert!(f.rect.width >= "a much longer title".len() as u16 + 2);
+    }
+
+    #[test]
+    fn centered_float_is_centered() {
+        let f = FloatView::anchored(AREA, FloatAnchor::Center, vec![sl("12345678")]);
+        assert_eq!(f.rect.x, (80 - f.rect.width) / 2);
+        assert_eq!(f.rect.y, (24 - f.rect.height) / 2);
+    }
+
+    #[test]
+    fn cursor_float_sits_below_the_cell_when_there_is_room() {
+        let f = FloatView::anchored(AREA, FloatAnchor::Cursor { col: 10, row: 5 }, vec![sl("x")]);
+        assert_eq!(f.rect.x, 10);
+        assert_eq!(f.rect.y, 6, "one row below the cursor");
+    }
+
+    #[test]
+    fn cursor_float_flips_above_when_it_would_clip_the_bottom() {
+        // Row 22 of a 24-row area: a 3-row box below would run off.
+        let f = FloatView::anchored(
+            AREA,
+            FloatAnchor::Cursor { col: 4, row: 22 },
+            vec![sl("a"), sl("b")],
+        );
+        assert!(f.rect.y < 22, "flipped above the cursor, got y={}", f.rect.y);
+        assert!(f.rect.y + f.rect.height <= 24);
+    }
+
+    /// Every anchor must land fully inside the area — the clamp the plan calls
+    /// for, checked at each edge.
+    ///
+    /// Deliberately uses an area that does **not** start at the origin, so the
+    /// left/top assertions are real rather than trivially true for `u16`, and so
+    /// anything assuming a `0,0` origin is caught.
+    #[test]
+    fn floats_are_clamped_inside_the_area_at_every_edge() {
+        const OFF: Rect = Rect { x: 7, y: 3, width: 60, height: 20 };
+        let wide = vec![sl(&"x".repeat(200))];
+        let tall: Vec<StyledLine> = (0..100).map(|i| sl(&format!("line {i}"))).collect();
+        let anchors = [
+            FloatAnchor::Center,
+            FloatAnchor::Cursor { col: OFF.x + OFF.width - 1, row: OFF.y + OFF.height - 1 },
+            FloatAnchor::Cursor { col: 0, row: 0 },
+            FloatAnchor::Cursor { col: 200, row: 200 },
+            FloatAnchor::Edge(FloatEdge::Top),
+            FloatAnchor::Edge(FloatEdge::Bottom),
+            FloatAnchor::Edge(FloatEdge::TopRight),
+            FloatAnchor::Edge(FloatEdge::BottomRight),
+        ];
+        for a in anchors {
+            for lines in [vec![sl("ok")], wide.clone(), tall.clone()] {
+                let f = FloatView::anchored(OFF, a, lines);
+                assert!(f.rect.x >= OFF.x, "{a:?} left edge: x={}", f.rect.x);
+                assert!(f.rect.y >= OFF.y, "{a:?} top edge: y={}", f.rect.y);
+                assert!(
+                    f.rect.x + f.rect.width <= OFF.x + OFF.width,
+                    "{a:?} right edge: x={} w={}",
+                    f.rect.x, f.rect.width
+                );
+                assert!(
+                    f.rect.y + f.rect.height <= OFF.y + OFF.height,
+                    "{a:?} bottom edge: y={} h={}",
+                    f.rect.y, f.rect.height
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn content_wider_than_the_screen_is_truncated_not_pushed_off() {
+        let f = FloatView::anchored(AREA, FloatAnchor::Center, vec![sl(&"y".repeat(500))]);
+        assert_eq!(f.rect.width, 80);
+        assert_eq!(f.rect.x, 0);
+    }
+
+    #[test]
+    fn a_tiny_area_still_produces_an_on_screen_rect() {
+        let tiny = Rect::new(0, 0, 1, 1);
+        let f = FloatView::anchored(tiny, FloatAnchor::Center, vec![sl("wide content")]);
+        assert_eq!(f.rect.x, 0);
+        assert_eq!(f.rect.y, 0);
+    }
+
+    #[test]
+    fn draw_order_is_by_z_and_stable_within_a_z() {
+        let mk = |name: &str, z: i32| {
+            FloatView::anchored(AREA, FloatAnchor::Center, vec![sl(name)]).with_z(z)
+        };
+        let floats = vec![mk("top", 10), mk("first", 0), mk("second", 0), mk("mid", 5)];
+        let order: Vec<&str> = floats_in_draw_order(&floats)
+            .iter()
+            .map(|f| f.lines[0].text.as_str())
+            .collect();
+        assert_eq!(order, ["first", "second", "mid", "top"]);
+    }
+
+    #[test]
+    fn frame_state_defaults_to_no_floats() {
+        let st = FrameState::default();
+        assert!(st.floats.is_empty());
     }
 }

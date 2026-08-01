@@ -997,15 +997,21 @@ impl Widget for WhichKeyWidget {
     }
 }
 
-/// Renders an LSP hover popup: a bordered box of syntax-highlighted lines.
-pub struct HoverWidget {
-    lines: Vec<StyledLine>,
+
+/// Renders a [`FloatView`](ruster_render::FloatView): a bordered box of
+/// syntax-highlighted lines, drawn above the window views.
+///
+/// The rect is already resolved and clamped by `FloatView::anchored`, so this
+/// only paints — no geometry decisions live here, which is what keeps the two
+/// backends from drifting.
+pub struct FloatWidget {
+    float: ruster_render::FloatView,
     theme: Option<ruster_render::Theme>,
 }
 
-impl HoverWidget {
-    pub fn new(lines: Vec<StyledLine>) -> Self {
-        HoverWidget { lines, theme: None }
+impl FloatWidget {
+    pub fn new(float: ruster_render::FloatView) -> Self {
+        FloatWidget { float, theme: None }
     }
 
     pub fn with_theme(mut self, theme: &ruster_render::Theme) -> Self {
@@ -1014,41 +1020,81 @@ impl HoverWidget {
     }
 }
 
-impl Widget for HoverWidget {
+impl Widget for FloatWidget {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let c = |fallback: Color, get: fn(&ruster_render::Theme) -> RColor| -> Color {
             self.theme.as_ref().map(|t| ruster_render_color_to_tui(&get(t))).unwrap_or(fallback)
         };
         let bg = c(Color::Rgb(24, 24, 37), |t| t.bg);
-        let default_fg = c(Color::Rgb(205, 214, 244), |t| t.fg);
+        let fg = c(Color::Rgb(205, 214, 244), |t| t.fg);
+        let border = c(Color::Rgb(243, 139, 168), |t| t.accent);
+
+        // Fill first, so whatever was underneath does not show through.
         for y in area.top()..area.bottom() {
             for x in area.left()..area.right() {
                 if let Some(cell) = buf.cell_mut((x, y)) {
                     cell.set_char(' ');
                     cell.set_bg(bg);
+                    cell.set_fg(fg);
                 }
             }
         }
-        for (row, line) in self.lines.iter().enumerate() {
-            let y = area.y + row as u16;
-            if y >= area.bottom() { break; }
-            // Map char index -> highlight fg for this line.
-            let mut colors: std::collections::HashMap<usize, RColor> = std::collections::HashMap::new();
+
+        if self.float.border && area.width >= 2 && area.height >= 2 {
+            let (l, r, t, b) = (area.left(), area.right() - 1, area.top(), area.bottom() - 1);
+            let mut put = |x: u16, y: u16, ch: char| {
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_char(ch);
+                    cell.set_fg(border);
+                    cell.set_bg(bg);
+                }
+            };
+            for x in l..=r {
+                put(x, t, '─');
+                put(x, b, '─');
+            }
+            for y in t..=b {
+                put(l, y, '│');
+                put(r, y, '│');
+            }
+            put(l, t, '╭');
+            put(r, t, '╮');
+            put(l, b, '╰');
+            put(r, b, '╯');
+
+            if let Some(title) = &self.float.title {
+                // Inset by two so the title never overwrites a corner.
+                for (i, ch) in title.chars().enumerate() {
+                    let x = l + 2 + i as u16;
+                    if x >= r {
+                        break;
+                    }
+                    put(x, t, ch);
+                }
+            }
+        }
+
+        let inner = self.float.inner();
+        for (row, line) in self.float.lines.iter().enumerate() {
+            let y = inner.y + row as u16;
+            if y >= inner.y.saturating_add(inner.height) {
+                break;
+            }
+            let mut colors: std::collections::HashMap<usize, RColor> =
+                std::collections::HashMap::new();
             for (offset, len, style) in &line.highlights {
-                for c in 0..*len {
-                    colors.insert(offset + c, style.fg);
+                for i in 0..*len {
+                    colors.insert(offset + i, style.fg);
                 }
             }
             for (i, ch) in line.text.chars().enumerate() {
-                let x = area.x + 1 + i as u16;
-                if x >= area.right() { break; }
+                let x = inner.x + i as u16;
+                if x >= inner.x.saturating_add(inner.width) {
+                    break;
+                }
                 if let Some(cell) = buf.cell_mut((x, y)) {
                     cell.set_char(ch);
-                    let fg = colors
-                        .get(&i)
-                        .map(ruster_render_color_to_tui)
-                        .unwrap_or(default_fg);
-                    cell.set_fg(fg);
+                    cell.set_fg(colors.get(&i).map(ruster_render_color_to_tui).unwrap_or(fg));
                     cell.set_bg(bg);
                 }
             }
@@ -1058,7 +1104,7 @@ impl Widget for HoverWidget {
 
 #[cfg(test)]
 mod tests {
-    use super::{BufferWidget, TerminalWidget};
+    use super::{BufferWidget, FloatWidget, TerminalWidget};
     use crate::widgets::{cmdline_label, mode_label};
     use ratatui::buffer::Buffer as RBuffer;
     use ratatui::layout::Rect;
@@ -1122,5 +1168,71 @@ mod tests {
     #[test]
     fn cmdline_label_empty() {
         assert_eq!(cmdline_label(""), ":");
+    }
+
+    fn row_text(buf: &RBuffer, y: u16, x0: u16, x1: u16) -> String {
+        (x0..x1).filter_map(|x| buf.cell((x, y)).map(|c| c.symbol().to_string())).collect()
+    }
+
+    /// A float must paint over whatever is underneath, border included — that
+    /// is the whole point of the primitive.
+    #[test]
+    fn float_widget_paints_a_bordered_box_over_the_background() {
+        let area = Rect::new(0, 0, 20, 6);
+        let mut buf = RBuffer::filled(
+            area,
+            ratatui::buffer::Cell::new("."),
+        );
+
+        let f = ruster_render::FloatView::anchored(
+            ruster_render::Rect::new(0, 0, 20, 6),
+            ruster_render::FloatAnchor::Center,
+            vec![StyledLine { text: "hi".into(), highlights: vec![] }],
+        );
+        let r = Rect::new(f.rect.x, f.rect.y, f.rect.width, f.rect.height);
+        FloatWidget::new(f.clone()).render(r, &mut buf);
+
+        // Corners and edges drawn.
+        assert_eq!(buf.cell((r.x, r.y)).unwrap().symbol(), "\u{256d}");
+        assert_eq!(buf.cell((r.right() - 1, r.y)).unwrap().symbol(), "\u{256e}");
+        assert_eq!(buf.cell((r.x, r.bottom() - 1)).unwrap().symbol(), "\u{2570}");
+        assert_eq!(buf.cell((r.right() - 1, r.bottom() - 1)).unwrap().symbol(), "\u{256f}");
+        // Content sits inside the border.
+        let inner = f.inner();
+        assert_eq!(row_text(&buf, inner.y, inner.x, inner.x + 2), "hi");
+        // The background outside the box is untouched.
+        assert_eq!(buf.cell((0, 0)).unwrap().symbol(), if r.x == 0 && r.y == 0 { "\u{256d}" } else { "." });
+    }
+
+    #[test]
+    fn float_widget_draws_its_title_on_the_top_border() {
+        let area = Rect::new(0, 0, 30, 6);
+        let mut buf = RBuffer::empty(area);
+        let f = ruster_render::FloatView::anchored_titled(
+            ruster_render::Rect::new(0, 0, 30, 6),
+            ruster_render::FloatAnchor::Center,
+            vec![StyledLine { text: "body".into(), highlights: vec![] }],
+            Some("Title".into()),
+        );
+        let r = Rect::new(f.rect.x, f.rect.y, f.rect.width, f.rect.height);
+        FloatWidget::new(f).render(r, &mut buf);
+        assert_eq!(row_text(&buf, r.y, r.x + 2, r.x + 7), "Title");
+    }
+
+    /// Content longer than the inner width is clipped at the border rather than
+    /// bleeding past it.
+    #[test]
+    fn float_widget_clips_content_to_the_inner_area() {
+        let area = Rect::new(0, 0, 12, 4);
+        let mut buf = RBuffer::filled(area, ratatui::buffer::Cell::new("."));
+        let f = ruster_render::FloatView::anchored(
+            ruster_render::Rect::new(0, 0, 12, 4),
+            ruster_render::FloatAnchor::Center,
+            vec![StyledLine { text: "x".repeat(50), highlights: vec![] }],
+        );
+        let r = Rect::new(f.rect.x, f.rect.y, f.rect.width, f.rect.height);
+        FloatWidget::new(f).render(r, &mut buf);
+        // The right border survives; nothing was written past it.
+        assert_eq!(buf.cell((r.right() - 1, r.y + 1)).unwrap().symbol(), "\u{2502}");
     }
 }
