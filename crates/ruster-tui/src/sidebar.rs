@@ -14,7 +14,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ruster_core::sidebar::{SidebarRow, SidebarTree};
 use ruster_core::windows::Rect as CoreRect;
 use ruster_render::{
-    Color, Rect as RRect, StatuslineView, StyledLine, SyntaxStyle, UIMode, WindowView,
+    Rect as RRect, StatuslineView, StyledLine, SyntaxStyle, Theme, UIMode, WindowView,
 };
 
 use crate::file_prompt::{FilePrompt, PromptOrigin};
@@ -306,7 +306,7 @@ impl SidebarState {
     /// Deliberately not its own view type: the sidebar reaches the GUI backend
     /// purely by being a window in `FrameState`, so introducing a bespoke view
     /// would mean a second draw path and a parity regression.
-    pub fn view(&self, rect: CoreRect, mode: UIMode) -> WindowView {
+    pub fn view(&self, rect: CoreRect, mode: UIMode, theme: &Theme) -> WindowView {
         let rows = self.rows();
         let selected = self.selected.min(rows.len().saturating_sub(1));
         let scroll =
@@ -327,14 +327,27 @@ impl SidebarState {
                 } else {
                     "  "
                 };
-                let text = format!("{}{}{}", indent, marker, r.name);
+                let mut text = format!("{}{}{}", indent, marker, r.name);
                 let highlights = if i == selected {
+                    // Pad out to the panel width so the selection reads as a
+                    // full row, the way every other list highlights. Stopping at
+                    // the end of the name also exposed a rendering mismatch: the
+                    // GUI draws text with measured advances but fills highlight
+                    // rects at a fixed `char_w`, so a row led by the ▸/▾ marker
+                    // drifted and clipped its last character.
+                    let width = rect.width as usize;
+                    let len = text.chars().count();
+                    if len < width {
+                        text.push_str(&" ".repeat(width - len));
+                    }
+                    // Offsets are char indices, not bytes — the ▸/▾ markers are
+                    // three bytes each, so `len()` would overshoot.
                     vec![(
                         0,
-                        text.len(),
+                        text.chars().count(),
                         SyntaxStyle {
-                            fg: Color::Default,
-                            bg: Color::Rgb(80, 80, 100),
+                            fg: theme.selection_fg,
+                            bg: theme.selection_bg,
                             bold: false,
                             italic: false,
                         },
@@ -598,10 +611,29 @@ mod tests {
         let root = fixture();
         let mut s = open_on(&root);
         s.handle_key(key('j'));
-        let v = s.view(CoreRect::new(0, 0, 30, 10), UIMode::default());
+        let theme = Theme::default();
+        let v = s.view(CoreRect::new(0, 0, 30, 10), UIMode::default(), &theme);
         assert_eq!(v.statusline.right, "2 items");
         assert!(v.lines[0].highlights.is_empty(), "unselected row is plain");
         assert!(!v.lines[1].highlights.is_empty(), "selected row is highlighted");
+        // The highlight must come from the theme, not a hardcoded grey, or the
+        // sidebar looks foreign against every other selectable list.
+        let (off, len, style) = v.lines[1].highlights[0];
+        assert_eq!(style.bg, theme.selection_bg);
+        assert_eq!(style.fg, theme.selection_fg);
+        assert_eq!(off, 0);
+        assert_eq!(
+            len,
+            v.lines[1].text.chars().count(),
+            "highlight length is in chars: the ▸/▾ markers are multi-byte"
+        );
+        // The selected row is padded out so the highlight spans the panel,
+        // rather than stopping at the end of the file name.
+        assert_eq!(len, 30, "selection covers the full row width");
+        assert!(v.lines[1].text.starts_with("  b.txt"), "{:?}", v.lines[1].text);
+        assert!(v.lines[1].text.ends_with(' '), "padded to the panel width");
+        // Unselected rows are not padded.
+        assert!(!v.lines[0].text.ends_with(' '));
         assert!(v.lines[0].text.contains("▸ a"), "collapsed dir marker: {:?}", v.lines[0].text);
         std::fs::remove_dir_all(&root).ok();
     }
