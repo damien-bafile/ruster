@@ -247,10 +247,16 @@ Completes the one partially-delivered Phase 6 item.
       wiring plus a restore path.
 - [ ] Ship the four Catppuccin variants (latte, frappe, macchiato, mocha) as `themes/*.lua`.
       Mocha is already the built-in default palette.
-- [ ] Optionally fold in `WhichKeyEntry` / `whichkey_key` — the one piece of
-      `feat/starship-ui` worth keeping (55 lines across 7 files, archived at
-      `origin/feat/starship-ui`, commit `b369449`). Cherry-pick it deliberately and teach
-      **both** backends to draw the accent; do not merge the branch to get it.
+- [ ] Optionally add a `whichkey_key` accent colour: turn `WhichKeyView::rows` from
+      `Vec<String>` into `Vec<WhichKeyEntry { key, desc }>` so the key letter can be
+      coloured separately, and teach **both** backends to draw it.
+
+      **Reimplement it; do not cherry-pick.** `feat/starship-ui` (archived at
+      `origin/feat/starship-ui`) has this as commit `b369449`, but it was built on that
+      branch's earlier commits and no longer applies — picking it alone conflicts in 7
+      files, and a full merge conflicts in 10. The feature is 55 insertions across files
+      both renderers have since changed, so writing it against current `main` is cheaper
+      than untangling it. Verified 2026-08-01, 124 commits past the divergence.
 - [ ] Tests: preview applies and Esc restores; discovery finds user themes.
 
 ### Task 12: TUI widget layer
