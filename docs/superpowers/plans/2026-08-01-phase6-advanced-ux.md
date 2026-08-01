@@ -42,14 +42,13 @@ graph to navigate by.
 
 | Stage | Tasks | Theme |
 |---|---|---|
-| **0 — Loose ends** | 1–6 | Carried out of Phase 5. **1–3 done (PR #26), 5 done**; 4 and 6 open. |
+| **0 — Loose ends** | 1–6 | **1–3 done (PR #26), 5 done (PR #27)**; 4 needs a human; 6 deferred past Stage 1. |
 | **1 — Foundations** | 7–8 | Floating windows, then git plumbing. Everything later builds on these. |
 | **2 — Surfaces** | 9–12 | Trouble, todos, theme preview, widgets — all consume Stage 1. |
 | **3 — Ecosystem** | 13–15 | Mason, diff viewer, then the config/docs/CI sweep. |
 
-Within Stage 0, Task 6 goes last — the graph is most useful once the tree has settled.
-Task 4 needs a human at a GUI, and Task 5 carries one judgement call, so they can run in
-any order alongside the rest.
+Task 6 has since been deferred past Stage 1 outright — see the task for why. Task 4 needs
+a human at a GUI. Everything else in Stage 0 has landed, so Stage 1 is clear to start.
 
 ---
 
@@ -161,19 +160,34 @@ agent environment.
       memory than the shadowing costs. Documented in `docs/keybindings.md` under the
       debugger section. **Do not re-litigate without a user report.**
 
-### Task 6: Re-run graphify on a clean corpus
+### Task 6: Re-run graphify on a clean corpus — **deferred to after Stage 1**
 
-The current `graphify-out/` is from 2026-07-30 and is **17 commits stale** — it predates
-the whole `app.rs` extraction, so its `App` god-node metrics describe a file that no longer
-exists in that shape.
+**Decision (2026-08-01): do not run this yet.** The last run cost **474,462 input
+tokens**, and the graph's value is navigating unfamiliar structure — which Stage 1 is about
+to change again by adding floating windows and the `ruster-git` crate. Running now and
+again after Stage 1 pays twice for the same insight. Run it **once**, after Task 8 lands,
+so a single pass covers both the PR #24 extraction and the Stage 1 additions.
 
-- [ ] Exclude `.impeccable/` and `.opencode/`. The Starship landing-page mocks generated
-      three spurious communities ("Starship Design Board", "Starship Hero Mock", "OpenCode
-      Plugin Deps") that have nothing to do with the editor.
-- [ ] Re-run and compare the `App` betweenness against the previous 0.369, as a check on
-      whether the extraction actually moved the needle.
-- [ ] Ignore the "Import Cycles" section — all 20 entries are files cycling to themselves,
-      a graphify artifact, not real cycles. Noted here so it isn't investigated again.
+The current `graphify-out/` is from 2026-07-30 and is stale by the whole `app.rs`
+extraction, so **treat its `App` metrics as historical**, not as a description of the tree.
+
+When it is run:
+
+- [ ] **There is no `--exclude` flag** — graphify narrows by the paths it is given. Pass an
+      include-list rather than the repo root:
+      `crates docs .superpowers AGENTS.md DESIGN.md PRODUCT.md`.
+      That drops `.impeccable/` and `.opencode/`, which contributed 5 files and generated
+      three whole communities ("Starship Design Board", "Starship Hero Mock", "OpenCode
+      Plugin Deps") unrelated to the editor.
+- [ ] Compare `App`'s betweenness against the previous **0.369** (next-highest was 0.127),
+      and its edge count against **215**. PR #24 took `App` from 78 fields to 57 and moved
+      ~640 non-test lines out of `app.rs`; this is the check on whether that actually
+      reduced its centrality or merely relocated code.
+- [ ] Also worth comparing: 2,415 nodes / 5,439 edges / 96 communities, and whether the
+      **245 isolated nodes** shrank.
+- [ ] **Ignore the "Import Cycles" section.** All 20 entries are files cycling to themselves
+      (`buffer.rs -> buffer.rs`) — a graphify artifact, not real cycles. Recorded here so it
+      is not investigated a third time.
 
 ---
 
