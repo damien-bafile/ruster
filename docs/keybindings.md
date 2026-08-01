@@ -245,6 +245,20 @@ colored by severity). The **quickfix list** collects them for navigation.
 | `:cnext` / `:cn` (or `]q`) | Jump to the next quickfix entry |
 | `:cprev` / `:cp` (or `[q`) | Jump to the previous quickfix entry |
 
+### Git signs
+Lines that differ from the git index are marked in the sign column: `+` added,
+`~` changed, `_` removed (shown on the line above the gap, since deleted lines
+have no line of their own). Diagnostics and breakpoints on the same line take
+precedence — git status is the weakest signal in the gutter.
+
+The diff runs in the background on open and after a write, and does nothing
+outside a repository or when git is missing. Turn it off with `git.signs = false`.
+
+| Command | Action |
+|---------|--------|
+| `]h` / `[h` | Jump to the next / previous hunk (wraps) |
+| `:Gitsigns` | Toggle git signs for this session |
+
 ### Debugger (DAP)
 Breakpoints show as `●` in the sign column. While a session is stopped, an overlay
 lists the call stack and the current scopes.

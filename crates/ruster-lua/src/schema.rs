@@ -235,6 +235,7 @@ pub const GROUPS: &[(&str, &str)] = &[
     ("dired", "File explorer"),
     ("sidebar", "Sidebar panel"),
     ("noice", "Notifications and messages"),
+    ("git", "Git integration"),
     ("build", "Build command"),
     ("test", "Test command"),
     ("dap", "Debug adapter"),
@@ -311,6 +312,9 @@ pub fn schema() -> Vec<SettingSpec> {
     // --- build / test / dap ---
     // Empty means "work it out from the project"; a project's ruster.toml still
     // wins over anything set here.
+    // --- git ---
+    add("git", "signs", "Git signs", Bool, b(true), "Mark added/changed/removed lines in the gutter");
+
     add("build", "command", "Build command", Text, t(""), "Command for :build; empty = detect from the project type");
     add("test", "command", "Test command", Text, t(""), "Command for :test; empty = detect from the project type");
     add("dap", "adapter", "Debug adapter", Text, t(""), "Adapter program for :debug; empty = detect from the file's language");
