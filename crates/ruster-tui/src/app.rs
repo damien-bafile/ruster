@@ -323,6 +323,11 @@ fn diff_pane_text(rows: &[(Option<u32>, Option<u32>)], lines: &[&str], right: bo
         .join("\n")
 }
 
+/// Lines `GitStatusState::render` prints before its first foldable row: the
+/// branch header and the blank line under it. The key handler subtracts these
+/// to turn a cursor line into a row index.
+const GIT_HEADER_LINES: usize = 2;
+
 /// Report a problem loading a user highlight query.
 ///
 /// Warning rather than error: highlighting has already fallen back to the
@@ -606,6 +611,8 @@ enum CmdAction {
     Mason,
     /// Open the manual, optionally jumping to a topic (`:help [topic]`).
     Help(Option<String>),
+    /// Open the git status view (`:Git`).
+    GitStatus,
     /// Save the open files and window layout for this project (`:SessionSave`).
     SessionSave,
     /// Reopen this project's saved session (`:SessionRestore`).
@@ -1170,6 +1177,8 @@ pub struct App {
     runner_root: PathBuf,
     runner_output: String,
     runner_kind: RunnerKind,
+    /// Folds and the last parsed status for the `:Git` view.
+    git_status: crate::git_status::GitStatusState,
     /// The install command awaiting confirmation, set only while the Mason
     /// dialog is open. `Some` is what distinguishes that dialog from a Lua one.
     pending_install: Option<String>,
@@ -1564,6 +1573,7 @@ impl App {
             runner_root: PathBuf::new(),
             runner_output: String::new(),
             runner_kind: RunnerKind::Build,
+            git_status: crate::git_status::GitStatusState::new(),
             pending_install: None,
             result_signs: std::collections::HashMap::new(),
             git_hunks: std::collections::HashMap::new(),
@@ -1802,6 +1812,13 @@ impl App {
         // hijacked. Unclaimed keys fall through to normal handling.
         // The problem list claims Enter/Tab/r/q the same way dired claims its
         // keys; everything else falls through so `:`, `/` and motions still work.
+        if self.active_is_git_status()
+            && self.vim.mode == VimMode::Normal
+            && self.emacs_isearch.is_none()
+            && self.handle_git_status_key(ck)
+        {
+            return;
+        }
         if self.active_is_help()
             && self.vim.mode == VimMode::Normal
             && self.emacs_isearch.is_none()
@@ -4023,6 +4040,7 @@ impl App {
             "Themes" | "themes" | "theme" => Ok(CmdAction::Themes),
             _ if trimmed == "sidebar" => Ok(CmdAction::Sidebar),
             "Mason" | "mason" => Ok(CmdAction::Mason),
+            "Git" | "git" | "G" => Ok(CmdAction::GitStatus),
             "help" | "h" | "Help" => Ok(CmdAction::Help(None)),
             _ if let Some(t) = trimmed.strip_prefix("help ").or_else(|| trimmed.strip_prefix("h ")) => {
                 Ok(CmdAction::Help(Some(t.trim().to_string())))
@@ -4169,6 +4187,7 @@ impl App {
             }
             CmdAction::Sidebar => self.toggle_sidebar(),
             CmdAction::Mason => self.open_mason(),
+            CmdAction::GitStatus => self.open_git_status(),
             CmdAction::Help(topic) => self.open_help(topic.as_deref()),
             CmdAction::SessionSave => self.save_session(false),
             CmdAction::SessionRestore => self.restore_session(false),
@@ -6037,6 +6056,110 @@ impl App {
 
         if let (Some(t), None) = (topic, line) {
             self.echo_warn(format!("No help for '{t}' — showing the manual"));
+        }
+    }
+
+    /// Open (or refresh) the `:Git` status view.
+    fn open_git_status(&mut self) {
+        let Some(root) = self.project_root.clone() else {
+            self.echo_warn("Not in a project".to_string());
+            return;
+        };
+        if !ruster_git::is_repo(&root) {
+            self.echo_warn("Not a git repository".to_string());
+            return;
+        }
+        let Some(status) = ruster_git::status(&root) else {
+            self.echo_error("Could not read git status".to_string());
+            return;
+        };
+        self.git_status.set_status(status);
+        let text = self.git_status.render(Some(&root));
+
+        let id = {
+            let mut w = self.ws.borrow_mut();
+            let existing = w
+                .buffers
+                .ids()
+                .iter()
+                .copied()
+                .find(|&id| w.buffers.get(id).is_some_and(|d| d.name == "*git*"));
+            let id = existing.unwrap_or_else(|| {
+                w.buffers.create_special(ruster_core::document::SpecialKind::Git, "*git*")
+            });
+            if let Some(doc) = w.buffers.get_mut(id) {
+                doc.buffer = Buffer::from_str(&text);
+            }
+            id
+        };
+        self.ws.borrow_mut().set_active_buffer(id);
+    }
+
+    fn active_is_git_status(&self) -> bool {
+        matches!(
+            self.ws.borrow().active_doc().kind,
+            DocKind::Special(ruster_core::document::SpecialKind::Git)
+        )
+    }
+
+    /// The screen row the cursor is on, minus the two header lines the view
+    /// prints before its first row.
+    fn git_status_row(&self) -> Option<usize> {
+        let w = self.ws.borrow();
+        let doc = w.active_doc();
+        doc.buffer.char_to_line(w.primary_head()).checked_sub(GIT_HEADER_LINES)
+    }
+
+    /// Keys while the status view is focused. Unclaimed keys fall through, so
+    /// `:`, `/` and the motions still work.
+    fn handle_git_status_key(&mut self, ck: crossterm::event::KeyEvent) -> bool {
+        if !ck.modifiers.difference(crossterm::event::KeyModifiers::SHIFT).is_empty() {
+            return false;
+        }
+        match ck.code {
+            KeyCode::Enter => {
+                let Some(path) = self.git_status_row().and_then(|r| self.git_status.path_at(r))
+                else {
+                    return true; // a heading: claimed, but nothing to open
+                };
+                let root = self.project_root.clone().unwrap_or_default();
+                let full = if path.is_absolute() { path } else { root.join(path) };
+                if full.is_file() {
+                    self.open_path(&full, None);
+                } else {
+                    self.echo_warn(format!("{} is gone", full.display()));
+                }
+                true
+            }
+            // `za` is the fold idiom elsewhere; `Tab` is the obvious one here.
+            KeyCode::Tab => {
+                if let Some(r) = self.git_status_row() {
+                    self.git_status.toggle_at(r);
+                    self.refresh_git_status_buffer();
+                }
+                true
+            }
+            KeyCode::Char('r') => {
+                self.open_git_status();
+                true
+            }
+            KeyCode::Char('q') => {
+                self.delete_active_buffer();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Re-render the status buffer from the state already parsed, without
+    /// shelling out again — folding must not cost a `git status`.
+    fn refresh_git_status_buffer(&mut self) {
+        let root = self.project_root.clone();
+        let text = self.git_status.render(root.as_deref());
+        let mut w = self.ws.borrow_mut();
+        let id = w.active_buffer();
+        if let Some(doc) = w.buffers.get_mut(id) {
+            doc.buffer = Buffer::from_str(&text);
         }
     }
 
@@ -8809,6 +8932,58 @@ mod tests {
         assert_eq!(a.buffer_offset_at(after.x, after.y).map(|(_, o)| o), Some(0));
         // A click in the sidebar column is not buffer text.
         assert_eq!(a.buffer_offset_at(before, after.y), None);
+    }
+
+    #[test]
+    fn git_status_parses() {
+        let a = App::new("x".into(), PathBuf::from("f.rs"));
+        assert_eq!(a.parse_cmdline(":Git"), Ok(CmdAction::GitStatus));
+        assert_eq!(a.parse_cmdline(":git"), Ok(CmdAction::GitStatus));
+    }
+
+    /// A project root that is not a git repository must say so rather than
+    /// opening an empty view.
+    ///
+    /// The root is set explicitly: `App` falls back to the working directory,
+    /// which during a test run *is* a repository, so a temp file alone would
+    /// not exercise this path.
+    #[test]
+    fn git_status_outside_a_repository_warns() {
+        let dir = shot_dir();
+        let mut a = App::new("x".into(), dir.join("loose.rs"));
+        a.project_root = Some(dir);
+        a.apply_cmd(CmdAction::GitStatus);
+        assert!(!a.active_is_git_status(), "no status buffer opened");
+        let last = a.notify.history().last().expect("a message");
+        assert!(last.text.contains("git repository"), "{:?}", last.text);
+    }
+
+    /// Folding must not shell out again — a `git status` per keypress would be
+    /// visible on any large repository.
+    #[test]
+    fn folding_re_renders_without_re_reading_git() {
+        let mut a = App::new("x".into(), PathBuf::from("f.rs"));
+        a.git_status.set_status(ruster_git::parse_status(
+            "# branch.head main\n1 A. N... 0 0 0 a b one.txt\n? two.txt\n",
+        ));
+        let before = a.git_status.rows().len();
+        a.git_status.toggle_at(0);
+        assert!(a.git_status.rows().len() < before, "folded from state alone");
+    }
+
+    /// The cursor line has to be offset by the header the view prints, or every
+    /// row resolves to the one above it.
+    #[test]
+    fn the_cursor_line_maps_past_the_header_to_a_row() {
+        let mut a = App::new("x".into(), PathBuf::from("f.rs"));
+        a.git_status.set_status(ruster_git::parse_status(
+            "# branch.head main\n1 A. N... 0 0 0 a b one.txt\n",
+        ));
+        let text = a.git_status.render(None);
+        // Header, blank, then the section heading and its file.
+        let file_line = text.lines().position(|l| l.contains("one.txt")).expect("listed");
+        let row = file_line - GIT_HEADER_LINES;
+        assert_eq!(a.git_status.path_at(row), Some(PathBuf::from("one.txt")));
     }
 
     #[test]

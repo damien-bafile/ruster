@@ -2,6 +2,7 @@ pub mod app;
 pub mod dialog;
 pub mod dired;
 pub mod file_prompt;
+pub mod git_status;
 pub mod help;
 pub mod key;
 pub mod mason;

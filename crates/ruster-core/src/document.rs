@@ -31,6 +31,8 @@ pub enum SpecialKind {
     Mason,
     /// The `:help` manual.
     Help,
+    /// The `:Git` status view.
+    Git,
     /// The Dashboard / welcome screen — a static page that cannot be closed.
     Dashboard,
     /// A general-purpose message log (build, LSP, echo, etc.).
