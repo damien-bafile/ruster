@@ -11,6 +11,90 @@ use ruster_render::{
     TermGridView, WelcomeView, Color as RColor,
 };
 
+/// Draw a bordered overlay box whose **top edge carries the title**:
+/// `╭─ Settings ─────╮`, sides down each edge, `╰────╯` along the bottom.
+///
+/// Used by the floating overlays (picker, settings). Tiled buffer windows use
+/// [`ruled_header`] alone — they sit flush against each other, so they have no
+/// sides of their own to join.
+pub(crate) fn titled_box(
+    buf: &mut Buffer,
+    area: Rect,
+    label: &str,
+    label_fg: Color,
+    rule_fg: Color,
+    bg: Color,
+) {
+    if area.width < 2 || area.height < 2 {
+        return;
+    }
+    let (l, r, t, b) = (area.left(), area.right() - 1, area.top(), area.bottom() - 1);
+    let mut put = |x: u16, y: u16, ch: char, fg: Color| {
+        if let Some(cell) = buf.cell_mut((x, y)) {
+            cell.set_char(ch);
+            cell.set_fg(fg);
+            cell.set_bg(bg);
+        }
+    };
+    // Top edge, with the title inset so the corners stay intact.
+    let hdr: Vec<char> = format!("─ {} ─", label).chars().collect();
+    for x in l..=r {
+        let i = (x - l) as usize;
+        let (ch, fg) = match hdr.get(i.wrapping_sub(1)) {
+            Some(&c) if x > l && x < r => (c, label_fg),
+            _ => ('─', rule_fg),
+        };
+        put(x, t, ch, fg);
+    }
+    put(l, t, '╭', rule_fg);
+    put(r, t, '╮', rule_fg);
+    for y in (t + 1)..b {
+        put(l, y, '│', rule_fg);
+        put(r, y, '│', rule_fg);
+    }
+    for x in l..=r {
+        put(x, b, '─', rule_fg);
+    }
+    put(l, b, '╰', rule_fg);
+    put(r, b, '╯', rule_fg);
+}
+
+/// Draw the standard panel header — `─ label ─` then ruled to the full width.
+///
+/// Every titled surface uses this: buffer windows, the picker, the settings
+/// page. Keeping one implementation is the point — the alternative is each
+/// overlay inventing its own title bar, which is how the picker ended up with a
+/// filled accent strip while the window beside it had a ruled line.
+pub(crate) fn ruled_header(
+    buf: &mut Buffer,
+    area: Rect,
+    label: &str,
+    label_fg: Color,
+    rule_fg: Color,
+    bg: Color,
+) {
+    let hdr = format!("─ {} ─", label);
+    let mut x = area.x;
+    for ch in hdr.chars() {
+        if x >= area.right() {
+            break;
+        }
+        if let Some(cell) = buf.cell_mut((x, area.y)) {
+            cell.set_char(ch);
+            cell.set_fg(label_fg);
+            cell.set_bg(bg);
+        }
+        x += 1;
+    }
+    for fill in x..area.right() {
+        if let Some(cell) = buf.cell_mut((fill, area.y)) {
+            cell.set_char('─');
+            cell.set_fg(rule_fg);
+            cell.set_bg(bg);
+        }
+    }
+}
+
 /// Convert a VimMode to a display string.
 pub fn mode_label(mode: &VimMode) -> &'static str {
     match mode {
@@ -739,7 +823,7 @@ impl Widget for SettingsWidget<'_> {
         let dim = c(Color::Rgb(127, 132, 156), |t| t.gutter);
         let sel = c(Color::Rgb(88, 91, 112), |t| t.selection_bg);
         let sel_fg = c(Color::Rgb(205, 214, 244), |t| t.selection_fg);
-        let accent_fg = c(Color::Rgb(30, 30, 46), |t| t.accent_fg);
+        let divider = c(Color::Rgb(69, 71, 90), |t| t.divider);
         let footer_bg = c(Color::Rgb(24, 24, 37), |t| t.bg);
         for y in area.top()..area.bottom() {
             for x in area.left()..area.right() {
@@ -764,12 +848,10 @@ impl Widget for SettingsWidget<'_> {
             }
         };
 
-        // Title row.
-        let title = format!(" Settings{} ", if self.view.dirty { " [+]" } else { "" });
-        for x in area.left()..area.right() {
-            put(buf, x, area.y, ' ', accent_fg, accent);
-        }
-        text(buf, area.x + 1, area.y, &title, accent_fg, accent);
+        // A bordered box whose top edge carries the title, so the sides meet the
+        // rule at the corners rather than starting under it.
+        let title = format!("Settings{}", if self.view.dirty { " [+]" } else { "" });
+        titled_box(buf, area, &title, accent, divider, bg);
 
         // Flatten groups into header + row lines.
         let mut lines: Vec<SettingsLine> = Vec::new();
@@ -801,7 +883,9 @@ impl Widget for SettingsWidget<'_> {
                 }
                 SettingsLine::Row(r) => {
                     let (row_fg, row_bg) = if r.selected {
-                        for x in area.left()..area.right() {
+                        // Inset by one so the highlight stops at the border
+                        // instead of painting over it.
+                        for x in (area.left() + 1)..area.right().saturating_sub(1) {
                             put(buf, x, y, ' ', sel_fg, sel);
                         }
                         (sel_fg, sel)
@@ -847,7 +931,6 @@ impl Widget for PickerWidget {
         let preview_bg = c(Color::Rgb(24, 24, 37), |t| t.bg);
         let accent = c(Color::Rgb(137, 180, 250), |t| t.accent);
         let fg = c(Color::Rgb(205, 214, 244), |t| t.fg);
-        let accent_fg = c(Color::Rgb(30, 30, 46), |t| t.accent_fg);
         let divider = c(Color::Rgb(69, 71, 90), |t| t.divider);
         for y in area.top()..area.bottom() {
             for x in area.left()..area.right() {
@@ -872,31 +955,29 @@ impl Widget for PickerWidget {
         let list_w = if has_preview { area.width * 2 / 5 } else { area.width };
         let list_right = area.x + list_w;
 
-        // Title row.
-        let title = format!(" {} ", self.view.title);
-        for (i, ch) in title.chars().enumerate() {
-            put(buf, area.x + i as u16, area.y, ch, accent_fg, accent);
-        }
+        // A bordered box whose top edge carries the title, matching the settings
+        // overlay. Everything below starts a row down so the rule stays whole.
+        titled_box(buf, area, &self.view.title, accent, divider, bg);
         // Query row.
         let query = format!(" > {}", self.view.query);
         for (i, ch) in query.chars().enumerate() {
-            put(buf, area.x + i as u16, area.y + 1, ch, Color::White, bg);
+            put(buf, area.x + 1 + i as u16, area.y + 1, ch, Color::White, bg);
         }
         // Item rows (clipped to the list column).
         for (row, item) in self.view.rows.iter().enumerate() {
             let y = area.y + 2 + row as u16;
-            if y >= area.bottom() { break; }
+            if y >= area.bottom().saturating_sub(1) { break; }
             let (row_fg, row_bg) = if item.selected {
                 (Color::Black, accent)
             } else {
                 (fg, bg)
             };
-            for x in area.left()..list_right.min(area.right()) {
+            for x in (area.left() + 1)..list_right.min(area.right().saturating_sub(1)) {
                 put(buf, x, y, ' ', row_fg, row_bg);
             }
             let label = format!(" {}", item.label);
             for (i, ch) in label.chars().enumerate() {
-                let x = area.x + i as u16;
+                let x = area.x + 1 + i as u16;
                 if x >= list_right { break; }
                 put(buf, x, y, ch, row_fg, row_bg);
             }
@@ -905,8 +986,9 @@ impl Widget for PickerWidget {
         // Preview column: highlighted file contents.
         if has_preview {
             let px = list_right + 1;
-            for y in area.top()..area.bottom() {
-                for x in px..area.right() {
+            // Start below the header so the rule stays unbroken across the top.
+            for y in (area.top() + 1)..area.bottom().saturating_sub(1) {
+                for x in px..area.right().saturating_sub(1) {
                     if let Some(cell) = buf.cell_mut((x, y)) {
                         cell.set_bg(preview_bg);
                     }
@@ -915,8 +997,8 @@ impl Widget for PickerWidget {
                 put(buf, list_right, y, '│', divider, bg);
             }
             for (row, line) in self.view.preview.iter().enumerate() {
-                let y = area.y + row as u16;
-                if y >= area.bottom() { break; }
+                let y = area.y + 1 + row as u16;
+                if y >= area.bottom().saturating_sub(1) { break; }
                 let mut colors: std::collections::HashMap<usize, RColor> =
                     std::collections::HashMap::new();
                 for (offset, len, style) in &line.highlights {
@@ -926,7 +1008,7 @@ impl Widget for PickerWidget {
                 }
                 for (i, ch) in line.text.chars().enumerate() {
                     let x = px + 1 + i as u16;
-                    if x >= area.right() { break; }
+                    if x >= area.right().saturating_sub(1) { break; }
                     let pfg = colors
                         .get(&i)
                         .map(ruster_render_color_to_tui)
