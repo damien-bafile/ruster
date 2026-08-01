@@ -75,12 +75,13 @@ are already the single source of truth; this reads them.
 
 ## Stage 2 — Worth it, but a real project
 
-### Task 3: Magit-style git porcelain — **planned separately**
+### Task 3: Magit-style git porcelain ✅ — **planned separately**
 
 Large enough to want its own document:
 [2026-08-02-phase7-task3-magit.md](2026-08-02-phase7-task3-magit.md), which
 carries the captured `porcelain=v2` fixtures, the staging design, and the
-sequencing into four PRs.
+sequencing into four PRs. **Delivered across PRs #45–#48 plus #49**, every box
+in that plan ticked, including hunk unstaging via the `:GitStaged` view.
 
 `AGENTS.md` says "in Lua on top of `git2-rs`". Both halves deserve challenge:
 
@@ -93,11 +94,11 @@ sequencing into four PRs.
   the cost of a C dependency on three platforms. Revisit only if shelling out
   proves too slow for the status view.
 
-- [ ] `:Git` status buffer: staged / unstaged / untracked, foldable by file.
-- [ ] Stage/unstage hunks (`s`/`u`), reusing the Task 8 hunk parser and the
+- [x] `:Git` status buffer: staged / unstaged / untracked, foldable by file.
+- [x] Stage/unstage hunks (`s`/`u`), reusing the Task 8 hunk parser and the
       Task 14 `DiffHunk` two-sided coordinates.
-- [ ] Commit (`c`) opening a message buffer; push/pull behind confirmation.
-- [ ] Tests: status parsing from captured `git status --porcelain=v2` output —
+- [x] Commit (`c`) opening a message buffer; push/pull behind confirmation.
+- [x] Tests: status parsing from captured `git status --porcelain=v2` output —
       no test may require a real repository, matching `ruster-git`'s existing rule.
 
 ### Task 4: Music player
