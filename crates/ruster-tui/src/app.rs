@@ -606,6 +606,10 @@ enum CmdAction {
     Mason,
     /// Open the manual, optionally jumping to a topic (`:help [topic]`).
     Help(Option<String>),
+    /// Save the open files and window layout for this project (`:SessionSave`).
+    SessionSave,
+    /// Reopen this project's saved session (`:SessionRestore`).
+    SessionRestore,
     GitsignsToggle,
     TodoList,
     Trouble,
@@ -1593,6 +1597,11 @@ impl App {
         if app.config.sidebar_auto_open && app.project_root.is_some() {
             app.toggle_sidebar();
         }
+        // Restoring is quiet on startup: a warning about a session that was
+        // never saved is noise on every first run in a project.
+        if app.config.session_autoload {
+            app.restore_session(true);
+        }
         app
     }
 
@@ -2566,6 +2575,9 @@ impl App {
         // Kill language servers, and detach the runtime without waiting for the
         // blocking stdin reader (which is parked in event::read()) — otherwise
         // dropping the runtime hangs on exit.
+        if self.config.session_autosave {
+            self.save_session(true);
+        }
         self.terminals.clear();
         self.lsp.shutdown_all();
         rt.shutdown_background();
@@ -2718,6 +2730,9 @@ impl App {
             // No sleep here: raylib paces the loop from `gui.target_fps`
             // (see RaylibRenderer::set_gui_config). A fixed sleep on top of
             // that pinned the GUI to ~60fps whatever the setting said.
+        }
+        if self.config.session_autosave {
+            self.save_session(true);
         }
         self.terminals.clear();
         self.lsp.shutdown_all();
@@ -4012,6 +4027,8 @@ impl App {
             _ if let Some(t) = trimmed.strip_prefix("help ").or_else(|| trimmed.strip_prefix("h ")) => {
                 Ok(CmdAction::Help(Some(t.trim().to_string())))
             }
+            "SessionSave" | "sessionsave" | "mksession" => Ok(CmdAction::SessionSave),
+            "SessionRestore" | "sessionrestore" | "loadsession" => Ok(CmdAction::SessionRestore),
             "SyntaxReload" | "syntaxreload" | "syntax reload" => Ok(CmdAction::SyntaxReload),
             "Diffview" | "diffview" | "Diff" | "diff" => Ok(CmdAction::Diffview),
             _ if let Some(n) = trimmed.strip_prefix("sidebar resize ").and_then(|s| s.trim().parse::<u16>().ok()) => Ok(CmdAction::SidebarResize(n)),
@@ -4153,6 +4170,8 @@ impl App {
             CmdAction::Sidebar => self.toggle_sidebar(),
             CmdAction::Mason => self.open_mason(),
             CmdAction::Help(topic) => self.open_help(topic.as_deref()),
+            CmdAction::SessionSave => self.save_session(false),
+            CmdAction::SessionRestore => self.restore_session(false),
             CmdAction::SyntaxReload => self.syntax_reload(),
             CmdAction::Diffview => self.open_diffview(),
             CmdAction::SidebarResize(n) => {
@@ -6126,6 +6145,119 @@ impl App {
         if open {
             self.open_mason();
         }
+    }
+
+    /// Capture the current session: which real files are open, and the layout.
+    ///
+    /// Only file-backed buffers are saved. Special buffers (dired, mason, diff,
+    /// terminals, `*messages*`) have nothing durable to point at, and an unsaved
+    /// scratch buffer has nowhere its contents could come back from.
+    fn capture_session(&self) -> Option<ruster_core::session::Session> {
+        let w = self.ws.borrow();
+        let mut files: Vec<PathBuf> = Vec::new();
+        let mut index: std::collections::HashMap<BufferId, usize> =
+            std::collections::HashMap::new();
+        for &id in w.buffers.ids().iter() {
+            let Some(doc) = w.buffers.get(id) else { continue };
+            if matches!(doc.kind, DocKind::Special(_)) {
+                continue;
+            }
+            let Some(path) = doc.file_path.clone() else { continue };
+            // Absolute, or the session only restores from the directory the
+            // editor happened to be started in. Canonicalising also collapses
+            // `..` so the same file saved two ways is one entry.
+            let path = std::fs::canonicalize(&path).unwrap_or_else(|_| {
+                std::env::current_dir().map(|d| d.join(&path)).unwrap_or(path)
+            });
+            index.insert(id, files.len());
+            files.push(path);
+        }
+        if files.is_empty() {
+            return None;
+        }
+        // Every visible window showed a special buffer (Mason, dired, a
+        // terminal), so the layout has nothing to say — but files *are* open.
+        // Fall back to a single window on the first of them rather than
+        // discarding the session and losing them.
+        let layout = w.windows.snapshot(|b| index.get(&b).copied()).unwrap_or(
+            ruster_core::windows::LayoutSnapshot::Leaf {
+                buffer: 0,
+                cursor: 0,
+                scroll: 0,
+                active: true,
+            },
+        );
+        Some(ruster_core::session::Session { files, layout })
+    }
+
+    /// Write the session for the current project.
+    fn save_session(&mut self, quiet: bool) {
+        let (Some(root), Some(dir)) = (self.project_root.clone(), ruster_config_dir()) else {
+            if !quiet {
+                self.echo_warn("No project — nothing to save a session for".to_string());
+            }
+            return;
+        };
+        let Some(session) = self.capture_session() else {
+            if !quiet {
+                self.echo_warn("No files open to save".to_string());
+            }
+            return;
+        };
+        match ruster_core::session::save(&dir, &root, &session) {
+            Ok(()) if !quiet => self.echo(format!("Session saved ({} files)", session.files.len())),
+            Ok(()) => {}
+            Err(e) => self.echo_error(format!("Could not save session: {e}")),
+        }
+    }
+
+    /// Reopen the saved session for the current project.
+    ///
+    /// Files that no longer exist are skipped and their windows collapse out of
+    /// the layout, so a session written before a refactor still restores what
+    /// survives instead of failing whole.
+    fn restore_session(&mut self, quiet: bool) {
+        let (Some(root), Some(dir)) = (self.project_root.clone(), ruster_config_dir()) else {
+            if !quiet {
+                self.echo_warn("No project — no session to restore".to_string());
+            }
+            return;
+        };
+        let Some(session) = ruster_core::session::load(&dir, &root) else {
+            if !quiet {
+                self.echo_warn("No saved session for this project".to_string());
+            }
+            return;
+        };
+
+        // Open every file that still exists, remembering which index it took.
+        let mut opened: Vec<Option<BufferId>> = Vec::with_capacity(session.files.len());
+        let mut missing = 0usize;
+        for path in &session.files {
+            if !path.is_file() {
+                opened.push(None);
+                missing += 1;
+                continue;
+            }
+            let content = std::fs::read_to_string(path).unwrap_or_default();
+            let id = self.ws.borrow_mut().buffers.open_file(path.clone(), content);
+            opened.push(Some(id));
+        }
+
+        let Some(tree) =
+            ruster_core::windows::WindowTree::restore(&session.layout, |i| {
+                opened.get(i).copied().flatten()
+            })
+        else {
+            self.echo_warn("Session restored no files (all missing)".to_string());
+            return;
+        };
+        self.ws.borrow_mut().windows = tree;
+        self.update_syntax();
+
+        let n = opened.iter().filter(|o| o.is_some()).count();
+        let note = if missing > 0 { format!(", {missing} missing") } else { String::new() };
+        self.echo(format!("Session restored ({n} files{note})"));
     }
 
     fn active_is_trouble(&self) -> bool {
@@ -8751,6 +8883,107 @@ mod tests {
         assert!(!a.handle_help_key(CtKey::new(KeyCode::Char('j'), KeyModifiers::NONE)));
         assert!(a.handle_help_key(CtKey::new(KeyCode::Char('q'), KeyModifiers::NONE)));
         assert!(!a.active_is_help(), "closed");
+    }
+
+    #[test]
+    fn session_commands_parse() {
+        let a = App::new("x".into(), PathBuf::from("f.rs"));
+        assert_eq!(a.parse_cmdline(":SessionSave"), Ok(CmdAction::SessionSave));
+        assert_eq!(a.parse_cmdline(":mksession"), Ok(CmdAction::SessionSave));
+        assert_eq!(a.parse_cmdline(":SessionRestore"), Ok(CmdAction::SessionRestore));
+        assert_eq!(a.parse_cmdline(":loadsession"), Ok(CmdAction::SessionRestore));
+    }
+
+    /// Special buffers have nothing durable to point at, so a session must not
+    /// try to save them — restoring a dead terminal is not restoration.
+    #[test]
+    fn a_session_saves_only_file_backed_buffers() {
+        let dir = shot_dir();
+        let real = dir.join("real.rs");
+        std::fs::write(&real, "fn main() {}\n").unwrap();
+        let mut a = App::new("fn main() {}".into(), real.clone());
+        // Add a special buffer alongside the real one.
+        a.apply_cmd(CmdAction::Mason);
+        assert!(a.ws.borrow().buffers.ids().len() >= 2, "mason buffer exists");
+
+        let s = a.capture_session().expect("something to save");
+        // Canonicalised on capture, so compare canonically — on macOS /var is
+        // a symlink to /private/var.
+        assert_eq!(
+            s.files,
+            vec![std::fs::canonicalize(&real).unwrap()],
+            "only the file-backed buffer"
+        );
+        assert!(
+            matches!(s.layout, ruster_core::windows::LayoutSnapshot::Leaf { buffer: 0, .. }),
+            "{:?}",
+            s.layout
+        );
+    }
+
+    /// A scratch buffer with no path cannot be restored from anywhere.
+    #[test]
+    fn a_session_with_nothing_on_disk_captures_nothing() {
+        let a = App::new("scratch".into(), PathBuf::from(""));
+        {
+            let id = a.ws.borrow().active_buffer();
+            a.ws.borrow_mut().buffers.get_mut(id).unwrap().file_path = None;
+        }
+        assert!(a.capture_session().is_none(), "nothing worth saving");
+    }
+
+    /// The round trip that matters: a split layout, saved and reopened, with the
+    /// cursor where it was.
+    #[test]
+    fn a_session_round_trips_through_disk() {
+        let dir = shot_dir();
+        let (a_rs, b_rs) = (dir.join("a.rs"), dir.join("b.rs"));
+        std::fs::write(&a_rs, "fn a() {}\nline two\n").unwrap();
+        std::fs::write(&b_rs, "fn b() {}\n").unwrap();
+
+        let mut app = App::new("fn a() {}\nline two\n".into(), a_rs.clone());
+        app.open_path(&b_rs, None);
+        app.ws.borrow_mut().windows.split(ruster_core::windows::SplitDir::Vertical);
+        let saved = app.capture_session().expect("a session");
+        assert_eq!(saved.files.len(), 2);
+
+        // Write and read it back through the real file path.
+        ruster_core::session::save(&dir, &dir, &saved).unwrap();
+        let loaded = ruster_core::session::load(&dir, &dir).expect("reloaded");
+        assert_eq!(loaded, saved, "survives the file format unchanged");
+    }
+
+    /// A file deleted since the session was written must not stop the rest
+    /// reopening.
+    #[test]
+    fn restoring_skips_files_that_no_longer_exist() {
+        let dir = shot_dir();
+        let keep = dir.join("keep.rs");
+        std::fs::write(&keep, "fn keep() {}\n").unwrap();
+        let session = ruster_core::session::Session {
+            files: vec![dir.join("gone.rs"), keep.clone()],
+            layout: ruster_core::windows::LayoutSnapshot::Split {
+                dir: ruster_core::windows::SplitDir::Vertical,
+                ratio: 0.5,
+                first: Box::new(ruster_core::windows::LayoutSnapshot::Leaf {
+                    buffer: 0,
+                    cursor: 0,
+                    scroll: 0,
+                    active: true,
+                }),
+                second: Box::new(ruster_core::windows::LayoutSnapshot::Leaf {
+                    buffer: 1,
+                    cursor: 0,
+                    scroll: 0,
+                    active: false,
+                }),
+            },
+        };
+        let restored = ruster_core::windows::WindowTree::restore(&session.layout, |i| {
+            session.files.get(i).filter(|p| p.is_file()).map(|_| BufferId(i as u32 + 1))
+        })
+        .expect("the surviving file still opens");
+        assert_eq!(restored.len(), 1, "the missing file's window collapsed out");
     }
 
     #[test]

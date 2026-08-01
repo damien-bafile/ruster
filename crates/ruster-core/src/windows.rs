@@ -78,7 +78,159 @@ pub struct WindowTree {
     fullscreen: Option<WindowId>,
 }
 
+/// Rebuild one node, allocating window ids in tree order.
+fn build(
+    snap: &LayoutSnapshot,
+    resolve: impl Fn(usize) -> Option<BufferId> + Copy,
+    windows: &mut HashMap<WindowId, Window>,
+    next: &mut u32,
+    active: &mut Option<WindowId>,
+) -> Option<Layout> {
+    match snap {
+        LayoutSnapshot::Leaf { buffer, cursor, scroll, active: is_active } => {
+            let buf = resolve(*buffer)?;
+            let id = WindowId(*next);
+            *next += 1;
+            windows.insert(
+                id,
+                Window {
+                    buffer: buf,
+                    cursors: CursorSet::single(*cursor),
+                    scroll_top: *scroll,
+                    height: 0,
+                },
+            );
+            if *is_active {
+                *active = Some(id);
+            }
+            Some(Layout::Leaf(id))
+        }
+        LayoutSnapshot::Split { dir, ratio, first, second } => {
+            let a = build(first, resolve, windows, next, active);
+            let b = build(second, resolve, windows, next, active);
+            match (a, b) {
+                (Some(a), Some(b)) => Some(Layout::Split {
+                    dir: *dir,
+                    ratio: *ratio,
+                    first: Box::new(a),
+                    second: Box::new(b),
+                }),
+                (Some(a), None) => Some(a),
+                (None, Some(b)) => Some(b),
+                (None, None) => None,
+            }
+        }
+    }
+}
+
+/// A serialisable picture of the window layout, for saving and restoring a
+/// session.
+///
+/// Mirrors the private [`Layout`] deliberately rather than exposing it. A leaf
+/// refers to a buffer by **index into the session's file list**, not by
+/// [`BufferId`] — ids are allocation order and mean nothing across runs.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LayoutSnapshot {
+    Leaf {
+        buffer: usize,
+        cursor: usize,
+        scroll: usize,
+        /// Whether this was the focused window.
+        active: bool,
+    },
+    Split {
+        dir: SplitDir,
+        ratio: f32,
+        first: Box<LayoutSnapshot>,
+        second: Box<LayoutSnapshot>,
+    },
+}
+
 impl WindowTree {
+    /// Capture the layout for a session.
+    ///
+    /// `index_of` maps a buffer to its position in the session's file list, and
+    /// returns `None` for buffers that are not being saved — terminals, dired,
+    /// and the other special buffers. A split with an unsaveable child collapses
+    /// to its saveable side, so a layout that was half scratch still restores
+    /// its real windows instead of being dropped whole.
+    pub fn snapshot(&self, index_of: impl Fn(BufferId) -> Option<usize> + Copy) -> Option<LayoutSnapshot> {
+        self.snapshot_at(&self.root, index_of)
+    }
+
+    fn snapshot_at(
+        &self,
+        node: &Layout,
+        index_of: impl Fn(BufferId) -> Option<usize> + Copy,
+    ) -> Option<LayoutSnapshot> {
+        match node {
+            Layout::Leaf(id) => {
+                let w = self.windows.get(id)?;
+                Some(LayoutSnapshot::Leaf {
+                    buffer: index_of(w.buffer)?,
+                    cursor: w.cursors.head(),
+                    scroll: w.scroll_top,
+                    active: *id == self.active,
+                })
+            }
+            Layout::Split { dir, ratio, first, second } => {
+                match (self.snapshot_at(first, index_of), self.snapshot_at(second, index_of)) {
+                    (Some(a), Some(b)) => Some(LayoutSnapshot::Split {
+                        dir: *dir,
+                        ratio: *ratio,
+                        first: Box::new(a),
+                        second: Box::new(b),
+                    }),
+                    // One side had nothing worth saving: keep the other rather
+                    // than losing both.
+                    (Some(a), None) => Some(a),
+                    (None, Some(b)) => Some(b),
+                    (None, None) => None,
+                }
+            }
+        }
+    }
+
+    /// Rebuild a tree from a snapshot.
+    ///
+    /// `resolve` turns a saved file index back into an open buffer, returning
+    /// `None` when that file could not be reopened — those leaves are dropped
+    /// the same way unsaveable ones were. `None` overall means nothing restored.
+    pub fn restore(
+        snap: &LayoutSnapshot,
+        resolve: impl Fn(usize) -> Option<BufferId> + Copy,
+    ) -> Option<WindowTree> {
+        let mut windows = HashMap::new();
+        let mut next = 1u32;
+        let mut active = None;
+        let root = build(snap, resolve, &mut windows, &mut next, &mut active)?;
+        // Nothing was marked active (or the active leaf was dropped): focus the
+        // first window rather than leaving the tree without a cursor.
+        let active = active.or_else(|| windows.keys().copied().min())?;
+        Some(WindowTree { root, windows, active, next, fullscreen: None })
+    }
+
+    /// The layout ratios, for tests and for callers that need to compare shapes.
+    #[cfg(test)]
+    fn shape(&self) -> String {
+        fn walk(l: &Layout, out: &mut String) {
+            match l {
+                Layout::Leaf(_) => out.push('L'),
+                Layout::Split { dir, first, second, .. } => {
+                    out.push(if *dir == SplitDir::Vertical { 'V' } else { 'H' });
+                    out.push('(');
+                    walk(first, out);
+                    out.push(' ');
+                    walk(second, out);
+                    out.push(')');
+                }
+            }
+        }
+        let mut s = String::new();
+        walk(&self.root, &mut s);
+        s
+    }
+
     /// A single window viewing `buffer`, filling the whole area.
     pub fn single(buffer: BufferId) -> Self {
         let id = WindowId(1);
@@ -446,5 +598,71 @@ mod tests {
         let new = t.split(SplitDir::Horizontal);
         assert_eq!(t.window(new).unwrap().buffer, buf);
         assert_eq!(t.window(new).unwrap().scroll_top, 7);
+    }
+
+    /// The shape, the focus, and every cursor must survive a save/restore.
+    #[test]
+    fn a_split_layout_round_trips_through_a_snapshot() {
+        let mut t = WindowTree::single(BufferId(1));
+        t.active_window_mut().cursors = CursorSet::single(42);
+        t.active_window_mut().scroll_top = 7;
+        let right = t.split(SplitDir::Vertical);
+        t.window_mut(right).unwrap().buffer = BufferId(2);
+        t.window_mut(right).unwrap().cursors = CursorSet::single(9);
+        let bottom = t.split(SplitDir::Horizontal);
+        t.window_mut(bottom).unwrap().buffer = BufferId(3);
+        let before = t.shape();
+        let active_buf = t.active_window().buffer;
+
+        // BufferId(n) <-> index n-1.
+        let snap = t.snapshot(|b| Some(b.0 as usize - 1)).expect("all saveable");
+        let restored = WindowTree::restore(&snap, |i| Some(BufferId(i as u32 + 1))).expect("rebuilt");
+
+        assert_eq!(restored.shape(), before, "same tree shape");
+        assert_eq!(restored.len(), 3);
+        assert_eq!(restored.active_window().buffer, active_buf, "focus preserved");
+        let first = restored.window(WindowId(1)).unwrap();
+        assert_eq!((first.cursors.head(), first.scroll_top), (42, 7), "cursor and scroll kept");
+    }
+
+    /// Terminals and dired are not saveable; their windows must drop out and
+    /// leave the rest of the layout intact rather than losing everything.
+    #[test]
+    fn unsaveable_windows_collapse_out_of_the_layout() {
+        let mut t = WindowTree::single(BufferId(1));
+        let right = t.split(SplitDir::Vertical);
+        t.window_mut(right).unwrap().buffer = BufferId(99); // a terminal, say
+
+        let snap = t.snapshot(|b| (b.0 != 99).then_some(b.0 as usize - 1)).expect("one survives");
+        assert!(matches!(snap, LayoutSnapshot::Leaf { buffer: 0, .. }), "{snap:?}");
+
+        let restored = WindowTree::restore(&snap, |i| Some(BufferId(i as u32 + 1))).unwrap();
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored.active_window().buffer, BufferId(1));
+    }
+
+    #[test]
+    fn a_layout_with_nothing_saveable_snapshots_to_nothing() {
+        let t = WindowTree::single(BufferId(1));
+        assert!(t.snapshot(|_| None).is_none());
+    }
+
+    /// A file deleted since the session was written must not take the rest of
+    /// the layout with it.
+    #[test]
+    fn a_file_that_no_longer_opens_is_dropped_on_restore() {
+        let snap = LayoutSnapshot::Split {
+            dir: SplitDir::Vertical,
+            ratio: 0.5,
+            first: Box::new(LayoutSnapshot::Leaf { buffer: 0, cursor: 0, scroll: 0, active: true }),
+            second: Box::new(LayoutSnapshot::Leaf { buffer: 1, cursor: 0, scroll: 0, active: false }),
+        };
+        // Index 0 is gone; only index 1 reopens.
+        let t = WindowTree::restore(&snap, |i| (i == 1).then_some(BufferId(7))).expect("one left");
+        assert_eq!(t.len(), 1);
+        assert_eq!(t.active_window().buffer, BufferId(7), "focus falls to what remains");
+
+        // And if nothing reopens at all, there is no tree.
+        assert!(WindowTree::restore(&snap, |_| None).is_none());
     }
 }

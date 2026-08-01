@@ -103,7 +103,7 @@ mod tests {
     #[test]
     fn help_covers_commands_that_shipped_recently() {
         let d = document();
-        for cmd in [":Mason", ":Diffview", ":SyntaxReload", ":Trouble", ":Gitsigns"] {
+        for cmd in [":Mason", ":Diffview", ":SyntaxReload", ":Trouble", ":SessionSave"] {
             assert!(d.contains(cmd), "{cmd} is missing from help");
         }
     }
@@ -152,8 +152,8 @@ mod tests {
     #[test]
     fn a_setting_resolves_to_its_row() {
         let d = document();
-        let line = resolve(&d, "sidebar.auto_open").expect("documented");
-        assert!(d.lines().nth(line).unwrap().contains("sidebar.auto_open"), "lands on the row");
+        let line = resolve(&d, "session.autoload").expect("documented");
+        assert!(d.lines().nth(line).unwrap().contains("session.autoload"), "lands on the row");
     }
 
     #[test]

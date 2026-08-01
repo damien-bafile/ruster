@@ -10,6 +10,7 @@ pub mod sidebar;
 pub mod snippets;
 pub mod message;
 pub mod workspace;
+pub mod session;
 pub mod windows;
 pub mod editor;
 pub mod vim;
