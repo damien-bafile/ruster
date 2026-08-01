@@ -1,6 +1,6 @@
 # Phase 5: IDE & Debugging Tools — Implementation Plan
 
-> **For agentic workers:** implement task-by-task; steps use checkbox (`- [ ]`) syntax.
+> **For agentic workers:** implement task-by-task; steps use checkbox (`- [x]`) syntax.
 > Mark a step `- [x]` only once its code compiles and its tests pass.
 
 **Design spec:** [2026-07-26-phase5-ide-tools-design.md](../specs/2026-07-26-phase5-ide-tools-design.md)
@@ -64,39 +64,49 @@ then DAP (largest, isolated). Ordered so each task is independently shippable.
   embedded terminal on its `cmd` (or a background thread if `use_terminal = false`).
 - [x] Tests: task discovery from a fixture `ruster.toml` (ruster-project), `:task`/`SPC o r` wiring.
 
-### Task 6: File-explorer sidebar
+### Task 6: File-explorer sidebar ✅
 
-- [ ] A persistent side window (`SpecialKind::Sidebar`) with a **tree** dired: expand/
+- [x] A persistent side window (`SpecialKind::Sidebar`) with a **tree** dired: expand/
   collapse dirs, open files, create/delete/rename (reuse dired ops).
-- [ ] Toggle with `SPC e` / `:Sidebar`; focus/resize like a normal window; follows the
+- [x] Toggle with `SPC e` / `:Sidebar`; focus/resize like a normal window; follows the
   active file.
-- [ ] Tests: tree expand/collapse state over a temp dir.
+- [x] Tests: tree expand/collapse state over a temp dir.
 
-### Task 7: Project workspaces
+### Task 7: Project workspaces ✅
 
-- [ ] Set the working root from the detected project; `:projects` picker of recent projects
+- [x] Set the working root from the detected project; `:projects` picker of recent projects
   switches root (reload sidebar, re-detect build/test).
-- [ ] Load project `ruster.toml` settings over the user config.
-- [ ] Tests: recent-projects persistence + switching.
+- [x] Load project `ruster.toml` settings over the user config.
+- [x] Tests: recent-projects persistence + switching.
 
-### Task 8: Multi-cursor polish
+### Task 8: Multi-cursor polish ✅
 
-- [ ] Alias `Ctrl-D` to the existing add-cursor-at-next-match (`C-n`); ensure Alt+click in
+- [x] Alias `Ctrl-D` to the existing add-cursor-at-next-match (`C-n`); ensure Alt+click in
   the GUI adds a caret. (Engine already supports multi-cursor via `CursorSet`.)
-- [ ] Tests: `Ctrl-D` adds a caret at the next match.
+- [x] Tests: `Ctrl-D` adds a caret at the next match.
 
-### Task 9: DAP debugger — new `ruster-dap` crate
+### Task 9: DAP debugger — new `ruster-dap` crate ✅
 
-- [ ] Mirror `ruster-lsp`: transport (stdio JSON-RPC), manager (one adapter per language:
+- [x] Mirror `ruster-lsp`: transport (stdio JSON-RPC), manager (one adapter per language:
   `lldb-dap`/`debugpy`/`gdb`), and result parsers (stopped, stackTrace, scopes, variables).
-- [ ] Breakpoints as gutter signs (toggle with `SPC d b`); launch/continue/step
+- [x] Breakpoints as gutter signs (toggle with `SPC d b`); launch/continue/step
   (`SPC d c` / `SPC d o` / `SPC d i`); a variables/watch panel window.
-- [ ] Non-blocking poll each frame like LSP; graceful when the adapter is missing.
-- [ ] Tests: parse captured DAP messages (initialize, stopped, stackTrace, variables).
+- [x] Non-blocking poll each frame like LSP; graceful when the adapter is missing.
+- [x] Tests: parse captured DAP messages (initialize, stopped, stackTrace, variables).
 
-### Task 10: Config, docs, CI
+### Task 10: Config, docs, CI ✅
 
-- [ ] Schema settings: `build.command`, `test.command`, `dap.adapter`, sidebar defaults.
-- [ ] Document commands/keys in `docs/{config-reference,keybindings}.md`.
-- [ ] `cargo test`/`clippy` green across the workspace; open the Phase 5 PR (likely split:
+- [x] Schema settings: `build.command`, `test.command`, `dap.adapter`, sidebar defaults.
+- [x] Document commands/keys in `docs/{config-reference,keybindings}.md`.
+- [x] `cargo test`/`clippy` green across the workspace; open the Phase 5 PR (likely split:
   runners+quickfix, sidebar+workspaces, DAP).
+
+---
+
+**Phase 5 complete** (2026-08-01). Tasks 1–10 shipped; merged to `main` in PRs #17, #19,
+#20, #21 and #24. Beyond the original scope this phase also delivered noice
+notifications, flash jump mode, cmdline path completion, the dashboard/messages buffers,
+and JS/TS syntax queries.
+
+Follow-on work is tracked in
+[2026-08-01-phase6-advanced-ux.md](2026-08-01-phase6-advanced-ux.md).
