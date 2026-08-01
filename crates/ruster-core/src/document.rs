@@ -27,6 +27,8 @@ pub enum SpecialKind {
     Sidebar,
     /// One pane of a side-by-side diff (`:Diffview`).
     Diff,
+    /// The `:Mason` external-tool listing.
+    Mason,
     /// The Dashboard / welcome screen — a static page that cannot be closed.
     Dashboard,
     /// A general-purpose message log (build, LSP, echo, etc.).

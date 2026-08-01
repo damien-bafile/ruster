@@ -215,6 +215,8 @@ Press `g` in Normal mode; the which-key panel lists the goto commands (LazyVim-s
 | `:msgs/err` / `:msgs/warn` / `:msgs build` / `:msgs lsp` | Filter the messages buffer by level or source |
 | `:projects` | Switch to a recent project (picker) |
 | `:sidebar` | Toggle the file-explorer sidebar on/off |
+| `:Mason` `:mason` | List the external tools ruster can use (LSP servers, debug adapters, formatters) and whether each is on `PATH` |
+| `:SyntaxReload` | Re-read highlight queries from `~/.config/ruster/queries/` and rebuild all buffers |
 | `:Diffview` `:diff` | Side-by-side diff of the active file against HEAD, in a vertical split. Panes stay row-aligned and scroll together; `~` marks a line the other side does not have |
 | `:SyntaxReload` | Re-read grammars and highlight queries from `~/.config/ruster/` and rebuild all buffers |
 | `:screenshot [path]` | Save a PNG of the window (GUI only). No path writes the next free `ruster-NNN.png` in the working directory; a directory writes a numbered file inside it; any other extension gains `.png` |

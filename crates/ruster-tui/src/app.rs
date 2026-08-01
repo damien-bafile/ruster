@@ -602,6 +602,8 @@ enum CmdAction {
     Projects,
     /// Toggle the file-explorer sidebar (`:sidebar`).
     Sidebar,
+    /// List external tools and their installed state (`:Mason`).
+    Mason,
     GitsignsToggle,
     TodoList,
     Trouble,
@@ -1162,6 +1164,9 @@ pub struct App {
     runner_root: PathBuf,
     runner_output: String,
     runner_kind: RunnerKind,
+    /// The install command awaiting confirmation, set only while the Mason
+    /// dialog is open. `Some` is what distinguishes that dialog from a Lua one.
+    pending_install: Option<String>,
     /// Per-file gutter signs from the last test run (✓/✗), merged with diagnostics.
     result_signs: std::collections::HashMap<PathBuf, ruster_render::SignsView>,
     /// Git hunks per buffer, refreshed in the background on open and on save.
@@ -1208,6 +1213,8 @@ enum RunnerKind {
     Build,
     Test,
     Task,
+    /// A `:Mason` install, streamed like any other command run.
+    Install,
 }
 
 /// The active editing paradigm. Neovim is modal; Emacs is modeless.
@@ -1551,6 +1558,7 @@ impl App {
             runner_root: PathBuf::new(),
             runner_output: String::new(),
             runner_kind: RunnerKind::Build,
+            pending_install: None,
             result_signs: std::collections::HashMap::new(),
             git_hunks: std::collections::HashMap::new(),
             git_rx: git_rx_init,
@@ -1783,6 +1791,13 @@ impl App {
         // hijacked. Unclaimed keys fall through to normal handling.
         // The problem list claims Enter/Tab/r/q the same way dired claims its
         // keys; everything else falls through so `:`, `/` and motions still work.
+        if self.active_is_mason()
+            && self.vim.mode == VimMode::Normal
+            && self.emacs_isearch.is_none()
+            && self.handle_mason_key(ck)
+        {
+            return;
+        }
         if self.active_is_trouble()
             && self.vim.mode == VimMode::Normal
             && self.emacs_isearch.is_none()
@@ -3983,6 +3998,7 @@ impl App {
             "Trouble" | "trouble" => Ok(CmdAction::Trouble),
             "Themes" | "themes" | "theme" => Ok(CmdAction::Themes),
             _ if trimmed == "sidebar" => Ok(CmdAction::Sidebar),
+            "Mason" | "mason" => Ok(CmdAction::Mason),
             "SyntaxReload" | "syntaxreload" | "syntax reload" => Ok(CmdAction::SyntaxReload),
             "Diffview" | "diffview" | "Diff" | "diff" => Ok(CmdAction::Diffview),
             _ if let Some(n) = trimmed.strip_prefix("sidebar resize ").and_then(|s| s.trim().parse::<u16>().ok()) => Ok(CmdAction::SidebarResize(n)),
@@ -4122,6 +4138,7 @@ impl App {
                 }
             }
             CmdAction::Sidebar => self.toggle_sidebar(),
+            CmdAction::Mason => self.open_mason(),
             CmdAction::SyntaxReload => self.syntax_reload(),
             CmdAction::Diffview => self.open_diffview(),
             CmdAction::SidebarResize(n) => {
@@ -4711,6 +4728,11 @@ impl App {
             DialogResponse::Submitted { button } => {
                 let values = d.values();
                 self.dialog = None;
+                if self.pending_install.is_some() {
+                    // ruster's own confirmation, not a plugin's dialog.
+                    self.run_pending_install(button.as_deref());
+                    return;
+                }
                 // Hand the values to the plugin that opened it. Without this the
                 // dialog is a display, not an API.
                 self.lua.fire_dialog_submit(&values, button.as_deref());
@@ -5919,6 +5941,119 @@ impl App {
         }
     }
 
+    /// Open (or refresh) the `:Mason` listing of external tools.
+    fn open_mason(&mut self) {
+        let tools = crate::mason::builtin_tools();
+        let text = crate::mason::render(&tools, crate::mason::is_installed);
+        let id = {
+            let mut w = self.ws.borrow_mut();
+            let existing = w
+                .buffers
+                .ids()
+                .iter()
+                .copied()
+                .find(|&id| w.buffers.get(id).is_some_and(|d| d.name == "*mason*"));
+            let id = existing.unwrap_or_else(|| {
+                w.buffers.create_special(ruster_core::document::SpecialKind::Mason, "*mason*")
+            });
+            if let Some(doc) = w.buffers.get_mut(id) {
+                doc.buffer = Buffer::from_str(&text);
+            }
+            id
+        };
+        self.ws.borrow_mut().set_active_buffer(id);
+    }
+
+    fn active_is_mason(&self) -> bool {
+        matches!(
+            self.ws.borrow().active_doc().kind,
+            DocKind::Special(ruster_core::document::SpecialKind::Mason)
+        )
+    }
+
+    /// Keys while the Mason list is focused. Unclaimed keys fall through, so
+    /// `:`, `/` and the leader still work here.
+    fn handle_mason_key(&mut self, ck: crossterm::event::KeyEvent) -> bool {
+        match ck.code {
+            KeyCode::Enter => {
+                self.confirm_install();
+                true
+            }
+            KeyCode::Char('r') => {
+                self.open_mason();
+                true
+            }
+            KeyCode::Char('q') => {
+                self.delete_active_buffer();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Ask before installing anything.
+    ///
+    /// The dialog shows the exact command that will run, verbatim. ruster never
+    /// installs unprompted and never runs anything the user has not read — the
+    /// registry is a convenience, not a licence to execute.
+    fn confirm_install(&mut self) {
+        let (line, text) = {
+            let w = self.ws.borrow();
+            let doc = w.active_doc();
+            (doc.buffer.char_to_line(w.primary_head()), doc.buffer.to_string())
+        };
+        let tools = crate::mason::builtin_tools();
+        let Some(tool) = crate::mason::tool_at_row(&tools, &text, line) else {
+            self.echo("Not a tool — put the cursor on a listed tool".to_string());
+            return;
+        };
+        if crate::mason::is_installed(&tool.binary) {
+            self.echo(format!("{} is already installed", tool.name));
+            return;
+        }
+        self.pending_install = Some(tool.install.clone());
+        self.dialog = Some(crate::dialog::DialogState::new(
+            format!("Install {}?", tool.name),
+            vec![
+                crate::dialog::Field::text("Runs", &tool.install),
+                crate::dialog::Field::button("Install"),
+                crate::dialog::Field::button("Cancel"),
+            ],
+        ));
+    }
+
+    /// Run a confirmed install, streamed through the runner like a build.
+    fn run_pending_install(&mut self, button: Option<&str>) {
+        let Some(cmd) = self.pending_install.take() else { return };
+        if button != Some("Install") {
+            self.echo("Install cancelled".to_string());
+            return;
+        }
+        let root = self.project_root.clone().unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+        });
+        self.start_run(RunnerKind::Install, cmd, root);
+    }
+
+    /// Report an install's outcome and refresh the list, so a tool that just
+    /// arrived flips to ✓ without the user re-running `:Mason`.
+    fn finish_install(&mut self, code: Option<i32>) {
+        use ruster_core::message::{MessageLevel, MessageSource};
+        let (level, text) = match code {
+            Some(0) => (MessageLevel::Success, "Install finished".to_string()),
+            Some(c) => (MessageLevel::Error, format!("Install failed (exit {c})")),
+            None => (MessageLevel::Error, "Install failed to run".to_string()),
+        };
+        self.push_message(level, MessageSource::System, text);
+        // Only refresh the listing if it is still open.
+        let open = self.ws.borrow().buffers.ids().iter().any(|&id| {
+            self.ws.borrow().buffers.get(id).is_some_and(|d| d.name == "*mason*")
+        });
+        if open {
+            self.open_mason();
+        }
+    }
+
     fn active_is_trouble(&self) -> bool {
         matches!(
             self.ws.borrow().active_doc().kind,
@@ -6113,6 +6248,7 @@ impl App {
     pub fn runner_status_text(&self) -> Option<&'static str> {
         if self.runner_rx.is_some() {
             Some(match self.runner_kind {
+                RunnerKind::Install => "Installing...",
                 RunnerKind::Build => "Building...",
                 RunnerKind::Test => "Testing...",
                 RunnerKind::Task => "Running Task...",
@@ -6184,6 +6320,7 @@ impl App {
     /// drain parses its output on completion.
     fn start_run(&mut self, kind: RunnerKind, cmd: String, root: PathBuf) {
         let (buf_name, label) = match kind {
+            RunnerKind::Install => ("*install*", "install"),
             RunnerKind::Build => ("*build*", "build"),
             RunnerKind::Test => ("*test*", "test"),
             RunnerKind::Task => ("*task*", "task"),
@@ -6268,6 +6405,8 @@ impl App {
             RunnerKind::Build => MessageSource::Build,
             RunnerKind::Test => MessageSource::Test,
             RunnerKind::Task => MessageSource::Task,
+            // An install is a system action, not part of the project's build.
+            RunnerKind::Install => MessageSource::System,
         };
         let mut appended = false;
         let mut done: Option<Option<i32>> = None;
@@ -6302,6 +6441,7 @@ impl App {
             match self.runner_kind {
                 RunnerKind::Build => self.finish_build(code),
                 RunnerKind::Test => self.finish_test(code),
+                RunnerKind::Install => self.finish_install(code),
                 RunnerKind::Task => {
                     let status_text = match code {
                         Some(0) => "succeeded".to_string(),
@@ -8463,6 +8603,129 @@ mod tests {
         assert_eq!(a.buffer_offset_at(after.x, after.y).map(|(_, o)| o), Some(0));
         // A click in the sidebar column is not buffer text.
         assert_eq!(a.buffer_offset_at(before, after.y), None);
+    }
+
+    #[test]
+    fn mason_parses_and_opens_a_listing() {
+        let mut a = App::new("x".into(), PathBuf::from("f.rs"));
+        assert_eq!(a.parse_cmdline(":Mason"), Ok(CmdAction::Mason));
+        assert_eq!(a.parse_cmdline(":mason"), Ok(CmdAction::Mason));
+
+        a.apply_cmd(CmdAction::Mason);
+        assert!(a.active_is_mason(), "the listing is focused");
+        let text = a.ws.borrow().active_doc().buffer.to_string();
+        assert!(text.contains("Language servers:"), "{text}");
+        assert!(text.contains("rust-analyzer"), "{text}");
+        assert!(text.contains("installed."), "{text}");
+    }
+
+    /// Nothing may run without the user seeing and confirming the exact command.
+    /// `Enter` opens a dialog; it must not start anything by itself.
+    #[test]
+    fn enter_on_a_tool_only_asks_and_never_installs() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let mut a = App::new("x".into(), PathBuf::from("f.rs"));
+        a.apply_cmd(CmdAction::Mason);
+        let text = a.ws.borrow().active_doc().buffer.to_string();
+
+        // Pick a tool this machine does *not* have, so the result does not
+        // depend on what happens to be installed on the test host.
+        let Some(row) = text.lines().position(|l| l.starts_with("  ·")) else {
+            return; // every known tool installed — nothing to confirm
+        };
+        let name = crate::mason::tool_at_row(&crate::mason::builtin_tools(), &text, row)
+            .expect("a listed tool")
+            .name;
+        let off = a.ws.borrow().active_doc().buffer.line_start_char(row);
+        a.ws.borrow_mut().windows.active_window_mut().cursors =
+            ruster_core::cursor::CursorSet::single(off);
+
+        a.handle_mason_key(CtKey::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(a.runner_rx.is_none(), "nothing was spawned merely by pressing Enter");
+        let d = a.dialog.as_ref().expect("a confirmation dialog is open");
+        assert!(d.view().title.contains(&name), "names the tool: {:?}", d.view().title);
+        // The exact command is armed and on screen before anyone agrees to it.
+        let pending = a.pending_install.clone().expect("a command is pending");
+        assert!(text.contains(&pending), "the listing already showed it: {pending}");
+        assert!(format!("{:?}", d.view()).contains(&pending), "and so does the dialog");
+    }
+
+    /// An already-installed tool is a no-op, not a re-install.
+    #[test]
+    fn enter_on_an_installed_tool_does_nothing() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let mut a = App::new("x".into(), PathBuf::from("f.rs"));
+        a.apply_cmd(CmdAction::Mason);
+        let text = a.ws.borrow().active_doc().buffer.to_string();
+        let Some(row) = text.lines().position(|l| l.starts_with("  ✓")) else {
+            return; // nothing installed on this host
+        };
+        let off = a.ws.borrow().active_doc().buffer.line_start_char(row);
+        a.ws.borrow_mut().windows.active_window_mut().cursors =
+            ruster_core::cursor::CursorSet::single(off);
+
+        a.handle_mason_key(CtKey::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(a.dialog.is_none(), "no dialog for something already present");
+        assert!(a.pending_install.is_none());
+        assert!(a.runner_rx.is_none());
+    }
+
+    /// Declining must discard the command, not merely close the dialog.
+    #[test]
+    fn cancelling_the_dialog_runs_nothing_and_forgets_the_command() {
+        let mut a = App::new("x".into(), PathBuf::from("f.rs"));
+        a.pending_install = Some("rm -rf /".to_string());
+        a.run_pending_install(Some("Cancel"));
+        assert!(a.runner_rx.is_none(), "nothing spawned");
+        assert!(a.pending_install.is_none(), "the command is forgotten, not left armed");
+
+        // Dismissing without a button (Esc) is also a refusal.
+        a.pending_install = Some("rm -rf /".to_string());
+        a.run_pending_install(None);
+        assert!(a.runner_rx.is_none());
+        assert!(a.pending_install.is_none());
+    }
+
+    /// The other half of the gate: confirming really does run it. Uses a
+    /// harmless command rather than a registry entry, so the test installs
+    /// nothing on the machine running it.
+    #[test]
+    fn confirming_the_dialog_runs_the_command() {
+        let mut a = App::new("x".into(), PathBuf::from("f.rs"));
+        a.pending_install = Some("echo installed".to_string());
+        a.run_pending_install(Some("Install"));
+        assert!(a.runner_rx.is_some(), "the confirmed command was spawned");
+        assert!(a.pending_install.is_none(), "and consumed, so it cannot re-run");
+        assert!(a.runner_output.starts_with("$ echo installed"), "{}", a.runner_output);
+    }
+
+    /// A plugin's dialog and ruster's confirmation share one widget, so the
+    /// submit path must not confuse them — a Lua dialog must never be able to
+    /// trigger an install.
+    #[test]
+    fn a_plugin_dialog_does_not_run_an_install() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let mut a = App::new("x".into(), PathBuf::from("f.rs"));
+        assert!(a.pending_install.is_none());
+        a.dialog = Some(crate::dialog::DialogState::new(
+            "From Lua",
+            vec![crate::dialog::Field::button("OK")],
+        ));
+        a.handle_dialog_key(CtKey::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(a.runner_rx.is_none(), "a plugin dialog installs nothing");
+    }
+
+    #[test]
+    fn mason_reports_when_the_cursor_is_not_on_a_tool() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let mut a = App::new("x".into(), PathBuf::from("f.rs"));
+        a.apply_cmd(CmdAction::Mason);
+        a.ws.borrow_mut().windows.active_window_mut().cursors =
+            ruster_core::cursor::CursorSet::single(0); // the first heading line
+        a.handle_mason_key(CtKey::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(a.dialog.is_none(), "no dialog for a heading");
+        assert!(a.runner_rx.is_none());
     }
 
     #[test]
