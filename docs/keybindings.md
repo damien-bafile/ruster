@@ -286,6 +286,14 @@ diagnostic, `Q` quickfix, `T` todo, followed by severity.
 | `r` | Refresh from the current sources |
 | `q` | Close the panel |
 
+### Themes
+`:Themes` lists every theme — the built-ins (including all four Catppuccin
+variants) plus any `~/.config/ruster/themes/*.lua`. **Moving the selection
+repaints the editor immediately**, so a theme is judged against real code rather
+than a swatch. `Enter` keeps it, `Esc` restores the one you started with.
+
+Accepting sets the theme for the session; `:settings` then `:w` persists it.
+
 Unclaimed keys fall through, so `:`, `/` and motions still work over the listing.
 
 ### Debugger (DAP)
