@@ -75,7 +75,12 @@ are already the single source of truth; this reads them.
 
 ## Stage 2 — Worth it, but a real project
 
-### Task 3: Magit-style git porcelain
+### Task 3: Magit-style git porcelain — **planned separately**
+
+Large enough to want its own document:
+[2026-08-02-phase7-task3-magit.md](2026-08-02-phase7-task3-magit.md), which
+carries the captured `porcelain=v2` fixtures, the staging design, and the
+sequencing into four PRs.
 
 `AGENTS.md` says "in Lua on top of `git2-rs`". Both halves deserve challenge:
 
