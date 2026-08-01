@@ -299,6 +299,30 @@ fn resolve_path(raw: &str, base_dir: &std::path::Path) -> std::path::PathBuf {
     }
 }
 
+/// Render one pane of a side-by-side diff.
+///
+/// `rows` comes from [`ruster_git::align`]; `pick` selects which side of each
+/// row this pane shows. The source line number is written into the text rather
+/// than left to the gutter, because padding rows have no line of their own and
+/// the gutter — which numbers display rows — would label every line after the
+/// first hunk wrongly.
+fn diff_pane_text(rows: &[(Option<u32>, Option<u32>)], lines: &[&str], right: bool) -> String {
+    let width = lines.len().max(1).to_string().len();
+    rows.iter()
+        .map(|row| {
+            match if right { row.1 } else { row.0 } {
+                Some(n) => {
+                    let text = lines.get(n as usize).copied().unwrap_or("");
+                    format!("{:>width$} │ {}", n + 1, text, width = width)
+                }
+                // No counterpart on this side: filler, as vimdiff shows it.
+                None => format!("{:>width$} │ ~", "", width = width),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Report a problem loading a user highlight query.
 ///
 /// Warning rather than error: highlighting has already fallen back to the
@@ -587,6 +611,8 @@ enum CmdAction {
     /// Re-read highlight queries from disk and rebuild every engine
     /// (`:SyntaxReload`), so editing a query does not need a restart.
     SyntaxReload,
+    /// Side-by-side diff of the active file against HEAD (`:Diffview`).
+    Diffview,
     /// Save an image of the screen (`:screenshot [path]`). `None` picks the
     /// next free `ruster-NNN.png` in the working directory.
     Screenshot(Option<String>),
@@ -2566,6 +2592,7 @@ impl App {
             let (line, col) = self.cursor_line_col();
             self.cursor_anim.update(dt, col, line, self.config.cursor_anim_enabled, self.config.cursor_anim_speed);
 
+            self.sync_diff_scroll();
             self.render();
             if self.should_quit { break; }
         }
@@ -2646,6 +2673,7 @@ impl App {
 
             let (line, col) = self.cursor_line_col();
             self.cursor_anim.update(dt, col, line, self.config.cursor_anim_enabled, self.config.cursor_anim_speed);
+            self.sync_diff_scroll();
             self.render();
             // Reported here rather than at the command, so the message reflects
             // the file that was actually written — and so the toast announcing
@@ -3955,6 +3983,7 @@ impl App {
             "Themes" | "themes" | "theme" => Ok(CmdAction::Themes),
             _ if trimmed == "sidebar" => Ok(CmdAction::Sidebar),
             "SyntaxReload" | "syntaxreload" | "syntax reload" => Ok(CmdAction::SyntaxReload),
+            "Diffview" | "diffview" | "Diff" | "diff" => Ok(CmdAction::Diffview),
             _ if let Some(n) = trimmed.strip_prefix("sidebar resize ").and_then(|s| s.trim().parse::<u16>().ok()) => Ok(CmdAction::SidebarResize(n)),
             "screenshot" | "Screenshot" => Ok(CmdAction::Screenshot(None)),
             _ if let Some(rest) = trimmed
@@ -4093,6 +4122,7 @@ impl App {
             }
             CmdAction::Sidebar => self.toggle_sidebar(),
             CmdAction::SyntaxReload => self.syntax_reload(),
+            CmdAction::Diffview => self.open_diffview(),
             CmdAction::SidebarResize(n) => {
                 self.sidebar.set_width(n);
             }
@@ -4879,6 +4909,171 @@ impl App {
             doc.buffer = ruster_core::buffer::Buffer::from_str(&text);
         }
         self.ws.borrow_mut().set_active_buffer(id);
+    }
+
+    /// Open a side-by-side diff of the active file against HEAD.
+    ///
+    /// Two read-only panes in a vertical split: HEAD on the left, the working
+    /// tree on the right, aligned so the same code sits on the same screen row
+    /// even where a hunk changes the line count.
+    fn open_diffview(&mut self) {
+        let Some(root) = self.project_root.clone() else {
+            self.echo_warn("Not in a project".to_string());
+            return;
+        };
+        // Resolve inside the narrowest scope, then act with the borrow dropped.
+        let target = {
+            let w = self.ws.borrow();
+            w.buffers
+                .get(w.active_buffer())
+                .and_then(|d| d.file_path.clone().map(|p| (p, d.buffer.to_string())))
+        };
+        let Some((path, working)) = target else {
+            self.echo_warn("No file in this window to diff".to_string());
+            return;
+        };
+        if !ruster_git::is_repo(&root) {
+            self.echo_warn("Not a git repository".to_string());
+            return;
+        }
+        let Some(head) = ruster_git::file_at_head(&root, &path) else {
+            self.echo_warn(format!(
+                "{} is not tracked at HEAD",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            ));
+            return;
+        };
+        let hunks = ruster_git::diff_hunks_two_sided(&root, &path).unwrap_or_default();
+        let (old_lines, new_lines): (Vec<&str>, Vec<&str>) =
+            (head.lines().collect(), working.lines().collect());
+        if hunks.is_empty() {
+            self.echo(format!(
+                "{} matches HEAD",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            ));
+            return;
+        }
+        let rows = ruster_git::align(&hunks, old_lines.len() as u32, new_lines.len() as u32);
+
+        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        self.close_diffview();
+        let left = self.make_diff_pane(
+            &format!("*diff HEAD: {name}*"),
+            &diff_pane_text(&rows, &old_lines, false),
+        );
+        let right = self.make_diff_pane(
+            &format!("*diff working: {name}*"),
+            &diff_pane_text(&rows, &new_lines, true),
+        );
+
+        // Split first, then fill: `split` copies the active window's buffer, so
+        // the panes have to be assigned afterwards.
+        let mut w = self.ws.borrow_mut();
+        w.set_active_buffer(left);
+        let new_win = w.windows.split(ruster_core::windows::SplitDir::Vertical);
+        if let Some(win) = w.windows.window_mut(new_win) {
+            win.buffer = right;
+        }
+        drop(w);
+        self.echo(format!("{} hunks in {name}", hunks.len()));
+    }
+
+    /// Create one read-only pane buffer for [`open_diffview`](Self::open_diffview).
+    fn make_diff_pane(&mut self, name: &str, text: &str) -> BufferId {
+        let mut w = self.ws.borrow_mut();
+        let id = w.buffers.create_special(ruster_core::document::SpecialKind::Diff, name);
+        if let Some(doc) = w.buffers.get_mut(id) {
+            doc.buffer = ruster_core::buffer::Buffer::from_str(text);
+        }
+        id
+    }
+
+    /// Drop any previous diff buffers, so re-running `:Diffview` replaces the
+    /// old panes instead of accumulating them.
+    fn close_diffview(&mut self) {
+        let stale: Vec<BufferId> = {
+            let w = self.ws.borrow();
+            w.buffers
+                .ids()
+                .iter()
+                .copied()
+                .filter(|&id| self.is_diff_buffer(&w, id))
+                .collect()
+        };
+        let mut w = self.ws.borrow_mut();
+        for id in stale {
+            w.buffers.close(id);
+        }
+    }
+
+    fn is_diff_buffer(&self, w: &ruster_core::workspace::Workspace, id: BufferId) -> bool {
+        w.buffers.get(id).is_some_and(|d| {
+            matches!(
+                d.kind,
+                ruster_core::document::DocKind::Special(ruster_core::document::SpecialKind::Diff)
+            )
+        })
+    }
+
+    /// Keep the two diff panes in step.
+    ///
+    /// Syncs the *cursor line*, not `scroll_top`. Scroll is recomputed inside
+    /// `render` from the cursor, so assigning it here would be overwritten on
+    /// the very next frame — and the follower's own clamp would drag it back to
+    /// wherever its cursor had been left. Because the panes are row-aligned by
+    /// construction, putting both cursors on the same row makes that same clamp
+    /// produce the same scroll for both, and the cursor ends up where the reader
+    /// is looking rather than stranded at the top.
+    ///
+    /// Whichever pane holds the cursor leads. The pair is identified by buffer
+    /// kind rather than stored window ids, so closing and reopening a pane
+    /// cannot leave a stale pairing behind.
+    fn sync_diff_scroll(&mut self) {
+        let mut w = self.ws.borrow_mut();
+        let active = w.windows.active();
+        // `compute_rects` is the only enumeration the window tree offers; the
+        // area is irrelevant here since only the ids are used.
+        let diff_wins: Vec<_> = w
+            .windows
+            .compute_rects(CoreRect::new(0, 0, 1000, 1000))
+            .into_iter()
+            .map(|(id, _)| id)
+            .filter(|&id| {
+                w.windows.window(id).is_some_and(|win| {
+                    w.buffers.get(win.buffer).is_some_and(|d| {
+                        matches!(
+                            d.kind,
+                            ruster_core::document::DocKind::Special(
+                                ruster_core::document::SpecialKind::Diff
+                            )
+                        )
+                    })
+                })
+            })
+            .collect();
+        if diff_wins.len() != 2 || !diff_wins.contains(&active) {
+            return;
+        }
+        // The line the leader's cursor sits on, in display rows.
+        let Some(line) = w.windows.window(active).and_then(|win| {
+            let head = win.cursors.primary().head;
+            w.buffers.get(win.buffer).map(|d| d.buffer.char_to_line(head))
+        }) else {
+            return;
+        };
+        for id in diff_wins.into_iter().filter(|&id| id != active) {
+            let Some(buf) = w.windows.window(id).map(|win| win.buffer) else { continue };
+            // Clamp: the panes are the same height, but a buffer can be empty.
+            let Some(off) = w.buffers.get(buf).map(|d| {
+                let last = d.buffer.line_count().saturating_sub(1);
+                d.buffer.line_start_char(line.min(last))
+            }) else {
+                continue;
+            };
+            if let Some(win) = w.windows.window_mut(id) {
+                win.cursors = ruster_core::cursor::CursorSet::single(off);
+            }
+        }
     }
 
     /// Apply a filter string to the messages buffer (`:msgs build`, `:msgs/err`).
@@ -8267,6 +8462,145 @@ mod tests {
         assert_eq!(a.buffer_offset_at(after.x, after.y).map(|(_, o)| o), Some(0));
         // A click in the sidebar column is not buffer text.
         assert_eq!(a.buffer_offset_at(before, after.y), None);
+    }
+
+    #[test]
+    fn diffview_parses() {
+        let a = App::new("x".into(), PathBuf::from("f.rs"));
+        assert_eq!(a.parse_cmdline(":Diffview"), Ok(CmdAction::Diffview));
+        assert_eq!(a.parse_cmdline(":diff"), Ok(CmdAction::Diffview));
+    }
+
+    /// The two panes must be the same height, or they stop lining up the moment
+    /// either is scrolled.
+    #[test]
+    fn diff_panes_are_the_same_height() {
+        let h = ruster_git::DiffHunk { old_start: 1, old_count: 1, new_start: 1, new_count: 4 };
+        let rows = ruster_git::align(&[h], 3, 6);
+        let old: Vec<&str> = vec!["a", "b", "c"];
+        let new: Vec<&str> = vec!["a", "B1", "B2", "B3", "B4", "c"];
+        let left = diff_pane_text(&rows, &old, false);
+        let right = diff_pane_text(&rows, &new, true);
+        assert_eq!(left.lines().count(), right.lines().count());
+        assert_eq!(left.lines().count(), rows.len());
+    }
+
+    /// Line numbers come from the *file*, not the display row — the whole reason
+    /// they are written into the text instead of left to the gutter. After a
+    /// hunk that adds lines, the left pane's numbering must skip nothing.
+    #[test]
+    fn diff_pane_numbers_lines_from_the_file_not_the_screen() {
+        let h = ruster_git::DiffHunk { old_start: 1, old_count: 1, new_start: 1, new_count: 4 };
+        let rows = ruster_git::align(&[h], 3, 6);
+        let old: Vec<&str> = vec!["a", "b", "c"];
+        let left: Vec<String> = diff_pane_text(&rows, &old, false).lines().map(str::to_string).collect();
+
+        assert!(left[0].ends_with("│ a"), "{:?}", left[0]);
+        assert!(left[0].trim_start().starts_with('1'));
+        assert!(left[1].ends_with("│ b"), "{:?}", left[1]);
+        // Three filler rows where the new side added lines the old side lacks.
+        assert!(left[2].ends_with('~') && left[3].ends_with('~') && left[4].ends_with('~'));
+        // And `c` is still line 3 of the old file, not line 6 of the display.
+        assert!(left[5].ends_with("│ c"), "{:?}", left[5]);
+        assert_eq!(left[5].trim_start().split(' ').next(), Some("3"), "{:?}", left[5]);
+    }
+
+    #[test]
+    fn diff_pane_right_side_shows_the_working_tree_lines() {
+        let h = ruster_git::DiffHunk { old_start: 1, old_count: 1, new_start: 1, new_count: 2 };
+        let rows = ruster_git::align(&[h], 2, 3);
+        let new: Vec<&str> = vec!["a", "B1", "B2"];
+        let right: Vec<String> =
+            diff_pane_text(&rows, &new, true).lines().map(str::to_string).collect();
+        assert!(right.iter().all(|l| !l.ends_with('~')), "the longer side never pads");
+        assert!(right[1].ends_with("│ B1") && right[2].ends_with("│ B2"));
+    }
+
+    /// A file with no counterpart on one side still renders — an empty pane
+    /// would look like a bug rather than a new file.
+    #[test]
+    fn a_brand_new_file_renders_filler_on_the_head_side() {
+        let rows = ruster_git::align(&[], 0, 2);
+        let left = diff_pane_text(&rows, &[], false);
+        assert_eq!(left.lines().count(), 2);
+        assert!(left.lines().all(|l| l.trim_start().starts_with("│ ~")), "{left:?}");
+    }
+
+    /// Regression: the first version synced `scroll_top`, which `render`
+    /// recomputes from the cursor — so the follower snapped back every frame and
+    /// the panes drifted apart the moment either was scrolled. Syncing the
+    /// cursor is what makes the shared clamp land both on the same row.
+    #[test]
+    fn diff_panes_follow_each_other_by_cursor_line() {
+        let mut a = App::new("x".into(), PathBuf::from("f.rs"));
+        let text = (1..=20).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let left = a.make_diff_pane("*diff HEAD: t*", &text);
+        let right = a.make_diff_pane("*diff working: t*", &text);
+        {
+            let mut w = a.ws.borrow_mut();
+            w.set_active_buffer(left);
+            let new_win = w.windows.split(ruster_core::windows::SplitDir::Vertical);
+            if let Some(win) = w.windows.window_mut(new_win) {
+                win.buffer = right;
+            }
+        }
+        // Put the active pane's cursor on line 12.
+        let target = {
+            let w = a.ws.borrow();
+            let buf = w.windows.active_window().buffer;
+            w.buffers.get(buf).unwrap().buffer.line_start_char(12)
+        };
+        {
+            let mut w = a.ws.borrow_mut();
+            w.windows.active_window_mut().cursors = ruster_core::cursor::CursorSet::single(target);
+        }
+
+        a.sync_diff_scroll();
+
+        let w = a.ws.borrow();
+        let lines: Vec<usize> = w
+            .windows
+            .compute_rects(CoreRect::new(0, 0, 100, 40))
+            .into_iter()
+            .filter_map(|(id, _)| {
+                let win = w.windows.window(id)?;
+                let d = w.buffers.get(win.buffer)?;
+                a.is_diff_buffer(&w, win.buffer)
+                    .then(|| d.buffer.char_to_line(win.cursors.primary().head))
+            })
+            .collect();
+        assert_eq!(lines.len(), 2, "two diff panes");
+        assert_eq!(lines[0], lines[1], "both cursors on the same row");
+        assert_eq!(lines[0], 12);
+    }
+
+    /// A single diff pane with no partner must be left alone rather than
+    /// half-synced against whatever else is on screen.
+    #[test]
+    fn a_lone_diff_pane_is_not_synced() {
+        let mut a = App::new("x".into(), PathBuf::from("f.rs"));
+        let only = a.make_diff_pane("*diff HEAD: t*", "a\nb\nc");
+        {
+            let mut w = a.ws.borrow_mut();
+            w.set_active_buffer(only);
+        }
+        a.sync_diff_scroll(); // must not panic, and must change nothing
+        let w = a.ws.borrow();
+        assert_eq!(w.windows.active_window().cursors.primary().head, 0);
+    }
+
+    #[test]
+    fn diffview_outside_a_repository_warns_rather_than_opening_panes() {
+        let dir = shot_dir();
+        let file = dir.join("loose.rs");
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+        let mut a = App::new("fn main() {}".into(), file);
+        a.apply_cmd(CmdAction::Diffview);
+        // Either "not in a project" or "not a git repository" — both are the
+        // refusal path, and neither may leave a diff buffer behind.
+        let w = a.ws.borrow();
+        let diffs = w.buffers.ids().iter().filter(|&&id| a.is_diff_buffer(&w, id)).count();
+        assert_eq!(diffs, 0, "no panes opened");
     }
 
     #[test]
