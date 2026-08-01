@@ -330,6 +330,38 @@ Pair a runtime grammar with a query of the same name under
 [`queries/`](#highlight-queries) — a grammar with no query parses but highlights
 nothing. `:SyntaxReload` picks up both.
 
+## Sessions
+
+ruster can remember what you had open per project: which files, how the windows
+were split, and where the cursor sat in each.
+
+| Command | Action |
+|---------|--------|
+| `:SessionSave` / `:mksession` | Save the current project's session |
+| `:SessionRestore` / `:loadsession` | Reopen it |
+
+Sessions live in `~/.config/ruster/sessions/`, one file per project root.
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `session.autosave` | boolean | true | Write the session when the editor exits |
+| `session.autoload` | boolean | false | Reopen the saved session on startup |
+
+`autoload` is **off** by default: silently reopening a pile of files when you
+asked to edit one is surprising. Turn it on if you want the editor to pick up
+where you left it.
+
+**What is not saved.** Only file-backed buffers. Special buffers (dired,
+`:Mason`, diffs, `*messages*`) have nothing durable to point at, and an unsaved
+scratch buffer has nowhere its contents could come back from. Embedded terminals
+are excluded deliberately: restoring a shell's scrollback into a process that no
+longer exists is not restoration.
+
+A file that has been deleted since the session was written is skipped and its
+window collapses out of the layout, so a session written before a refactor still
+restores whatever survives. A session file that cannot be parsed is ignored
+entirely rather than restoring half a layout.
+
 ## Snippets
 
 Tab in insert mode expands a snippet whose trigger word precedes the cursor, then

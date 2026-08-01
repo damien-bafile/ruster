@@ -240,6 +240,7 @@ pub const GROUPS: &[(&str, &str)] = &[
     ("build", "Build command"),
     ("test", "Test command"),
     ("dap", "Debug adapter"),
+    ("session", "Saved sessions (open files and window layout)"),
     ("colors", "Per-element color overrides (empty = theme)"),
 ];
 
@@ -300,6 +301,8 @@ pub fn schema() -> Vec<SettingSpec> {
 
     // --- sidebar ---
     add("sidebar", "auto_open", "Auto-open sidebar", Bool, b(false), "Open the sidebar automatically on startup");
+    add("session", "autoload", "Restore session on open", Bool, b(false), "Reopen the project's saved files and layout on startup");
+    add("session", "autosave", "Save session on quit", Bool, b(true), "Write the session when the editor exits");
 
     // --- noice ---
     add("noice", "mini", "Mini toasts", Bool, b(true), "Show transient toasts in the cmdline row");
