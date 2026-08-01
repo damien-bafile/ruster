@@ -311,6 +311,17 @@ struct CmdlineCompletion {
 
 /// Build a sign column from a buffer's diagnostics: one glyph per line, the most
 /// severe (lowest severity number) winning when several land on the same line.
+/// The colour for a `TODO`-class keyword — the same amber the warning severity
+/// uses, so the gutter and the comment agree on what "needs attention" looks like.
+fn todo_style() -> ruster_render::SyntaxStyle {
+    ruster_render::SyntaxStyle {
+        fg: ruster_render::Color::Rgb(249, 226, 175),
+        bg: ruster_render::Color::Default,
+        bold: true,
+        italic: false,
+    }
+}
+
 fn diagnostics_to_signs(diags: &[ruster_lsp::Diagnostic]) -> ruster_render::SignsView {
     let mut best: std::collections::HashMap<u16, u8> = std::collections::HashMap::new();
     for d in diags {
@@ -521,6 +532,7 @@ enum CmdAction {
     /// Toggle the file-explorer sidebar (`:sidebar`).
     Sidebar,
     GitsignsToggle,
+    TodoList,
     /// Resize the sidebar to N columns (`:Sidebar resize N`).
     SidebarResize(u16),
     /// Toggle the Noice notification-stack panel (`:Noice`).
@@ -2637,14 +2649,36 @@ impl App {
                     None => continue,
                 }
             };
-            if let Ok(engine) = SyntaxEngine::new(&content, &ext) {
+            if let Ok(mut engine) = SyntaxEngine::new(&content, &ext) {
+                engine.overlay_todo_highlights(&self.config.todo_keywords, todo_style());
                 self.syntax.insert(buf, engine);
             }
         }
         let active_content = self.ws.borrow().buffers.get(active).map(|d| d.buffer.to_string());
         if let (Some(c), Some(engine)) = (active_content.as_ref(), self.syntax.get_mut(&active)) {
             engine.reparse(c);
+            // reparse rebuilds the cached lines, so the overlay has to be reapplied.
+            engine.overlay_todo_highlights(&self.config.todo_keywords, todo_style());
         }
+    }
+
+    /// Every `TODO`-class marker in the open buffers, newest file first.
+    ///
+    /// Only buffers that already have a syntax engine are scanned — markers come
+    /// from the tree's comment captures, so a file with no grammar has none.
+    fn todo_markers(&self) -> Vec<(PathBuf, ruster_syntax::TodoMarker)> {
+        let mut out = Vec::new();
+        let w = self.ws.borrow();
+        for (&buf, engine) in &self.syntax {
+            let Some(path) = w.buffers.get(buf).and_then(|d| d.file_path.clone()) else {
+                continue;
+            };
+            for m in engine.todo_markers(&self.config.todo_keywords) {
+                out.push((path.clone(), m));
+            }
+        }
+        out.sort_by(|a, b| (&a.0, a.1.line).cmp(&(&b.0, b.1.line)));
+        out
     }
 
     /// Sync the active buffer to its language server (didOpen/didChange) and
@@ -3757,6 +3791,7 @@ impl App {
             "db_stop" if self.debug_session.is_some() => Ok(CmdAction::DebugStop),
             "db_toggle" | "B" => Ok(CmdAction::DebugToggleBreakpoint),
             "Gitsigns" | "gitsigns" => Ok(CmdAction::GitsignsToggle),
+            "TodoList" | "todolist" | "todo" => Ok(CmdAction::TodoList),
             _ if trimmed == "sidebar" => Ok(CmdAction::Sidebar),
             _ if let Some(n) = trimmed.strip_prefix("sidebar resize ").and_then(|s| s.trim().parse::<u16>().ok()) => Ok(CmdAction::SidebarResize(n)),
             "Noice" | "noice" => Ok(CmdAction::NoicePanel),
@@ -3873,6 +3908,7 @@ impl App {
             CmdAction::Messages => self.open_messages(),
             CmdAction::MessagesFilter(filter) => self.apply_messages_filter(&filter),
             CmdAction::Projects => self.open_projects(),
+            CmdAction::TodoList => self.open_todo_list(),
             CmdAction::GitsignsToggle => {
                 self.git_signs = !self.git_signs;
                 if self.git_signs {
@@ -5325,8 +5361,43 @@ impl App {
 
     /// `:copen` — refresh the quickfix list from diagnostics and show it as a
     /// picker; choosing an entry jumps to it.
+    /// `:TodoList` — collect TODO-class markers into the quickfix list and open
+    /// it. Routing through quickfix means `]q`/`[q` and the Trouble panel get
+    /// them for free rather than each growing its own list.
+    fn open_todo_list(&mut self) {
+        let markers = self.todo_markers();
+        if markers.is_empty() {
+            self.echo_warn("No TODO markers in open buffers".to_string());
+            return;
+        }
+        let items: Vec<QuickfixItem> = markers
+            .into_iter()
+            .map(|(path, m)| QuickfixItem {
+                path,
+                line: m.line,
+                col: m.col,
+                message: if m.text.is_empty() {
+                    m.keyword.clone()
+                } else {
+                    format!("{}: {}", m.keyword, m.text)
+                },
+                // Info: a marker is a note to self, not a compiler complaint.
+                severity: 3,
+            })
+            .collect();
+        self.quickfix = QuickfixList::new(items);
+        self.open_quickfix_picker("TODO");
+    }
+
     fn open_quickfix(&mut self) {
         self.rebuild_quickfix_from_diagnostics();
+        self.open_quickfix_picker("Quickfix");
+    }
+
+    /// Show whatever is already in the quickfix list. Split out so callers that
+    /// populate it themselves — `:TodoList` — aren't overwritten by the
+    /// diagnostics rebuild.
+    fn open_quickfix_picker(&mut self, title: &str) {
         if self.quickfix.is_empty() {
             self.echo_warn("Quickfix list is empty".to_string());
             return;
@@ -5353,7 +5424,7 @@ impl App {
                 )
             })
             .collect();
-        self.picker = Some(PickerState::new("Quickfix", items));
+        self.picker = Some(PickerState::new(title, items));
     }
 
     /// Jump to the current quickfix entry and report the position in the list.

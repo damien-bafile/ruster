@@ -259,6 +259,16 @@ outside a repository or when git is missing. Turn it off with `git.signs = false
 | `]h` / `[h` | Jump to the next / previous hunk (wraps) |
 | `:Gitsigns` | Toggle git signs for this session |
 
+### TODO markers
+`TODO`, `FIXME`, `HACK`, `NOTE` and `XXX` are highlighted where they appear **in a
+comment**. The ranges come from the syntax tree, so a keyword inside a string
+literal is not marked — and a file whose language has no grammar has no markers
+rather than guessed ones. Set `todo.keywords` to change the set.
+
+| Command | Action |
+|---------|--------|
+| `:TodoList` (or `:todo`) | Collect markers from open buffers into the quickfix list and open it |
+
 ### Debugger (DAP)
 Breakpoints show as `●` in the sign column. While a session is stopped, an overlay
 lists the call stack and the current scopes.
