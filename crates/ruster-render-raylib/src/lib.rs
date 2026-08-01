@@ -50,6 +50,12 @@ fn capture_screen(
     path: &std::path::Path,
 ) -> Result<std::path::PathBuf, String> {
     let name = path.to_str().ok_or_else(|| format!("{} is not valid UTF-8", path.display()))?;
+    // SAFETY: flushes raylib's own draw batch, which is the missing step.
+    // raylib queues draw calls and only submits them in `EndDrawing`; reading
+    // pixels syncs *GL* but knows nothing about that queue, so whatever was
+    // drawn most recently — the dialog, the last overlay — is still pending and
+    // simply absent from the image. This is the same call `EndDrawing` makes.
+    unsafe { raylib::ffi::rlDrawRenderBatchActive() };
     d.load_image_from_screen(thread).export_image(name);
     // raylib reports a failed export only through its own log, so confirm the
     // file arrived rather than claiming a save that never happened.
@@ -205,9 +211,13 @@ pub struct RaylibRenderer {
     settings_scroll: usize,
     picker_scroll: usize,
     event_buffer: Vec<KeyEvent>,
-    /// Where to write the next frame, set by `request_screenshot` and consumed
-    /// at the end of `render_frame`.
-    pending_screenshot: Option<std::path::PathBuf>,
+    /// Where to write, and how many frames to let settle first.
+    ///
+    /// The countdown is not cosmetic. A capture on the very first frame after
+    /// the window opens comes back black — the GL surface is not ready, and
+    /// nothing about the draw calls says so. Letting a couple of frames go by
+    /// costs nothing a user would notice and makes the result reliable.
+    pending_screenshot: Option<(std::path::PathBuf, u8)>,
     /// The result of that capture, waiting to be polled by the run loop.
     screenshot_result: Option<Result<std::path::PathBuf, String>>,
 }
@@ -1177,18 +1187,24 @@ impl Renderer for RaylibRenderer {
         // ago, or nothing at all on the first frame. That is a black image, and
         // it is what this originally produced. Everything for this frame is
         // drawn by now, so reading here gets the completed picture.
-        let pending = self.pending_screenshot.take();
-        if let Some(path) = pending {
-            let result = capture_screen(&d, &self.thread, &path);
-            drop(d);
-            self.screenshot_result = Some(result);
-        } else {
-            drop(d);
+        match self.pending_screenshot.take() {
+            Some((path, 0)) => {
+                let result = capture_screen(&d, &self.thread, &path);
+                drop(d);
+                self.screenshot_result = Some(result);
+            }
+            // Not settled yet — see the field's comment.
+            Some((path, waiting)) => {
+                self.pending_screenshot = Some((path, waiting - 1));
+                drop(d);
+            }
+            None => drop(d),
         }
     }
 
     fn request_screenshot(&mut self, path: &std::path::Path) -> bool {
-        self.pending_screenshot = Some(path.to_path_buf());
+        // Two frames of settling: enough for a window that has just opened.
+        self.pending_screenshot = Some((path.to_path_buf(), 1));
         true
     }
 
