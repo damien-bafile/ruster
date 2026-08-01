@@ -371,13 +371,26 @@ A user grammar with no query is a runtime condition, handled by falling back.
 which currently only plans to install LSP and DAP binaries. Extend it there rather than
 growing a second installer inside `ruster-syntax`.
 
-### Task 17: Config, docs, CI
+### Task 17: Config, docs, CI ✅
 
-- [ ] Schema settings for every option added above (`git.*`, `todo.*`, `trouble.*`).
-- [ ] Document commands and keys in `docs/{config-reference,keybindings}.md` **as each task
+- [x] Schema settings for every option added above (`git.*`, `todo.*`, `trouble.*`).
+      Audited both directions: the schema declares 72 keys and `config.rs` reads
+      exactly those 72 — no drift. `git.signs` and `todo.keywords` were already
+      present. **`trouble.*` has no settings because Trouble has no configurable
+      behaviour**; it takes its sources from whatever is loaded. Adding empty
+      config surface for symmetry would be worse than not having it.
+- [x] Document commands and keys in `docs/{config-reference,keybindings}.md` **as each task
       lands**, not at the end — the Phase 5 debugger shipped undocumented for a week because
       this was deferred.
-- [ ] `cargo test` + `cargo clippy --workspace --all-targets -- -D warnings` green.
+      An audit found **13 undocumented commands**, so the rule was still being
+      broken: `:Noice`, `:Noice split`, the whole `:echo`/`:echom`/`:echoe`
+      family, `:sidebar resize N`, and several aliases. All now documented.
+      Since "remember to update the docs" had already failed twice, this is now
+      a test — `crates/ruster-tui/tests/docs_in_sync.rs` scrapes the command
+      literals out of `parse_cmdline` and fails CI naming any that
+      `keybindings.md` does not mention, and does the same for the schema
+      against `config-reference.md`.
+- [x] `cargo test` + `cargo clippy --workspace --all-targets -- -D warnings` green (590 passing).
 
 ## Out of scope, deliberately
 
