@@ -334,6 +334,7 @@ In Emacs mode every printable key self-inserts; `Ctrl`/`Alt` chords are commands
 | `C-u <n>` | Universal argument: repeat the next command `n` times |
 | `C-/` or `C-_` | Undo |
 | `C-s` / `C-r` | Incremental search forward / backward (repeat to jump) |
+| `M-x` | Run a command — opens the command palette |
 | `C-g` | Cancel — clear the mark / prefix |
 | `C-x C-s` | Save the file |
 | `C-x C-c` | Quit |
