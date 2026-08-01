@@ -38,6 +38,28 @@ fn draw_text_cells<D: RaylibDraw>(
     }
 }
 
+/// Read the framebuffer and write it out as a PNG.
+///
+/// Takes the *draw handle* rather than the raylib handle so it can be called
+/// mid-frame, before `EndDrawing` swaps the buffers away. `RaylibDrawHandle`
+/// derefs to `RaylibHandle`, so this is the same read either way — only the
+/// timing differs, and the timing is the whole point.
+fn capture_screen(
+    d: &RaylibDrawHandle<'_>,
+    thread: &RaylibThread,
+    path: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    let name = path.to_str().ok_or_else(|| format!("{} is not valid UTF-8", path.display()))?;
+    d.load_image_from_screen(thread).export_image(name);
+    // raylib reports a failed export only through its own log, so confirm the
+    // file arrived rather than claiming a save that never happened.
+    if path.is_file() {
+        Ok(path.to_path_buf())
+    } else {
+        Err(format!("could not write {}", path.display()))
+    }
+}
+
 /// A 1px border rectangle: `(x, y, w, h)`.
 type Edge = (i32, i32, i32, i32);
 
@@ -360,21 +382,6 @@ impl RaylibRenderer {
             event_buffer: Vec::new(),
             pending_screenshot: None,
             screenshot_result: None,
-        }
-    }
-
-    /// Read the framebuffer and write it out as a PNG.
-    ///
-    /// Only ever called with the draw handle dropped, so the frame is complete.
-    fn capture_screen(&self, path: &std::path::Path) -> Result<std::path::PathBuf, String> {
-        let name = path.to_str().ok_or_else(|| format!("{} is not valid UTF-8", path.display()))?;
-        self.rl.load_image_from_screen(&self.thread).export_image(name);
-        // raylib reports a failed export only through its own log, so confirm
-        // the file arrived rather than claiming a save that never happened.
-        if path.is_file() {
-            Ok(path.to_path_buf())
-        } else {
-            Err(format!("could not write {}", path.display()))
         }
     }
 
@@ -1163,12 +1170,20 @@ impl Renderer for RaylibRenderer {
             }
         }
 
-        // The draw handle holds `&mut self.rl` and ends the frame when it drops,
-        // so the capture has to wait for it — reading the framebuffer while it
-        // is alive would catch a half-drawn screen.
-        drop(d);
-        if let Some(path) = self.pending_screenshot.take() {
-            self.screenshot_result = Some(self.capture_screen(&path));
+        // Capture *before* the draw handle drops.
+        //
+        // Dropping it runs `EndDrawing`, which swaps the buffers — so reading
+        // afterwards reads the new back buffer, which holds the frame from two
+        // ago, or nothing at all on the first frame. That is a black image, and
+        // it is what this originally produced. Everything for this frame is
+        // drawn by now, so reading here gets the completed picture.
+        let pending = self.pending_screenshot.take();
+        if let Some(path) = pending {
+            let result = capture_screen(&d, &self.thread, &path);
+            drop(d);
+            self.screenshot_result = Some(result);
+        } else {
+            drop(d);
         }
     }
 
