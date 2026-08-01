@@ -37,12 +37,22 @@ type SetLinesFn = Box<dyn FnMut(i32, i32, Vec<String>)>;
 type GetCursorFn = Box<dyn FnMut() -> (i32, i32)>;
 type SetCursorFn = Box<dyn FnMut(i32, i32)>;
 
-pub struct LuaRuntime {
-    pub lua: Lua,
+/// State shared between the runtime and the Lua closures it installs.
+///
+/// Held behind an `Rc` by both sides. This exists because the previous design
+/// handed each closure a `*const LuaRuntime` taken from a local in `new()` and
+/// then *moved* the runtime out on return — leaving every installed `ruster.*`
+/// function dereferencing freed memory. Sharing by `Rc` means the closures keep
+/// the state alive rather than pointing at where it used to be.
+///
+/// `Lua` deliberately stays outside: closures already receive `&Lua` as their
+/// first argument, and putting it here would make the runtime own a `Lua` that
+/// owns closures that own the runtime.
+pub(crate) struct Shared {
     pub(crate) keymaps: RefCell<Vec<LuaKeymap>>,
     pub(crate) pending: RefCell<Vec<LuaAction>>,
-    pub events: RefCell<EventBus>,
-    pub current_dt: RefCell<f64>,
+    pub(crate) events: RefCell<EventBus>,
+    pub(crate) current_dt: RefCell<f64>,
     pub(crate) get_lines: RefCell<Option<GetLinesFn>>,
     pub(crate) set_lines: RefCell<Option<SetLinesFn>>,
     pub(crate) get_cursor: RefCell<Option<GetCursorFn>>,
@@ -53,16 +63,18 @@ pub struct LuaRuntime {
     pub(crate) window_cb: RefCell<Option<WindowCallbacks>>,
 }
 
+pub struct LuaRuntime {
+    pub lua: Lua,
+    pub(crate) shared: std::rc::Rc<Shared>,
+}
+
 impl LuaRuntime {
     pub fn new() -> mlua::Result<Self> {
         let lua = Lua::new();
-        let pending = RefCell::new(Vec::new());
-        let events = RefCell::new(EventBus::new());
-        let runtime = LuaRuntime {
-            lua,
+        let shared = std::rc::Rc::new(Shared {
             keymaps: RefCell::new(Vec::new()),
-            pending,
-            events,
+            pending: RefCell::new(Vec::new()),
+            events: RefCell::new(EventBus::new()),
             current_dt: RefCell::new(0.0),
             get_lines: RefCell::new(None),
             set_lines: RefCell::new(None),
@@ -70,11 +82,13 @@ impl LuaRuntime {
             set_cursor: RefCell::new(None),
             statusline: RefCell::new(Vec::new()),
             window_cb: RefCell::new(None),
-        };
+        });
 
-        let ruster = crate::api::create_table(&runtime)?;
-        runtime.lua.globals().set("ruster", ruster)?;
-        Ok(runtime)
+        // The closures capture a clone of `shared`, so moving the runtime out of
+        // this function on the next line is now safe.
+        let ruster = crate::api::create_table(&lua, &shared)?;
+        lua.globals().set("ruster", ruster)?;
+        Ok(LuaRuntime { lua, shared })
     }
 
     pub fn set_buffer_callbacks(
@@ -84,21 +98,21 @@ impl LuaRuntime {
         get_cursor: Box<dyn FnMut() -> (i32, i32)>,
         set_cursor: Box<dyn FnMut(i32, i32)>,
     ) {
-        self.get_lines.replace(Some(get_lines));
-        self.set_lines.replace(Some(set_lines));
-        self.get_cursor.replace(Some(get_cursor));
-        self.set_cursor.replace(Some(set_cursor));
+        self.shared.get_lines.replace(Some(get_lines));
+        self.shared.set_lines.replace(Some(set_lines));
+        self.shared.get_cursor.replace(Some(get_cursor));
+        self.shared.set_cursor.replace(Some(set_cursor));
     }
 
     /// Install the window/buffer manipulation callbacks.
     pub fn set_window_callbacks(&self, cb: WindowCallbacks) {
-        self.window_cb.replace(Some(cb));
+        self.shared.window_cb.replace(Some(cb));
     }
 
     /// Evaluate all Lua statusline sections registered for `pos`
     /// ("left" | "center" | "right"), returning each one's string result.
     pub fn statusline_sections(&self, pos: &str) -> Vec<String> {
-        let sections = self.statusline.borrow();
+        let sections = self.shared.statusline.borrow();
         let mut out = Vec::new();
         for (p, key) in sections.iter() {
             if p != pos {
@@ -116,11 +130,11 @@ impl LuaRuntime {
     }
 
     pub fn fire_event(&self, name: &str, args: &[mlua::Value]) {
-        self.events.borrow().emit(&self.lua, name, args);
+        self.shared.events.borrow().emit(&self.lua, name, args);
     }
 
     pub fn set_frame_dt(&self, dt: f64) {
-        *self.current_dt.borrow_mut() = dt;
+        *self.shared.current_dt.borrow_mut() = dt;
         let val = mlua::Value::Number(dt);
         self.fire_event("Frame", &[val]);
     }
@@ -317,13 +331,13 @@ impl LuaRuntime {
     }
 
     pub fn drain_actions(&self) -> Vec<LuaAction> {
-        self.pending.borrow_mut().drain(..).collect()
+        self.shared.pending.borrow_mut().drain(..).collect()
     }
 
     /// Check if a Lua keymap matches for the given mode and key.
     /// Returns true if matched (consumed the key).
     pub fn handle_key(&self, mode: &str, ck: &crossterm::event::KeyEvent) -> bool {
-        for km in self.keymaps.borrow().iter() {
+        for km in self.shared.keymaps.borrow().iter() {
             if km.mode != mode { continue; }
             if km.keys.len() != 1 { continue; } // multi-keys in future
             let expected = crate::keymap::lua_key_to_crossterm(&km.keys[0]);

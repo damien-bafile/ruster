@@ -163,3 +163,22 @@ ruster.config.tabstop = 2
 ruster.config.number = true
 ruster.config.format_on_save = true
 ```
+
+## `ruster.ui.dialog(spec)`
+
+Show a modal form. The editor owns the widgets; Lua describes the fields.
+
+```lua
+ruster.ui.dialog{
+  title = "Deploy",
+  fields = {
+    { label = "Dry run", kind = "toggle", value = "on" },
+    { label = "Target",  kind = "select", value = "staging", options = { "staging", "prod" } },
+    { label = "Message", kind = "text",   value = "ship it" },
+  },
+}
+```
+
+`kind` is `toggle`, `select`, `text` or `number`; anything else is treated as
+`text` so a typo still shows the dialog. `j`/`k` move, `Space` toggles or cycles,
+`Enter` edits a text field and submits elsewhere, `Esc` cancels.
