@@ -42,19 +42,22 @@ graph to navigate by.
 
 | Stage | Tasks | Theme |
 |---|---|---|
-| **0 — Loose ends** | 1–6 | Carried out of Phase 5. Small, independent, mostly hygiene. |
+| **0 — Loose ends** | 1–6 | Carried out of Phase 5. **Tasks 1–3 done (PR #26)**; 4–6 open. |
 | **1 — Foundations** | 7–8 | Floating windows, then git plumbing. Everything later builds on these. |
 | **2 — Surfaces** | 9–12 | Trouble, todos, theme preview, widgets — all consume Stage 1. |
 | **3 — Ecosystem** | 13–15 | Mason, diff viewer, then the config/docs/CI sweep. |
 
-Within Stage 0, do Task 1 first (it deletes a branch, so it stops rotting) and Task 6 last
-(the graph is most useful once the tree has settled).
+Within Stage 0, Task 6 goes last — the graph is most useful once the tree has settled.
+Task 4 needs a human at a GUI, and Task 5 carries one judgement call, so they can run in
+any order alongside the rest.
 
 ---
 
 ## Stage 0 — Loose ends
 
-### Task 1: Salvage `feat/starship-ui`, then delete the branch
+### Task 1: Salvage `feat/starship-ui` ✅ (PR #26)
+
+> **Executed 2026-08-01. Two claims in the original plan were wrong; corrected below.**
 
 The branch is 7 commits and 5 days stale, diverged before 92 commits of `main`. Most of it
 is **superseded**: the test runner shipped as PR #19, four of its five theme colour fields
@@ -63,44 +66,67 @@ are already in `main` (more thoroughly — 15–30 references vs 12), and its he
 in PR #18. A dry-run merge conflicts in **10 files**, including `app.rs` (restructured in
 PR #24) and `widgets.rs` (now a `widgets/` directory).
 
-So: cherry-pick what is genuinely novel, take the docs, and drop the rest.
+- [x] Cherry-pick `ad96b45` — Backspace pops the leader sequence, and cancels the `g` menu.
+      Applies cleanly.
+      **Correction:** this was planned as "a real UX win". It is not — it is behaviourally a
+      **no-op** on `main`. The leader tree is one level deep, so popping the single group key
+      empties the sequence and cancels, which is exactly what Esc already did; and the
+      `g`-menu replay path was harmless too, because `VimState` clears `pending_g` on the
+      very next key (`vim/mod.rs:334`). Both were confirmed by reverting each half and
+      watching the tests still pass. Kept because the code now states its intent and the pop
+      starts to matter once a group nests — but its tests are labelled characterization
+      tests, not bug guards.
+- [x] **Do not salvage the design docs.** `.impeccable/surfaces/editor-chrome.md`,
+      `DESIGN.md` and `PRODUCT.md` turned out to be **byte-identical** between the branch and
+      `main`, so there was nothing to take. The two genuinely unique docs
+      (`2026-07-28-cmdline-whichkey-ux.md` + its spec) describe **the road not taken** —
+      "the M-x keybinding is removed entirely", `CmdlineCompletions` replacing `PickerState`
+      — the opposite of what shipped in PR #18. Landing them in `docs/superpowers/plans/`
+      would leave a contradictory plan for a future agent, and that file opens with
+      *"REQUIRED SUB-SKILL: use subagent-driven-development to implement this plan
+      task-by-task."* They stay on the branch.
+- [ ] **Still open — decide, don't merge:** `WhichKeyEntry` + the `whichkey_key` accent
+      colour (55 lines, 7 files) is the one thing genuinely absent from `main`. It touches
+      `ruster-render`, so it needs both backends. Deferred to Task 11 as a deliberate visual
+      change; cherry-pick it there rather than merging the branch.
+- [x] **Archived, not deleted.** The branch was local-only, so deleting it would have
+      destroyed the only copy. Pushed to `origin/feat/starship-ui` as a reference. It is not
+      a merge candidate — leave it indefinitely; it costs nothing.
 
-- [ ] Cherry-pick `ad96b45` — Backspace pops the leader sequence, and cancels the `g` menu.
-      12 lines, one file; `leader_pending: Option<Vec<char>>` is unchanged in `main`, so it
-      applies cleanly. Add a test alongside `leader_resolves_groups_and_actions`.
-- [ ] Salvage the design docs, which merge cleanly (they were absent from the conflict set):
-      `docs/superpowers/plans/2026-07-28-cmdline-whichkey-ux.md` (798 lines),
-      `docs/superpowers/specs/2026-07-28-cmdline-whichkey-ux-design.md` (300 lines),
-      `.impeccable/surfaces/editor-chrome.md`, and the `DESIGN.md` / `PRODUCT.md` additions.
-      Reconcile them against what shipped — they predate the current cmdline design.
-- [ ] **Decide, don't merge:** `WhichKeyEntry` + the `whichkey_key` accent colour (55 lines,
-      7 files) is genuinely absent from `main` but touches `ruster-render`, so it needs both
-      backends. Treat it as a deliberate visual change, folded into Task 11 if wanted.
-- [ ] Delete `feat/starship-ui` once the above has landed. It is **local-only** — never
-      pushed to origin — so this is a local `git branch -D`, not a remote deletion.
-- [ ] Tests: leader Backspace pops one key, then cancels when the sequence empties.
+### Task 2: Drop per-buffer caches on close ✅ (PR #26)
 
-### Task 2: Wire up `DiredState::forget`
+> **Scope grew during execution: five maps leaked, not one — and one leaked a process.**
 
-`delete_active_buffer` closes a buffer without clearing the per-buffer dired caches
-(`dirs`, `styled`, `entries`), so they grow for the life of the session. `forget(id)` was
-written for this in PR #24 and has **zero call sites**.
+`delete_active_buffer` closed the buffer and left every per-buffer cache behind, so they
+grew for the life of the session.
 
-- [ ] Call `self.dired.forget(id)` from `delete_active_buffer` in `crates/ruster-tui/src/app.rs`.
-- [ ] Check the same leak for `terminals` and `syntax`, which are also keyed by `BufferId`.
-- [ ] Tests: open a dired buffer, close it, assert the caches no longer hold its id.
+- [x] Call `self.dired.forget(id)` from `delete_active_buffer`.
+- [x] **`syntax`, `lsp_docs`, `diagnostics` and `terminals` leaked identically** — all are
+      keyed by `BufferId` and none was ever cleaned up. Swept behind one `forget_buffer(id)`
+      on the single close path.
+- [x] **`terminals` was the one that mattered beyond memory:** `TerminalSession` kills its
+      child in `Drop`, so a leaked session left a shell process running until the editor
+      exited.
+- [x] Tests: close a dired buffer, assert every cache dropped its id. Confirmed to fail with
+      the cleanup removed.
 
-### Task 3: Collapse the verbose notification call sites
+### Task 3: Collapse the verbose notification call sites ✅ (PR #26)
 
 `app.rs` has **72** `Notification::new(...)` calls, most spelling out the full
 `ruster_core::message::MessageLevel::…` / `MessageSource::Echo` path across 130 columns.
 `App::echo` was added in PR #24 and covers the Info case.
 
-- [ ] Add `warn` / `error` siblings to `App::echo`, then convert the call sites.
-- [ ] Purely mechanical — **the level of each message must not change**. PR #24 already
-      fixed one bug caused by an argument-list `match` picking the wrong level; don't
-      introduce another while tidying.
-- [ ] Tests: the existing suite is the guard; no new tests needed.
+- [x] Added `echo_success` / `echo_warn` / `echo_error` beside `echo`, all routing through
+      one `echo_at`. Converted the **40** `Echo`-source sites; the 32 remaining calls carry a
+      non-`Echo` source (System, Lsp, Task, Build, Test) or a computed level and stay explicit.
+- [x] **Level preservation verified mechanically, not by eye.** A script extracts every
+      `(level, source, message)` triple emitted from `app.rs` before and after — expanding
+      each helper call back to the level it implies — and compares the multisets. 57
+      notifications, identical. (The first run showed a spurious 2-entry gap; that was an
+      asymmetric filter in the script, which was fixed rather than waved through.)
+- [x] One site needed restructuring rather than substitution: `debug_toggle_breakpoint`
+      reported inside a live `Ref` on `self.ws`, which the old single-field
+      `self.notify.push` tolerated but a `&mut self` helper does not.
 
 ### Task 4: Verify the raylib GUI, and record how
 
@@ -197,7 +223,10 @@ Completes the one partially-delivered Phase 6 item.
       wiring plus a restore path.
 - [ ] Ship the four Catppuccin variants (latte, frappe, macchiato, mocha) as `themes/*.lua`.
       Mocha is already the built-in default palette.
-- [ ] Optionally fold in `WhichKeyEntry` / `whichkey_key` from Task 1 here.
+- [ ] Optionally fold in `WhichKeyEntry` / `whichkey_key` — the one piece of
+      `feat/starship-ui` worth keeping (55 lines across 7 files, archived at
+      `origin/feat/starship-ui`, commit `b369449`). Cherry-pick it deliberately and teach
+      **both** backends to draw the accent; do not merge the branch to get it.
 - [ ] Tests: preview applies and Esc restores; discovery finds user themes.
 
 ### Task 12: TUI widget layer
