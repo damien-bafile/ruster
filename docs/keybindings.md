@@ -209,15 +209,21 @@ Press `g` in Normal mode; the which-key panel lists the goto commands (LazyVim-s
 | `:ls` `:buffers` `:ibuffer` | Buffer list picker |
 | `:bd` `:bdelete` | Delete the active buffer |
 | `:term` `:terminal` | Open an embedded terminal |
-| `:settings` `:config` | Open the settings page |
+| `:settings` `:config` `:RusterConfig` | Open the settings page |
 | `:dashboard` | Open the dashboard (welcome screen with recent projects) |
 | `:messages` `:msgs` | Open the general-purpose messages buffer |
-| `:msgs/err` / `:msgs/warn` / `:msgs build` / `:msgs lsp` | Filter the messages buffer by level or source |
+| `:msgs/err` / `:msgs/warn` / `:msgs build` / `:msgs lsp` | Filter the messages buffer by level or source (`:messages/…` works too) |
 | `:projects` | Switch to a recent project (picker) |
 | `:sidebar` | Toggle the file-explorer sidebar on/off |
-| `:SyntaxReload` | Re-read highlight queries from `~/.config/ruster/queries/` and rebuild all buffers |
+| `:sidebar resize <N>` | Set the sidebar width to N columns |
+| `:Noice` `:noice` | Toggle the notification-stack panel |
+| `:Noice split` / `:Noice history` | Open the full notification history in a split |
+| `:echo <text>` | Show a message as a mini toast |
+| `:echom <text>` | Show a warning — mini toast *and* the notification panel |
+| `:echoe <text>` | Show an error in the notification panel |
+| `:SyntaxReload` / `:syntax reload` | Re-read highlight queries from `~/.config/ruster/queries/` and rebuild all buffers |
 | `:screenshot [path]` | Save a PNG of the window (GUI only). No path writes the next free `ruster-NNN.png` in the working directory; a directory writes a numbered file inside it; any other extension gains `.png` |
-| `:config-errors` | Show config load/validation errors |
+| `:config-errors` `:configerrors` | Show config load/validation errors |
 
 ### Navigation
 | Command | Action |
@@ -245,8 +251,8 @@ colored by severity). The **quickfix list** collects them for navigation.
 | `:test` (or `SPC c t`) | Run the project's test command; output streams to `*test*`, failures get ✗ gutter signs and feed the quickfix list |
 | `:task` / `:tasks` (or `SPC o r`) | Pick a `ruster.toml` task to run — in the embedded terminal, or a background thread when `use_terminal = false` |
 | `:copen` (`:cwindow`) | Open the quickfix list as a picker; Enter jumps to an entry |
-| `:cnext` / `:cn` (or `]q`) | Jump to the next quickfix entry |
-| `:cprev` / `:cp` (or `[q`) | Jump to the previous quickfix entry |
+| `:cnext` / `:cn` / `:cN` (or `]q`) | Jump to the next quickfix entry |
+| `:cprev` / `:cp` / `:cprevious` (or `[q`) | Jump to the previous quickfix entry |
 
 ### Git signs
 Lines that differ from the git index are marked in the sign column: `+` added,
@@ -348,7 +354,7 @@ ruster ships two editing paradigms. Switch at any time:
 | Command | Action |
 |---------|--------|
 | `:set editmode emacs` | Modeless Emacs editing |
-| `:set editmode neovim` | Modal vim editing (the default) |
+| `:set editmode neovim` (also `vim`, `nvim`) | Modal vim editing (the default) |
 
 Lua plugins can read the active paradigm from `ruster.editmode` (`"neovim"` /
 `"emacs"`). The statusline shows `-- EMACS --` while it is active.
