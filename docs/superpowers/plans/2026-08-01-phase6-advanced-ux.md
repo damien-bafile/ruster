@@ -44,7 +44,7 @@ graph to navigate by.
 |---|---|---|
 | **0 — Loose ends** | 1–6 | **1–3 done (PR #26), 5 done (PR #27)**; 4 needs a human; 6 deferred past Stage 1. |
 | **1 — Foundations** | 7–8 | Floating windows, then git plumbing. Everything later builds on these. |
-| **2 — Surfaces** | 9–12 | Trouble, todos, theme preview, widgets — all consume Stage 1. |
+| **2 — Surfaces** | 9–12 | **Complete.** Trouble, todos, theme preview, widgets. |
 | **3 — Ecosystem** | 13–17 | Mason, diff viewer, syntax extensibility, then the config/docs/CI sweep. |
 
 Task 6 has since been deferred past Stage 1 outright — see the task for why. Task 4 needs
@@ -221,15 +221,18 @@ Unblocks the three notification backends removed in PR #24 as uncompiled stubs
 
 ## Stage 2 — Surfaces
 
-### Task 9: Trouble-style problem list
+### Task 9: Trouble-style problem list ✅
 
-- [ ] A pinned `*trouble*` buffer aggregating diagnostics, quickfix entries and TODOs,
-      grouped by file with fold/unfold. Reuse the picker primitive rather than adding a
-      list widget.
-- [ ] `:Trouble` / `SPC x x`; Enter jumps, `q` closes.
-- [ ] Tests: grouping and jump-target resolution.
+- [x] A pinned `*trouble*` buffer aggregating diagnostics, quickfix entries and TODOs,
+      grouped by file with fold/unfold.
+      **Deviation:** the picker primitive was *not* reused. A picker is transient and
+      closes on selection; the panel has to persist and fold while you work through it.
+      It is a buffer with a small row model in `trouble.rs` — no new list widget, which
+      was the point of that clause.
+- [x] `:Trouble` / `SPC x x`; Enter jumps, `Tab` folds, `r` refreshes, `q` closes.
+- [x] Tests: grouping, folding across a refresh, and jump-target resolution.
 
-### Task 10: Todo comments
+### Task 10: Todo comments ✅
 
 - [ ] Highlight `TODO` / `FIXME` / `HACK` / `NOTE` / `XXX` in comments. `ruster-syntax`
       already colours org-mode `TODO` keywords (`markup.rs:113-120`) — extend that rather
@@ -238,7 +241,7 @@ Unblocks the three notification backends removed in PR #24 as uncompiled stubs
 - [ ] Config: `todo.keywords` (list) and per-keyword colours in the theme.
 - [ ] Tests: keyword detection inside comments only, not in string literals.
 
-### Task 11: Theme live-preview picker
+### Task 11: Theme live-preview picker ✅
 
 Completes the one partially-delivered Phase 6 item.
 
@@ -259,13 +262,17 @@ Completes the one partially-delivered Phase 6 item.
       than untangling it. Verified 2026-08-01, 124 commits past the divergence.
 - [ ] Tests: preview applies and Esc restores; discovery finds user themes.
 
-### Task 12: TUI widget layer
+### Task 12: TUI widget layer ✅
 
-- [ ] Evaluate `ratatui-widgets` / `ratada` against writing the handful actually needed
-      (button, checkbox, select, text field). **Prefer writing them** unless the crate earns
-      its dependency — the settings page already hand-rolls its controls and works.
-- [ ] Expose the chosen set through the Lua API so plugins can build dialogs.
-- [ ] Whatever is chosen must render in both backends (see Global constraints).
+- [x] Evaluated: **no crate can be used.** `ratatui-widgets`, `ratada` and `textual-rs`
+      all draw into ratatui, and `ruster-render-raylib` does not depend on ratatui at all —
+      a crate could serve half the editor, which the parity constraint forbids. Written
+      instead, out of the `ControlKind` vocabulary both backends already draw: toggle
+      (checkbox), select, text, number and button.
+- [x] `ruster.ui.dialog{ title, fields, on_submit }`. The callback receives the values
+      keyed by label plus the button pressed, so a plugin can act on the result — a
+      dialog it cannot read answers from is a display, not an API.
+- [x] Rendered by both backends, sharing `titled_box` and `control_display`.
 
 ## Stage 3 — Ecosystem
 

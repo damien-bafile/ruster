@@ -745,17 +745,24 @@ fn draw_section_header(
 
 /// Renders a floating picker overlay (title, query line, selectable rows).
 pub struct PickerWidget {
+    /// First visible row, so a selection past the box stays on screen.
+    scroll: usize,
     view: ruster_render::PickerView,
     theme: Option<ruster_render::Theme>,
 }
 
 impl PickerWidget {
     pub fn new(view: ruster_render::PickerView) -> Self {
-        PickerWidget { view, theme: None }
+        PickerWidget { view, theme: None, scroll: 0 }
     }
 
     pub fn with_theme(mut self, theme: &ruster_render::Theme) -> Self {
         self.theme = Some(*theme);
+        self
+    }
+
+    pub fn with_scroll(mut self, scroll: usize) -> Self {
+        self.scroll = scroll;
         self
     }
 }
@@ -859,7 +866,7 @@ impl Widget for SettingsWidget<'_> {
         let body_top = area.y + 1;
         let body_h = area.height.saturating_sub(3) as usize; // title + footer + help
         *self.scroll =
-            ruster_render::settings_scroll(*self.scroll, selected, body_h, lines.len());
+            ruster_render::list_scroll(*self.scroll, selected, body_h, lines.len());
         let scroll = *self.scroll;
         let value_col = area.x + 32.min(area.width / 2);
 
@@ -952,7 +959,7 @@ impl Widget for PickerWidget {
             put(buf, area.x + 1 + i as u16, area.y + 1, ch, Color::White, bg);
         }
         // Item rows (clipped to the list column).
-        for (row, item) in self.view.rows.iter().enumerate() {
+        for (row, item) in self.view.rows.iter().skip(self.scroll).enumerate() {
             let y = area.y + 2 + row as u16;
             if y >= area.bottom().saturating_sub(1) { break; }
             let (row_fg, row_bg) = if item.selected {
@@ -1244,9 +1251,14 @@ impl Widget for DialogWidget {
                     }
                 }
             }
-            text(buf, area.x + 2, y, &r.label, rfg, rbg);
             let shown = control_display(r);
-            text(buf, value_col, y, &shown, if r.editing { accent } else { rfg }, rbg);
+            if r.kind == ruster_render::ControlKind::Button {
+                // A button is one thing, not a label with a value beside it.
+                text(buf, area.x + 2, y, &shown, rfg, rbg);
+            } else {
+                text(buf, area.x + 2, y, &r.label, rfg, rbg);
+                text(buf, value_col, y, &shown, if r.editing { accent } else { rfg }, rbg);
+            }
         }
         let fy = area.bottom().saturating_sub(2);
         text(buf, area.x + 2, fy, &self.view.footer, dim, bg);
@@ -1327,6 +1339,31 @@ mod tests {
 
     /// A float must paint over whatever is underneath, border included — that
     /// is the whole point of the primitive.
+    #[test]
+    fn dialog_widget_draws_a_button_row() {
+        use crate::widgets::DialogWidget;
+        let area = Rect::new(0, 0, 50, 6);
+        let mut buf = RBuffer::empty(area);
+        let view = ruster_render::DialogView {
+            title: "T".into(),
+            rows: vec![ruster_render::SettingRowView {
+                label: "OK".into(),
+                kind: ruster_render::ControlKind::Button,
+                value: String::new(),
+                selected: true,
+                editing: false,
+                help: String::new(),
+                swatch: None,
+            }],
+            footer: "f".into(),
+        };
+        DialogWidget::new(view).render(area, &mut buf);
+        let row: String = (0..area.width)
+            .filter_map(|x| buf.cell((x, 1)).map(|c| c.symbol().to_string()))
+            .collect();
+        assert!(row.contains("[ OK ]"), "button row was {row:?}");
+    }
+
     #[test]
     fn float_widget_paints_a_bordered_box_over_the_background() {
         let area = Rect::new(0, 0, 20, 6);

@@ -38,26 +38,96 @@ fn draw_text_cells<D: RaylibDraw>(
     }
 }
 
+/// A 1px border rectangle: `(x, y, w, h)`.
+type Edge = (i32, i32, i32, i32);
+
+/// The pixel geometry of a titled box, separated from the drawing so it can be
+/// checked without a window — which is the only way these properties get tested
+/// at all, since creating a GL context is not available in a unit test.
+#[derive(Debug, PartialEq, Eq)]
+struct BoxEdges {
+    /// The top rule, as one run when untitled and two when a title splits it.
+    top: Vec<Edge>,
+    left: Edge,
+    right: Edge,
+    bottom: Edge,
+    /// Where the title is drawn, when there is one.
+    label_at: Option<(i32, i32)>,
+}
+
+/// Lay out a bordered overlay box whose top edge carries the title.
+///
+/// `label_w` is the measured pixel width of the title, or `None` for an
+/// untitled box. Returns `None` when the rect is too small to draw a border in.
+///
+/// Every edge is a continuous 1px line, and the top one sits at the vertical
+/// middle of the header row — where a `─` glyph would render. Mixing the two (a
+/// glyph top rule, pixel sides) puts the horizontal half a row above where the
+/// verticals begin, so the corners never meet; drawing the sides as per-row `│`
+/// glyphs instead makes them a dashed line. Pixels for all four edges is the
+/// only combination that is both continuous and joined.
+fn box_edges(rect: Edge, line_h: i32, char_w: f32, label_w: Option<i32>) -> Option<BoxEdges> {
+    let (x, y, w, h) = rect;
+    if w < 4 || h < 2 * line_h {
+        return None;
+    }
+    let rule_y = y + line_h / 2;
+    let bottom_y = y + h - 1;
+    // Sides start on the rule, so each corner is a single joined pixel.
+    let side_h = (bottom_y - rule_y).max(0);
+
+    let (top, label_at) = match label_w {
+        Some(label_w) => {
+            let label_x = x + (2.0 * char_w) as i32;
+            let pad = (char_w * 0.5) as i32;
+            let gap_start = label_x - pad;
+            let gap_end = (label_x + label_w + pad).min(x + w);
+            let mut runs = vec![(x, rule_y, (gap_start - x).max(0), 1)];
+            // A title wide enough to reach the far edge leaves no second run.
+            if gap_end < x + w {
+                runs.push((gap_end, rule_y, x + w - gap_end, 1));
+            }
+            (runs, Some((label_x, y)))
+        }
+        None => (vec![(x, rule_y, w, 1)], None),
+    };
+
+    Some(BoxEdges {
+        top,
+        left: (x, rule_y, 1, side_h),
+        right: (x + w - 1, rule_y, 1, side_h),
+        bottom: (x, bottom_y, w, 1),
+        label_at,
+    })
+}
+
 /// Draw a bordered overlay box whose top edge carries the title, with the sides
 /// meeting that rule rather than starting beneath it. The GUI counterpart of the
-/// TUI's `titled_box`.
+/// TUI's `titled_box`. Geometry lives in [`box_edges`].
 fn draw_titled_box<D: RaylibDraw>(
     d: &mut D,
     m: TextMetrics<'_>,
-    rect: (i32, i32, i32, i32),
+    rect: Edge,
     line_h: i32,
-    label: &str,
+    label: Option<&str>,
     label_fg: Color,
     rule_fg: Color,
 ) {
-    let (x, y, w, h) = rect;
-    draw_ruled_header(d, m, (x, y), w, label, label_fg, rule_fg);
-    // Sides start below the header so nothing runs under the rule.
-    let side_y = y + line_h;
-    let side_h = (h - line_h).max(0);
-    d.draw_rectangle(x, side_y, 1, side_h, rule_fg);
-    d.draw_rectangle(x + w - 1, side_y, 1, side_h, rule_fg);
-    d.draw_rectangle(x, y + h - 1, w, 1, rule_fg);
+    let label = label.filter(|l| !l.is_empty());
+    let label_w = label.map(|l| m.font.measure_text(l, m.size as f32, 1.0).x as i32);
+    let Some(edges) = box_edges(rect, line_h, m.char_w, label_w) else {
+        return;
+    };
+
+    for (x, y, w, h) in edges.top {
+        d.draw_rectangle(x, y, w, h, rule_fg);
+    }
+    if let (Some(label), Some((lx, ly))) = (label, edges.label_at) {
+        d.draw_text_ex(m.font, label, Vector2::new(lx as f32, ly as f32), m.size as f32, 1.0, label_fg);
+    }
+    for (x, y, w, h) in [edges.left, edges.right, edges.bottom] {
+        d.draw_rectangle(x, y, w, h, rule_fg);
+    }
 }
 
 /// Draw the standard panel header — `─ label ─` then ruled to the full width.
@@ -111,7 +181,13 @@ pub struct RaylibRenderer {
     /// Top visible line of the Settings overlay, persisted across frames so the
     /// list scrolls like a normal widget (holds until the selection hits an edge).
     settings_scroll: usize,
+    picker_scroll: usize,
     event_buffer: Vec<KeyEvent>,
+    /// Where to write the next frame, set by `request_screenshot` and consumed
+    /// at the end of `render_frame`.
+    pending_screenshot: Option<std::path::PathBuf>,
+    /// The result of that capture, waiting to be polled by the run loop.
+    screenshot_result: Option<Result<std::path::PathBuf, String>>,
 }
 
 /// Map a render-neutral color to a raylib color, using `fallback` for `Default`.
@@ -280,7 +356,25 @@ impl RaylibRenderer {
             theme: gui.theme,
             font_sig: (font_override.map(str::to_string), gui.font_size),
             settings_scroll: 0,
+            picker_scroll: 0,
             event_buffer: Vec::new(),
+            pending_screenshot: None,
+            screenshot_result: None,
+        }
+    }
+
+    /// Read the framebuffer and write it out as a PNG.
+    ///
+    /// Only ever called with the draw handle dropped, so the frame is complete.
+    fn capture_screen(&self, path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+        let name = path.to_str().ok_or_else(|| format!("{} is not valid UTF-8", path.display()))?;
+        self.rl.load_image_from_screen(&self.thread).export_image(name);
+        // raylib reports a failed export only through its own log, so confirm
+        // the file arrived rather than claiming a save that never happened.
+        if path.is_file() {
+            Ok(path.to_path_buf())
+        } else {
+            Err(format!("could not write {}", path.display()))
         }
     }
 
@@ -767,10 +861,12 @@ impl Renderer for RaylibRenderer {
             if has_preview {
                 d.draw_rectangle(box_x + list_w, box_y, box_w - list_w, box_h, bg);
                 // Divider starts below the header, which rules across the top.
-                d.draw_rectangle(box_x + list_w, box_y + line_h, 1, box_h - line_h, accent);
+                // Meets the top rule at its midpoint, like the outer edges.
+                let div_y = box_y + line_h / 2;
+                d.draw_rectangle(box_x + list_w, div_y, 1, box_h - line_h / 2, accent);
             }
             // Drawn before the column scissors so it spans the whole box.
-            draw_titled_box(&mut d, metrics, (box_x, box_y, box_w, box_h), line_h, &picker.title, accent, divider);
+            draw_titled_box(&mut d, metrics, (box_x, box_y, box_w, box_h), line_h, Some(&picker.title), accent, divider);
             // List column — title, query, and rows, clipped to the list width
             // so long labels don't bleed across the divider into the preview.
             let list_clip_w = if has_preview { list_w } else { box_w };
@@ -783,7 +879,13 @@ impl Renderer for RaylibRenderer {
                 );
                 s.draw_text_ex(font, &format!(" > {}", picker.query), Vector2::new(box_x as f32 + 4.0, (box_y + line_h) as f32), font_size as f32, 1.0, default_color);
                 let max_visible = ((box_h - 2 * line_h) / line_h).max(0) as usize;
-                for (i, row) in picker.rows.iter().take(max_visible).enumerate() {
+                // Keep the selection on screen; a wrap to the last item has to
+                // take the view with it.
+                let sel = picker.rows.iter().position(|r| r.selected).unwrap_or(0);
+                self.picker_scroll = ruster_render::list_scroll(
+                    self.picker_scroll, sel, max_visible, picker.rows.len());
+                let pscroll = self.picker_scroll;
+                for (i, row) in picker.rows.iter().skip(pscroll).take(max_visible).enumerate() {
                     let ry = box_y + (2 + i as i32) * line_h;
                     if row.selected {
                         s.draw_rectangle(box_x, ry, list_clip_w, line_h, accent);
@@ -916,7 +1018,7 @@ impl Renderer for RaylibRenderer {
             let mut s = d.begin_scissor_mode(bx, by, bw, bh);
             s.draw_rectangle(bx, by, bw, bh, sbg);
             let title = format!("Settings{}", if settings.dirty { " [+]" } else { "" });
-            draw_titled_box(&mut s, metrics, (bx, by, bw, bh), line_h, &title, accent, divider);
+            draw_titled_box(&mut s, metrics, (bx, by, bw, bh), line_h, Some(&title), accent, divider);
 
             // Flatten groups into header/row lines.
             let mut lines: Vec<(bool, String, Option<&SettingRowView>)> = Vec::new();
@@ -934,7 +1036,7 @@ impl Renderer for RaylibRenderer {
             // overlap them; scroll like a normal list (hold until an edge).
             let body_rows = ((bh - 3 * line_h) / line_h).max(1) as usize;
             self.settings_scroll =
-                ruster_render::settings_scroll(self.settings_scroll, selected, body_rows, lines.len());
+                ruster_render::list_scroll(self.settings_scroll, selected, body_rows, lines.len());
             let scroll = self.settings_scroll;
             let value_x = (bx + (32.0 * char_w) as i32).min(bx + bw / 2);
 
@@ -981,7 +1083,7 @@ impl Renderer for RaylibRenderer {
             let dx = (screen_w - dw) / 2;
             let dy = (screen_h - dh) / 2;
             d.draw_rectangle(dx, dy, dw, dh, bg);
-            draw_titled_box(&mut d, metrics, (dx, dy, dw, dh), line_h, &dlg.title, accent, divider);
+            draw_titled_box(&mut d, metrics, (dx, dy, dw, dh), line_h, Some(&dlg.title), accent, divider);
             let value_x = dx + (26.0 * char_w) as i32;
             for (i, r) in dlg.rows.iter().enumerate() {
                 let ry = dy + (1 + i as i32) * line_h;
@@ -996,10 +1098,15 @@ impl Renderer for RaylibRenderer {
                 if let Some(b) = rbg {
                     d.draw_rectangle(dx + 1, ry, dw - 2, line_h, b);
                 }
-                d.draw_text_ex(font, &r.label, Vector2::new((dx + 8) as f32, ry as f32), font_size as f32, 1.0, rfg);
                 let shown = ruster_render::control_display(r);
-                let vfg = if r.editing { accent } else { rfg };
-                d.draw_text_ex(font, &shown, Vector2::new(value_x as f32, ry as f32), font_size as f32, 1.0, vfg);
+                if r.kind == ruster_render::ControlKind::Button {
+                    // A button is one thing, not a label with a value beside it.
+                    d.draw_text_ex(font, &shown, Vector2::new((dx + 8) as f32, ry as f32), font_size as f32, 1.0, rfg);
+                } else {
+                    d.draw_text_ex(font, &r.label, Vector2::new((dx + 8) as f32, ry as f32), font_size as f32, 1.0, rfg);
+                    let vfg = if r.editing { accent } else { rfg };
+                    d.draw_text_ex(font, &shown, Vector2::new(value_x as f32, ry as f32), font_size as f32, 1.0, vfg);
+                }
             }
             let fy = dy + dh - 2 * line_h;
             d.draw_text_ex(font, &dlg.footer, Vector2::new((dx + 8) as f32, fy as f32), font_size as f32, 1.0, gutter_color);
@@ -1016,17 +1123,17 @@ impl Renderer for RaylibRenderer {
             let fh = f.rect.height as i32 * line_h;
             d.draw_rectangle(fx, fy, fw, fh, bg);
             if f.border {
-                d.draw_rectangle_lines(fx, fy, fw, fh, accent);
-                if let Some(title) = &f.title {
-                    d.draw_text_ex(
-                        font,
-                        title,
-                        Vector2::new((fx + (2.0 * char_w) as i32) as f32, fy as f32),
-                        font_size as f32,
-                        1.0,
-                        accent,
-                    );
-                }
+                // Same box as every other overlay, so a float's title sits in a
+                // gap in its top edge rather than painted over the border.
+                draw_titled_box(
+                    &mut d,
+                    metrics,
+                    (fx, fy, fw, fh),
+                    line_h,
+                    f.title.as_deref(),
+                    accent,
+                    accent,
+                );
             }
             let inner = f.inner();
             let ix = pad_x + (inner.x as f32 * char_w) as i32;
@@ -1055,6 +1162,23 @@ impl Renderer for RaylibRenderer {
                 draw_text_cells(&mut s, metrics, (ix as f32, ly as f32), &chars, &char_colors);
             }
         }
+
+        // The draw handle holds `&mut self.rl` and ends the frame when it drops,
+        // so the capture has to wait for it — reading the framebuffer while it
+        // is alive would catch a half-drawn screen.
+        drop(d);
+        if let Some(path) = self.pending_screenshot.take() {
+            self.screenshot_result = Some(self.capture_screen(&path));
+        }
+    }
+
+    fn request_screenshot(&mut self, path: &std::path::Path) -> bool {
+        self.pending_screenshot = Some(path.to_path_buf());
+        true
+    }
+
+    fn poll_screenshot(&mut self) -> Option<Result<std::path::PathBuf, String>> {
+        self.screenshot_result.take()
     }
 
     fn poll_input(&mut self) -> Option<KeyEvent> {
@@ -1088,7 +1212,79 @@ impl Renderer for RaylibRenderer {
 
 #[cfg(test)]
 mod tests {
-    use super::RaylibRenderer;
+    use super::{box_edges, RaylibRenderer};
+
+    /// Metrics matching the shipped defaults, so the numbers below are the ones
+    /// the GUI actually uses.
+    const LINE_H: i32 = 20;
+    const CHAR_W: f32 = 10.0;
+
+    /// A titled float: 200px wide at (100, 50), 6 rows tall, title 40px wide.
+    fn titled() -> super::BoxEdges {
+        box_edges((100, 50, 200, 6 * LINE_H), LINE_H, CHAR_W, Some(40)).expect("big enough")
+    }
+
+    /// The regression this whole rework was for: the sides used to begin below
+    /// the top rule, leaving both upper corners visibly open.
+    #[test]
+    fn all_four_corners_meet() {
+        let e = titled();
+        let rule_y = e.top[0].1;
+        let (lx, ly, _, lh) = e.left;
+        let (rx, ry, _, rh) = e.right;
+        let (bx, by, bw, _) = e.bottom;
+
+        // Sides start *on* the rule row, not under it.
+        assert_eq!(ly, rule_y, "left side starts on the top rule");
+        assert_eq!(ry, rule_y, "right side starts on the top rule");
+        // And run down to the bottom rule, which spans the full width.
+        assert_eq!(ly + lh, by, "left side reaches the bottom rule");
+        assert_eq!(ry + rh, by, "right side reaches the bottom rule");
+        assert_eq!((bx, bx + bw), (lx, rx + 1), "bottom spans both sides");
+    }
+
+    /// An untitled float — which is every float the editor draws today, the
+    /// hover popup being the only one — gets one unbroken line, not a run of
+    /// glyphs with gaps between them.
+    #[test]
+    fn an_untitled_box_has_one_continuous_top_rule() {
+        let e = box_edges((0, 0, 200, 6 * LINE_H), LINE_H, CHAR_W, None).expect("big enough");
+        assert_eq!(e.top, vec![(0, LINE_H / 2, 200, 1)], "a single full-width run");
+        assert_eq!(e.label_at, None);
+    }
+
+    /// A title interrupts the rule and nothing else: the two runs plus the gap
+    /// must tile the full width exactly, with no overlap and no missing pixels.
+    #[test]
+    fn a_title_splits_the_rule_without_shortening_it() {
+        let e = titled();
+        assert_eq!(e.top.len(), 2, "a left stub and a run past the title");
+        let (x0, y0, w0, _) = e.top[0];
+        let (x1, y1, w1, _) = e.top[1];
+        assert_eq!(y0, y1, "both runs sit on the same row");
+        assert_eq!(x0, 100, "the left stub starts at the left edge");
+        assert_eq!(x1 + w1, 300, "the right run ends at the right edge");
+        // The gap is exactly the title plus its padding — the label sits in it.
+        let (label_x, label_y) = e.label_at.expect("titled");
+        assert!(x0 + w0 <= label_x && label_x + 40 <= x1, "the title fits the gap");
+        assert_eq!(label_y, 50, "the title is drawn on the header row, above the rule");
+    }
+
+    /// A title too wide for the box must not produce a negative-width run that
+    /// draws backwards across the border.
+    #[test]
+    fn an_overlong_title_drops_the_right_hand_run() {
+        let e = box_edges((0, 0, 100, 6 * LINE_H), LINE_H, CHAR_W, Some(500)).expect("big enough");
+        assert_eq!(e.top.len(), 1, "no run past the title");
+        assert!(e.top[0].2 >= 0, "and the stub is never negative");
+    }
+
+    /// Too small to hold a border: draw nothing rather than overlapping edges.
+    #[test]
+    fn a_box_with_no_room_for_a_border_is_skipped() {
+        assert!(box_edges((0, 0, 3, 100), LINE_H, CHAR_W, None).is_none(), "too narrow");
+        assert!(box_edges((0, 0, 100, LINE_H), LINE_H, CHAR_W, None).is_none(), "too short");
+    }
 
     /// Every glyph the editor draws has to be baked into the font atlas, or
     /// raylib substitutes `?` — a failure that shows up only in the GUI, never
