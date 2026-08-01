@@ -166,6 +166,11 @@ Press `SPC` in Normal mode; the which-key panel lists continuations.
 | `SPC o m` | Open messages buffer (`:messages`) |
 | `SPC o r` | Run a `ruster.toml` task (picker) |
 | `SPC p p` | Switch project (`:projects`) |
+| `SPC d d` | Start debugging (`:debug`) |
+| `SPC d b` | Toggle breakpoint |
+| `SPC d c` | Continue |
+| `SPC d n` / `SPC d i` / `SPC d o` | Step over / into / out |
+| `SPC d q` | Stop debugging |
 | `SPC u n` / `SPC u r` | Toggle line / relative numbers |
 | `SPC q q` | Quit |
 | `SPC q w` | Save and quit |
@@ -239,6 +244,38 @@ colored by severity). The **quickfix list** collects them for navigation.
 | `:copen` (`:cwindow`) | Open the quickfix list as a picker; Enter jumps to an entry |
 | `:cnext` / `:cn` (or `]q`) | Jump to the next quickfix entry |
 | `:cprev` / `:cp` (or `[q`) | Jump to the previous quickfix entry |
+
+### Debugger (DAP)
+Breakpoints show as `●` in the sign column. While a session is stopped, an overlay
+lists the call stack and the current scopes.
+
+The adapter is chosen from the **current file's language** — `lldb-vscode` for Rust,
+`debugpy` for Python, `dlv dap` for Go. Set `dap.adapter` to override the program;
+if no adapter matches the language, `:debug` says so rather than failing silently.
+The adapter must be installed and on `PATH`.
+
+| Command | Action |
+|---------|--------|
+| `:debug` / `:db` (or `SPC d d`) | Start a debug session for the current file's language |
+| `:db_toggle` / `:B` (or `SPC d b`, `F2`) | Toggle a breakpoint on the current line |
+| `:db_continue` / `:continue` (or `SPC d c`, `F5`) | Continue execution |
+| `:db_next` (or `SPC d n`, `F10`) | Step over |
+| `:db_stepin` (or `SPC d i`, `F11`) | Step into |
+| `:db_stepout` / `:finish` (or `SPC d o`, `F12`) | Step out |
+| `:db_stop` (or `SPC d q`, `Shift-F5`) | Stop the session |
+
+While a session is active, `:n` and `:s` are aliases for step-over and step-into.
+The `:db_*` names always work and are never shadowed.
+
+### Function keys
+| Key | Action |
+|-----|--------|
+| `F2` | Toggle breakpoint |
+| `F5` / `Shift-F5` | Continue / stop debugging |
+| `F6` | Run tests (`:test`) |
+| `F7` | Build (`:build`) |
+| `F9` | Run a task (`:task`) |
+| `F10` / `F11` / `F12` | Step over / into / out |
 
 ### Editing
 | Command | Action |
