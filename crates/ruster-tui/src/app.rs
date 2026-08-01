@@ -299,6 +299,38 @@ fn resolve_path(raw: &str, base_dir: &std::path::Path) -> std::path::PathBuf {
     }
 }
 
+/// The first `ruster-NNN.png` in `dir` that does not exist yet, so repeated
+/// `:screenshot` calls accumulate instead of overwriting one file.
+fn next_screenshot_path(dir: &std::path::Path) -> PathBuf {
+    (1u32..)
+        .map(|n| dir.join(format!("ruster-{n:03}.png")))
+        .find(|p| !p.exists())
+        // Unreachable short of four billion screenshots, but a fallback keeps
+        // this total rather than panicking on an exhausted range.
+        .unwrap_or_else(|| dir.join("ruster.png"))
+}
+
+/// Where `:screenshot [arg]` should write, resolved against `cwd`.
+///
+/// An absent argument, or one naming an existing directory, picks a fresh
+/// numbered file there. The extension is forced to `.png` because the backend
+/// chooses its encoder from it, and any other suffix would produce a file
+/// nothing can open.
+fn screenshot_path(arg: Option<&str>, cwd: &std::path::Path) -> PathBuf {
+    let Some(arg) = arg.map(str::trim).filter(|s| !s.is_empty()) else {
+        return next_screenshot_path(cwd);
+    };
+    let mut p = resolve_path(arg, cwd);
+    if p.is_dir() {
+        return next_screenshot_path(&p);
+    }
+    if p.extension().is_none_or(|e| !e.eq_ignore_ascii_case("png")) {
+        let name = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        p.set_file_name(format!("{name}.png"));
+    }
+    p
+}
+
 /// State for cmdline path completion (Tab/Shift-Tab cycling).
 struct CmdlineCompletion {
     /// The original text before completion started.
@@ -539,6 +571,9 @@ enum CmdAction {
     Themes,
     /// Resize the sidebar to N columns (`:Sidebar resize N`).
     SidebarResize(u16),
+    /// Save an image of the screen (`:screenshot [path]`). `None` picks the
+    /// next free `ruster-NNN.png` in the working directory.
+    Screenshot(Option<String>),
     /// Toggle the Noice notification-stack panel (`:Noice`).
     NoicePanel,
     /// Open the Noice split history buffer (`:Noice split` / `:Noice history`).
@@ -2589,6 +2624,21 @@ impl App {
             let (line, col) = self.cursor_line_col();
             self.cursor_anim.update(dt, col, line, self.config.cursor_anim_enabled, self.config.cursor_anim_speed);
             self.render();
+            // Reported here rather than at the command, so the message reflects
+            // the file that was actually written — and so the toast announcing
+            // the screenshot never appears *in* it.
+            if let Some(result) = self.renderer.poll_screenshot() {
+                use ruster_core::message::MessageLevel;
+                let (level, text) = match result {
+                    Ok(p) => (MessageLevel::Success, format!("Screenshot saved to {}", p.display())),
+                    Err(e) => (MessageLevel::Error, format!("Screenshot failed: {e}")),
+                };
+                self.notify.push(Notification::new(
+                    level,
+                    ruster_core::message::MessageSource::Echo,
+                    text,
+                ));
+            }
             if self.renderer.should_close() || self.should_quit { break; }
             // No sleep here: raylib paces the loop from `gui.target_fps`
             // (see RaylibRenderer::set_gui_config). A fixed sleep on top of
@@ -3860,6 +3910,13 @@ impl App {
             "Themes" | "themes" | "theme" => Ok(CmdAction::Themes),
             _ if trimmed == "sidebar" => Ok(CmdAction::Sidebar),
             _ if let Some(n) = trimmed.strip_prefix("sidebar resize ").and_then(|s| s.trim().parse::<u16>().ok()) => Ok(CmdAction::SidebarResize(n)),
+            "screenshot" | "Screenshot" => Ok(CmdAction::Screenshot(None)),
+            _ if let Some(rest) = trimmed
+                .strip_prefix("screenshot ")
+                .or_else(|| trimmed.strip_prefix("Screenshot ")) =>
+            {
+                Ok(CmdAction::Screenshot(Some(rest.trim().to_string())))
+            }
             "Noice" | "noice" => Ok(CmdAction::NoicePanel),
             _ if trimmed.starts_with("Noice ") || trimmed.starts_with("noice ") => {
                 let sub = trimmed.split_once(' ').map(|x| x.1).unwrap_or("").trim().to_string();
@@ -3991,6 +4048,19 @@ impl App {
             CmdAction::Sidebar => self.toggle_sidebar(),
             CmdAction::SidebarResize(n) => {
                 self.sidebar.set_width(n);
+            }
+            CmdAction::Screenshot(arg) => {
+                let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                let path = screenshot_path(arg.as_deref(), &cwd);
+                if !self.renderer.request_screenshot(&path) {
+                    self.notify.push(Notification::new(
+                        ruster_core::message::MessageLevel::Warning,
+                        ruster_core::message::MessageSource::Echo,
+                        "Screenshots need the GUI backend — run `just gui`".to_string(),
+                    ));
+                }
+                // On success there is nothing to say yet: the capture happens
+                // after the next frame, and `run_gui` reports the outcome.
             }
             CmdAction::DebugStart => self.debug_start(),
             CmdAction::DebugContinue => self.debug_continue(),
@@ -8150,5 +8220,94 @@ mod tests {
         assert_eq!(a.buffer_offset_at(after.x, after.y).map(|(_, o)| o), Some(0));
         // A click in the sidebar column is not buffer text.
         assert_eq!(a.buffer_offset_at(before, after.y), None);
+    }
+
+    static SHOT_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    /// A unique empty temp dir per call, so these stay parallel-safe.
+    fn shot_dir() -> PathBuf {
+        let id = SHOT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("ruster_shot_{id}"));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn a_bare_screenshot_numbers_from_one_in_the_working_directory() {
+        let dir = shot_dir();
+        assert_eq!(screenshot_path(None, &dir), dir.join("ruster-001.png"));
+        // Blank and whitespace-only arguments mean the same as none at all.
+        assert_eq!(screenshot_path(Some("   "), &dir), dir.join("ruster-001.png"));
+    }
+
+    /// Two screenshots in a row must not silently overwrite the first.
+    #[test]
+    fn numbering_skips_files_that_already_exist() {
+        let dir = shot_dir();
+        std::fs::write(dir.join("ruster-001.png"), "x").unwrap();
+        std::fs::write(dir.join("ruster-002.png"), "x").unwrap();
+        assert_eq!(screenshot_path(None, &dir), dir.join("ruster-003.png"));
+    }
+
+    #[test]
+    fn a_relative_argument_resolves_against_the_working_directory() {
+        let dir = shot_dir();
+        assert_eq!(screenshot_path(Some("shot.png"), &dir), dir.join("shot.png"));
+        assert_eq!(screenshot_path(Some("sub/shot.png"), &dir), dir.join("sub/shot.png"));
+    }
+
+    #[test]
+    fn an_absolute_argument_is_left_alone() {
+        let dir = shot_dir();
+        let abs = dir.join("elsewhere.png");
+        assert_eq!(
+            screenshot_path(Some(abs.to_str().unwrap()), std::path::Path::new("/nowhere")),
+            abs
+        );
+    }
+
+    /// The backend picks its encoder from the extension, so anything else would
+    /// write a file that no viewer can open.
+    #[test]
+    fn a_non_png_argument_gains_the_extension() {
+        let dir = shot_dir();
+        assert_eq!(screenshot_path(Some("shot"), &dir), dir.join("shot.png"));
+        assert_eq!(screenshot_path(Some("shot.jpg"), &dir), dir.join("shot.jpg.png"));
+        // Already a PNG, in any case: left exactly as typed.
+        assert_eq!(screenshot_path(Some("shot.PNG"), &dir), dir.join("shot.PNG"));
+    }
+
+    /// `:screenshot ~/Pictures` names a folder, not a file to be clobbered.
+    #[test]
+    fn a_directory_argument_gets_a_numbered_file_inside_it() {
+        let dir = shot_dir();
+        let sub = dir.join("pics");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(screenshot_path(Some("pics"), &dir), sub.join("ruster-001.png"));
+    }
+
+    #[test]
+    fn screenshot_parses_with_and_without_a_path() {
+        let a = App::new("content".into(), PathBuf::from("f.txt"));
+        assert_eq!(a.parse_cmdline(":screenshot"), Ok(CmdAction::Screenshot(None)));
+        assert_eq!(a.parse_cmdline(":Screenshot"), Ok(CmdAction::Screenshot(None)));
+        assert_eq!(
+            a.parse_cmdline(":screenshot ~/x.png"),
+            Ok(CmdAction::Screenshot(Some("~/x.png".to_string())))
+        );
+    }
+
+    /// The TUI cannot produce an image, and must say so rather than appear to
+    /// have saved one.
+    #[test]
+    fn screenshot_on_a_backend_without_support_warns() {
+        let target = shot_dir().join("unsupported.png");
+        let mut a = App::new("content".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::Screenshot(Some(target.to_string_lossy().into_owned())));
+        let last = a.notify.history().last().expect("a message was pushed");
+        assert_eq!(last.level, ruster_core::message::MessageLevel::Warning);
+        assert!(last.text.contains("GUI backend"), "{:?}", last.text);
+        assert!(!target.exists(), "nothing was written");
     }
 }

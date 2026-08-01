@@ -855,6 +855,28 @@ pub trait Renderer {
     /// Re-apply GUI metrics + theme (and reload the font) at runtime, for live
     /// re-theming from the Settings page. Default no-op (e.g. the TUI backend).
     fn set_gui_config(&mut self, _gui: &GuiConfig, _font: Option<&str>) {}
+
+    /// Ask for an image of the screen to be written to `path`, returning whether
+    /// this backend can produce one at all.
+    ///
+    /// Deliberately *deferred* rather than immediate: a backend captures by
+    /// reading its framebuffer, and this is called from command handling —
+    /// between frames, where the buffer holds a stale frame or nothing. The
+    /// capture therefore happens at the end of the next [`render_frame`], so
+    /// what lands on disk is a frame that was actually drawn.
+    ///
+    /// [`render_frame`]: Renderer::render_frame
+    fn request_screenshot(&mut self, _path: &std::path::Path) -> bool {
+        false
+    }
+
+    /// The outcome of a [`request_screenshot`], once the frame it captured has
+    /// been drawn — `None` until then, and once taken it does not repeat.
+    ///
+    /// [`request_screenshot`]: Renderer::request_screenshot
+    fn poll_screenshot(&mut self) -> Option<Result<std::path::PathBuf, String>> {
+        None
+    }
 }
 
 #[cfg(test)]

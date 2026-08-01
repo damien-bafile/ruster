@@ -150,6 +150,11 @@ pub struct RaylibRenderer {
     settings_scroll: usize,
     picker_scroll: usize,
     event_buffer: Vec<KeyEvent>,
+    /// Where to write the next frame, set by `request_screenshot` and consumed
+    /// at the end of `render_frame`.
+    pending_screenshot: Option<std::path::PathBuf>,
+    /// The result of that capture, waiting to be polled by the run loop.
+    screenshot_result: Option<Result<std::path::PathBuf, String>>,
 }
 
 /// Map a render-neutral color to a raylib color, using `fallback` for `Default`.
@@ -320,6 +325,23 @@ impl RaylibRenderer {
             settings_scroll: 0,
             picker_scroll: 0,
             event_buffer: Vec::new(),
+            pending_screenshot: None,
+            screenshot_result: None,
+        }
+    }
+
+    /// Read the framebuffer and write it out as a PNG.
+    ///
+    /// Only ever called with the draw handle dropped, so the frame is complete.
+    fn capture_screen(&self, path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+        let name = path.to_str().ok_or_else(|| format!("{} is not valid UTF-8", path.display()))?;
+        self.rl.load_image_from_screen(&self.thread).export_image(name);
+        // raylib reports a failed export only through its own log, so confirm
+        // the file arrived rather than claiming a save that never happened.
+        if path.is_file() {
+            Ok(path.to_path_buf())
+        } else {
+            Err(format!("could not write {}", path.display()))
         }
     }
 
@@ -1107,6 +1129,23 @@ impl Renderer for RaylibRenderer {
                 draw_text_cells(&mut s, metrics, (ix as f32, ly as f32), &chars, &char_colors);
             }
         }
+
+        // The draw handle holds `&mut self.rl` and ends the frame when it drops,
+        // so the capture has to wait for it — reading the framebuffer while it
+        // is alive would catch a half-drawn screen.
+        drop(d);
+        if let Some(path) = self.pending_screenshot.take() {
+            self.screenshot_result = Some(self.capture_screen(&path));
+        }
+    }
+
+    fn request_screenshot(&mut self, path: &std::path::Path) -> bool {
+        self.pending_screenshot = Some(path.to_path_buf());
+        true
+    }
+
+    fn poll_screenshot(&mut self) -> Option<Result<std::path::PathBuf, String>> {
+        self.screenshot_result.take()
     }
 
     fn poll_input(&mut self) -> Option<KeyEvent> {
