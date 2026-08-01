@@ -1294,6 +1294,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ruster-git"
+version = "0.1.0"
+
+[[package]]
 name = "ruster-lsp"
 version = "0.1.0"
 dependencies = [
@@ -1382,6 +1386,7 @@ dependencies = [
  "ratatui",
  "ruster-core",
  "ruster-dap",
+ "ruster-git",
  "ruster-lsp",
  "ruster-lua",
  "ruster-notify",

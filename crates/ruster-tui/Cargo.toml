@@ -13,6 +13,7 @@ ruster-syntax = { path = "../ruster-syntax" }
 ruster-lua = { path = "../ruster-lua" }
 ruster-lsp = { path = "../ruster-lsp" }
 ruster-terminal = { path = "../ruster-terminal" }
+ruster-git = { path = "../ruster-git" }
 ruster-project = { path = "../ruster-project" }
 ruster-dap = { path = "../ruster-dap" }
 ruster-notify = { path = "../ruster-notify" }

@@ -520,6 +520,7 @@ enum CmdAction {
     Projects,
     /// Toggle the file-explorer sidebar (`:sidebar`).
     Sidebar,
+    GitsignsToggle,
     /// Resize the sidebar to N columns (`:Sidebar resize N`).
     SidebarResize(u16),
     /// Toggle the Noice notification-stack panel (`:Noice`).
@@ -1064,6 +1065,13 @@ pub struct App {
     runner_kind: RunnerKind,
     /// Per-file gutter signs from the last test run (✓/✗), merged with diagnostics.
     result_signs: std::collections::HashMap<PathBuf, ruster_render::SignsView>,
+    /// Git hunks per buffer, refreshed in the background on open and on save.
+    git_hunks: std::collections::HashMap<BufferId, Vec<ruster_git::Hunk>>,
+    /// Results from the background `git diff` workers.
+    git_rx: std::sync::mpsc::Receiver<(BufferId, Vec<ruster_git::Hunk>)>,
+    git_tx: std::sync::mpsc::Sender<(BufferId, Vec<ruster_git::Hunk>)>,
+    /// `git.signs` — whether the gutter shows git status at all.
+    git_signs: bool,
     /// Floating boxes drawn above the windows this frame. Rebuilt per frame by
     /// whatever owns them; empty most of the time.
     floats: Vec<ruster_render::FloatView>,
@@ -1358,6 +1366,8 @@ impl App {
                 ruster_project::record_recent(state_dir, root, 30);
             }
         }
+        let (git_tx_init, git_rx_init) = std::sync::mpsc::channel();
+        let git_signs_init = config.git_signs;
         let mut notify = NotificationManager::new(ruster_notify::NoiceSettings {
             mini_enabled: config.noice.mini_enabled,
             notify_enabled: config.noice.notify_enabled,
@@ -1430,6 +1440,10 @@ impl App {
             runner_output: String::new(),
             runner_kind: RunnerKind::Build,
             result_signs: std::collections::HashMap::new(),
+            git_hunks: std::collections::HashMap::new(),
+            git_rx: git_rx_init,
+            git_tx: git_tx_init,
+            git_signs: git_signs_init,
             floats: Vec::new(),
             sidebar: SidebarState::new(),
             messages: ruster_core::message::MessageLog::new(),
@@ -1442,6 +1456,8 @@ impl App {
             show_noice_panel: false,
         };
         // Create background buffers (pinned, not navigated to).
+        let initial = app.ws.borrow().active_buffer();
+        app.refresh_git_hunks(initial);
         app.ensure_dashboard_buffer();
         app.ensure_messages_buffer();
         // Auto-open sidebar if configured and a project root is detected.
@@ -1602,6 +1618,8 @@ impl App {
             if let Some(open) = self.bracket_pending.take() {
                 if matches!(ck.code, KeyCode::Char('q')) {
                     if open == ']' { self.quickfix_next() } else { self.quickfix_prev() }
+                } else if matches!(ck.code, KeyCode::Char('h')) {
+                    self.jump_hunk(open == ']');
                 } else {
                     self.feed_key_to_vim(KeyCode::Char(open));
                     self.feed_key_to_vim(ck.code);
@@ -3139,6 +3157,7 @@ impl App {
 
     fn render(&mut self) {
         self.notify.tick();
+        self.drain_git_hunks();
         self.drain_pending_results();
         self.drain_build_runner();
         self.drain_debug_events();
@@ -3370,11 +3389,16 @@ impl App {
                 let signs = if terminal.is_some() {
                     ruster_render::SignsView::default()
                 } else {
-                    let mut s = self
-                        .diagnostics
-                        .get(&buf_id)
-                        .map(|d| diagnostics_to_signs(d))
-                        .unwrap_or_default();
+                    // Git status is the weakest signal: a diagnostic or a
+                    // breakpoint on the same line matters more, and later signs
+                    // win, so these go in first.
+                    let mut s = self.git_signs_for(buf_id);
+                    if let Some(diag) =
+                        self.diagnostics.get(&buf_id).map(|d| diagnostics_to_signs(d))
+                    {
+                        s.width = s.width.max(diag.width);
+                        s.signs.extend(diag.signs);
+                    }
                     if !self.result_signs.is_empty() {
                         if let Some(p) =
                             self.ws.borrow().buffers.get(buf_id).and_then(|d| d.file_path.clone())
@@ -3729,6 +3753,7 @@ impl App {
             "db_stepout" | "finish" if self.debug_session.is_some() => Ok(CmdAction::DebugStepOut),
             "db_stop" if self.debug_session.is_some() => Ok(CmdAction::DebugStop),
             "db_toggle" | "B" => Ok(CmdAction::DebugToggleBreakpoint),
+            "Gitsigns" | "gitsigns" => Ok(CmdAction::GitsignsToggle),
             _ if trimmed == "sidebar" => Ok(CmdAction::Sidebar),
             _ if let Some(n) = trimmed.strip_prefix("sidebar resize ").and_then(|s| s.trim().parse::<u16>().ok()) => Ok(CmdAction::SidebarResize(n)),
             "Noice" | "noice" => Ok(CmdAction::NoicePanel),
@@ -3845,6 +3870,17 @@ impl App {
             CmdAction::Messages => self.open_messages(),
             CmdAction::MessagesFilter(filter) => self.apply_messages_filter(&filter),
             CmdAction::Projects => self.open_projects(),
+            CmdAction::GitsignsToggle => {
+                self.git_signs = !self.git_signs;
+                if self.git_signs {
+                    let id = self.ws.borrow().active_buffer();
+                    self.refresh_git_hunks(id);
+                    self.echo("Git signs on");
+                } else {
+                    self.git_hunks.clear();
+                    self.echo("Git signs off");
+                }
+            }
             CmdAction::Sidebar => self.toggle_sidebar(),
             CmdAction::SidebarResize(n) => {
                 self.sidebar.set_width(n);
@@ -4751,6 +4787,93 @@ impl App {
 
     /// Delete the active buffer, switching the active window to another open
     /// buffer first. Refuses when it is the only buffer, or when it is modified.
+    /// Signs for `buf_id`'s git hunks: `+` added, `~` modified, `_` removed.
+    ///
+    /// Empty when `git.signs` is off or the buffer has no hunks, which is the
+    /// common case and must cost nothing.
+    fn git_signs_for(&self, buf_id: BufferId) -> ruster_render::SignsView {
+        if !self.git_signs {
+            return ruster_render::SignsView::default();
+        }
+        let Some(hunks) = self.git_hunks.get(&buf_id) else {
+            return ruster_render::SignsView::default();
+        };
+        if hunks.is_empty() {
+            return ruster_render::SignsView::default();
+        }
+        let mut signs: Vec<(u16, char, ruster_render::Color)> = Vec::new();
+        for h in hunks {
+            let (glyph, color) = match h.kind {
+                ruster_git::HunkKind::Added => ('+', ruster_render::Color::Rgb(166, 227, 161)),
+                ruster_git::HunkKind::Modified => ('~', ruster_render::Color::Rgb(249, 226, 175)),
+                ruster_git::HunkKind::Removed => ('_', ruster_render::Color::Rgb(243, 139, 168)),
+            };
+            match h.kind {
+                // A deletion has no lines of its own — mark the boundary.
+                ruster_git::HunkKind::Removed => signs.push((h.start as u16, glyph, color)),
+                _ => signs.extend(h.lines().map(|l| (l as u16, glyph, color))),
+            }
+        }
+        ruster_render::SignsView { width: 1, signs }
+    }
+
+    /// Kick off a background `git diff` for `buf_id`.
+    ///
+    /// Non-blocking like the LSP and runner paths: a thread writes back through
+    /// an mpsc channel that `render` drains. Silently does nothing when the file
+    /// is untracked, outside a repo, or git is missing.
+    fn refresh_git_hunks(&mut self, buf_id: BufferId) {
+        if !self.git_signs {
+            return;
+        }
+        let Some(path) = self.ws.borrow().buffers.get(buf_id).and_then(|d| d.file_path.clone())
+        else {
+            return;
+        };
+        let root = match self.project_root.clone() {
+            Some(r) => r,
+            None => match path.parent() {
+                Some(p) => p.to_path_buf(),
+                None => return,
+            },
+        };
+        let tx = self.git_tx.clone();
+        std::thread::spawn(move || {
+            if let Some(hunks) = ruster_git::diff_hunks(&root, &path) {
+                let _ = tx.send((buf_id, hunks));
+            }
+        });
+    }
+
+    /// Take whatever the git workers finished since the last frame.
+    fn drain_git_hunks(&mut self) {
+        while let Ok((id, hunks)) = self.git_rx.try_recv() {
+            self.git_hunks.insert(id, hunks);
+        }
+    }
+
+    /// `]h` / `[h` — jump to the next/previous hunk, wrapping.
+    fn jump_hunk(&mut self, forward: bool) {
+        let buf_id = self.ws.borrow().active_buffer();
+        let Some(hunks) = self.git_hunks.get(&buf_id).filter(|h| !h.is_empty()).cloned() else {
+            self.echo("No git hunks");
+            return;
+        };
+        let line = {
+            let w = self.ws.borrow();
+            w.buffer().char_to_line(w.primary_head()) as u32
+        };
+        let target = if forward {
+            ruster_git::next_hunk(&hunks, line)
+        } else {
+            ruster_git::prev_hunk(&hunks, line)
+        };
+        if let Some(h) = target {
+            let off = self.ws.borrow().buffer().line_start_char(h.start as usize);
+            self.ws.borrow_mut().execute(Action::Move(Motion::To(off)));
+        }
+    }
+
     /// Drop every per-buffer cache keyed by `id`.
     ///
     /// Call this whenever a buffer is closed. Each of these maps is keyed by
@@ -4928,6 +5051,7 @@ impl App {
         let content = std::fs::read_to_string(path).unwrap_or_default();
         let id = self.ws.borrow_mut().buffers.open_file(path.to_path_buf(), content);
         self.ws.borrow_mut().set_active_buffer(id);
+        self.refresh_git_hunks(id);
         // Detect the project root for this file and update the cached root.
         let new_root = ruster_project::project_root(path);
         if new_root.is_some() && new_root != self.project_root {
@@ -5597,6 +5721,13 @@ impl App {
         }
     }
 
+    /// Re-diff the active buffer. Called after a write, when the file on disk
+    /// no longer matches what git last saw.
+    fn refresh_git_hunks_active(&mut self) {
+        let id = self.ws.borrow().active_buffer();
+        self.refresh_git_hunks(id);
+    }
+
     fn save_file(&mut self, force: bool) {
         // Format-on-save: format via LSP first, then write when the edits arrive.
         if self.config.format_on_save && !self.pending_format_save {
@@ -5639,6 +5770,8 @@ impl App {
             }
             Err(e) => { self.echo_error(format!("Error: {}", e)); },
         }
+        // The file on disk changed, so the diff against the index has too.
+        self.refresh_git_hunks_active();
         self.lua.fire_event_str("BufWritePost", &[path.to_str().unwrap_or("")]);
     }
 
@@ -6272,6 +6405,111 @@ mod tests {
 
     /// Closing a buffer must drop its per-buffer caches. None of these maps was
     /// cleaned up before, so they grew for the life of the session.
+    /// Git status is the weakest signal in the gutter: when a line is both
+    /// changed and carries a diagnostic, the diagnostic must win. Signs are
+    /// merged later-wins, so this pins the ordering.
+    #[test]
+    fn a_diagnostic_outranks_a_git_sign_on_the_same_line() {
+        let mut a = App::new("one\ntwo\nthree\n".into(), PathBuf::from("f.txt"));
+        let id = a.ws.borrow().active_buffer();
+        a.git_signs = true;
+        a.git_hunks.insert(
+            id,
+            vec![ruster_git::Hunk { kind: ruster_git::HunkKind::Modified, start: 1, count: 1 }],
+        );
+
+        // Line 1 is changed *and* has an error.
+        let signs = a.git_signs_for(id);
+        assert_eq!(signs.at(1).map(|(g, _)| g), Some('~'), "git sign alone shows");
+
+        let mut merged = signs;
+        merged.signs.push((1, 'E', ruster_render::Color::Rgb(243, 139, 168)));
+        assert_eq!(
+            merged.at(1).map(|(g, _)| g),
+            Some('E'),
+            "the diagnostic pushed later wins the line"
+        );
+    }
+
+    #[test]
+    fn git_signs_map_each_hunk_kind_to_its_glyph() {
+        let mut a = App::new("a\nb\nc\nd\ne\n".into(), PathBuf::from("f.txt"));
+        let id = a.ws.borrow().active_buffer();
+        a.git_signs = true;
+        a.git_hunks.insert(
+            id,
+            vec![
+                ruster_git::Hunk { kind: ruster_git::HunkKind::Added, start: 0, count: 2 },
+                ruster_git::Hunk { kind: ruster_git::HunkKind::Modified, start: 3, count: 1 },
+                ruster_git::Hunk { kind: ruster_git::HunkKind::Removed, start: 4, count: 0 },
+            ],
+        );
+        let s = a.git_signs_for(id);
+        assert_eq!(s.at(0).map(|(g, _)| g), Some('+'), "added spans its lines");
+        assert_eq!(s.at(1).map(|(g, _)| g), Some('+'));
+        assert_eq!(s.at(2), None, "unchanged line has no sign");
+        assert_eq!(s.at(3).map(|(g, _)| g), Some('~'));
+        assert_eq!(s.at(4).map(|(g, _)| g), Some('_'), "a deletion marks its boundary line");
+    }
+
+    #[test]
+    fn git_signs_disabled_produces_nothing() {
+        let mut a = App::new("x\n".into(), PathBuf::from("f.txt"));
+        let id = a.ws.borrow().active_buffer();
+        a.git_hunks.insert(
+            id,
+            vec![ruster_git::Hunk { kind: ruster_git::HunkKind::Added, start: 0, count: 1 }],
+        );
+        a.git_signs = false;
+        assert!(a.git_signs_for(id).signs.is_empty(), "git.signs = false draws nothing");
+    }
+
+    #[test]
+    fn gitsigns_command_toggles_and_clears() {
+        let mut a = App::new("x\n".into(), PathBuf::from("f.txt"));
+        let id = a.ws.borrow().active_buffer();
+        a.git_hunks.insert(
+            id,
+            vec![ruster_git::Hunk { kind: ruster_git::HunkKind::Added, start: 0, count: 1 }],
+        );
+        assert_eq!(a.parse_cmdline(":Gitsigns"), Ok(CmdAction::GitsignsToggle));
+        assert!(a.git_signs, "on by default");
+        a.apply_cmd(CmdAction::GitsignsToggle);
+        assert!(!a.git_signs);
+        assert!(a.git_hunks.is_empty(), "toggling off drops the cached hunks");
+    }
+
+    /// `]h` / `[h` move the cursor between hunks and wrap.
+    #[test]
+    fn bracket_h_jumps_between_git_hunks() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("l0\nl1\nl2\nl3\nl4\nl5\n".into(), PathBuf::from("f.txt"));
+        let id = a.ws.borrow().active_buffer();
+        a.git_signs = true;
+        a.git_hunks.insert(
+            id,
+            vec![
+                ruster_git::Hunk { kind: ruster_git::HunkKind::Modified, start: 1, count: 1 },
+                ruster_git::Hunk { kind: ruster_git::HunkKind::Added, start: 4, count: 1 },
+            ],
+        );
+        let line_of = |a: &App| {
+            let w = a.ws.borrow();
+            w.buffer().char_to_line(w.primary_head())
+        };
+
+        a.handle_key(CtKey::new(KeyCode::Char(']'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('h'), none));
+        assert_eq!(line_of(&a), 1, "]h goes to the first hunk");
+        a.handle_key(CtKey::new(KeyCode::Char(']'), none));
+        a.handle_key(CtKey::new(KeyCode::Char('h'), none));
+        assert_eq!(line_of(&a), 4, "]h advances");
+        a.handle_key(CtKey::new(KeyCode::Char('['), none));
+        a.handle_key(CtKey::new(KeyCode::Char('h'), none));
+        assert_eq!(line_of(&a), 1, "[h goes back");
+    }
+
     #[test]
     fn bdelete_forgets_the_buffers_caches() {
         let tmp = std::env::temp_dir().join("ruster_forget_caches");

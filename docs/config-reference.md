@@ -154,6 +154,7 @@ Keys are addressed as `group.key`.
 | `build.command` | string | _(detect)_ | Command for `:build`; empty detects from the project type |
 | `test.command` | string | _(detect)_ | Command for `:test`; empty detects from the project type |
 | `dap.adapter` | string | _(detect)_ | Debug adapter program for `:debug`; empty detects from the file's language |
+| `git.signs` | boolean | true | Mark added/changed/removed lines in the gutter |
 
 > Colors are **not** listed here — they live in [themes](#themes).
 
