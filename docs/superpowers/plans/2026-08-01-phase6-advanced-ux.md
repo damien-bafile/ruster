@@ -291,24 +291,24 @@ Completes the one partially-delivered Phase 6 item.
 - [ ] Synchronised scrolling between the two panes.
 - [ ] Tests: pane alignment across an unbalanced hunk.
 
-### Task 15: Load highlight queries from a user directory
+### Task 15: Load highlight queries from a user directory ✅
 
 Today **neither** grammars nor queries can be changed without a rebuild. `queries/` looks
 like runtime data but is build input — `crates/ruster-syntax/src/lib.rs` pulls each file in
 with `include_str!` (12 of them). This task moves the query half out; the grammar half is
 Task 16, because it costs far more.
 
-- [ ] Have `query_files_for_lang` check `~/.config/ruster/queries/<lang>/highlights.scm`
+- [x] Have `query_files_for_lang` check `~/.config/ruster/queries/<lang>/highlights.scm`
       (and `textobjects.scm`) first, falling back to the compiled-in copy. The theme loader
       already discovers `~/.config/ruster/themes/*.lua` this way — follow it rather than
       inventing a second discovery mechanism.
-- [ ] A malformed user query must not take the editor down: report it through the
+- [x] A malformed user query must not take the editor down: report it through the
       notification pipeline and fall back to the built-in, the way a bad `config.lua`
       already degrades.
-- [ ] Reload on `:e`/save of a query file, or expose `:SyntaxReload`. Requiring a restart to
+- [x] Reload on `:e`/save of a query file, or expose `:SyntaxReload`. Requiring a restart to
       test a capture rule defeats the point.
-- [ ] Document the directory and precedence in `docs/config-reference.md`.
-- [ ] Tests: user file wins over the built-in; a malformed file falls back rather than
+- [x] Document the directory and precedence in `docs/config-reference.md`.
+- [x] Tests: user file wins over the built-in; a malformed file falls back rather than
       panicking; an absent directory is the normal path and costs nothing.
 
 **Worth having on its own.** It makes highlighting editable and shareable for all 11

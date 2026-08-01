@@ -299,6 +299,19 @@ fn resolve_path(raw: &str, base_dir: &std::path::Path) -> std::path::PathBuf {
     }
 }
 
+/// Report a problem loading a user highlight query.
+///
+/// Warning rather than error: highlighting has already fallen back to the
+/// built-in query, so the editor still works — the user just isn't getting the
+/// customisation they asked for, and would otherwise have no way to know.
+fn push_query_warning(notify: &mut NotificationManager, text: String) {
+    notify.push(Notification::new(
+        ruster_core::message::MessageLevel::Warning,
+        ruster_core::message::MessageSource::System,
+        text,
+    ));
+    }
+
 /// The first `ruster-NNN.png` in `dir` that does not exist yet, so repeated
 /// `:screenshot` calls accumulate instead of overwriting one file.
 fn next_screenshot_path(dir: &std::path::Path) -> PathBuf {
@@ -571,6 +584,9 @@ enum CmdAction {
     Themes,
     /// Resize the sidebar to N columns (`:Sidebar resize N`).
     SidebarResize(u16),
+    /// Re-read highlight queries from disk and rebuild every engine
+    /// (`:SyntaxReload`), so editing a query does not need a restart.
+    SyntaxReload,
     /// Save an image of the screen (`:screenshot [path]`). `None` picks the
     /// next free `ruster-NNN.png` in the working directory.
     Screenshot(Option<String>),
@@ -1193,7 +1209,11 @@ impl App {
         // Highlight the LF-normalized buffer text, not the raw file bytes, so
         // CRLF files don't desync syntax spans from what's rendered.
         let normalized = ws.borrow().buffer().to_string();
+        // The notification manager does not exist yet, so hold any query
+        // problems until it does rather than dropping them.
+        let mut query_warnings: Vec<String> = Vec::new();
         if let Ok(engine) = SyntaxEngine::new(&normalized, ext) {
+            query_warnings.extend(engine.warnings().iter().cloned());
             syntax.insert(initial_buffer, engine);
         }
         let mut syntax_tried = std::collections::HashSet::new();
@@ -1530,6 +1550,9 @@ impl App {
         app.refresh_git_hunks(initial);
         app.ensure_dashboard_buffer();
         app.ensure_messages_buffer();
+        for w in query_warnings {
+            push_query_warning(&mut app.notify, w);
+        }
         // Auto-open sidebar if configured and a project root is detected.
         if app.config.sidebar_auto_open && app.project_root.is_some() {
             app.toggle_sidebar();
@@ -2764,6 +2787,9 @@ impl App {
             };
             if let Ok(mut engine) = SyntaxEngine::new(&content, &ext) {
                 engine.overlay_todo_highlights(&self.config.todo_keywords, todo_style());
+                for w in engine.warnings() {
+                    push_query_warning(&mut self.notify, w.clone());
+                }
                 self.syntax.insert(buf, engine);
             }
         }
@@ -2773,6 +2799,25 @@ impl App {
             // reparse rebuilds the cached lines, so the overlay has to be reapplied.
             engine.overlay_todo_highlights(&self.config.todo_keywords, todo_style());
         }
+    }
+
+    /// Re-read highlight queries from disk and rebuild every buffer's engine.
+    ///
+    /// Queries are read once when an engine is built, so without this an edit
+    /// to `~/.config/ruster/queries/…` would need a restart to see — which
+    /// defeats the point of making them editable. `syntax_tried` is cleared
+    /// too, or buffers whose engine previously failed to build would never be
+    /// retried against the corrected query.
+    fn syntax_reload(&mut self) {
+        let count = self.syntax.len();
+        self.syntax.clear();
+        self.syntax_tried.clear();
+        self.update_syntax();
+        self.notify.push(Notification::new(
+            ruster_core::message::MessageLevel::Info,
+            ruster_core::message::MessageSource::System,
+            format!("Reloaded highlight queries ({count} buffers)"),
+        ));
     }
 
     /// Every `TODO`-class marker in the open buffers, newest file first.
@@ -3909,6 +3954,7 @@ impl App {
             "Trouble" | "trouble" => Ok(CmdAction::Trouble),
             "Themes" | "themes" | "theme" => Ok(CmdAction::Themes),
             _ if trimmed == "sidebar" => Ok(CmdAction::Sidebar),
+            "SyntaxReload" | "syntaxreload" | "syntax reload" => Ok(CmdAction::SyntaxReload),
             _ if let Some(n) = trimmed.strip_prefix("sidebar resize ").and_then(|s| s.trim().parse::<u16>().ok()) => Ok(CmdAction::SidebarResize(n)),
             "screenshot" | "Screenshot" => Ok(CmdAction::Screenshot(None)),
             _ if let Some(rest) = trimmed
@@ -4046,6 +4092,7 @@ impl App {
                 }
             }
             CmdAction::Sidebar => self.toggle_sidebar(),
+            CmdAction::SyntaxReload => self.syntax_reload(),
             CmdAction::SidebarResize(n) => {
                 self.sidebar.set_width(n);
             }
@@ -8220,6 +8267,45 @@ mod tests {
         assert_eq!(a.buffer_offset_at(after.x, after.y).map(|(_, o)| o), Some(0));
         // A click in the sidebar column is not buffer text.
         assert_eq!(a.buffer_offset_at(before, after.y), None);
+    }
+
+    #[test]
+    fn syntax_reload_parses() {
+        let a = App::new("fn main() {}".into(), PathBuf::from("f.rs"));
+        assert_eq!(a.parse_cmdline(":SyntaxReload"), Ok(CmdAction::SyntaxReload));
+        assert_eq!(a.parse_cmdline(":syntaxreload"), Ok(CmdAction::SyntaxReload));
+    }
+
+    /// Queries are read when an engine is built, so a reload has to discard the
+    /// engines — keeping them would re-report success while still highlighting
+    /// from the old query.
+    #[test]
+    fn syntax_reload_rebuilds_the_engines() {
+        let mut a = App::new("fn main() {}".into(), PathBuf::from("f.rs"));
+        assert_eq!(a.syntax.len(), 1, "the initial buffer is highlighted");
+
+        a.apply_cmd(CmdAction::SyntaxReload);
+        assert_eq!(a.syntax.len(), 1, "and is highlighted again afterwards");
+        assert!(!a.syntax_tried.is_empty(), "the rebuild re-marked it as tried");
+
+        let last = a.notify.history().last().expect("a message was pushed");
+        assert!(last.text.contains("Reloaded highlight queries"), "{:?}", last.text);
+    }
+
+    /// A buffer whose engine failed to build must be retried after a reload —
+    /// fixing a broken query is the main reason to run one.
+    #[test]
+    fn syntax_reload_retries_buffers_that_previously_failed() {
+        let mut a = App::new("plain text".into(), PathBuf::from("f.unknownext"));
+        // No grammar for this extension, so no engine — but it was attempted.
+        assert!(a.syntax.is_empty());
+        a.update_syntax();
+        assert!(!a.syntax_tried.is_empty(), "marked so it is not retried every frame");
+
+        a.apply_cmd(CmdAction::SyntaxReload);
+        // The retry happened (the set was cleared and repopulated) even though
+        // it failed again, which is what lets a corrected query take effect.
+        assert!(a.syntax.is_empty(), "still unsupported");
     }
 
     static SHOT_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);

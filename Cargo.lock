@@ -1351,6 +1351,7 @@ dependencies = [
 name = "ruster-syntax"
 version = "0.1.0"
 dependencies = [
+ "dirs",
  "ruster-render",
  "streaming-iterator",
  "tree-sitter",

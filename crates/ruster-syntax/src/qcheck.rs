@@ -74,7 +74,7 @@ fn tsx_files_highlight_without_error() {
 fn every_parseable_language_has_a_highlight_query() {
     for ext in ["rs", "py", "js", "ts", "c", "json", "toml", "yaml", "lua", "scm", "just"] {
         assert!(crate::language_for_ext(ext).is_some(), "{ext} has a grammar");
-        let (scm, _) = crate::query_files_for_lang(crate::lang_key(ext));
+        let (scm, _) = crate::builtin_queries(crate::lang_key(ext));
         assert!(!scm.is_empty(), "{ext} parses but ships no highlight query");
     }
 }

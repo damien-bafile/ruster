@@ -249,6 +249,35 @@ ruster.lsp = {
 ruster.config.format_on_save = true
 ```
 
+## Highlight queries
+
+Syntax highlighting is driven by tree-sitter queries. ruster ships one per
+supported language, and you can override any of them without rebuilding by
+putting your own in `~/.config/ruster/queries/<lang>/`:
+
+| File | Controls |
+|------|----------|
+| `highlights.scm` | Which nodes get which highlight group |
+| `textobjects.scm` | What `if`/`af`, `ic`/`ac`, `il`/`al`, `ia`/`aa` select |
+
+`<lang>` is the language key, not the file extension — `rust`, `python`,
+`javascript`, `typescript`, `json`, `lua`, `toml`, `yaml`, `c`, `scheme`,
+`just`. So `~/.config/ruster/queries/rust/highlights.scm` replaces the built-in
+Rust highlights.
+
+**Precedence is per file, not per language.** Supplying `highlights.scm` alone
+leaves `textobjects.scm` on the built-in, so overriding colours does not
+silently disable `daf`. A language that ships no built-in query works the same
+way, which is how you can add highlighting for one that has none.
+
+**A broken query never breaks the editor.** If tree-sitter rejects your file,
+ruster warns (see it again with `:messages`) and falls back to the built-in
+query, the same way a bad `config.lua` degrades rather than failing to start.
+
+Queries are read when a buffer's highlighter is built, so run **`:SyntaxReload`**
+after editing one — it re-reads every query from disk and rebuilds all open
+buffers, and no restart is needed.
+
 ## Snippets
 
 Tab in insert mode expands a snippet whose trigger word precedes the cursor, then
