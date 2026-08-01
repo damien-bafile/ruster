@@ -149,6 +149,82 @@ has. Method count and line count are the metrics that track the real problem.
 
 ---
 
+## Stage 5 — Lua: let plugins react, not just run
+
+`ruster.cmd(":Whatever")` already makes **every `:` command a Lua API**, so the
+command surface is not the limitation — adding a command extends the cmdline,
+the keymap system and Lua at once. The limitation is that a plugin can be
+*invoked* but can barely *react*, which makes plugins closer to startup scripts
+than extensions.
+
+The decision rule this implies, worth writing down:
+
+- needs to **do** something → add a `:` command; Lua gets it free
+- needs to **return** a value → `ruster.cmd` is fire-and-forget, so `ruster.api.*`
+- needs to **react** to something → an event, which is the gap below
+
+### Task 11: More events
+
+Lua can hook exactly four: `VimEnter`, `ModeChanged`, `BufWritePre`,
+`BufWritePost`. Neovim has around sixty.
+
+- [ ] `BufEnter` / `BufLeave` — the most-used autocmd in any editor.
+- [ ] `CursorMoved` — debounced, or it fires per keypress and every plugin
+      using it becomes a performance problem.
+- [ ] `InsertEnter` / `InsertLeave`, `WinEnter`, `FileType`, `VimLeave`.
+- [ ] Tests: each fires once, with the right arguments, and firing into a
+      handler that errors does not take the editor down.
+
+### Task 12: A timer
+
+- [ ] `ruster.defer(ms, fn)` and a cancellable `ruster.timer`.
+- [ ] Without it there is no debounce, no polling, no deferred work — the
+      absence is why driving the GUI for screenshots needed a whole
+      `init.lua`-and-`:screenshot` dance rather than "wait, then capture".
+- [ ] Must run on the frame drain like every other Lua action, not a thread:
+      the runtime is not `Send`, and that is deliberate.
+
+### Task 13: Read-only introspection
+
+- [ ] Lua cannot ask for diagnostics, git status, or the current file's path.
+- [ ] Add the queries a statusline or a lightweight plugin actually needs, and
+      no more. Every getter is API surface that has to keep working.
+
+---
+
+## Stage 6 — The application icon
+
+ruster has no icon anywhere: no `.icns`, no `.ico`, no `.desktop`, and the
+raylib window shows the default. It is the first thing anyone sees and the last
+thing anyone adds.
+
+GUI-only, so no TUI parity question arises.
+
+### Task 14: The artwork
+
+- [ ] Decide the mark. This wants a designer rather than a generated
+      placeholder — an obviously-programmatic icon is worse than none, because
+      it looks finished. If a placeholder ships first, make it visibly a
+      placeholder and track replacing it.
+- [ ] Source: one square master (1024×1024) that everything else derives from.
+
+### Task 15: Wire it up per platform
+
+- [ ] **Runtime window icon** — `RaylibHandle::set_window_icon`, so the running
+      window and the dock/taskbar entry stop showing the default. Cheapest win
+      and works on all three platforms; do this one first.
+- [ ] **macOS** — an `.app` bundle with `Contents/Resources/*.icns`. Without a
+      bundle there is no Dock icon however the window is configured, so this is
+      packaging work, not icon work.
+- [ ] **Windows** — `.ico` embedded in the executable via a build script
+      (`embed-resource` or `winres`).
+- [ ] **Linux** — hicolor PNGs plus a `.desktop` entry.
+- [ ] Tests: the asset is present and non-empty, and the build script runs on
+      the platform that needs it. Nobody can test "looks right" — that is a
+      look, and the `gui-check` skill is how to take it.
+
+---
+
 ## Out of scope, deliberately
 
 - **Threading the core.** `Rc<RefCell<Workspace>>` with 292 borrow sites; every
@@ -156,4 +232,8 @@ has. Method count and line count are the metrics that track the real problem.
   Revisit only if Task 9 fails to deliver.
 - **Rewriting the theme system.** The pseudo-language route works and is already
   proven; five more groups do not justify a new mechanism.
-- **New features of any kind.** That is what a finetuning phase is not.
+- **New features of any kind.** That is what a finetuning phase is not — with
+  the icon as the deliberate exception, since an application without one is
+  unfinished rather than unfeatured.
+- **A full autocmd system.** Task 11 adds the events plugins actually reach for,
+  not Neovim's sixty. Add more when something needs them.

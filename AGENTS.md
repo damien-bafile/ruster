@@ -144,6 +144,8 @@
 | **Stale render state** | `App::floats` has no writer; the raylib float/dialog draw order contradicts its own comment. |
 | **Performance** | `SyntaxEngine::reparse` allocates a `Parser` and does a *full* reparse every frame. Incremental parsing is switched off, and it is the largest win available. |
 | **`App` growth** | 127 → 151 → **189** methods across PR #24, Phase 6 and Phase 7; `app.rs` now 7,583 non-test lines. Track method and line count, **not** graphify betweenness — that measures being the composition root, which extraction cannot change. |
+| **Lua extensibility** | `ruster.cmd` already makes every `:` command a Lua API, so commands are not the gap. Plugins can be *invoked* but barely *react*: four events exist where Neovim has sixty, there is no timer, and no read-only introspection. |
+| **Application icon** | No `.icns`, `.ico` or `.desktop` anywhere, and the raylib window shows the default. Runtime window icon first; macOS needs an `.app` bundle before a Dock icon is possible at all. |
 
 Plan: [docs/superpowers/plans/2026-08-02-phase8-finetuning.md](docs/superpowers/plans/2026-08-02-phase8-finetuning.md)
 
