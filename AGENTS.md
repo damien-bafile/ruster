@@ -134,6 +134,21 @@
 
 ---
 
+## Phase 8: Finetuning
+*(No new features – paying down what building the others left behind)*
+
+| Area | What |
+| :--- | :--- |
+| **Theming** | Eight sites draw fixed RGB that no theme can reach: git gutter signs, diagnostic/debug signs, dired entry types, flash labels, and a TUI-only toast background. Route them through the `diff` pseudo-language pattern already proven for `:GitStaged`. |
+| **Missing basics** | `:16` goto-line, `:hover` — the latter also being the only deliberate way to put a float on screen. |
+| **Stale render state** | `App::floats` has no writer; the raylib float/dialog draw order contradicts its own comment. |
+| **Performance** | `SyntaxEngine::reparse` allocates a `Parser` and does a *full* reparse every frame. Incremental parsing is switched off, and it is the largest win available. |
+| **`App` growth** | 127 → 151 → **189** methods across PR #24, Phase 6 and Phase 7; `app.rs` now 7,583 non-test lines. Track method and line count, **not** graphify betweenness — that measures being the composition root, which extraction cannot change. |
+
+Plan: [docs/superpowers/plans/2026-08-02-phase8-finetuning.md](docs/superpowers/plans/2026-08-02-phase8-finetuning.md)
+
+---
+
 ## Cross-Cutting Technical Decisions
 
 - **Configuration**: Stored in `~/.config/ruster/ruster.toml` (TOML) with Lua overrides for dynamic logic.

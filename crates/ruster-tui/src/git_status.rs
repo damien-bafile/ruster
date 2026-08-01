@@ -13,6 +13,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use ruster_git::{FileStatus, Status, StatusEntry};
+use ruster_render::StyledLine;
 
 /// The three groups a file can appear in. A file edited, staged, then edited
 /// again appears in **both** `Staged` and `Unstaged` — that is what the `XY`
@@ -120,8 +121,13 @@ impl GitStatusState {
         self.layout(root).into_iter().map(|(text, _)| text).collect::<Vec<_>>().join("\n")
     }
 
-    /// The row a rendered line belongs to, or `None` for the header, a blank,
-    /// or a section heading.
+    /// The row a rendered line belongs to, or `None` for the branch header and
+    /// blank lines.
+    ///
+    /// A section heading *does* resolve, to its own row: folding has to work
+    /// with the cursor on a heading, which is where it naturally sits. Asking
+    /// whether that row is a file is [`path_at`](Self::path_at)'s job, and it
+    /// answers `None` — so `Enter` on a heading still does nothing.
     ///
     /// Derived from the same layout `render` emits rather than by offsetting a
     /// constant: the view puts a blank line before every section after the
@@ -152,7 +158,7 @@ impl GitStatusState {
                             if collapsed { '▸' } else { '▾' },
                             section.heading()
                         ),
-                        None,
+                        Some(row_index),
                     ));
                 }
                 Row::Entry { section, index } => {
@@ -202,6 +208,41 @@ fn display_path(p: &Path, root: Option<&Path>) -> String {
     root.and_then(|r| p.strip_prefix(r).ok()).unwrap_or(p).display().to_string()
 }
 
+/// Colour a unified diff the way every other diff tool does: additions green,
+/// deletions red, hunk headers accented, file headers dim.
+///
+/// Colours come from the `diff` pseudo-language in `ruster-syntax`, so they
+/// follow the active theme and honour `ruster.config.syntax.diff.*` like every
+/// other syntax group — rather than being four hardcoded values that no theme
+/// can reach.
+pub fn diff_styled_lines(text: &str) -> Vec<StyledLine> {
+    // Overrides are looked up per language, so name the one being drawn.
+    ruster_syntax::set_current_lang("diff");
+    text.lines()
+        .map(|line| {
+            let kind = if line.starts_with("+++") || line.starts_with("---") {
+                // File headers first: they start with +/- but are not changes.
+                Some("header")
+            } else if line.starts_with('+') {
+                Some("added")
+            } else if line.starts_with('-') {
+                Some("removed")
+            } else if line.starts_with("@@") {
+                Some("hunk")
+            } else if line.starts_with("diff --git") || line.starts_with("index ") {
+                Some("header")
+            } else {
+                None
+            };
+            let highlights = match kind {
+                Some(k) => vec![(0, line.chars().count(), ruster_syntax::diff_style(k))],
+                None => Vec::new(),
+            };
+            StyledLine { text: line.to_string(), highlights }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,6 +262,61 @@ mod tests {
         let mut s = GitStatusState::new();
         s.set_status(ruster_git::parse_status(SAMPLE));
         s
+    }
+
+    #[test]
+    fn a_diff_is_coloured_by_line_kind() {
+        let diff = "\
+diff --git a/f b/f
+index 1..2 100644
+--- a/f
++++ b/f
+@@ -1,2 +1,2 @@
+ context
+-removed
++added
+";
+        let lines = diff_styled_lines(diff);
+        let kind = |i: usize| lines[i].highlights.first().map(|(_, _, s)| s.fg);
+        let of = |g: &str| ruster_syntax::diff_style(g).fg;
+
+        assert_eq!(kind(0), Some(of("header")), "diff --git");
+        assert_eq!(kind(1), Some(of("header")), "index");
+        // `---`/`+++` start with -/+ but are headers, not changes. Testing
+        // these before the change cases is the whole subtlety.
+        assert_eq!(kind(2), Some(of("header")), "--- header, not a deletion");
+        assert_eq!(kind(3), Some(of("header")), "+++ header, not an addition");
+        assert_eq!(kind(4), Some(of("hunk")), "@@");
+        assert_eq!(kind(5), None, "context is unstyled");
+        assert_eq!(kind(6), Some(of("removed")));
+        assert_eq!(kind(7), Some(of("added")));
+        // The four are actually distinct, or the colouring says nothing.
+        let all = [of("added"), of("removed"), of("hunk"), of("header")];
+        for (i, a) in all.iter().enumerate() {
+            for b in all.iter().skip(i + 1) {
+                assert_ne!(a, b, "diff groups must not share a colour");
+            }
+        }
+    }
+
+    /// The colours are themeable, not hardcoded: an override reaches the diff.
+    #[test]
+    fn a_syntax_override_recolours_the_diff() {
+        let mut ov = ruster_syntax::SyntaxOverrides::new();
+        let mut groups = std::collections::HashMap::new();
+        groups.insert("added".to_string(), ruster_render::Color::Rgb(1, 2, 3));
+        ov.insert("diff".to_string(), groups);
+        ruster_syntax::set_syntax_overrides(ov);
+
+        let lines = diff_styled_lines("+added\n");
+        assert_eq!(
+            lines[0].highlights.first().map(|(_, _, s)| s.fg),
+            Some(ruster_render::Color::Rgb(1, 2, 3)),
+            "ruster.config.syntax.diff.added took effect"
+        );
+
+        // Leave the global clean for other tests.
+        ruster_syntax::set_syntax_overrides(ruster_syntax::SyntaxOverrides::new());
     }
 
     #[test]

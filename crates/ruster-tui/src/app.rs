@@ -610,6 +610,8 @@ enum CmdAction {
     GitStatus,
     /// Stage the hunk under the cursor (`:GitStageHunk`).
     GitStageHunk,
+    /// Show the staged diff, where `u` unstages a hunk (`:GitStaged`).
+    GitStaged,
     /// Compose a commit message (`:GitCommit`).
     GitCommit,
     /// Push to the remote, after confirmation (`:GitPush`).
@@ -1829,6 +1831,13 @@ impl App {
         // hijacked. Unclaimed keys fall through to normal handling.
         // The problem list claims Enter/Tab/r/q the same way dired claims its
         // keys; everything else falls through so `:`, `/` and motions still work.
+        if self.active_is_git_staged()
+            && self.vim.mode == VimMode::Normal
+            && self.emacs_isearch.is_none()
+            && self.handle_git_staged_key(ck)
+        {
+            return;
+        }
         if self.active_is_git_status()
             && self.vim.mode == VimMode::Normal
             && self.emacs_isearch.is_none()
@@ -3606,9 +3615,17 @@ impl App {
                     win.height = buf_h;
                 }
 
+                let is_diff = w.buffers.get(buf_id).is_some_and(|d| {
+                    matches!(
+                        d.kind,
+                        DocKind::Special(ruster_core::document::SpecialKind::GitStaged)
+                    )
+                });
                 let lines: Vec<StyledLine> = match self.dired.styled_lines(buf_id) {
                     // Dired listings are colored by entry type.
                     Some(styled) => styled.to_vec(),
+                    // A staged diff is coloured as a diff, not as source.
+                    None if is_diff => crate::git_status::diff_styled_lines(&content),
                     None => match self.syntax.get(&buf_id) {
                         Some(engine) => engine.styled_lines().to_vec(),
                         None => plain_lines(&content),
@@ -4059,6 +4076,7 @@ impl App {
             "Mason" | "mason" => Ok(CmdAction::Mason),
             "Git" | "git" | "G" => Ok(CmdAction::GitStatus),
             "GitStageHunk" | "gitstagehunk" | "stagehunk" => Ok(CmdAction::GitStageHunk),
+            "GitStaged" | "gitstaged" | "staged" => Ok(CmdAction::GitStaged),
             "GitCommit" | "gitcommit" | "commit" => Ok(CmdAction::GitCommit),
             "GitPush" | "gitpush" | "push" => Ok(CmdAction::GitPush),
             "GitPull" | "gitpull" | "pull" => Ok(CmdAction::GitPull),
@@ -4118,19 +4136,30 @@ impl App {
     /// Apply a parsed cmdline action. `:q` closes the active window and only
     /// quits the app when it is the last window.
     fn apply_cmd(&mut self, action: CmdAction) {
-        // While the settings page is open, :w saves it and :q closes it.
+        // While the settings page is open, `:w` saves it and `:q` closes it.
+        //
+        // Anything else closes the page and then runs normally. It used to be
+        // swallowed — `_ => {}` and `return` — so with the settings page up,
+        // `:Git`, `:help` and every other command did nothing at all and said
+        // nothing about why. Asking for something else is a clear enough signal
+        // that the page has served its purpose.
         if self.settings.is_some() {
             match action {
-                CmdAction::Save(_) => self.save_settings(),
+                CmdAction::Save(_) => {
+                    self.save_settings();
+                    return;
+                }
                 CmdAction::SaveAndQuit => {
                     self.save_settings();
                     self.settings = None;
+                    return;
                 }
-                CmdAction::Quit | CmdAction::ForceQuit => self.settings = None,
-                CmdAction::Settings => {}
-                _ => {}
+                CmdAction::Quit | CmdAction::ForceQuit | CmdAction::Settings => {
+                    self.settings = None;
+                    return;
+                }
+                _ => self.settings = None,
             }
-            return;
         }
         match action {
             CmdAction::Save(force) => {
@@ -4218,6 +4247,7 @@ impl App {
             CmdAction::Mason => self.open_mason(),
             CmdAction::GitStatus => self.open_git_status(),
             CmdAction::GitStageHunk => self.git_stage_hunk(),
+            CmdAction::GitStaged => self.open_git_staged(),
             CmdAction::GitCommit => self.open_git_commit(),
             CmdAction::GitPush => self.confirm_git_remote("Push"),
             CmdAction::GitPull => self.confirm_git_remote("Pull"),
@@ -5083,7 +5113,8 @@ impl App {
             win.buffer = right;
         }
         drop(w);
-        self.echo(format!("{} hunks in {name}", hunks.len()));
+        let n = hunks.len();
+        self.echo(format!("{n} hunk{} in {name}", if n == 1 { "" } else { "s" }));
     }
 
     /// Create one read-only pane buffer for [`open_diffview`](Self::open_diffview).
@@ -6092,16 +6123,26 @@ impl App {
         }
     }
 
+    /// The git working tree to run git in.
+    ///
+    /// **Not** `project_root`: in a workspace that is the nearest `Cargo.toml`,
+    /// i.e. a crate directory, and git reports paths relative to wherever it is
+    /// invoked — so running from a crate makes a change elsewhere in the
+    /// repository come back as `../other-crate/src/lib.rs`.
+    ///
+    /// Computed rather than cached: the two places `project_root` is assigned
+    /// are not the only ones that matter, since tests set it directly, and a
+    /// stale cache would be worse than the one `rev-parse` this costs.
+    fn git_root(&self) -> Option<PathBuf> {
+        ruster_git::repo_root(self.project_root.as_deref()?)
+    }
+
     /// Open (or refresh) the `:Git` status view.
     fn open_git_status(&mut self) {
-        let Some(root) = self.project_root.clone() else {
-            self.echo_warn("Not in a project".to_string());
-            return;
-        };
-        if !ruster_git::is_repo(&root) {
+        let Some(root) = self.git_root() else {
             self.echo_warn("Not a git repository".to_string());
             return;
-        }
+        };
         let Some(status) = ruster_git::status(&root) else {
             self.echo_error("Could not read git status".to_string());
             return;
@@ -6167,8 +6208,9 @@ impl App {
                 }
                 true
             }
-            // `za` is the fold idiom elsewhere; `Tab` is the obvious one here.
-            KeyCode::Tab => {
+            // `z` folds here as it does in `:Trouble`, so the two sectioned
+            // lists share one idiom.
+            KeyCode::Tab | KeyCode::Char('z') => {
                 if let Some(r) = self.git_status_row() {
                     self.git_status.toggle_at(r);
                     self.refresh_git_status_buffer();
@@ -6187,6 +6229,10 @@ impl App {
                 self.open_git_commit();
                 true
             }
+            KeyCode::Char('d') => {
+                self.open_git_staged();
+                true
+            }
             KeyCode::Char('P') => {
                 self.confirm_git_remote("Push");
                 true
@@ -6195,7 +6241,7 @@ impl App {
                 self.confirm_git_remote("Pull");
                 true
             }
-            KeyCode::Char('r') => {
+            KeyCode::Char('r') | KeyCode::Char('g') => {
                 self.open_git_status();
                 true
             }
@@ -6209,8 +6255,8 @@ impl App {
 
     /// Open a buffer to compose a commit message. `:w` commits it.
     fn open_git_commit(&mut self) {
-        let Some(root) = self.project_root.clone() else {
-            self.echo_warn("Not in a project".to_string());
+        let Some(root) = self.git_root() else {
+            self.echo_warn("Not a git repository".to_string());
             return;
         };
         let Some(status) = ruster_git::status(&root) else {
@@ -6277,7 +6323,7 @@ impl App {
 
     /// Commit what the message buffer holds. Called instead of a file write.
     fn commit_from_buffer(&mut self) {
-        let Some(root) = self.project_root.clone() else { return };
+        let Some(root) = self.git_root() else { return };
         let raw = self.ws.borrow().active_doc().buffer.to_string();
         let message = ruster_git::clean_commit_message(&raw);
         if message.is_empty() {
@@ -6308,16 +6354,120 @@ impl App {
     /// Ask before pushing or pulling — both talk to a remote, and a push in
     /// particular is not something to trigger by a stray keypress.
     fn confirm_git_remote(&mut self, verb: &'static str) {
-        let Some(root) = self.project_root.clone() else {
-            self.echo_warn("Not in a project".to_string());
-            return;
-        };
-        if !ruster_git::is_repo(&root) {
+        if self.git_root().is_none() {
             self.echo_warn("Not a git repository".to_string());
             return;
         }
         let cmd = format!("git {}", verb.to_lowercase());
         self.confirm_command(format!("{verb}?"), verb, cmd, RunnerKind::Git);
+    }
+
+    /// Open the staged diff, where `u` unstages the hunk under the cursor.
+    ///
+    /// This is what makes hunk unstaging well defined. Doing it from a *file*
+    /// buffer cannot work: it needs the HEAD→index diff, whose line numbers are
+    /// the index's, and those stop matching the file the moment it also has
+    /// unstaged edits — exactly when someone reaches for it. Here the buffer
+    /// *is* that diff, so a cursor line resolves to a hunk with no translation
+    /// at all.
+    fn open_git_staged(&mut self) {
+        let Some(root) = self.git_root() else {
+            self.echo_warn("Not a git repository".to_string());
+            return;
+        };
+        let Some(diff) = ruster_git::staged_diff(&root) else {
+            self.echo_error("Could not read the staged diff".to_string());
+            return;
+        };
+        // Unstaging the last hunk empties the diff. If the view is open it must
+        // say so rather than keep showing what is no longer staged.
+        let text = if diff.trim().is_empty() {
+            self.echo("Nothing staged".to_string());
+            if !self.active_is_git_staged() {
+                return;
+            }
+            "Nothing staged.\n".to_string()
+        } else {
+            diff
+        };
+        let id = {
+            let mut w = self.ws.borrow_mut();
+            let existing = w
+                .buffers
+                .ids()
+                .iter()
+                .copied()
+                .find(|&id| w.buffers.get(id).is_some_and(|d| d.name == "*git-staged*"));
+            let id = existing.unwrap_or_else(|| {
+                w.buffers
+                    .create_special(ruster_core::document::SpecialKind::GitStaged, "*git-staged*")
+            });
+            if let Some(doc) = w.buffers.get_mut(id) {
+                doc.buffer = Buffer::from_str(&text);
+            }
+            id
+        };
+        self.ws.borrow_mut().set_active_buffer(id);
+    }
+
+    fn active_is_git_staged(&self) -> bool {
+        matches!(
+            self.ws.borrow().active_doc().kind,
+            DocKind::Special(ruster_core::document::SpecialKind::GitStaged)
+        )
+    }
+
+    /// Keys in the staged diff. `u` unstages the hunk under the cursor.
+    fn handle_git_staged_key(&mut self, ck: crossterm::event::KeyEvent) -> bool {
+        if !ck.modifiers.is_empty() {
+            return false;
+        }
+        match ck.code {
+            KeyCode::Char('u') => {
+                self.git_unstage_hunk_at_cursor();
+                true
+            }
+            KeyCode::Char('r') | KeyCode::Char('g') => {
+                self.open_git_staged();
+                true
+            }
+            KeyCode::Char('q') => {
+                self.delete_active_buffer();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Unstage the hunk the cursor is inside, in the staged diff buffer.
+    ///
+    /// Everything derives from the buffer text — it is the diff — so there is
+    /// no cached patch list to fall out of step with what is on screen.
+    fn git_unstage_hunk_at_cursor(&mut self) {
+        let Some(root) = self.git_root() else { return };
+        let (diff, line) = {
+            let w = self.ws.borrow();
+            (w.active_doc().buffer.to_string(), w.active_doc().buffer.char_to_line(w.primary_head()))
+        };
+        let Some(index) = ruster_git::hunk_of_line(&diff).get(line).copied().flatten() else {
+            self.echo_warn("No hunk under the cursor".to_string());
+            return;
+        };
+        let patches = ruster_git::split_hunks(&diff);
+        let Some(patch) = patches.get(index) else {
+            self.echo_error("Could not isolate that hunk".to_string());
+            return;
+        };
+
+        match ruster_git::apply_to_index(&root, patch, true) {
+            Ok(()) => {
+                let total = patches.len();
+                // Re-read: the diff just changed, and the buffer is the diff.
+                self.open_git_staged();
+                self.echo(format!("Unstaged hunk {} of {total}", index + 1));
+            }
+            Err(e) => self.echo_error(format!("Could not unstage that hunk: {e}")),
+        }
     }
 
     /// Stage the hunk the cursor is inside, in the file being edited.
@@ -6335,8 +6485,8 @@ impl App {
     /// granularity (`u` in `:Git`) until there is a view of the staged diff to
     /// point at.
     fn git_stage_hunk(&mut self) {
-        let Some(root) = self.project_root.clone() else {
-            self.echo_warn("Not in a project".to_string());
+        let Some(root) = self.git_root() else {
+            self.echo_warn("Not a git repository".to_string());
             return;
         };
         // Resolve inside the narrowest scope, then act with the borrow dropped.
@@ -6383,7 +6533,7 @@ impl App {
     /// --staged` cannot alter the working tree — so the worst a bug here can do
     /// is stage the wrong file, never lose an edit.
     fn git_stage_at_cursor(&mut self, stage: bool) {
-        let (Some(row), Some(root)) = (self.git_status_row(), self.project_root.clone()) else {
+        let (Some(row), Some(root)) = (self.git_status_row(), self.git_root()) else {
             return;
         };
         let Some(path) = self.git_status.path_at(row) else {
@@ -6544,9 +6694,13 @@ impl App {
             self.echo(format!("{} cancelled", p.verb));
             return;
         }
-        let root = self.project_root.clone().unwrap_or_else(|| {
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-        });
+        // A git command runs from the working tree, not from whichever crate
+        // directory happens to be the project root.
+        let root = match p.kind {
+            RunnerKind::Git => self.git_root(),
+            _ => self.project_root.clone(),
+        }
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         self.start_run(p.kind, p.cmd, root);
     }
 
@@ -9318,6 +9472,86 @@ mod tests {
         assert!(last.text.contains("repository") || last.text.contains("staged"), "{:?}", last.text);
     }
 
+    /// Regression: with the settings page open, every command that was not
+    /// settings-specific was silently swallowed — `:Git`, `:help` and the rest
+    /// did nothing and said nothing. Found in the GUI, and true in the TUI too.
+    #[test]
+    fn a_command_while_settings_is_open_closes_it_and_runs() {
+        let mut a = App::new("x".into(), PathBuf::from("f.rs"));
+        a.apply_cmd(CmdAction::Settings);
+        assert!(a.settings.is_some(), "the page is open");
+
+        a.apply_cmd(CmdAction::Help(None));
+        assert!(a.settings.is_none(), "the page stepped aside");
+        assert!(a.active_is_help(), "and the command actually ran");
+    }
+
+    /// The two that genuinely mean something different there still do.
+    #[test]
+    fn save_and_quit_still_belong_to_the_settings_page() {
+        let mut a = App::new("x".into(), PathBuf::from("f.rs"));
+        a.apply_cmd(CmdAction::Settings);
+        a.apply_cmd(CmdAction::Quit);
+        assert!(a.settings.is_none(), ":q closes the page");
+        assert!(!a.should_quit, "and does not quit the editor");
+
+        a.apply_cmd(CmdAction::Settings);
+        assert!(a.settings.is_some());
+        a.apply_cmd(CmdAction::Save(false));
+        assert!(a.settings.is_some(), ":w saves the page and leaves it open");
+    }
+
+    #[test]
+    fn git_staged_parses() {
+        let a = App::new("x".into(), PathBuf::from("f.rs"));
+        assert_eq!(a.parse_cmdline(":GitStaged"), Ok(CmdAction::GitStaged));
+        assert_eq!(a.parse_cmdline(":staged"), Ok(CmdAction::GitStaged));
+    }
+
+    /// The cursor line in a diff buffer maps straight to a hunk — that is the
+    /// whole reason unstaging happens here rather than in the file buffer.
+    #[test]
+    fn a_cursor_line_in_the_staged_diff_resolves_to_its_hunk() {
+        let diff = "\
+diff --git a/f.txt b/f.txt
+index 1..2 100644
+--- a/f.txt
++++ b/f.txt
+@@ -1,3 +1,3 @@
+ a
+-b
++B
+@@ -10,3 +10,3 @@
+ c
+-d
++D
+";
+        let map = ruster_git::hunk_of_line(diff);
+        let lines: Vec<&str> = diff.lines().collect();
+        let first_change = lines.iter().position(|l| *l == "+B").unwrap();
+        let second_change = lines.iter().position(|l| *l == "+D").unwrap();
+        assert_eq!(map[first_change], Some(0));
+        assert_eq!(map[second_change], Some(1));
+        // A file header belongs to no hunk, so `u` there declines.
+        assert_eq!(map[0], None);
+
+        // And those indices address the right patches.
+        let patches = ruster_git::split_hunks(diff);
+        assert!(patches[0].contains("+B") && !patches[0].contains("+D"));
+        assert!(patches[1].contains("+D") && !patches[1].contains("+B"));
+    }
+
+    #[test]
+    fn git_staged_outside_a_repository_warns() {
+        let dir = shot_dir();
+        let mut a = App::new("x".into(), dir.join("f.rs"));
+        a.project_root = Some(dir);
+        a.apply_cmd(CmdAction::GitStaged);
+        assert!(!a.active_is_git_staged(), "no diff buffer opened");
+        let last = a.notify.history().last().expect("a message");
+        assert!(last.text.contains("git repository"), "{:?}", last.text);
+    }
+
     #[test]
     fn git_stage_hunk_parses() {
         let a = App::new("x".into(), PathBuf::from("f.rs"));
@@ -9335,15 +9569,16 @@ mod tests {
         a.project_root = None;
         a.apply_cmd(CmdAction::GitStageHunk);
         let last = a.notify.history().last().expect("a message");
-        assert!(last.text.contains("Not in a project"), "{:?}", last.text);
+        assert!(last.text.contains("git repository"), "{:?}", last.text);
     }
 
     /// A buffer with no file on disk has no hunks to stage.
     #[test]
     fn git_stage_hunk_needs_a_file() {
-        let dir = shot_dir();
+        // A real repository, so the run gets past the repo check to the one
+        // being tested — the working directory during a test run is one.
         let mut a = App::new("scratch".into(), PathBuf::from(""));
-        a.project_root = Some(dir);
+        a.project_root = std::env::current_dir().ok();
         {
             let id = a.ws.borrow().active_buffer();
             a.ws.borrow_mut().buffers.get_mut(id).unwrap().file_path = None;
@@ -9413,10 +9648,12 @@ mod tests {
             );
         }
 
-        // Headings and blanks are not rows.
+        // A heading resolves to its own row, so folding works with the cursor
+        // on it — but that row is not a file, so `Enter` still does nothing.
         let heading = text.lines().position(|l| l.contains("Untracked")).unwrap();
-        assert_eq!(a.git_status.row_at_line(heading), None, "a heading is not a file");
-        assert_eq!(a.git_status.row_at_line(0), None, "nor is the branch header");
+        let hrow = a.git_status.row_at_line(heading).expect("a heading has a row");
+        assert_eq!(a.git_status.path_at(hrow), None, "a heading is not a file");
+        assert_eq!(a.git_status.row_at_line(0), None, "the branch header is not a row");
         assert_eq!(a.git_status.row_at_line(9999), None);
     }
 

@@ -100,6 +100,11 @@ cycles the **selected theme's palette** (same picker as the Colors group) and sh
 `default` when left at the built-in color; `dd`/`Delete` resets a group. Overrides are
 **per language** and apply to open buffers on `:w` (no restart).
 
+`diff` appears in that list too. It is a pseudo-language — nothing parses it —
+but routing the staged-diff view's colours through the same machinery means
+`:GitStaged` follows the active theme instead of four hardcoded values. Its
+groups are `added`, `removed`, `hunk` and `header`.
+
 They persist to a `ruster.config.syntax` table:
 
 ```lua

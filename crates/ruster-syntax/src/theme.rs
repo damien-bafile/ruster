@@ -63,8 +63,10 @@ pub fn groups_for_lang(key: &str) -> &'static [&'static str] {
         "heading", "strong", "emphasis", "code", "link", "url", "marker", "quote",
         "keyword", "block", "todo", "done",
     ];
+    const DIFF: &[&str] = &["added", "removed", "hunk", "header"];
     match key {
         "markdown" | "org" => MARKUP,
+        "diff" => DIFF,
         _ => CODE,
     }
 }
@@ -89,10 +91,36 @@ pub fn default_code_style(group: &str) -> SyntaxStyle {
 /// The default fg for a group in `lang`, used to seed the Settings editor's
 /// swatch/value before any override is set.
 pub fn default_fg_for(lang: &str, group: &str) -> Color {
-    if matches!(lang, "markdown" | "org") {
-        default_markup_style(group).fg
-    } else {
-        default_code_style(group).fg
+    match lang {
+        "markdown" | "org" => default_markup_style(group).fg,
+        "diff" => default_diff_style(group).fg,
+        _ => default_code_style(group).fg,
+    }
+}
+
+/// Styles for a unified diff, with the current language's overrides applied.
+///
+/// `diff` is a pseudo-language: nothing parses it, but routing it through the
+/// same per-language override machinery as Markdown means it appears in the
+/// Settings syntax editor and honours `ruster.config.syntax.diff.*` for free,
+/// instead of needing a second theming system for four colours.
+pub fn diff_style(kind: &str) -> SyntaxStyle {
+    let mut style = default_diff_style(kind);
+    if let Some(fg) = override_fg(kind) {
+        style.fg = fg;
+    }
+    style
+}
+
+/// The built-in default diff style for `kind` (no overrides applied).
+pub fn default_diff_style(kind: &str) -> SyntaxStyle {
+    match kind {
+        "added"   => SyntaxStyle { fg: rgb(166, 227, 161), bg: Color::Default, bold: false, italic: false },
+        "removed" => SyntaxStyle { fg: rgb(243, 139, 168), bg: Color::Default, bold: false, italic: false },
+        "hunk"    => SyntaxStyle { fg: rgb(137, 180, 250), bg: Color::Default, bold: true,  italic: false },
+        // File headers and `index` lines: present but not the point.
+        "header"  => SyntaxStyle { fg: rgb(108, 112, 134), bg: Color::Default, bold: false, italic: false },
+        _         => SyntaxStyle { fg: Color::Default, bg: Color::Default, bold: false, italic: false },
     }
 }
 
