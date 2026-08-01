@@ -57,16 +57,16 @@ this needs a deliberate serialisable representation rather than `#[derive]` on
 internals — worth doing carefully once, since Task 2 and any future workspace
 feature will want the same thing.
 
-### Task 2: Help menu (`:help`)
+### Task 2: Help menu (`:help`) ✅
 
-- [ ] `:help` opens a searchable buffer; `:help <topic>` jumps to a section.
-- [ ] Source it from what already exists rather than a second copy of the truth:
+- [x] `:help` opens a searchable buffer; `:help <topic>` jumps to a section.
+- [x] Source it from what already exists rather than a second copy of the truth:
       `docs/keybindings.md` and `docs/config-reference.md` are already complete
       and now CI-enforced. Embed them with `include_str!` and render as markup —
       `ruster-syntax` already highlights markdown.
-- [ ] `:help <command>` resolves a `:` command to its row in the table; `:help
+- [x] `:help <command>` resolves a `:` command to its row in the table; `:help
       <setting>` to its row in the config reference.
-- [ ] Tests: topic resolution, including a topic that does not exist.
+- [x] Tests: topic resolution, including a topic that does not exist.
 
 **Why second:** it turns the doc-sync guard into a user-facing feature. The docs
 are already the single source of truth; this reads them.

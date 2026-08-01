@@ -223,6 +223,7 @@ Press `g` in Normal mode; the which-key panel lists the goto commands (LazyVim-s
 | `:echoe <text>` | Show an error in the notification panel |
 | `:Diffview` `:diff` | Side-by-side diff of the active file against HEAD, in a vertical split. Panes stay row-aligned and scroll together; `~` marks a line the other side does not have |
 | `:Mason` `:mason` | List the external tools ruster can use (LSP servers, debug adapters, formatters) and whether each is on `PATH` |
+| `:help [topic]` `:h [topic]` | Open the manual. A topic jumps to a section, a `:command`, or a `setting.key`; `/` searches, `q` closes |
 | `:SessionSave` `:mksession` | Save this project's open files and window layout |
 | `:SessionRestore` `:loadsession` | Reopen this project's saved session |
 | `:SyntaxReload` / `:syntax reload` | Re-read grammars and highlight queries from `~/.config/ruster/` and rebuild all buffers |
