@@ -25,6 +25,8 @@ pub enum SpecialKind {
     Build,
     /// The file-explorer sidebar (tree dired) in a persistent side column.
     Sidebar,
+    /// The `:Mason` external-tool listing.
+    Mason,
     /// The Dashboard / welcome screen — a static page that cannot be closed.
     Dashboard,
     /// A general-purpose message log (build, LSP, echo, etc.).

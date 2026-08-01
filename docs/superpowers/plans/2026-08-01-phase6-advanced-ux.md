@@ -296,13 +296,16 @@ Completes the one partially-delivered Phase 6 item.
 
 ## Stage 3 — Ecosystem
 
-### Task 13: Mason-style tool installer
+### Task 13: Mason-style tool installer ✅
 
-- [ ] `:Mason` lists known LSP servers, DAP adapters and formatters with an installed/missing
+- [x] `:Mason` lists known LSP servers, DAP adapters and formatters with an installed/missing
       state, resolved by probing `PATH`.
-- [ ] Install by shelling out to the tool's own documented method, streamed through the
+- [x] Install by shelling out to the tool's own documented method, streamed through the
       Task 7 floating window. Never bundle binaries; never install without confirmation.
-- [ ] Tests: registry parsing and `PATH` probing with a stubbed lookup.
+- [x] Tests: registry parsing and `PATH` probing with a stubbed lookup.
+      Streamed through the existing runner (`RunnerKind::Install` → `*install*`)
+      rather than the Task 7 float: an install is a long command whose output
+      wants scrollback, which is exactly what the runner buffer already is.
 
 ### Task 14: Diff viewer
 

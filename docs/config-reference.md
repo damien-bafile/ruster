@@ -278,6 +278,29 @@ Queries are read when a buffer's highlighter is built, so run **`:SyntaxReload`*
 after editing one — it re-reads every query from disk and rebuilds all open
 buffers, and no restart is needed.
 
+## External tools (`:Mason`)
+
+`:Mason` lists the language servers, debug adapters and formatters ruster knows
+how to use, marking each `✓` when its binary is on `PATH` and `·` when it is
+not. Each row shows the install command in full.
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Install the tool under the cursor (asks first) |
+| `r` | Re-probe `PATH` and refresh the list |
+| `q` | Close the list |
+
+**ruster is not a package manager.** It bundles no binaries and downloads
+nothing itself. Every command in the registry is the tool's own documented
+install method — the same line you would have typed — and `Enter` only opens a
+confirmation dialog showing that exact text. Nothing runs until you choose
+**Install**; choosing **Cancel** or pressing `Esc` discards it. The command then
+runs in a shell and streams into `*install*`, like `:build`.
+
+Tools whose install method differs per platform have one entry per platform, and
+a tool with no method for your platform is not listed rather than being offered
+a command that cannot work.
+
 ## Snippets
 
 Tab in insert mode expands a snippet whose trigger word precedes the cursor, then
