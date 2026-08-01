@@ -3615,9 +3615,17 @@ impl App {
                     win.height = buf_h;
                 }
 
+                let is_diff = w.buffers.get(buf_id).is_some_and(|d| {
+                    matches!(
+                        d.kind,
+                        DocKind::Special(ruster_core::document::SpecialKind::GitStaged)
+                    )
+                });
                 let lines: Vec<StyledLine> = match self.dired.styled_lines(buf_id) {
                     // Dired listings are colored by entry type.
                     Some(styled) => styled.to_vec(),
+                    // A staged diff is coloured as a diff, not as source.
+                    None if is_diff => crate::git_status::diff_styled_lines(&content),
                     None => match self.syntax.get(&buf_id) {
                         Some(engine) => engine.styled_lines().to_vec(),
                         None => plain_lines(&content),
@@ -5105,7 +5113,8 @@ impl App {
             win.buffer = right;
         }
         drop(w);
-        self.echo(format!("{} hunks in {name}", hunks.len()));
+        let n = hunks.len();
+        self.echo(format!("{n} hunk{} in {name}", if n == 1 { "" } else { "s" }));
     }
 
     /// Create one read-only pane buffer for [`open_diffview`](Self::open_diffview).
