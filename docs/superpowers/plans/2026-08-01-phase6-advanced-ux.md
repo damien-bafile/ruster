@@ -42,14 +42,13 @@ graph to navigate by.
 
 | Stage | Tasks | Theme |
 |---|---|---|
-| **0 — Loose ends** | 1–6 | Carried out of Phase 5. **Tasks 1–3 done (PR #26)**; 4–6 open. |
+| **0 — Loose ends** | 1–6 | **1–3 done (PR #26), 5 done (PR #27)**; 4 needs a human; 6 deferred past Stage 1. |
 | **1 — Foundations** | 7–8 | Floating windows, then git plumbing. Everything later builds on these. |
 | **2 — Surfaces** | 9–12 | Trouble, todos, theme preview, widgets — all consume Stage 1. |
 | **3 — Ecosystem** | 13–15 | Mason, diff viewer, then the config/docs/CI sweep. |
 
-Within Stage 0, Task 6 goes last — the graph is most useful once the tree has settled.
-Task 4 needs a human at a GUI, and Task 5 carries one judgement call, so they can run in
-any order alongside the rest.
+Task 6 has since been deferred past Stage 1 outright — see the task for why. Task 4 needs
+a human at a GUI. Everything else in Stage 0 has landed, so Stage 1 is clear to start.
 
 ---
 
@@ -140,30 +139,55 @@ agent environment.
 - [ ] If this keeps recurring, write a project skill under `.claude/skills/` that launches
       the GUI and drives it, so the check is repeatable rather than manual.
 
-### Task 5: Refresh the stale process docs
+### Task 5: Refresh the stale process docs ✅
 
-- [ ] `.superpowers/sdd/task-11-report.md` is still marked `DONE_WITH_CONCERNS`. Both
-      concerns — "3 build warnings" and "crates have zero tests" — were resolved before
-      Phase 5 shipped. Mark it resolved with a pointer to what fixed it.
-- [ ] `.superpowers/sdd/progress.md` ends at the noice ledger; either close it out or
-      note that Phase 5 superseded it.
-- [ ] Decide and record: `:n` and `:s` alias step-over/step-into while a debug session is
-      active, shadowing bare `:s`. **Recommendation: leave it** — the `:db_*` names always
-      work and are documented. Write the decision down so it isn't re-litigated.
+- [x] `.superpowers/sdd/task-11-report.md` marked **RESOLVED**, with the original text kept
+      as the historical record. Both concerns verified cleared on `main` at `824bfbe`:
+      `set_isearch_message` no longer exists and clippy is clean and CI-enforced; the four
+      crates it called testless now hold 177 / 33 / 14 / 16 tests.
+- [x] `.superpowers/sdd/progress.md` closed out, pointing here for ongoing work.
+- [x] **Decision: leave the `:n` / `:s` debug aliases as they are.**
 
-### Task 6: Re-run graphify on a clean corpus
+      While a debug session is active, `:n` and `:s` alias step-over and step-into
+      (`app.rs`, guarded on `debug_session.is_some()`). Bare `:s` — repeat-last-substitute —
+      is therefore shadowed mid-session, because the alias is matched before
+      `parse_substitute`. `:s/pat/rep/` is unaffected: it carries a `/` and never
+      exact-matches `"s"`.
 
-The current `graphify-out/` is from 2026-07-30 and is **17 commits stale** — it predates
-the whole `app.rs` extraction, so its `App` god-node metrics describe a file that no longer
-exists in that shape.
+      Left alone because the collision is narrow (bare `:s`, only while stopped in the
+      debugger), the `:db_*` names are unambiguous, always available and documented, and the
+      short forms match what gdb/lldb users expect. Removing them would cost more in muscle
+      memory than the shadowing costs. Documented in `docs/keybindings.md` under the
+      debugger section. **Do not re-litigate without a user report.**
 
-- [ ] Exclude `.impeccable/` and `.opencode/`. The Starship landing-page mocks generated
-      three spurious communities ("Starship Design Board", "Starship Hero Mock", "OpenCode
-      Plugin Deps") that have nothing to do with the editor.
-- [ ] Re-run and compare the `App` betweenness against the previous 0.369, as a check on
-      whether the extraction actually moved the needle.
-- [ ] Ignore the "Import Cycles" section — all 20 entries are files cycling to themselves,
-      a graphify artifact, not real cycles. Noted here so it isn't investigated again.
+### Task 6: Re-run graphify on a clean corpus — **deferred to after Stage 1**
+
+**Decision (2026-08-01): do not run this yet.** The last run cost **474,462 input
+tokens**, and the graph's value is navigating unfamiliar structure — which Stage 1 is about
+to change again by adding floating windows and the `ruster-git` crate. Running now and
+again after Stage 1 pays twice for the same insight. Run it **once**, after Task 8 lands,
+so a single pass covers both the PR #24 extraction and the Stage 1 additions.
+
+The current `graphify-out/` is from 2026-07-30 and is stale by the whole `app.rs`
+extraction, so **treat its `App` metrics as historical**, not as a description of the tree.
+
+When it is run:
+
+- [ ] **There is no `--exclude` flag** — graphify narrows by the paths it is given. Pass an
+      include-list rather than the repo root:
+      `crates docs .superpowers AGENTS.md DESIGN.md PRODUCT.md`.
+      That drops `.impeccable/` and `.opencode/`, which contributed 5 files and generated
+      three whole communities ("Starship Design Board", "Starship Hero Mock", "OpenCode
+      Plugin Deps") unrelated to the editor.
+- [ ] Compare `App`'s betweenness against the previous **0.369** (next-highest was 0.127),
+      and its edge count against **215**. PR #24 took `App` from 78 fields to 57 and moved
+      ~640 non-test lines out of `app.rs`; this is the check on whether that actually
+      reduced its centrality or merely relocated code.
+- [ ] Also worth comparing: 2,415 nodes / 5,439 edges / 96 communities, and whether the
+      **245 isolated nodes** shrank.
+- [ ] **Ignore the "Import Cycles" section.** All 20 entries are files cycling to themselves
+      (`buffer.rs -> buffer.rs`) — a graphify artifact, not real cycles. Recorded here so it
+      is not investigated a third time.
 
 ---
 
