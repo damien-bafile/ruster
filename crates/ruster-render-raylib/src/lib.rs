@@ -117,13 +117,17 @@ impl RaylibRenderer {
     /// simply won't have the icon glyphs. `load_font_ex` takes the set as a
     /// string. The plane-1 Material Design range is intentionally omitted to
     /// keep the atlas small.
-    fn font_chars() -> String {
+    pub(crate) fn font_chars() -> String {
         let mut s = String::new();
         // Ranges of codepoints to bake, as inclusive (start, end) pairs.
         const RANGES: &[(u32, u32)] = &[
             (0x20, 0x7E),     // printable ASCII
             (0xA0, 0xFF),     // Latin-1 supplement
-            (0x2500, 0x259F), // box drawing + block elements
+            // Box drawing, block elements *and* geometric shapes. The last of
+            // these is easy to stop short of at 0x259F, which silently drops the
+            // sidebar's ▸/▾ markers and the debugger's ● breakpoint — they render
+            // as `?` in the GUI while looking fine in the TUI.
+            (0x2500, 0x25FF),
             (0x2600, 0x26FF), // misc symbols (⚡ etc.)
             (0xE000, 0xE00D), // Pomicons
             (0xE0A0, 0xE0D7), // Powerline + extras
@@ -995,5 +999,47 @@ impl Renderer for RaylibRenderer {
         self.pad_y = gui.padding_y;
         self.theme = gui.theme;
         self.rl.set_target_fps(gui.target_fps as u32);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RaylibRenderer;
+
+    /// Every glyph the editor draws has to be baked into the font atlas, or
+    /// raylib substitutes `?` — a failure that shows up only in the GUI, never
+    /// in the TUI or in any headless test.
+    ///
+    /// This caught ▸/▾ (sidebar markers) and ● (breakpoints) sitting just past
+    /// the end of the box-drawing range. Add a glyph here whenever the editor
+    /// starts drawing one.
+    #[test]
+    fn every_glyph_the_editor_draws_is_in_the_font_atlas() {
+        let atlas: std::collections::HashSet<char> =
+            RaylibRenderer::font_chars().chars().collect();
+
+        let glyphs = [
+            ('▸', "sidebar: collapsed directory"),
+            ('▾', "sidebar: expanded directory"),
+            ('●', "debugger: breakpoint"),
+            ('✓', "test runner: pass"),
+            ('✗', "test runner: fail"),
+            ('⚠', "notifications: warning"),
+            ('+', "git signs: added"),
+            ('~', "git signs: modified"),
+            ('_', "git signs: removed"),
+            ('─', "window chrome: horizontal rule"),
+            ('│', "float border: vertical"),
+            ('╭', "float border: top-left"),
+            ('╮', "float border: top-right"),
+            ('╰', "float border: bottom-left"),
+            ('╯', "float border: bottom-right"),
+        ];
+        let missing: Vec<_> =
+            glyphs.iter().filter(|(c, _)| !atlas.contains(c)).collect();
+        assert!(
+            missing.is_empty(),
+            "glyphs absent from the font atlas, so the GUI draws `?`: {missing:?}"
+        );
     }
 }

@@ -3468,7 +3468,10 @@ impl App {
             }
         }
         if let Some(srect) = sidebar_rect {
-            views.insert(0, self.sidebar.view(srect, vim_mode_to_ui_mode(self.vim.mode)));
+            views.insert(
+                0,
+                self.sidebar.view(srect, vim_mode_to_ui_mode(self.vim.mode), &self.theme_palette()),
+            );
         }
 
         let cmdline = if let Some(p) = &self.file_prompt {
