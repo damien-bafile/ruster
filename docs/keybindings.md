@@ -166,6 +166,7 @@ Press `SPC` in Normal mode; the which-key panel lists continuations.
 | `SPC o m` | Open messages buffer (`:messages`) |
 | `SPC o r` | Run a `ruster.toml` task (picker) |
 | `SPC p p` | Switch project (`:projects`) |
+| `SPC x x` | Problem list (`:Trouble`) |
 | `SPC d d` | Start debugging (`:debug`) |
 | `SPC d b` | Toggle breakpoint |
 | `SPC d c` | Continue |
@@ -268,6 +269,24 @@ rather than guessed ones. Set `todo.keywords` to change the set.
 | Command | Action |
 |---------|--------|
 | `:TodoList` (or `:todo`) | Collect markers from open buffers into the quickfix list and open it |
+
+### Problem list (Trouble)
+`:Trouble` (or `SPC x x`) opens a pinned `*trouble*` buffer aggregating **LSP
+diagnostics, the quickfix list and TODO markers**, grouped by file.
+
+The same problem reaching the list from two sources is shown once — the quickfix
+list is a container that `:TodoList` and the build runner copy into, so its copy
+loses to the specific source. Each line is tagged with where it came from: `D`
+diagnostic, `Q` quickfix, `T` todo, followed by severity.
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Jump to the entry under the cursor |
+| `Tab` / `z` | Fold or unfold the file group |
+| `r` | Refresh from the current sources |
+| `q` | Close the panel |
+
+Unclaimed keys fall through, so `:`, `/` and motions still work over the listing.
 
 ### Debugger (DAP)
 Breakpoints show as `●` in the sign column. While a session is stopped, an overlay
