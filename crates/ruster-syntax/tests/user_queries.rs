@@ -61,6 +61,19 @@ fn user_queries_are_discovered_read_and_degraded_from_the_config_dir() {
     assert_eq!(warnings.len(), 1, "exactly one complaint: {warnings:?}");
     assert!(warnings[0].contains("built-in"), "says what it did: {:?}", warnings[0]);
 
+    // The engine keeps the query it is *using* for later re-queries, not the
+    // text it was handed. TODO markers re-run it against the tree, so storing
+    // the rejected query would break them on exactly the buffers that already
+    // warned — silently, since highlighting itself looks fine.
+    let kws = vec!["TODO".to_string()];
+    let with_todo = SyntaxEngine::new("// TODO: still found\nconst X: i32 = 1;\n", "rs")
+        .expect("builds despite the broken user query");
+    assert_eq!(
+        with_todo.todo_markers(&kws).len(),
+        1,
+        "the fallback query still resolves comment captures"
+    );
+
     // A working custom query takes effect and stays quiet.
     write_query(&root, "(integer_literal) @number");
     let custom = SyntaxEngine::new(SRC, "rs").expect("a valid query builds");
