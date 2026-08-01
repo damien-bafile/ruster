@@ -33,6 +33,8 @@ pub enum SpecialKind {
     Help,
     /// The `:Git` status view.
     Git,
+    /// A commit message being composed (`:GitCommit`), written by `:w`.
+    GitCommit,
     /// The Dashboard / welcome screen — a static page that cannot be closed.
     Dashboard,
     /// A general-purpose message log (build, LSP, echo, etc.).
@@ -172,8 +174,16 @@ impl Document {
 
     /// Ruster-managed special buffers (dired, ibuffer, picker) are non-editable
     /// — they are UI listings the app owns, so edits are gated out.
+    ///
+    /// The one exception is a commit message: it is a special buffer because
+    /// ruster owns what happens on `:w`, but its whole purpose is for the user
+    /// to type into.
     pub fn read_only(&self) -> bool {
-        matches!(self.kind, DocKind::Special(_))
+        match self.kind {
+            DocKind::Special(SpecialKind::GitCommit) => false,
+            DocKind::Special(_) => true,
+            _ => false,
+        }
     }
 }
 
@@ -209,6 +219,10 @@ mod tests {
     #[test]
     fn special_document_is_read_only() {
         assert!(Document::special(SpecialKind::Dired, "*dired*").read_only());
+        assert!(
+            !Document::special(SpecialKind::GitCommit, "*git-commit*").read_only(),
+            "a commit message is typed into, so it is the one editable special buffer"
+        );
         assert!(Document::special(SpecialKind::Ibuffer, "*ibuffer*").read_only());
         assert!(!Document::from_file(PathBuf::from("a.rs"), "x").read_only());
         assert!(!Document::scratch("[No Name]").read_only());

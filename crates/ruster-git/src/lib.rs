@@ -426,6 +426,57 @@ pub fn status(root: &Path) -> Option<Status> {
         .then(|| parse_status(&String::from_utf8_lossy(&out.stdout)))
 }
 
+/// Strip a commit message of its comment lines and surrounding blank space.
+///
+/// `#` lines are the template ruster writes to remind the user what is staged;
+/// git's own editor flow treats them the same way. An empty result means the
+/// commit should be abandoned, exactly as `git commit` does.
+pub fn clean_commit_message(text: &str) -> String {
+    let body: Vec<&str> = text.lines().filter(|l| !l.trim_start().starts_with('#')).collect();
+    body.join("\n").trim().to_string()
+}
+
+/// Commit the index with `message`.
+///
+/// The message goes in on **stdin** (`-F -`), so it is never quoted into a
+/// shell and a message containing quotes, newlines or `$` cannot be
+/// misinterpreted.
+pub fn commit(root: &Path, message: &str) -> Result<String, String> {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    if message.trim().is_empty() {
+        return Err("empty commit message — nothing committed".to_string());
+    }
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["commit", "-F", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("could not run git commit: {e}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or("no stdin")?
+        .write_all(message.as_bytes())
+        .map_err(|e| format!("could not write the message: {e}"))?;
+    let out = child.wait_with_output().map_err(|e| format!("git commit failed: {e}"))?;
+    if out.status.success() {
+        return Ok(String::from_utf8_lossy(&out.stdout).trim().to_string());
+    }
+    // git puts "nothing to commit" on stdout, not stderr.
+    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    let msg = if err.is_empty() {
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    } else {
+        err
+    };
+    Err(if msg.is_empty() { "git commit failed".to_string() } else { msg })
+}
+
 /// Split a unified diff into one self-contained patch per hunk.
 ///
 /// Each result is the file's header (`diff --git`, `index`, `---`, `+++`, and
@@ -1098,6 +1149,69 @@ diff --git a/tracked.txt b/tracked.txt
         assert!(!err.is_empty(), "git explained itself: {err}");
         // And nothing was staged by the attempt.
         assert!(status(&dir).unwrap().staged().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_commit_message_loses_its_comments_and_surrounding_blanks() {
+        let msg = "\nAdd the thing\n\nWith a body.\n# On branch main\n#   M f.txt\n";
+        assert_eq!(clean_commit_message(msg), "Add the thing\n\nWith a body.");
+        // Indented comments count too — git strips those as well.
+        assert_eq!(clean_commit_message("   # only a comment\n"), "");
+        assert_eq!(clean_commit_message(""), "");
+        // A `#` inside a line is not a comment.
+        assert_eq!(clean_commit_message("fix issue #42\n"), "fix issue #42");
+    }
+
+    #[test]
+    fn committing_writes_the_message_and_clears_the_index() {
+        let Some(dir) = scratch_repo("commit") else { return };
+        std::fs::write(dir.join("tracked.txt"), "changed\n").unwrap();
+        stage(&dir, Path::new("tracked.txt")).unwrap();
+
+        commit(&dir, "A real message\n\nWith a body").expect("committed");
+        assert!(status(&dir).unwrap().is_clean(), "index cleared");
+
+        let log = Command::new("git")
+            .arg("-C").arg(&dir).args(["log", "-1", "--pretty=%B"]).output().unwrap();
+        let body = String::from_utf8_lossy(&log.stdout);
+        assert!(body.contains("A real message"), "{body}");
+        assert!(body.contains("With a body"), "the body survives: {body}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A message with shell metacharacters must reach git intact — it goes in
+    /// on stdin precisely so it is never quoted into a shell.
+    #[test]
+    fn a_message_with_quotes_and_dollars_survives() {
+        let Some(dir) = scratch_repo("quoting") else { return };
+        std::fs::write(dir.join("tracked.txt"), "x\n").unwrap();
+        stage(&dir, Path::new("tracked.txt")).unwrap();
+
+        let tricky = "fix \"quoted\" $HOME and `backticks`";
+        commit(&dir, tricky).expect("committed");
+        let log = Command::new("git")
+            .arg("-C").arg(&dir).args(["log", "-1", "--pretty=%s"]).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&log.stdout).trim(), tricky);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_empty_message_refuses_to_commit() {
+        let Some(dir) = scratch_repo("emptymsg") else { return };
+        std::fs::write(dir.join("tracked.txt"), "x\n").unwrap();
+        stage(&dir, Path::new("tracked.txt")).unwrap();
+        let err = commit(&dir, "   \n").unwrap_err();
+        assert!(err.contains("empty"), "{err}");
+        assert!(!status(&dir).unwrap().is_clean(), "still staged");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn committing_nothing_reports_gits_own_complaint() {
+        let Some(dir) = scratch_repo("nothing") else { return };
+        let err = commit(&dir, "nothing staged").unwrap_err();
+        assert!(!err.is_empty(), "git said something: {err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
