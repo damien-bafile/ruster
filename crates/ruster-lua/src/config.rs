@@ -562,6 +562,11 @@ pub struct Config {
     pub dap_adapter: Option<String>,
     /// Open the sidebar automatically on startup.
     pub sidebar_auto_open: bool,
+    /// Reopen the project's saved session on startup. Off by default:
+    /// silently reopening files is surprising when you asked for one.
+    pub session_autoload: bool,
+    /// Write the session on exit, so `:SessionRestore` has something to read.
+    pub session_autosave: bool,
     pub noice: NoiceConfig,
     /// Per-language syntax color overrides: `lang key -> (group -> hex)`. Carried
     /// separately from the flat schema (edited via the Settings syntax editor).
@@ -610,6 +615,8 @@ impl Config {
             (("terminal", "default_mode"), Enum(self.terminal_default_mode.clone())),
             (("dired", "show_hidden"), Bool(self.dired_show_hidden)),
             (("sidebar", "auto_open"), Bool(self.sidebar_auto_open)),
+            (("session", "autoload"), Bool(self.session_autoload)),
+            (("session", "autosave"), Bool(self.session_autosave)),
             (("colors", "bg"), Text(self.color_overrides.bg.clone())),
             (("colors", "fg"), Text(self.color_overrides.fg.clone())),
             (("colors", "gutter"), Text(self.color_overrides.gutter.clone())),
@@ -705,6 +712,8 @@ impl Config {
             test_command: ostr("test", "command"),
             dap_adapter: ostr("dap", "adapter"),
             sidebar_auto_open: bl("sidebar", "auto_open", d.sidebar_auto_open),
+            session_autoload: bl("session", "autoload", d.session_autoload),
+            session_autosave: bl("session", "autosave", d.session_autosave),
             // Not part of the flat schema; carried separately and merged by the
             // caller (runtime parse / Settings save).
             syntax_overrides: std::collections::HashMap::new(),
@@ -807,6 +816,8 @@ impl Default for Config {
             test_command: None,
             dap_adapter: None,
             sidebar_auto_open: false,
+            session_autoload: false,
+            session_autosave: true,
             noice: NoiceConfig::default(),
             syntax_overrides: std::collections::HashMap::new(),
         }
