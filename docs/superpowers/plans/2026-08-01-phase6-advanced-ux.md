@@ -160,7 +160,27 @@ agent environment.
       memory than the shadowing costs. Documented in `docs/keybindings.md` under the
       debugger section. **Do not re-litigate without a user report.**
 
-### Task 6: Re-run graphify on a clean corpus — **deferred to after Stage 1**
+### Task 6: Re-run graphify on a clean corpus ✅ (2026-08-01)
+
+**Run.** 2,640 nodes / 6,572 edges / 114 communities, 93k input tokens (down from
+474k — the semantic cache covered all but 8 files). `.impeccable/` and `.opencode/`
+were excluded but accounted for only 4 files, not the three communities assumed.
+
+**The headline finding inverts this plan's premise.** `App` betweenness rose
+0.369 → 0.5146 despite PR #24. Simulating extractions against the graph shows why:
+moving all 151 `impl App` methods into modules changes betweenness by **-4.3%**,
+while moving its 53 `references` edges — fields whose types come from 9 different
+crates — changes it by **-91.4%**. Betweenness is measuring App's role as the
+*composition root*, which every application has and which extraction cannot remove.
+
+The extractions did work: extracted modules score cohesion 0.12–0.25 against
+0.047–0.056 for what remains in `App`.
+
+**Track `impl App` method count instead** (127 at PR #24 → 151 now) and `app.rs`
+non-test lines (5766 → 6439). Those measure the real problem and betweenness
+cannot see them.
+
+### Task 6 (historical note): why it was deferred
 
 **Decision (2026-08-01): do not run this yet.** The last run cost **474,462 input
 tokens**, and the graph's value is navigating unfamiliar structure — which Stage 1 is about
@@ -193,30 +213,30 @@ When it is run:
 
 ## Stage 1 — Foundations
 
-### Task 7: Floating windows
+### Task 7: Floating windows ✅ (one bullet outstanding)
 
 Unblocks the three notification backends removed in PR #24 as uncompiled stubs
 (`CmdlinePopup`, `Popup`, `Confirm`), plus modal dialogs for Tasks 9 and 12.
 
-- [ ] A `FloatView { rect, lines, border, title, z }` on `FrameState`, drawn **above** the
+- [x] A `FloatView { rect, lines, border, title, z }` on `FrameState`, drawn **above** the
       window views. Positioning helpers: cursor-relative, centred, and edge-anchored.
-- [ ] Draw it in both `ruster-tui/src/renderer.rs` and `ruster-render-raylib`. The hover
+- [x] Draw it in both `ruster-tui/src/renderer.rs` and `ruster-render-raylib`. The hover
       popup (`HoverWidget`) and which-key panel are the closest existing precedents; fold
       them onto the new primitive if it doesn't complicate them.
 - [ ] Re-introduce `BackendKind::{CmdlinePopup, Popup, Confirm}` in `ruster-notify` **only
       once they render** — they were removed precisely because they were unreachable.
-- [ ] Tests: z-ordering over window views; clamping at each screen edge.
+- [x] Tests: z-ordering over window views; clamping at each screen edge.
 
-### Task 8: Git signs (gitsigns)
+### Task 8: Git signs (gitsigns) ✅
 
-- [ ] New `ruster-git` crate: run `git diff --no-color -U0` for a file, parse the hunk
+- [x] New `ruster-git` crate: run `git diff --no-color -U0` for a file, parse the hunk
       headers into `(added, modified, removed)` line ranges. Pure parsing, unit-tested from
       captured output — no test may require a real repository.
-- [ ] Feed the existing sign column (`SignsView`) alongside diagnostics and test results.
+- [x] Feed the existing sign column (`SignsView`) alongside diagnostics and test results.
       That merge already happens in `render`; this is a third source, not a new column.
-- [ ] `]h` / `[h` to jump between hunks; `:Gitsigns toggle`.
-- [ ] Non-blocking: refresh on save and on buffer switch via a background thread.
-- [ ] Tests: hunk parsing (added/modified/removed/mixed); sign merge precedence with
+- [x] `]h` / `[h` to jump between hunks; `:Gitsigns toggle`.
+- [x] Non-blocking: refresh on save and on buffer switch via a background thread.
+- [x] Tests: hunk parsing (added/modified/removed/mixed); sign merge precedence with
       diagnostics on the same line.
 
 ## Stage 2 — Surfaces
