@@ -824,56 +824,6 @@ impl Renderer for RaylibRenderer {
         }
 
         // Hover popup, near the top-center (syntax-highlighted).
-        if let Some(lines) = &state.hover {
-            if !lines.is_empty() {
-                let box_bg = bg;
-                let longest = lines.iter().map(|l| l.text.chars().count()).max().unwrap_or(0);
-                let box_w = ((longest as f32 * char_w) as i32 + 16).min(screen_w - 20);
-                let box_h = (lines.len() as i32 * line_h + 8).min(screen_h - 20);
-                let box_x = (screen_w - box_w) / 2;
-                let box_y = line_h;
-                d.draw_rectangle(box_x, box_y, box_w, box_h, box_bg);
-                d.draw_rectangle_lines(box_x, box_y, box_w, box_h, accent);
-                let mut s = d.begin_scissor_mode(box_x + 1, box_y + 1, box_w - 2, box_h - 2);
-                for (i, line) in lines.iter().enumerate() {
-                    let ly = box_y + 4 + i as i32 * line_h;
-                    let n = line.text.len();
-                    if n == 0 {
-                        continue;
-                    }
-                    if line.highlights.is_empty() {
-                        s.draw_text_ex(font, &line.text, Vector2::new(box_x as f32 + 6.0, ly as f32), font_size as f32, 1.0, default_color);
-                        continue;
-                    }
-                    let chars: Vec<char> = line.text.chars().collect();
-                    let nchars = chars.len();
-                    let mut char_colors: Vec<Color> = vec![default_color; nchars];
-                    for &(offset, len, ref style) in &line.highlights {
-                        let fg = match style.fg {
-                            ruster_render::Color::Rgb(r, g, b) => Color::new(r, g, b, 255),
-                            ruster_render::Color::Default => default_color,
-                        };
-                        let end = (offset + len).min(nchars);
-                        if offset < end {
-                            char_colors[offset..end].fill(fg);
-                        }
-                    }
-                    let mut x_off = box_x as f32 + 6.0;
-                    let mut ci = 0;
-                    while ci < nchars {
-                        let c = char_colors[ci];
-                        let start = ci;
-                        while ci < nchars && char_colors[ci] == c {
-                            ci += 1;
-                        }
-                        let seg: String = chars[start..ci].iter().collect();
-                        s.draw_text_ex(font, &seg, Vector2::new(x_off, ly as f32), font_size as f32, 1.0, c);
-                        x_off += measure(&seg);
-                    }
-                }
-            }
-        }
-
         // Bottom which-key panel, sliding up from the screen edge by `anim`.
         if let Some(wk) = &state.whichkey {
             let panel_h = (wk.rows.len() as i32 + 1) * line_h + 8;
@@ -966,6 +916,68 @@ impl Renderer for RaylibRenderer {
             s.draw_rectangle(bx, fy, bw, line_h, bar_bg);
             // The footer is a bar, so its text uses the bar/divider text colour.
             s.draw_text_ex(font, &settings.footer, Vector2::new((bx + 4) as f32, fy as f32), font_size as f32, 1.0, statusline_fg);
+        }
+
+        // Floats sit above every other surface, lowest z first. The rects are
+        // already resolved and clamped in cell coordinates by FloatView, so this
+        // only converts to pixels and paints — the geometry is shared with the
+        // TUI backend rather than reimplemented here.
+        for f in ruster_render::floats_in_draw_order(&state.floats) {
+            let fx = pad_x + (f.rect.x as f32 * char_w) as i32;
+            let fy = pad_y + f.rect.y as i32 * line_h;
+            let fw = (f.rect.width as f32 * char_w) as i32;
+            let fh = f.rect.height as i32 * line_h;
+            d.draw_rectangle(fx, fy, fw, fh, bg);
+            if f.border {
+                d.draw_rectangle_lines(fx, fy, fw, fh, accent);
+                if let Some(title) = &f.title {
+                    d.draw_text_ex(
+                        font,
+                        title,
+                        Vector2::new((fx + (2.0 * char_w) as i32) as f32, fy as f32),
+                        font_size as f32,
+                        1.0,
+                        accent,
+                    );
+                }
+            }
+            let inner = f.inner();
+            let ix = pad_x + (inner.x as f32 * char_w) as i32;
+            let iy = pad_y + inner.y as i32 * line_h;
+            let mut s = d.begin_scissor_mode(ix, iy, (inner.width as f32 * char_w) as i32, inner.height as i32 * line_h);
+            for (row, line) in f.lines.iter().enumerate() {
+                if row as u16 >= inner.height {
+                    break;
+                }
+                let ly = iy + row as i32 * line_h;
+                if line.text.is_empty() {
+                    continue;
+                }
+                if line.highlights.is_empty() {
+                    s.draw_text_ex(font, &line.text, Vector2::new(ix as f32, ly as f32), font_size as f32, 1.0, default_color);
+                    continue;
+                }
+                let chars: Vec<char> = line.text.chars().collect();
+                let mut char_colors: Vec<Color> = vec![default_color; chars.len()];
+                for &(offset, len, ref style) in &line.highlights {
+                    let fg = to_raylib(style.fg, default_color);
+                    for c in char_colors.iter_mut().skip(offset).take(len) {
+                        *c = fg;
+                    }
+                }
+                let mut x_off = ix as f32;
+                let mut ci = 0;
+                while ci < chars.len() {
+                    let c = char_colors[ci];
+                    let start = ci;
+                    while ci < chars.len() && char_colors[ci] == c {
+                        ci += 1;
+                    }
+                    let seg: String = chars[start..ci].iter().collect();
+                    s.draw_text_ex(font, &seg, Vector2::new(x_off, ly as f32), font_size as f32, 1.0, c);
+                    x_off += font.measure_text(&seg, font_size as f32, 1.0).x;
+                }
+            }
         }
     }
 

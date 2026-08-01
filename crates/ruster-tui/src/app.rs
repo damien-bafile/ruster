@@ -1072,6 +1072,9 @@ pub struct App {
     git_tx: std::sync::mpsc::Sender<(BufferId, Vec<ruster_git::Hunk>)>,
     /// `git.signs` — whether the gutter shows git status at all.
     git_signs: bool,
+    /// Floating boxes drawn above the windows this frame. Rebuilt per frame by
+    /// whatever owns them; empty most of the time.
+    floats: Vec<ruster_render::FloatView>,
     /// The file-explorer side panel.
     sidebar: SidebarState,
     /// The message log for editor/plugin messages.
@@ -1441,6 +1444,7 @@ impl App {
             git_rx: git_rx_init,
             git_tx: git_tx_init,
             git_signs: git_signs_init,
+            floats: Vec::new(),
             sidebar: SidebarState::new(),
             messages: ruster_core::message::MessageLog::new(),
             messages_buf: None,
@@ -3615,14 +3619,26 @@ impl App {
         } else {
             None
         };
+        // The hover popup is an ordinary float now, so it shares one clamping
+        // and drawing path with every other floating surface.
+        let mut floats = self.floats.clone();
+        if let Some(lines) = &self.hover {
+            if !lines.is_empty() {
+                floats.push(ruster_render::FloatView::anchored(
+                    RRect::new(0, 0, cols, rows),
+                    ruster_render::FloatAnchor::Edge(ruster_render::FloatEdge::Top),
+                    lines.clone(),
+                ));
+            }
+        }
         let state = FrameState {
+            floats,
             windows: views,
             cmdline: cmdline.as_deref(),
             noice_mini,
             noice_notify,
             picker: picker_view,
             whichkey,
-            hover: self.hover.clone(),
             settings: self.settings.as_ref().map(|s| s.view()),
             welcome: welcome_view,
             theme: self.theme_palette(),
