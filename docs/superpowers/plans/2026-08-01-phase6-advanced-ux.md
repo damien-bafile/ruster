@@ -42,7 +42,7 @@ graph to navigate by.
 
 | Stage | Tasks | Theme |
 |---|---|---|
-| **0 — Loose ends** | 1–6 | Carried out of Phase 5. **Tasks 1–3 done (PR #26)**; 4–6 open. |
+| **0 — Loose ends** | 1–6 | Carried out of Phase 5. **1–3 done (PR #26), 5 done**; 4 and 6 open. |
 | **1 — Foundations** | 7–8 | Floating windows, then git plumbing. Everything later builds on these. |
 | **2 — Surfaces** | 9–12 | Trouble, todos, theme preview, widgets — all consume Stage 1. |
 | **3 — Ecosystem** | 13–15 | Mason, diff viewer, then the config/docs/CI sweep. |
@@ -140,16 +140,26 @@ agent environment.
 - [ ] If this keeps recurring, write a project skill under `.claude/skills/` that launches
       the GUI and drives it, so the check is repeatable rather than manual.
 
-### Task 5: Refresh the stale process docs
+### Task 5: Refresh the stale process docs ✅
 
-- [ ] `.superpowers/sdd/task-11-report.md` is still marked `DONE_WITH_CONCERNS`. Both
-      concerns — "3 build warnings" and "crates have zero tests" — were resolved before
-      Phase 5 shipped. Mark it resolved with a pointer to what fixed it.
-- [ ] `.superpowers/sdd/progress.md` ends at the noice ledger; either close it out or
-      note that Phase 5 superseded it.
-- [ ] Decide and record: `:n` and `:s` alias step-over/step-into while a debug session is
-      active, shadowing bare `:s`. **Recommendation: leave it** — the `:db_*` names always
-      work and are documented. Write the decision down so it isn't re-litigated.
+- [x] `.superpowers/sdd/task-11-report.md` marked **RESOLVED**, with the original text kept
+      as the historical record. Both concerns verified cleared on `main` at `824bfbe`:
+      `set_isearch_message` no longer exists and clippy is clean and CI-enforced; the four
+      crates it called testless now hold 177 / 33 / 14 / 16 tests.
+- [x] `.superpowers/sdd/progress.md` closed out, pointing here for ongoing work.
+- [x] **Decision: leave the `:n` / `:s` debug aliases as they are.**
+
+      While a debug session is active, `:n` and `:s` alias step-over and step-into
+      (`app.rs`, guarded on `debug_session.is_some()`). Bare `:s` — repeat-last-substitute —
+      is therefore shadowed mid-session, because the alias is matched before
+      `parse_substitute`. `:s/pat/rep/` is unaffected: it carries a `/` and never
+      exact-matches `"s"`.
+
+      Left alone because the collision is narrow (bare `:s`, only while stopped in the
+      debugger), the `:db_*` names are unambiguous, always available and documented, and the
+      short forms match what gdb/lldb users expect. Removing them would cost more in muscle
+      memory than the shadowing costs. Documented in `docs/keybindings.md` under the
+      debugger section. **Do not re-litigate without a user report.**
 
 ### Task 6: Re-run graphify on a clean corpus
 
