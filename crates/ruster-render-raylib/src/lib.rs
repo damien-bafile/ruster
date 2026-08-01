@@ -5,6 +5,47 @@ use raylib::consts::KeyboardKey;
 use raylib::prelude::*;
 use ruster_render::{ControlKind, CursorKind, FrameState, GuiConfig, Renderer, SettingRowView};
 
+/// Draw `chars` on the cell grid, one `char_w` apart, colouring each by `colors`.
+///
+/// The GUI is a cell grid: the cursor, the selection quads, the sign column and
+/// the viewport's column count are all placed at `n * char_w`. Text has to be
+/// placed the same way. Letting the font's own advances accumulate instead —
+/// drawing runs and stepping by their measured width — drifts the moment a glyph
+/// whose advance is not `char_w` appears, such as a box-drawing marker or a
+/// glyph the font substitutes. Everything after it then sits slightly off from
+/// the highlight behind it, which is how the sidebar's selection came to clip
+/// its last character.
+///
+/// One call per glyph costs little more than one per run: `draw_text_ex` already
+/// emits a quad per glyph internally, and the embedded terminal has always drawn
+/// this way.
+fn draw_text_cells<D: RaylibDraw>(
+    d: &mut D,
+    m: TextMetrics<'_>,
+    at: (f32, f32),
+    chars: &[char],
+    colors: &[Color],
+) {
+    let (x0, y) = at;
+    let mut buf = [0u8; 4];
+    for (i, ch) in chars.iter().enumerate() {
+        if *ch == ' ' || *ch == '\0' {
+            continue; // nothing to draw, and skipping keeps the glyph count down
+        }
+        let color = colors.get(i).copied().unwrap_or(Color::WHITE);
+        let x = x0 + i as f32 * m.char_w;
+        d.draw_text_ex(m.font, ch.encode_utf8(&mut buf), Vector2::new(x, y), m.size as f32, 1.0, color);
+    }
+}
+
+/// The font metrics every text draw needs; they always travel together.
+#[derive(Clone, Copy)]
+struct TextMetrics<'a> {
+    font: &'a WeakFont,
+    size: i32,
+    char_w: f32,
+}
+
 pub struct RaylibRenderer {
     rl: RaylibHandle,
     thread: RaylibThread,
@@ -266,6 +307,7 @@ impl Renderer for RaylibRenderer {
         let theme = state.theme;
         let font = &self.font;
         let measure = |s: &str| font.measure_text(s, font_size as f32, 1.0).x;
+        let metrics = TextMetrics { font, size: font_size, char_w };
 
         let default_color = to_raylib(theme.fg, Color::new(205, 214, 244, 255));
         let gutter_color = to_raylib(theme.gutter, Color::new(108, 112, 134, 255));
@@ -521,18 +563,7 @@ impl Renderer for RaylibRenderer {
                             char_colors[ss as usize..end].fill(selection_fg);
                         }
                     }
-                    let mut x_offset = text_x as f32;
-                    let mut i = 0;
-                    while i < nchars {
-                        let c = char_colors[i];
-                        let start = i;
-                        while i < nchars && char_colors[i] == c {
-                            i += 1;
-                        }
-                        let seg: String = chars[start..i].iter().collect();
-                        s.draw_text_ex(font, &seg, Vector2::new(x_offset, gy as f32), font_size as f32, 1.0, c);
-                        x_offset += measure(&seg);
-                    }
+                    draw_text_cells(&mut s, metrics, (text_x as f32, gy as f32), &chars, &char_colors);
                 }
 
                 // Cursor (only the active window sets cursor_visible).
@@ -756,18 +787,7 @@ impl Renderer for RaylibRenderer {
                             char_colors[offset..end].fill(fg);
                         }
                     }
-                    let mut x_off = px as f32;
-                    let mut ci = 0;
-                    while ci < nchars {
-                        let c = char_colors[ci];
-                        let start = ci;
-                        while ci < nchars && char_colors[ci] == c {
-                            ci += 1;
-                        }
-                        let seg: String = chars[start..ci].iter().collect();
-                        s.draw_text_ex(font, &seg, Vector2::new(x_off, ly as f32), font_size as f32, 1.0, c);
-                        x_off += measure(&seg);
-                    }
+                    draw_text_cells(&mut s, metrics, (px as f32, ly as f32), &chars, &char_colors);
                 }
             }
         }
@@ -969,18 +989,7 @@ impl Renderer for RaylibRenderer {
                         *c = fg;
                     }
                 }
-                let mut x_off = ix as f32;
-                let mut ci = 0;
-                while ci < chars.len() {
-                    let c = char_colors[ci];
-                    let start = ci;
-                    while ci < chars.len() && char_colors[ci] == c {
-                        ci += 1;
-                    }
-                    let seg: String = chars[start..ci].iter().collect();
-                    s.draw_text_ex(font, &seg, Vector2::new(x_off, ly as f32), font_size as f32, 1.0, c);
-                    x_off += font.measure_text(&seg, font_size as f32, 1.0).x;
-                }
+                draw_text_cells(&mut s, metrics, (ix as f32, ly as f32), &chars, &char_colors);
             }
         }
     }
