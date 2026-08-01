@@ -120,8 +120,13 @@ impl GitStatusState {
         self.layout(root).into_iter().map(|(text, _)| text).collect::<Vec<_>>().join("\n")
     }
 
-    /// The row a rendered line belongs to, or `None` for the header, a blank,
-    /// or a section heading.
+    /// The row a rendered line belongs to, or `None` for the branch header and
+    /// blank lines.
+    ///
+    /// A section heading *does* resolve, to its own row: folding has to work
+    /// with the cursor on a heading, which is where it naturally sits. Asking
+    /// whether that row is a file is [`path_at`](Self::path_at)'s job, and it
+    /// answers `None` — so `Enter` on a heading still does nothing.
     ///
     /// Derived from the same layout `render` emits rather than by offsetting a
     /// constant: the view puts a blank line before every section after the
@@ -152,7 +157,7 @@ impl GitStatusState {
                             if collapsed { '▸' } else { '▾' },
                             section.heading()
                         ),
-                        None,
+                        Some(row_index),
                     ));
                 }
                 Row::Entry { section, index } => {

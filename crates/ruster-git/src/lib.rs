@@ -624,6 +624,29 @@ fn run_git(root: &Path, args: &[&str], path: &Path) -> Result<(), String> {
     Err(if err.is_empty() { "git failed".to_string() } else { err })
 }
 
+/// The top level of the working tree containing `from`, or `None` when it is
+/// not in a repository.
+///
+/// Every git operation must run from here rather than from the *project* root,
+/// which in a workspace is the nearest `Cargo.toml` — a crate directory. git
+/// reports paths relative to wherever it is invoked, so running from a crate
+/// makes a change elsewhere in the repository come back as
+/// `../other-crate/src/lib.rs`. That still resolves, but it reads as broken and
+/// puts the whole repository's changes under a heading that names one crate.
+pub fn repo_root(from: &Path) -> Option<PathBuf> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(from)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!path.is_empty()).then(|| PathBuf::from(path))
+}
+
 /// Whether `root` looks like a git working tree. Cheap enough to call on a
 /// buffer switch.
 pub fn is_repo(root: &Path) -> bool {
@@ -1212,6 +1235,43 @@ diff --git a/tracked.txt b/tracked.txt
         let Some(dir) = scratch_repo("nothing") else { return };
         let err = commit(&dir, "nothing staged").unwrap_err();
         assert!(!err.is_empty(), "git said something: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Git reports paths relative to wherever it runs, so every operation has
+    /// to run from the working tree — not from a crate directory inside it.
+    #[test]
+    fn the_repo_root_is_the_working_tree_not_the_subdirectory() {
+        let Some(dir) = scratch_repo("reporoot") else { return };
+        let sub = dir.join("crates").join("inner");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join("f.txt"), "x\n").unwrap();
+
+        let from_sub = repo_root(&sub).expect("found from a subdirectory");
+        let from_top = repo_root(&dir).expect("found from the top");
+        assert_eq!(from_sub, from_top, "both resolve to the same working tree");
+        // Canonicalised by git, so compare that way.
+        assert_eq!(from_sub, std::fs::canonicalize(&dir).unwrap());
+
+        // The bug this exists to prevent: status from the subdirectory reports
+        // `../..`-style paths, from the root it does not.
+        std::fs::write(dir.join("tracked.txt"), "changed\n").unwrap();
+        let from_root = status(&from_top).unwrap();
+        assert!(
+            from_root.unstaged().iter().all(|e| !e.path.to_string_lossy().contains("..")),
+            "no parent-relative paths: {:?}",
+            from_root.unstaged()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn outside_a_repository_there_is_no_repo_root() {
+        let dir = std::env::temp_dir().join("ruster_not_a_repo");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // A temp dir is not inside a working tree.
+        assert_eq!(repo_root(&dir), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

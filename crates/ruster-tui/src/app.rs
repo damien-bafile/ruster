@@ -6092,16 +6092,26 @@ impl App {
         }
     }
 
+    /// The git working tree to run git in.
+    ///
+    /// **Not** `project_root`: in a workspace that is the nearest `Cargo.toml`,
+    /// i.e. a crate directory, and git reports paths relative to wherever it is
+    /// invoked — so running from a crate makes a change elsewhere in the
+    /// repository come back as `../other-crate/src/lib.rs`.
+    ///
+    /// Computed rather than cached: the two places `project_root` is assigned
+    /// are not the only ones that matter, since tests set it directly, and a
+    /// stale cache would be worse than the one `rev-parse` this costs.
+    fn git_root(&self) -> Option<PathBuf> {
+        ruster_git::repo_root(self.project_root.as_deref()?)
+    }
+
     /// Open (or refresh) the `:Git` status view.
     fn open_git_status(&mut self) {
-        let Some(root) = self.project_root.clone() else {
-            self.echo_warn("Not in a project".to_string());
-            return;
-        };
-        if !ruster_git::is_repo(&root) {
+        let Some(root) = self.git_root() else {
             self.echo_warn("Not a git repository".to_string());
             return;
-        }
+        };
         let Some(status) = ruster_git::status(&root) else {
             self.echo_error("Could not read git status".to_string());
             return;
@@ -6167,8 +6177,9 @@ impl App {
                 }
                 true
             }
-            // `za` is the fold idiom elsewhere; `Tab` is the obvious one here.
-            KeyCode::Tab => {
+            // `z` folds here as it does in `:Trouble`, so the two sectioned
+            // lists share one idiom.
+            KeyCode::Tab | KeyCode::Char('z') => {
                 if let Some(r) = self.git_status_row() {
                     self.git_status.toggle_at(r);
                     self.refresh_git_status_buffer();
@@ -6195,7 +6206,7 @@ impl App {
                 self.confirm_git_remote("Pull");
                 true
             }
-            KeyCode::Char('r') => {
+            KeyCode::Char('r') | KeyCode::Char('g') => {
                 self.open_git_status();
                 true
             }
@@ -6209,8 +6220,8 @@ impl App {
 
     /// Open a buffer to compose a commit message. `:w` commits it.
     fn open_git_commit(&mut self) {
-        let Some(root) = self.project_root.clone() else {
-            self.echo_warn("Not in a project".to_string());
+        let Some(root) = self.git_root() else {
+            self.echo_warn("Not a git repository".to_string());
             return;
         };
         let Some(status) = ruster_git::status(&root) else {
@@ -6277,7 +6288,7 @@ impl App {
 
     /// Commit what the message buffer holds. Called instead of a file write.
     fn commit_from_buffer(&mut self) {
-        let Some(root) = self.project_root.clone() else { return };
+        let Some(root) = self.git_root() else { return };
         let raw = self.ws.borrow().active_doc().buffer.to_string();
         let message = ruster_git::clean_commit_message(&raw);
         if message.is_empty() {
@@ -6308,11 +6319,7 @@ impl App {
     /// Ask before pushing or pulling — both talk to a remote, and a push in
     /// particular is not something to trigger by a stray keypress.
     fn confirm_git_remote(&mut self, verb: &'static str) {
-        let Some(root) = self.project_root.clone() else {
-            self.echo_warn("Not in a project".to_string());
-            return;
-        };
-        if !ruster_git::is_repo(&root) {
+        if self.git_root().is_none() {
             self.echo_warn("Not a git repository".to_string());
             return;
         }
@@ -6335,8 +6342,8 @@ impl App {
     /// granularity (`u` in `:Git`) until there is a view of the staged diff to
     /// point at.
     fn git_stage_hunk(&mut self) {
-        let Some(root) = self.project_root.clone() else {
-            self.echo_warn("Not in a project".to_string());
+        let Some(root) = self.git_root() else {
+            self.echo_warn("Not a git repository".to_string());
             return;
         };
         // Resolve inside the narrowest scope, then act with the borrow dropped.
@@ -6383,7 +6390,7 @@ impl App {
     /// --staged` cannot alter the working tree — so the worst a bug here can do
     /// is stage the wrong file, never lose an edit.
     fn git_stage_at_cursor(&mut self, stage: bool) {
-        let (Some(row), Some(root)) = (self.git_status_row(), self.project_root.clone()) else {
+        let (Some(row), Some(root)) = (self.git_status_row(), self.git_root()) else {
             return;
         };
         let Some(path) = self.git_status.path_at(row) else {
@@ -6544,9 +6551,13 @@ impl App {
             self.echo(format!("{} cancelled", p.verb));
             return;
         }
-        let root = self.project_root.clone().unwrap_or_else(|| {
-            std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-        });
+        // A git command runs from the working tree, not from whichever crate
+        // directory happens to be the project root.
+        let root = match p.kind {
+            RunnerKind::Git => self.git_root(),
+            _ => self.project_root.clone(),
+        }
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         self.start_run(p.kind, p.cmd, root);
     }
 
@@ -9335,15 +9346,16 @@ mod tests {
         a.project_root = None;
         a.apply_cmd(CmdAction::GitStageHunk);
         let last = a.notify.history().last().expect("a message");
-        assert!(last.text.contains("Not in a project"), "{:?}", last.text);
+        assert!(last.text.contains("git repository"), "{:?}", last.text);
     }
 
     /// A buffer with no file on disk has no hunks to stage.
     #[test]
     fn git_stage_hunk_needs_a_file() {
-        let dir = shot_dir();
+        // A real repository, so the run gets past the repo check to the one
+        // being tested — the working directory during a test run is one.
         let mut a = App::new("scratch".into(), PathBuf::from(""));
-        a.project_root = Some(dir);
+        a.project_root = std::env::current_dir().ok();
         {
             let id = a.ws.borrow().active_buffer();
             a.ws.borrow_mut().buffers.get_mut(id).unwrap().file_path = None;
@@ -9413,10 +9425,12 @@ mod tests {
             );
         }
 
-        // Headings and blanks are not rows.
+        // A heading resolves to its own row, so folding works with the cursor
+        // on it — but that row is not a file, so `Enter` still does nothing.
         let heading = text.lines().position(|l| l.contains("Untracked")).unwrap();
-        assert_eq!(a.git_status.row_at_line(heading), None, "a heading is not a file");
-        assert_eq!(a.git_status.row_at_line(0), None, "nor is the branch header");
+        let hrow = a.git_status.row_at_line(heading).expect("a heading has a row");
+        assert_eq!(a.git_status.path_at(hrow), None, "a heading is not a file");
+        assert_eq!(a.git_status.row_at_line(0), None, "the branch header is not a row");
         assert_eq!(a.git_status.row_at_line(9999), None);
     }
 

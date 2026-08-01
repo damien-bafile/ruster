@@ -42,7 +42,7 @@ rest.
 
 ---
 
-## Stage 1 — Read-only status
+## Stage 1 — Read-only status ✅ (PR 1)
 
 ### 1.1 Parse `git status --porcelain=v2 --branch`
 
@@ -57,23 +57,24 @@ Captured from a real repository, and these are the shapes the parser must take:
 ? untracked.txt
 ```
 
-- [ ] `1` = ordinary change, `2` = rename/copy, `?` = untracked, `u` = unmerged,
+- [x] `1` = ordinary change, `2` = rename/copy, `?` = untracked, `u` = unmerged,
       `#` = header.
-- [ ] The `XY` field is the whole point: **X is the staged status, Y the
+- [x] The `XY` field is the whole point: **X is the staged status, Y the
       unstaged one**. `MM` above is one file appearing in *both* lists — get
       this wrong and the two sections lie.
-- [ ] A `2` line's paths are `new<TAB>old`, **tab-separated**, not space. A
+- [x] A `2` line's paths are `new<TAB>old`, **tab-separated**, not space. A
       space-splitting parser silently mangles every rename.
-- [ ] Tests over captured output only — no test may require a real repository,
+- [x] Tests over captured output only — no test may require a real repository,
       matching `ruster-git`'s existing rule. The samples above go in as fixtures.
 
 ### 1.2 The `:Git` status buffer
 
-- [ ] A special buffer like `:Trouble` and `:Mason`: `SpecialKind::Git`, sections
+- [x] A special buffer like `:Trouble` and `:Mason`: `SpecialKind::Git`, sections
       for **Staged**, **Unstaged**, **Untracked**, foldable per file with `za`.
-- [ ] Branch and upstream in the header, from the `# branch.*` lines.
-- [ ] `Enter` opens the file; `Tab`/`za` folds; `g`/`r` refreshes; `q` closes.
-- [ ] Reuse `trouble.rs`'s grouping and row-resolution shape — it already solves
+- [x] Branch and upstream in the header, from the `# branch.*` lines.
+- [x] `Enter` opens the file; `Tab`/`z` folds; `g`/`r` refreshes; `q` closes.
+      (`z` rather than the `za` this plan first wrote, matching `:Trouble`.)
+- [x] Reuse `trouble.rs`'s grouping and row-resolution shape — it already solves
       "screen row → item" for a foldable, sectioned list, and duplicating it
       would be the third copy of that logic.
 
@@ -122,7 +123,7 @@ one hunk instead of several.
 
 ---
 
-## Stage 3 — Writing operations ✅ (PR 4)
+## Stage 3 — Writing operations ✅ (PR 4) ✅ (PR 4)
 
 Every one of these changes history or the remote, so each is gated.
 

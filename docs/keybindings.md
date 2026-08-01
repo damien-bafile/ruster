@@ -223,7 +223,7 @@ Press `g` in Normal mode; the which-key panel lists the goto commands (LazyVim-s
 | `:echoe <text>` | Show an error in the notification panel |
 | `:Diffview` `:diff` | Side-by-side diff of the active file against HEAD, in a vertical split. Panes stay row-aligned and scroll together; `~` marks a line the other side does not have |
 | `:Mason` `:mason` | List the external tools ruster can use (LSP servers, debug adapters, formatters) and whether each is on `PATH` |
-| `:Git` `:git` | Git status: staged, unstaged and untracked files in foldable sections. `s` stages the file under the cursor, `u` unstages it, `c` commits, `P` pushes, `F` pulls, `Enter` opens it, `Tab` folds a section, `r` refreshes, `q` closes |
+| `:Git` `:git` | Git status: staged, unstaged and untracked files in foldable sections. `s` stages the file under the cursor, `u` unstages it, `c` commits, `P` pushes, `F` pulls, `Enter` opens it, `Tab`/`z` folds a section, `r`/`g` refreshes, `q` closes |
 | `:GitStageHunk` `:stagehunk` | Stage just the hunk the cursor is inside, in the file being edited. Only the index is touched; the working tree is never modified |
 | `:GitCommit` `:gitcommit` `:commit` | Compose a commit message for what is staged; `:w` commits it, an empty message aborts |
 | `:GitPush` `:gitpush` `:push` | Push to the remote — asks first, showing the exact command |
