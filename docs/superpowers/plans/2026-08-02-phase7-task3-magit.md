@@ -89,7 +89,7 @@ carries none of the risk below.
 - [x] `s` → `git add -- <path>`, `u` → `git restore --staged -- <path>`.
       Straightforward, and worth landing before hunks.
 
-### 2.2 Stage and unstage *hunks*
+### 2.2 Stage and unstage *hunks* ✅ (PR 3, staging only)
 
 This is the whole difficulty of the task and should be planned before it is
 started.
@@ -99,18 +99,24 @@ hunk**, which must be reconstructed — not sliced out of the original diff text
 because the header line counts have to be recomputed for a patch that contains
 one hunk instead of several.
 
-- [ ] Generate with **context** (`git diff -U3`), not the `-U0` the gutter uses.
+- [x] Generate with **context** (`git diff -U3`), not the `-U0` the gutter uses.
       `git apply` needs context lines to locate the hunk; a `-U0` patch is
       rejected or misapplies.
-- [ ] Rebuild the `@@ -a,b +c,d @@` header for the single hunk. `DiffHunk`
+- [x] Rebuild the `@@ -a,b +c,d @@` header for the single hunk. `DiffHunk`
       already carries both sides, which is why Task 14's two-sided coordinates
       were worth keeping.
-- [ ] Unstaging is the same patch applied with `--cached --reverse`.
-- [ ] **Never write to the working tree.** `--cached` only touches the index, so
+- [~] Unstaging is the same patch applied with `--cached --reverse`. The
+      *mechanism* works and is tested, but there is no cursor-driven unstage:
+      that needs the HEAD→index diff, whose line numbers are the index's and do
+      not match the buffer whenever the file also has unstaged edits — which is
+      exactly when someone would reach for it. Unstaging stays at file
+      granularity (`u` in `:Git`) until there is a view of the staged diff to
+      point at.
+- [x] **Never write to the working tree.** `--cached` only touches the index, so
       a bug loses staging, not the user's edits. Discarding changes (a
       `git checkout --` equivalent) is genuinely destructive and belongs behind
       the confirmation dialog, if it is offered at all.
-- [ ] Tests: build a patch from captured diff output and assert the exact bytes,
+- [x] Tests: build a patch from captured diff output and assert the exact bytes,
       including the recomputed header — then a round-trip test that
       apply-then-reverse is identity. No repository required.
 

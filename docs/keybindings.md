@@ -224,6 +224,7 @@ Press `g` in Normal mode; the which-key panel lists the goto commands (LazyVim-s
 | `:Diffview` `:diff` | Side-by-side diff of the active file against HEAD, in a vertical split. Panes stay row-aligned and scroll together; `~` marks a line the other side does not have |
 | `:Mason` `:mason` | List the external tools ruster can use (LSP servers, debug adapters, formatters) and whether each is on `PATH` |
 | `:Git` `:git` | Git status: staged, unstaged and untracked files in foldable sections. `s` stages the file under the cursor, `u` unstages it, `Enter` opens it, `Tab` folds a section, `r` refreshes, `q` closes |
+| `:GitStageHunk` `:stagehunk` | Stage just the hunk the cursor is inside, in the file being edited. Only the index is touched; the working tree is never modified |
 | `:help [topic]` `:h [topic]` | Open the manual. A topic jumps to a section, a `:command`, or a `setting.key`; `/` searches, `q` closes |
 | `:SessionSave` `:mksession` | Save this project's open files and window layout |
 | `:SessionRestore` `:loadsession` | Reopen this project's saved session |

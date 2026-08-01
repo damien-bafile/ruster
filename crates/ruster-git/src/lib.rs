@@ -426,6 +426,118 @@ pub fn status(root: &Path) -> Option<Status> {
         .then(|| parse_status(&String::from_utf8_lossy(&out.stdout)))
 }
 
+/// Split a unified diff into one self-contained patch per hunk.
+///
+/// Each result is the file's header (`diff --git`, `index`, `---`, `+++`, and
+/// any mode or rename lines) followed by exactly one `@@` hunk — a patch
+/// `git apply` will accept on its own.
+///
+/// The hunk is taken **verbatim**, headers included. That is correct because
+/// `git diff` reports the *old* side relative to what we apply to: staging uses
+/// the index→worktree diff and applies to the index, unstaging uses the
+/// HEAD→index diff and reverses it against the index. In both cases the hunk's
+/// `-old_start` already refers to the file `git apply` will be patching, and
+/// git locates the change by that plus the surrounding context — which is why
+/// the diff must be generated with context (`-U3`), not the `-U0` the gutter
+/// uses. A `-U0` patch has nothing to anchor to and git rejects or misplaces it.
+pub fn split_hunks(diff: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut header = String::new();
+    let mut hunk = String::new();
+
+    let flush = |header: &str, hunk: &mut String, out: &mut Vec<String>| {
+        if !hunk.is_empty() {
+            out.push(format!("{header}{hunk}"));
+            hunk.clear();
+        }
+    };
+
+    for line in diff.lines() {
+        if line.starts_with("diff --git ") {
+            flush(&header, &mut hunk, &mut out);
+            header.clear();
+            header.push_str(line);
+            header.push('\n');
+        } else if line.starts_with("@@") {
+            flush(&header, &mut hunk, &mut out);
+            hunk.push_str(line);
+            hunk.push('\n');
+        } else if hunk.is_empty() {
+            // Still in this file's header: `index`, `---`, `+++`, mode and
+            // rename lines all belong with it.
+            if !header.is_empty() {
+                header.push_str(line);
+                header.push('\n');
+            }
+        } else {
+            // Body of the current hunk, including `\ No newline at end of file`.
+            hunk.push_str(line);
+            hunk.push('\n');
+        }
+    }
+    flush(&header, &mut hunk, &mut out);
+    out
+}
+
+/// The staged-or-unstaged diff for one path, with enough context to apply.
+///
+/// `staged` picks `--cached` (HEAD→index) over the default (index→worktree).
+pub fn diff_text(root: &Path, path: &Path, staged: bool) -> Option<String> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(root).args(["diff", "--no-color", "-U3"]);
+    if staged {
+        cmd.arg("--cached");
+    }
+    let out = cmd.arg("--").arg(path).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Apply `patch` to the **index only**.
+///
+/// Always `--cached`, so this can never touch the working tree: the worst a
+/// wrong patch can do is stage something unintended, which `unstage` undoes.
+/// `reverse` unstages instead of staging.
+pub fn apply_to_index(root: &Path, patch: &str, reverse: bool) -> Result<(), String> {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(root).args(["apply", "--cached", "--unidiff-zero"]);
+    if reverse {
+        cmd.arg("--reverse");
+    }
+    let mut child = cmd
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("could not run git apply: {e}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or("no stdin")?
+        .write_all(patch.as_bytes())
+        .map_err(|e| format!("could not write patch: {e}"))?;
+    let out = child.wait_with_output().map_err(|e| format!("git apply failed: {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    Err(if err.is_empty() { "git apply refused the patch".to_string() } else { err })
+}
+
+/// The index of the hunk covering `line` (0-based, working-file coordinates),
+/// for "stage the hunk the cursor is in".
+pub fn hunk_index_at(hunks: &[DiffHunk], line: u32) -> Option<usize> {
+    hunks.iter().position(|h| {
+        let start = h.new_start;
+        // A deletion occupies no lines, so match the boundary it sits on.
+        let end = start + h.new_count.max(1);
+        (start..end).contains(&line)
+    })
+}
+
 /// Stage `path` — `git add -- <path>`.
 ///
 /// Works for a modified, deleted or untracked file alike: `git add` on a
@@ -802,6 +914,190 @@ u UU N... 100644 100644 100644 100644 df967b9 ba2906d e45c9c2 conflict.txt
         let err = stage(&dir, Path::new("does-not-exist.txt")).unwrap_err();
         assert!(!err.is_empty(), "git said something");
         assert!(err.contains("did not match") || err.contains("pathspec"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A real two-hunk `git diff -U3`, captured verbatim.
+    const TWO_HUNKS: &str = "\
+diff --git a/f.txt b/f.txt
+index c4352f8..2966adb 100644
+--- a/f.txt
++++ b/f.txt
+@@ -1,6 +1,6 @@
+ line 1
+ line 2
+-line 3
++CHANGED 3
+ line 4
+ line 5
+ line 6
+@@ -13,7 +13,7 @@ line 12
+ line 13
+ line 14
+ line 15
+-line 16
++CHANGED 16
+ line 17
+ line 18
+ line 19
+";
+
+    #[test]
+    fn splitting_gives_one_applicable_patch_per_hunk() {
+        let parts = split_hunks(TWO_HUNKS);
+        assert_eq!(parts.len(), 2);
+        for p in &parts {
+            // Each part must stand alone: header, then exactly one hunk.
+            assert!(p.starts_with("diff --git a/f.txt b/f.txt\n"), "{p}");
+            assert!(p.contains("--- a/f.txt\n+++ b/f.txt\n"), "{p}");
+            assert_eq!(p.matches("\n@@").count() + usize::from(p.starts_with("@@")), 1, "{p}");
+        }
+        assert!(parts[0].contains("CHANGED 3") && !parts[0].contains("CHANGED 16"));
+        assert!(parts[1].contains("CHANGED 16") && !parts[1].contains("CHANGED 3"));
+    }
+
+    /// The hunk headers are carried through untouched — they already describe
+    /// the file `git apply` will patch.
+    #[test]
+    fn each_patch_keeps_its_own_hunk_header() {
+        let parts = split_hunks(TWO_HUNKS);
+        assert!(parts[0].contains("@@ -1,6 +1,6 @@"), "{}", parts[0]);
+        assert!(parts[1].contains("@@ -13,7 +13,7 @@ line 12"), "{}", parts[1]);
+    }
+
+    /// Context is what `git apply` anchors on, so it must survive splitting.
+    #[test]
+    fn context_lines_stay_with_their_hunk() {
+        let parts = split_hunks(TWO_HUNKS);
+        assert!(parts[0].contains("\n line 1\n") && parts[0].contains("\n line 6\n"));
+        assert!(parts[1].contains("\n line 13\n") && parts[1].contains("\n line 19\n"));
+    }
+
+    #[test]
+    fn a_diff_over_several_files_keeps_each_header_with_its_hunks() {
+        let two_files = "\
+diff --git a/one.txt b/one.txt
+index 1..2 100644
+--- a/one.txt
++++ b/one.txt
+@@ -1 +1 @@
+-a
++b
+diff --git a/two.txt b/two.txt
+index 3..4 100644
+--- a/two.txt
++++ b/two.txt
+@@ -5 +5 @@
+-c
++d
+";
+        let parts = split_hunks(two_files);
+        assert_eq!(parts.len(), 2);
+        assert!(parts[0].contains("one.txt") && !parts[0].contains("two.txt"));
+        assert!(parts[1].contains("two.txt") && !parts[1].contains("one.txt"));
+    }
+
+    #[test]
+    fn splitting_an_empty_or_headerless_diff_yields_nothing() {
+        assert!(split_hunks("").is_empty());
+        assert!(split_hunks("no diff here\njust text\n").is_empty());
+    }
+
+    /// A file with no trailing newline carries a marker line that belongs to
+    /// the hunk, not to the next one.
+    #[test]
+    fn the_no_newline_marker_stays_in_its_hunk() {
+        let d = "\
+diff --git a/f b/f
+--- a/f
++++ b/f
+@@ -1 +1 @@
+-a
+\\ No newline at end of file
++b
+";
+        let parts = split_hunks(d);
+        assert_eq!(parts.len(), 1);
+        assert!(parts[0].contains("\\ No newline at end of file"), "{}", parts[0]);
+    }
+
+    #[test]
+    fn the_hunk_under_the_cursor_is_found_by_line() {
+        let hunks = vec![
+            DiffHunk { old_start: 2, old_count: 1, new_start: 2, new_count: 3 },
+            DiffHunk { old_start: 10, old_count: 2, new_start: 12, new_count: 0 },
+        ];
+        assert_eq!(hunk_index_at(&hunks, 2), Some(0));
+        assert_eq!(hunk_index_at(&hunks, 4), Some(0), "the last line of the run");
+        assert_eq!(hunk_index_at(&hunks, 5), None, "past it");
+        assert_eq!(hunk_index_at(&hunks, 0), None, "before any hunk");
+        // A deletion covers no lines of its own; match the boundary it sits on.
+        assert_eq!(hunk_index_at(&hunks, 12), Some(1));
+    }
+
+    /// The end-to-end claim: staging one hunk of a two-hunk change stages
+    /// exactly that hunk, leaving the other unstaged and the file untouched.
+    #[test]
+    fn staging_one_hunk_leaves_the_other_unstaged() {
+        let Some(dir) = scratch_repo("hunk") else { return };
+        let original: String = (1..=20).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(dir.join("f.txt"), &original).unwrap();
+        let git = |args: &[&str]| {
+            Command::new("git").arg("-C").arg(&dir).args(args).output().unwrap()
+        };
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "twenty"]);
+
+        // Change line 3 and line 16 — far enough apart to be two hunks.
+        let mut lines: Vec<String> = (1..=20).map(|i| format!("line {i}\n")).collect();
+        lines[2] = "CHANGED 3\n".into();
+        lines[15] = "CHANGED 16\n".into();
+        let edited: String = lines.concat();
+        std::fs::write(dir.join("f.txt"), &edited).unwrap();
+
+        let diff = diff_text(&dir, Path::new("f.txt"), false).expect("a diff");
+        let parts = split_hunks(&diff);
+        assert_eq!(parts.len(), 2, "two hunks:\n{diff}");
+
+        apply_to_index(&dir, &parts[0], false).expect("staged the first hunk");
+
+        // The index has the first change and not the second.
+        let staged = String::from_utf8_lossy(&git(&["show", ":f.txt"]).stdout).into_owned();
+        assert!(staged.contains("CHANGED 3"), "first hunk staged");
+        assert!(!staged.contains("CHANGED 16"), "second hunk NOT staged");
+
+        // The working tree is untouched — `--cached` never writes to it.
+        assert_eq!(std::fs::read_to_string(dir.join("f.txt")).unwrap(), edited);
+
+        // And the file now shows in both sections, which is the `MM` case.
+        let st = status(&dir).unwrap();
+        assert!(st.staged().iter().any(|e| e.path.ends_with("f.txt")));
+        assert!(st.unstaged().iter().any(|e| e.path.ends_with("f.txt")));
+
+        // Reversing the same patch against the index puts it back.
+        apply_to_index(&dir, &parts[0], true).expect("unstaged the hunk");
+        assert!(status(&dir).unwrap().staged().is_empty(), "nothing staged again");
+        assert_eq!(std::fs::read_to_string(dir.join("f.txt")).unwrap(), edited, "file still intact");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A patch that does not apply must fail loudly rather than half-apply.
+    #[test]
+    fn a_patch_that_does_not_apply_is_refused() {
+        let Some(dir) = scratch_repo("badpatch") else { return };
+        let bogus = "\
+diff --git a/tracked.txt b/tracked.txt
+--- a/tracked.txt
++++ b/tracked.txt
+@@ -1 +1 @@
+-nothing like the real content
++replacement
+";
+        let err = apply_to_index(&dir, bogus, false).unwrap_err();
+        assert!(!err.is_empty(), "git explained itself: {err}");
+        // And nothing was staged by the attempt.
+        assert!(status(&dir).unwrap().staged().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
