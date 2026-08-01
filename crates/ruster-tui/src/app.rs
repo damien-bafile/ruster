@@ -610,6 +610,12 @@ enum CmdAction {
     GitStatus,
     /// Stage the hunk under the cursor (`:GitStageHunk`).
     GitStageHunk,
+    /// Compose a commit message (`:GitCommit`).
+    GitCommit,
+    /// Push to the remote, after confirmation (`:GitPush`).
+    GitPush,
+    /// Pull from the remote, after confirmation (`:GitPull`).
+    GitPull,
     /// Save the open files and window layout for this project (`:SessionSave`).
     SessionSave,
     /// Reopen this project's saved session (`:SessionRestore`).
@@ -1176,9 +1182,13 @@ pub struct App {
     runner_kind: RunnerKind,
     /// Folds and the last parsed status for the `:Git` view.
     git_status: crate::git_status::GitStatusState,
-    /// The install command awaiting confirmation, set only while the Mason
-    /// dialog is open. `Some` is what distinguishes that dialog from a Lua one.
-    pending_install: Option<String>,
+    /// A shell command awaiting the user's confirmation. `Some` is what
+    /// distinguishes ruster's own confirmation dialog from a plugin's.
+    ///
+    /// One slot for both `:Mason` installs and git push/pull: they differ only
+    /// in wording and which results buffer they stream to, and a second copy of
+    /// the mechanism would be a second place for it to go wrong.
+    pending_confirm: Option<PendingConfirm>,
     /// Per-file gutter signs from the last test run (✓/✗), merged with diagnostics.
     result_signs: std::collections::HashMap<PathBuf, ruster_render::SignsView>,
     /// Git hunks per buffer, refreshed in the background on open and on save.
@@ -1219,14 +1229,24 @@ pub struct App {
     pub show_noice_panel: bool,
 }
 
+/// A command the user has been asked to confirm.
+struct PendingConfirm {
+    cmd: String,
+    kind: RunnerKind,
+    /// The confirming button's label, e.g. `Install` or `Push`.
+    verb: String,
+}
+
 /// What a background run is, so its output is parsed appropriately on completion.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum RunnerKind {
     Build,
     Test,
     Task,
     /// A `:Mason` install, streamed like any other command run.
     Install,
+    /// A git command the user confirmed — push or pull.
+    Git,
 }
 
 /// The active editing paradigm. Neovim is modal; Emacs is modeless.
@@ -1571,7 +1591,7 @@ impl App {
             runner_output: String::new(),
             runner_kind: RunnerKind::Build,
             git_status: crate::git_status::GitStatusState::new(),
-            pending_install: None,
+            pending_confirm: None,
             result_signs: std::collections::HashMap::new(),
             git_hunks: std::collections::HashMap::new(),
             git_rx: git_rx_init,
@@ -4039,6 +4059,9 @@ impl App {
             "Mason" | "mason" => Ok(CmdAction::Mason),
             "Git" | "git" | "G" => Ok(CmdAction::GitStatus),
             "GitStageHunk" | "gitstagehunk" | "stagehunk" => Ok(CmdAction::GitStageHunk),
+            "GitCommit" | "gitcommit" | "commit" => Ok(CmdAction::GitCommit),
+            "GitPush" | "gitpush" | "push" => Ok(CmdAction::GitPush),
+            "GitPull" | "gitpull" | "pull" => Ok(CmdAction::GitPull),
             "help" | "h" | "Help" => Ok(CmdAction::Help(None)),
             _ if let Some(t) = trimmed.strip_prefix("help ").or_else(|| trimmed.strip_prefix("h ")) => {
                 Ok(CmdAction::Help(Some(t.trim().to_string())))
@@ -4110,7 +4133,15 @@ impl App {
             return;
         }
         match action {
-            CmdAction::Save(force) => self.save_file(force),
+            CmdAction::Save(force) => {
+                // `:w` on a commit message commits it rather than writing a
+                // file — that buffer has no path to write to.
+                if self.active_is_git_commit() {
+                    self.commit_from_buffer();
+                } else {
+                    self.save_file(force);
+                }
+            }
             CmdAction::SaveAs(p) => self.save_as(&p),
             CmdAction::Quit => {
                 let closed = {
@@ -4187,6 +4218,9 @@ impl App {
             CmdAction::Mason => self.open_mason(),
             CmdAction::GitStatus => self.open_git_status(),
             CmdAction::GitStageHunk => self.git_stage_hunk(),
+            CmdAction::GitCommit => self.open_git_commit(),
+            CmdAction::GitPush => self.confirm_git_remote("Push"),
+            CmdAction::GitPull => self.confirm_git_remote("Pull"),
             CmdAction::Help(topic) => self.open_help(topic.as_deref()),
             CmdAction::SessionSave => self.save_session(false),
             CmdAction::SessionRestore => self.restore_session(false),
@@ -4779,9 +4813,9 @@ impl App {
             DialogResponse::Submitted { button } => {
                 let values = d.values();
                 self.dialog = None;
-                if self.pending_install.is_some() {
+                if self.pending_confirm.is_some() {
                     // ruster's own confirmation, not a plugin's dialog.
-                    self.run_pending_install(button.as_deref());
+                    self.run_pending_confirm(button.as_deref());
                     return;
                 }
                 // Hand the values to the plugin that opened it. Without this the
@@ -6149,6 +6183,18 @@ impl App {
                 self.git_stage_at_cursor(false);
                 true
             }
+            KeyCode::Char('c') => {
+                self.open_git_commit();
+                true
+            }
+            KeyCode::Char('P') => {
+                self.confirm_git_remote("Push");
+                true
+            }
+            KeyCode::Char('F') => {
+                self.confirm_git_remote("Pull");
+                true
+            }
             KeyCode::Char('r') => {
                 self.open_git_status();
                 true
@@ -6159,6 +6205,119 @@ impl App {
             }
             _ => false,
         }
+    }
+
+    /// Open a buffer to compose a commit message. `:w` commits it.
+    fn open_git_commit(&mut self) {
+        let Some(root) = self.project_root.clone() else {
+            self.echo_warn("Not in a project".to_string());
+            return;
+        };
+        let Some(status) = ruster_git::status(&root) else {
+            self.echo_warn("Not a git repository".to_string());
+            return;
+        };
+        if status.staged().is_empty() {
+            self.echo_warn("Nothing staged to commit".to_string());
+            return;
+        }
+
+        // A template like git's own: the message on top, then a reminder of
+        // what is about to be committed, as comments that get stripped.
+        let mut text = String::from("\n");
+        text.push_str("# Write a commit message above. Save with :w to commit,\n");
+        text.push_str("# or close the buffer to abandon it. Lines starting with\n");
+        text.push_str("# '#' are ignored, and an empty message aborts.\n#\n");
+        text.push_str(&format!(
+            "# On branch {}\n# Changes to be committed:\n",
+            status.branch.as_deref().unwrap_or("(detached)")
+        ));
+        for e in status.staged() {
+            let name = e.path.strip_prefix(&root).unwrap_or(&e.path).display();
+            text.push_str(&format!(
+                "#   {} {}\n",
+                e.staged.map_or(' ', ruster_git::FileStatus::letter),
+                name
+            ));
+        }
+
+        let id = {
+            let mut w = self.ws.borrow_mut();
+            let existing = w
+                .buffers
+                .ids()
+                .iter()
+                .copied()
+                .find(|&id| w.buffers.get(id).is_some_and(|d| d.name == "*git-commit*"));
+            let id = existing.unwrap_or_else(|| {
+                w.buffers
+                    .create_special(ruster_core::document::SpecialKind::GitCommit, "*git-commit*")
+            });
+            if let Some(doc) = w.buffers.get_mut(id) {
+                doc.buffer = Buffer::from_str(&text);
+            }
+            id
+        };
+        self.ws.borrow_mut().set_active_buffer(id);
+        self.enter_insert_at_top();
+    }
+
+    /// Put the cursor on the first (empty) line ready to type the message.
+    fn enter_insert_at_top(&mut self) {
+        let mut w = self.ws.borrow_mut();
+        w.windows.active_window_mut().cursors = ruster_core::cursor::CursorSet::single(0);
+    }
+
+    fn active_is_git_commit(&self) -> bool {
+        matches!(
+            self.ws.borrow().active_doc().kind,
+            DocKind::Special(ruster_core::document::SpecialKind::GitCommit)
+        )
+    }
+
+    /// Commit what the message buffer holds. Called instead of a file write.
+    fn commit_from_buffer(&mut self) {
+        let Some(root) = self.project_root.clone() else { return };
+        let raw = self.ws.borrow().active_doc().buffer.to_string();
+        let message = ruster_git::clean_commit_message(&raw);
+        if message.is_empty() {
+            self.echo_warn("Empty commit message — nothing committed".to_string());
+            return;
+        }
+        match ruster_git::commit(&root, &message) {
+            Ok(out) => {
+                // The message is committed, so the buffer is no longer unsaved
+                // work — clear the flag or `delete_active_buffer` refuses it and
+                // reports "buffer modified", which reads as if the commit failed.
+                self.ws.borrow_mut().active_doc_mut().modified = false;
+                self.delete_active_buffer();
+                let summary = out.lines().next().unwrap_or("committed").to_string();
+                self.echo(summary);
+                // The committed lines are no longer changes, so the gutter must
+                // stop marking them.
+                let id = self.ws.borrow().active_buffer();
+                self.refresh_git_hunks(id);
+                if self.active_is_git_status() {
+                    self.open_git_status();
+                }
+            }
+            Err(e) => self.echo_error(format!("Commit failed: {e}")),
+        }
+    }
+
+    /// Ask before pushing or pulling — both talk to a remote, and a push in
+    /// particular is not something to trigger by a stray keypress.
+    fn confirm_git_remote(&mut self, verb: &'static str) {
+        let Some(root) = self.project_root.clone() else {
+            self.echo_warn("Not in a project".to_string());
+            return;
+        };
+        if !ruster_git::is_repo(&root) {
+            self.echo_warn("Not a git repository".to_string());
+            return;
+        }
+        let cmd = format!("git {}", verb.to_lowercase());
+        self.confirm_command(format!("{verb}?"), verb, cmd, RunnerKind::Git);
     }
 
     /// Stage the hunk the cursor is inside, in the file being edited.
@@ -6347,28 +6506,70 @@ impl App {
             self.echo(format!("{} is already installed", tool.name));
             return;
         }
-        self.pending_install = Some(tool.install.clone());
-        self.dialog = Some(crate::dialog::DialogState::new(
+        self.confirm_command(
             format!("Install {}?", tool.name),
+            "Install",
+            tool.install.clone(),
+            RunnerKind::Install,
+        );
+    }
+
+    /// Ask before running `cmd`, showing it verbatim.
+    ///
+    /// `verb` names the confirming button and the message if it is declined, so
+    /// the dialog reads as the thing it will do rather than a generic "OK".
+    fn confirm_command(
+        &mut self,
+        title: String,
+        verb: &str,
+        cmd: String,
+        kind: RunnerKind,
+    ) {
+        self.dialog = Some(crate::dialog::DialogState::new(
+            title,
             vec![
-                crate::dialog::Field::text("Runs", &tool.install),
-                crate::dialog::Field::button("Install"),
+                crate::dialog::Field::text("Runs", &cmd),
+                crate::dialog::Field::button(verb),
                 crate::dialog::Field::button("Cancel"),
             ],
         ));
+        self.pending_confirm =
+            Some(PendingConfirm { cmd, kind, verb: verb.to_string() });
     }
 
-    /// Run a confirmed install, streamed through the runner like a build.
-    fn run_pending_install(&mut self, button: Option<&str>) {
-        let Some(cmd) = self.pending_install.take() else { return };
-        if button != Some("Install") {
-            self.echo("Install cancelled".to_string());
+    /// Run a confirmed command, streamed through the runner like a build.
+    fn run_pending_confirm(&mut self, button: Option<&str>) {
+        let Some(p) = self.pending_confirm.take() else { return };
+        if button != Some(p.verb.as_str()) {
+            self.echo(format!("{} cancelled", p.verb));
             return;
         }
         let root = self.project_root.clone().unwrap_or_else(|| {
             std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
         });
-        self.start_run(RunnerKind::Install, cmd, root);
+        self.start_run(p.kind, p.cmd, root);
+    }
+
+    /// Report a push/pull's outcome and refresh the status view if it is open,
+    /// so the ahead/behind counts stop lying immediately.
+    fn finish_git_command(&mut self, code: Option<i32>) {
+        use ruster_core::message::{MessageLevel, MessageSource};
+        let (level, text) = match code {
+            Some(0) => (MessageLevel::Success, "git finished".to_string()),
+            Some(c) => (MessageLevel::Error, format!("git failed (exit {c})")),
+            None => (MessageLevel::Error, "git failed to run".to_string()),
+        };
+        self.push_message(level, MessageSource::System, text);
+        let open = self
+            .ws
+            .borrow()
+            .buffers
+            .ids()
+            .iter()
+            .any(|&id| self.ws.borrow().buffers.get(id).is_some_and(|d| d.name == "*git*"));
+        if open {
+            self.open_git_status();
+        }
     }
 
     /// Report an install's outcome and refresh the list, so a tool that just
@@ -6698,6 +6899,7 @@ impl App {
         if self.runner_rx.is_some() {
             Some(match self.runner_kind {
                 RunnerKind::Install => "Installing...",
+                RunnerKind::Git => "Running git...",
                 RunnerKind::Build => "Building...",
                 RunnerKind::Test => "Testing...",
                 RunnerKind::Task => "Running Task...",
@@ -6770,6 +6972,7 @@ impl App {
     fn start_run(&mut self, kind: RunnerKind, cmd: String, root: PathBuf) {
         let (buf_name, label) = match kind {
             RunnerKind::Install => ("*install*", "install"),
+            RunnerKind::Git => ("*git-output*", "git command"),
             RunnerKind::Build => ("*build*", "build"),
             RunnerKind::Test => ("*test*", "test"),
             RunnerKind::Task => ("*task*", "task"),
@@ -6856,6 +7059,7 @@ impl App {
             RunnerKind::Task => MessageSource::Task,
             // An install is a system action, not part of the project's build.
             RunnerKind::Install => MessageSource::System,
+            RunnerKind::Git => MessageSource::System,
         };
         let mut appended = false;
         let mut done: Option<Option<i32>> = None;
@@ -6891,6 +7095,7 @@ impl App {
                 RunnerKind::Build => self.finish_build(code),
                 RunnerKind::Test => self.finish_test(code),
                 RunnerKind::Install => self.finish_install(code),
+                RunnerKind::Git => self.finish_git_command(code),
                 RunnerKind::Task => {
                     let status_text = match code {
                         Some(0) => "succeeded".to_string(),
@@ -9055,6 +9260,65 @@ mod tests {
     }
 
     #[test]
+    fn git_commit_and_remote_commands_parse() {
+        let a = App::new("x".into(), PathBuf::from("f.rs"));
+        assert_eq!(a.parse_cmdline(":GitCommit"), Ok(CmdAction::GitCommit));
+        assert_eq!(a.parse_cmdline(":commit"), Ok(CmdAction::GitCommit));
+        assert_eq!(a.parse_cmdline(":GitPush"), Ok(CmdAction::GitPush));
+        assert_eq!(a.parse_cmdline(":pull"), Ok(CmdAction::GitPull));
+    }
+
+    /// Push and pull talk to a remote, so neither may run on a keypress alone.
+    #[test]
+    fn pushing_asks_before_running_anything() {
+        let mut a = App::new("x".into(), PathBuf::from("f.rs"));
+        a.apply_cmd(CmdAction::GitPush);
+        assert!(a.runner_rx.is_none(), "nothing spawned by asking");
+        let d = a.dialog.as_ref().expect("a confirmation dialog");
+        assert!(d.view().title.contains("Push"), "{:?}", d.view().title);
+        let p = a.pending_confirm.as_ref().expect("a command is pending");
+        assert_eq!(p.cmd, "git push");
+        assert_eq!(p.verb, "Push");
+    }
+
+    /// The shared confirmation slot must not confuse a push with an install:
+    /// pressing the *other* verb declines.
+    #[test]
+    fn confirming_with_the_wrong_verb_declines() {
+        let mut a = App::new("x".into(), PathBuf::from("f.rs"));
+        a.pending_confirm = Some(PendingConfirm {
+            cmd: "git push".to_string(),
+            kind: RunnerKind::Git,
+            verb: "Push".to_string(),
+        });
+        a.run_pending_confirm(Some("Install"));
+        assert!(a.runner_rx.is_none(), "the wrong button ran nothing");
+        assert!(a.pending_confirm.is_none(), "and the command is forgotten");
+    }
+
+    /// A commit message buffer must be editable — every other special buffer is
+    /// read-only, and this one exists to be typed into.
+    #[test]
+    fn the_commit_buffer_is_editable() {
+        let doc = ruster_core::document::Document::special(
+            ruster_core::document::SpecialKind::GitCommit,
+            "*git-commit*",
+        );
+        assert!(!doc.read_only());
+    }
+
+    #[test]
+    fn committing_with_nothing_staged_declines() {
+        let dir = shot_dir();
+        let mut a = App::new("x".into(), dir.join("f.rs"));
+        a.project_root = Some(dir);
+        a.apply_cmd(CmdAction::GitCommit);
+        assert!(!a.active_is_git_commit(), "no message buffer opened");
+        let last = a.notify.history().last().expect("a message");
+        assert!(last.text.contains("repository") || last.text.contains("staged"), "{:?}", last.text);
+    }
+
+    #[test]
     fn git_stage_hunk_parses() {
         let a = App::new("x".into(), PathBuf::from("f.rs"));
         assert_eq!(a.parse_cmdline(":GitStageHunk"), Ok(CmdAction::GitStageHunk));
@@ -9372,7 +9636,7 @@ mod tests {
         let d = a.dialog.as_ref().expect("a confirmation dialog is open");
         assert!(d.view().title.contains(&name), "names the tool: {:?}", d.view().title);
         // The exact command is armed and on screen before anyone agrees to it.
-        let pending = a.pending_install.clone().expect("a command is pending");
+        let pending = a.pending_confirm.as_ref().expect("a command is pending").cmd.clone();
         assert!(text.contains(&pending), "the listing already showed it: {pending}");
         assert!(format!("{:?}", d.view()).contains(&pending), "and so does the dialog");
     }
@@ -9393,7 +9657,7 @@ mod tests {
 
         a.handle_mason_key(CtKey::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(a.dialog.is_none(), "no dialog for something already present");
-        assert!(a.pending_install.is_none());
+        assert!(a.pending_confirm.is_none());
         assert!(a.runner_rx.is_none());
     }
 
@@ -9401,16 +9665,24 @@ mod tests {
     #[test]
     fn cancelling_the_dialog_runs_nothing_and_forgets_the_command() {
         let mut a = App::new("x".into(), PathBuf::from("f.rs"));
-        a.pending_install = Some("rm -rf /".to_string());
-        a.run_pending_install(Some("Cancel"));
+        a.pending_confirm = Some(PendingConfirm {
+            cmd: "rm -rf /".to_string(),
+            kind: RunnerKind::Install,
+            verb: "Install".to_string(),
+        });
+        a.run_pending_confirm(Some("Cancel"));
         assert!(a.runner_rx.is_none(), "nothing spawned");
-        assert!(a.pending_install.is_none(), "the command is forgotten, not left armed");
+        assert!(a.pending_confirm.is_none(), "the command is forgotten, not left armed");
 
         // Dismissing without a button (Esc) is also a refusal.
-        a.pending_install = Some("rm -rf /".to_string());
-        a.run_pending_install(None);
+        a.pending_confirm = Some(PendingConfirm {
+            cmd: "rm -rf /".to_string(),
+            kind: RunnerKind::Install,
+            verb: "Install".to_string(),
+        });
+        a.run_pending_confirm(None);
         assert!(a.runner_rx.is_none());
-        assert!(a.pending_install.is_none());
+        assert!(a.pending_confirm.is_none());
     }
 
     /// The other half of the gate: confirming really does run it. Uses a
@@ -9419,10 +9691,14 @@ mod tests {
     #[test]
     fn confirming_the_dialog_runs_the_command() {
         let mut a = App::new("x".into(), PathBuf::from("f.rs"));
-        a.pending_install = Some("echo installed".to_string());
-        a.run_pending_install(Some("Install"));
+        a.pending_confirm = Some(PendingConfirm {
+            cmd: "echo installed".to_string(),
+            kind: RunnerKind::Install,
+            verb: "Install".to_string(),
+        });
+        a.run_pending_confirm(Some("Install"));
         assert!(a.runner_rx.is_some(), "the confirmed command was spawned");
-        assert!(a.pending_install.is_none(), "and consumed, so it cannot re-run");
+        assert!(a.pending_confirm.is_none(), "and consumed, so it cannot re-run");
         assert!(a.runner_output.starts_with("$ echo installed"), "{}", a.runner_output);
     }
 
@@ -9433,7 +9709,7 @@ mod tests {
     fn a_plugin_dialog_does_not_run_an_install() {
         use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
         let mut a = App::new("x".into(), PathBuf::from("f.rs"));
-        assert!(a.pending_install.is_none());
+        assert!(a.pending_confirm.is_none());
         a.dialog = Some(crate::dialog::DialogState::new(
             "From Lua",
             vec![crate::dialog::Field::button("OK")],

@@ -122,16 +122,16 @@ one hunk instead of several.
 
 ---
 
-## Stage 3 — Writing operations
+## Stage 3 — Writing operations ✅ (PR 4)
 
 Every one of these changes history or the remote, so each is gated.
 
-- [ ] `c` → commit: open a message buffer, `:w` commits. An empty message
+- [x] `c` → commit: open a message buffer, `:w` commits. An empty message
       aborts.
-- [ ] `P` → push, `F` → pull: **behind the confirmation dialog**, showing the
+- [x] `P` → push, `F` → pull: **behind the confirmation dialog**, showing the
       exact command, the pattern `:Mason` established. Stream output through
       `RunnerKind` into a results buffer like an install.
-- [ ] No force-push, no history rewriting, no `reset --hard` from the UI. A
+- [x] No force-push, no history rewriting, no `reset --hard` from the UI. A
       porcelain that can silently destroy work is worse than no porcelain; the
       user still has a terminal for those.
 
