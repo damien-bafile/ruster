@@ -904,11 +904,10 @@ impl Widget for PickerWidget {
         let list_w = if has_preview { area.width * 2 / 5 } else { area.width };
         let list_right = area.x + list_w;
 
-        // Title row, in the same ruled style as a buffer window's header. Scoped
-        // to the list column: the preview pane owns its own full height, so a
-        // full-width rule would strike through its first line.
-        let hdr_area = Rect::new(area.x, area.y, list_w, 1);
-        ruled_header(buf, hdr_area, &self.view.title, accent, divider, bg);
+        // The title *is* the top edge of the box: `─ Files ─────` ruled all the
+        // way across, over the preview column too. Everything below starts a row
+        // down so nothing collides with it.
+        ruled_header(buf, area, &self.view.title, accent, divider, bg);
         // Query row.
         let query = format!(" > {}", self.view.query);
         for (i, ch) in query.chars().enumerate() {
@@ -937,7 +936,8 @@ impl Widget for PickerWidget {
         // Preview column: highlighted file contents.
         if has_preview {
             let px = list_right + 1;
-            for y in area.top()..area.bottom() {
+            // Start below the header so the rule stays unbroken across the top.
+            for y in (area.top() + 1)..area.bottom() {
                 for x in px..area.right() {
                     if let Some(cell) = buf.cell_mut((x, y)) {
                         cell.set_bg(preview_bg);
@@ -947,7 +947,7 @@ impl Widget for PickerWidget {
                 put(buf, list_right, y, '│', divider, bg);
             }
             for (row, line) in self.view.preview.iter().enumerate() {
-                let y = area.y + row as u16;
+                let y = area.y + 1 + row as u16;
                 if y >= area.bottom() { break; }
                 let mut colors: std::collections::HashMap<usize, RColor> =
                     std::collections::HashMap::new();

@@ -744,9 +744,19 @@ impl Renderer for RaylibRenderer {
             d.draw_rectangle(box_x, box_y, box_w, box_h, bg);
             if has_preview {
                 d.draw_rectangle(box_x + list_w, box_y, box_w - list_w, box_h, bg);
-                d.draw_rectangle(box_x + list_w, box_y, 1, box_h, accent);
+                // Divider starts below the header, which rules across the top.
+                d.draw_rectangle(box_x + list_w, box_y + line_h, 1, box_h - line_h, accent);
             }
-            d.draw_rectangle_lines(box_x, box_y, box_w, box_h, accent);
+            // Left, right and bottom edges only, and starting below the header:
+            // the ruled header *is* the top edge, so a rectangle outline would
+            // both double the line and run under the rule.
+            let side_y = box_y + line_h;
+            let side_h = (box_h - line_h).max(0);
+            d.draw_rectangle(box_x, side_y, 1, side_h, accent);
+            d.draw_rectangle(box_x + box_w - 1, side_y, 1, side_h, accent);
+            d.draw_rectangle(box_x, box_y + box_h - 1, box_w, 1, accent);
+            // Drawn before the column scissors so it spans the whole box.
+            draw_ruled_header(&mut d, metrics, (box_x, box_y), box_w, &picker.title, accent, divider);
             // List column — title, query, and rows, clipped to the list width
             // so long labels don't bleed across the divider into the preview.
             let list_clip_w = if has_preview { list_w } else { box_w };
@@ -757,8 +767,6 @@ impl Renderer for RaylibRenderer {
                     (list_clip_w - 2).max(1),
                     box_h - 2,
                 );
-                // Scoped to the list column — the preview pane owns its own height.
-                draw_ruled_header(&mut s, metrics, (box_x, box_y), list_clip_w, &picker.title, accent, divider);
                 s.draw_text_ex(font, &format!(" > {}", picker.query), Vector2::new(box_x as f32 + 4.0, (box_y + line_h) as f32), font_size as f32, 1.0, default_color);
                 let max_visible = ((box_h - 2 * line_h) / line_h).max(0) as usize;
                 for (i, row) in picker.rows.iter().take(max_visible).enumerate() {
@@ -781,7 +789,7 @@ impl Renderer for RaylibRenderer {
                 );
                 let px = box_x + list_w + 6;
                 for (i, line) in picker.preview.iter().enumerate() {
-                    let ly = box_y + i as i32 * line_h;
+                    let ly = box_y + (1 + i as i32) * line_h;
                     if ly > box_y + box_h {
                         break;
                     }
