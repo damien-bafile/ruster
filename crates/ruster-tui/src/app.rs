@@ -1777,7 +1777,7 @@ impl App {
                 if let KeyCode::Char(reg) = ck.code {
                     if kind == 'q' {
                         self.macro_recording = Some((reg, Vec::new()));
-                        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!("Recording @{}", reg)));
+                        self.echo(format!("Recording @{}", reg));
                     } else {
                         self.replay_macro(reg);
                     }
@@ -1789,7 +1789,7 @@ impl App {
                     if let Some((reg, keys)) = self.macro_recording.take() {
                         let n = keys.len();
                         self.macros.insert(reg, keys);
-                        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!("Recorded @{} ({} keys)", reg, n)));
+                        self.echo(format!("Recorded @{} ({} keys)", reg, n));
                     } else {
                         self.pending_macro = Some('q');
                     }
@@ -1845,7 +1845,7 @@ impl App {
                     // First Tab press: generate candidates
                     let candidates = self.generate_completion_candidates(&path_part);
                     if candidates.is_empty() {
-                        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Echo, format!("No matches for '{}'", path_part)));
+                        self.echo_warn(format!("No matches for '{}'", path_part));
                         return;
                     }
                     let prefix = raw
@@ -2034,7 +2034,7 @@ impl App {
                     self.cmdline_completion = None;
                     match self.parse_cmdline(&cmd) {
                         Ok(a) => self.apply_cmd(a),
-                        Err(e) => { self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, e)); },
+                        Err(e) => { self.echo(e); },
                     }
                 }
                 other => self.ws.borrow_mut().execute(other),
@@ -2110,7 +2110,7 @@ impl App {
             EditMode::Emacs => "emacs",
         };
         self.lua.set_editmode(name);
-        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!("editmode: {}", name)));
+        self.echo(format!("editmode: {}", name));
     }
 
     /// Apply a general schema-backed `:set` command. Looks up the option by key,
@@ -2214,7 +2214,7 @@ impl App {
                 KeyCode::Char('1') => self.ws.borrow_mut().windows.only(),
                 KeyCode::Char('2') => self.ws.borrow_mut().split(SplitDir::Horizontal),
                 KeyCode::Char('3') => self.ws.borrow_mut().split(SplitDir::Vertical),
-                _ => { self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Echo, "C-x undefined".to_string())); },
+                _ => { self.echo_warn("C-x undefined".to_string()); },
             }
             return;
         }
@@ -2227,7 +2227,7 @@ impl App {
             }
             KeyEvent::Ctrl('g') => {
                 self.emacs.cancel();
-                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, "Quit".to_string()));
+                self.echo("Quit".to_string());
                 return;
             }
             KeyEvent::Alt('x') => {
@@ -3103,7 +3103,7 @@ impl App {
             })
             .collect();
         if count == 0 {
-            self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Echo, format!("Pattern not found: {}", pattern)));
+            self.echo_warn(format!("Pattern not found: {}", pattern));
             return;
         }
         let mut text = new.join("\n");
@@ -3111,11 +3111,11 @@ impl App {
             text.push('\n');
         }
         self.replace_active_content(&text);
-        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!(
+        self.echo(format!(
             "{} substitution{}",
             count,
             if count == 1 { "" } else { "s" }
-        )));
+        ));
     }
 
     /// Replace the active buffer's entire content via a single undo batch.
@@ -3796,7 +3796,7 @@ impl App {
             CmdAction::CloseWindow => {
                 let closed = self.ws.borrow_mut().windows.close_active();
                 if !closed {
-                    self.notify.push(Notification::new(ruster_core::message::MessageLevel::Error, ruster_core::message::MessageSource::Echo, "E444: Cannot close last window".to_string()));
+                    self.echo_error("E444: Cannot close last window".to_string());
                 }
             }
             CmdAction::Only => self.ws.borrow_mut().windows.only(),
@@ -3953,14 +3953,14 @@ impl App {
         {
             Ok(c) => c,
             Err(_) => {
-                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Error, ruster_core::message::MessageSource::Echo, "ripgrep (rg) not found in PATH".to_string()));
+                self.echo_error("ripgrep (rg) not found in PATH".to_string());
                 return;
             }
         };
         let stdout = match child.stdout.take() {
             Some(s) => s,
             None => {
-                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Error, ruster_core::message::MessageSource::Echo, "failed to capture rg output".to_string()));
+                self.echo_error("failed to capture rg output".to_string());
                 return;
             }
         };
@@ -4093,11 +4093,11 @@ impl App {
         if let Some(s) = self.settings.as_mut() {
             s.dirty = false;
         }
-        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Error, ruster_core::message::MessageSource::Echo, if wrote {
+        self.echo_error(if wrote {
             "Saved config.lua".to_string()
         } else {
             "Could not write config.lua".to_string()
-        }));
+        });
     }
 
     /// Push the config's per-language syntax colours into the highlighter and
@@ -4620,7 +4620,7 @@ impl App {
             .map(|d| ruster_project::recent_projects(&d))
             .unwrap_or_default();
         if recent.is_empty() {
-            self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Echo, "No recent projects".to_string()));
+            self.echo_warn("No recent projects".to_string());
             return;
         }
         let items: Vec<PickerItem> = recent
@@ -4642,8 +4642,27 @@ impl App {
 
     /// Push a plain informational message.
     fn echo(&mut self, msg: impl Into<String>) {
+        self.echo_at(ruster_core::message::MessageLevel::Info, msg);
+    }
+
+    /// A successful outcome the user asked for (`Created …`, `Deleted …`).
+    fn echo_success(&mut self, msg: impl Into<String>) {
+        self.echo_at(ruster_core::message::MessageLevel::Success, msg);
+    }
+
+    /// Something the user should notice but that isn't a failure.
+    fn echo_warn(&mut self, msg: impl Into<String>) {
+        self.echo_at(ruster_core::message::MessageLevel::Warning, msg);
+    }
+
+    /// A failed operation. Errors route to the notify panel and are persistent.
+    fn echo_error(&mut self, msg: impl Into<String>) {
+        self.echo_at(ruster_core::message::MessageLevel::Error, msg);
+    }
+
+    fn echo_at(&mut self, level: ruster_core::message::MessageLevel, msg: impl Into<String>) {
         self.notify.push(Notification::new(
-            ruster_core::message::MessageLevel::Info,
+            level,
             ruster_core::message::MessageSource::Echo,
             msg.into(),
         ));
@@ -4716,6 +4735,20 @@ impl App {
 
     /// Delete the active buffer, switching the active window to another open
     /// buffer first. Refuses when it is the only buffer, or when it is modified.
+    /// Drop every per-buffer cache keyed by `id`.
+    ///
+    /// Call this whenever a buffer is closed. Each of these maps is keyed by
+    /// `BufferId` and none of them was cleaned up before, so they grew for the
+    /// life of the session — and a leaked `TerminalSession` keeps its child
+    /// process alive, since the kill happens in its `Drop`.
+    fn forget_buffer(&mut self, id: BufferId) {
+        self.dired.forget(id);
+        self.syntax.remove(&id);
+        self.lsp_docs.remove(&id);
+        self.diagnostics.remove(&id);
+        self.terminals.remove(&id);
+    }
+
     fn delete_active_buffer(&mut self) {
         let mut w = self.ws.borrow_mut();
         let cur = w.active_buffer();
@@ -4724,15 +4757,17 @@ impl App {
             Some(o) => {
                 if w.buffers.get(cur).map(|d| d.modified).unwrap_or(false) {
                     drop(w);
-                    self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Echo, "E89: buffer modified (add ! to override)".to_string()));
+                    self.echo_warn("E89: buffer modified (add ! to override)".to_string());
                     return;
                 }
                 w.set_active_buffer(o);
                 w.buffers.close(cur);
+                drop(w);
+                self.forget_buffer(cur);
             }
             None => {
                 drop(w);
-                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Echo, "E514: cannot close last buffer".to_string()));
+                self.echo_warn("E514: cannot close last buffer".to_string());
             }
         }
     }
@@ -4746,7 +4781,7 @@ impl App {
         let keys = match self.macros.get(&reg) {
             Some(k) => k.clone(),
             None => {
-                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Echo, format!("No macro in @{}", reg)));
+                self.echo_warn(format!("No macro in @{}", reg));
                 return;
             }
         };
@@ -4817,7 +4852,7 @@ impl App {
             }
             PickerAction::RunCmd(cmd) => match self.parse_cmdline(&cmd) {
                 Ok(a) => self.apply_cmd(a),
-                Err(e) => { self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, e)); },
+                Err(e) => { self.echo(e); },
             },
             PickerAction::RunTask(name) => self.run_task(&name),
         }
@@ -4907,7 +4942,7 @@ impl App {
             KeyCode::Char('d') => self.lsp_definition(),
             KeyCode::Char('r') => self.lsp_references(),
             KeyCode::Char('h') => self.lsp_hover(),
-            KeyCode::Esc => {} // cancel
+            KeyCode::Esc | KeyCode::Backspace => {} // cancel
             other => {
                 self.feed_key_to_vim(KeyCode::Char('g'));
                 self.feed_key_to_vim(other);
@@ -4924,6 +4959,17 @@ impl App {
     }
 
     fn handle_leader_key(&mut self, ck: crossterm::event::KeyEvent) {
+        // Backspace pops the last key from the leader sequence. When the
+        // sequence becomes empty, cancel leader mode entirely.
+        if ck.code == KeyCode::Backspace {
+            if let Some(seq) = &mut self.leader_pending {
+                seq.pop();
+                if seq.is_empty() {
+                    self.leader_pending = None;
+                }
+            }
+            return;
+        }
         let c = match ck.code {
             KeyCode::Char(c) => c,
             // Esc or anything else cancels the leader sequence.
@@ -4974,7 +5020,7 @@ impl App {
             }
             LeaderAction::Rename => {
                 // Seed the cmdline with :rename for the new name.
-                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, "Use :rename <new-name>".to_string()));
+                self.echo("Use :rename <new-name>".to_string());
             }
             LeaderAction::DocumentSymbol => self.lsp_document_symbols(),
             LeaderAction::Diagnostics => self.open_diagnostics_picker(),
@@ -4985,16 +5031,16 @@ impl App {
             LeaderAction::Settings => self.open_settings(),
             LeaderAction::ToggleNumber => {
                 self.config.number = !self.config.number;
-                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!("number: {}", self.config.number)));
+                self.echo(format!("number: {}", self.config.number));
             }
             LeaderAction::ToggleRelative => {
                 self.config.relativenumber = !self.config.relativenumber;
-                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!("relativenumber: {}", self.config.relativenumber)));
+                self.echo(format!("relativenumber: {}", self.config.relativenumber));
             }
             LeaderAction::Grep => {
                 // Seed the cmdline for a ripgrep pattern.
                 self.vim.set_cmdline(":Rg ");
-                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, "Type a pattern and press Enter".to_string()));
+                self.echo("Type a pattern and press Enter".to_string());
             }
             LeaderAction::Build => self.run_build(),
             LeaderAction::Test => self.run_test(),
@@ -5078,7 +5124,7 @@ impl App {
         let path = self.ws.borrow().active_doc().file_path.clone();
         let diags = self.diagnostics.get(&active).cloned().unwrap_or_default();
         if diags.is_empty() {
-            self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Echo, "No diagnostics".to_string()));
+            self.echo_warn("No diagnostics".to_string());
             return;
         }
         let path = match path {
@@ -5139,7 +5185,7 @@ impl App {
     fn open_quickfix(&mut self) {
         self.rebuild_quickfix_from_diagnostics();
         if self.quickfix.is_empty() {
-            self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Echo, "Quickfix list is empty".to_string()));
+            self.echo_warn("Quickfix list is empty".to_string());
             return;
         }
         let items: Vec<PickerItem> = self
@@ -5179,12 +5225,12 @@ impl App {
                 self.quickfix.len(),
             ),
             None => {
-                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Echo, "Quickfix list is empty".to_string()));
+                self.echo_warn("Quickfix list is empty".to_string());
                 return;
             }
         };
         self.open_path(&path, Some((line, col)));
-        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!("({pos}/{total}) {msg}")));
+        self.echo(format!("({pos}/{total}) {msg}"));
     }
 
     /// `:cnext` / `]q` — advance the quickfix selection and jump.
@@ -5238,7 +5284,7 @@ impl App {
         let root = self.project_root_for_run();
         let cfg = ruster_project::ProjectConfig::load(&root);
         if cfg.tasks.is_empty() {
-            self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Echo, "No tasks — add [tasks.<name>] to ruster.toml".to_string()));
+            self.echo_warn("No tasks — add [tasks.<name>] to ruster.toml".to_string());
             return;
         }
         let items: Vec<PickerItem> = cfg
@@ -5270,7 +5316,7 @@ impl App {
         let root = self.project_root_for_run();
         let cfg = ruster_project::ProjectConfig::load(&root);
         let Some(task) = cfg.tasks.get(name) else {
-            self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Echo, format!("No such task: {name}")));
+            self.echo_warn(format!("No such task: {name}"));
             return;
         };
         let cwd = match &task.cwd {
@@ -5331,11 +5377,11 @@ impl App {
             RunnerKind::Task => ("*task*", "task"),
         };
         if self.runner_rx.is_some() {
-            self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!("A {label} is already running")));
+            self.echo(format!("A {label} is already running"));
             return;
         }
         if cmd.is_empty() {
-            self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!("No {label} command for this project (set it in ruster.toml)")));
+            self.echo(format!("No {label} command for this project (set it in ruster.toml)"));
             return;
         }
         self.runner_kind = kind;
@@ -5350,7 +5396,7 @@ impl App {
             w.set_active_buffer(id);
         }
         self.runner_rx = Some(crate::runner::spawn_shell_command(&cmd, &root));
-        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, format!("{label}: {cmd}")));
+        self.echo(format!("{label}: {cmd}"));
     }
 
     /// Poll the active debug session (if any) for DAP events, updating state.
@@ -5480,7 +5526,7 @@ impl App {
             ruster_core::message::MessageSource::Build,
             msg.clone(),
         );
-        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, msg));
+        self.echo(msg);
     }
 
     fn finish_test(&mut self, code: Option<i32>) {
@@ -5515,7 +5561,7 @@ impl App {
             ruster_core::message::MessageSource::Test,
             msg.clone(),
         );
-        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo, msg));
+        self.echo(msg);
     }
 
     /// Interpret the key following a `Ctrl-w` prefix.
@@ -5560,7 +5606,7 @@ impl App {
         let path = match path {
             Some(p) => p,
             None => {
-                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Error, ruster_core::message::MessageSource::Echo, "E32: No file name".to_string()));
+                self.echo_error("E32: No file name".to_string());
                 return;
             }
         };
@@ -5568,14 +5614,14 @@ impl App {
         match std::fs::write(&path, &content) {
             Ok(()) => {
                 self.ws.borrow_mut().active_doc_mut().modified = false;
-                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Success, ruster_core::message::MessageSource::Echo, format!("Saved: {}", path.display())));
+                self.echo_success(format!("Saved: {}", path.display()));
             }
             Err(_e) if force => {
                 let _ = std::fs::write(&path, &content);
                 self.ws.borrow_mut().active_doc_mut().modified = false;
-                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Success, ruster_core::message::MessageSource::Echo, format!("Saved (forced): {}", path.display())));
+                self.echo_success(format!("Saved (forced): {}", path.display()));
             }
-            Err(e) => { self.notify.push(Notification::new(ruster_core::message::MessageLevel::Error, ruster_core::message::MessageSource::Echo, format!("Error: {}", e))); },
+            Err(e) => { self.echo_error(format!("Error: {}", e)); },
         }
         self.lua.fire_event_str("BufWritePost", &[path.to_str().unwrap_or("")]);
     }
@@ -5615,9 +5661,9 @@ impl App {
                     doc.file_path = Some(PathBuf::from(path));
                     doc.modified = false;
                 }
-                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Success, ruster_core::message::MessageSource::Echo, format!("Saved: {}", path)));
+                self.echo_success(format!("Saved: {}", path));
             }
-            Err(e) => { self.notify.push(Notification::new(ruster_core::message::MessageLevel::Error, ruster_core::message::MessageSource::Echo, format!("Error: {}", e))); },
+            Err(e) => { self.echo_error(format!("Error: {}", e)); },
         }
     }
 
@@ -5729,20 +5775,22 @@ impl App {
     }
 
     fn debug_toggle_breakpoint(&mut self) {
-        let (path, line) = {
+        // Resolve inside the borrow, report outside it — `echo_warn` takes
+        // `&mut self`, which the live `Ref` on `self.ws` would forbid.
+        let resolved = {
             let w = self.ws.borrow();
-            let doc = w.active_doc();
-            let path = match doc.file_path.as_ref() {
-                Some(p) => p.canonicalize().unwrap_or_else(|_| p.clone()),
-                None => {
-                    self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Echo, "No file path for breakpoint"));
-                    return;
-                }
-            };
-            let head = w.primary_head();
-            let buf = w.buffer();
-            let line = buf.char_to_line(head) as u16;
-            (path, line)
+            w.active_doc().file_path.as_ref().map(|p| {
+                let path = p.canonicalize().unwrap_or_else(|_| p.clone());
+                let line = w.buffer().char_to_line(w.primary_head()) as u16;
+                (path, line)
+            })
+        };
+        let (path, line) = match resolved {
+            Some(v) => v,
+            None => {
+                self.echo_warn("No file path for breakpoint");
+                return;
+            }
         };
         let lines = self.debug_breakpoints.entry(path.clone()).or_default();
         if let Some(pos) = lines.iter().position(|&l| l == line) {
@@ -6204,6 +6252,35 @@ mod tests {
         // scratch + dashboard + messages
         assert_eq!(a.ws.borrow().buffers.len(), 3);
         assert!(a.ws.borrow().buffers.get(orig).is_none());
+    }
+
+    /// Closing a buffer must drop its per-buffer caches. None of these maps was
+    /// cleaned up before, so they grew for the life of the session.
+    #[test]
+    fn bdelete_forgets_the_buffers_caches() {
+        let tmp = std::env::temp_dir().join("ruster_forget_caches");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("a.txt"), "x").unwrap();
+
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::Dired(Some(tmp.to_string_lossy().into_owned())));
+        let dired_id = a.ws.borrow().active_buffer();
+        assert!(a.dired.styled_lines(dired_id).is_some(), "dired cached its listing");
+
+        // Give it a diagnostics entry too, so the sweep is covered beyond dired.
+        a.diagnostics.insert(dired_id, Vec::new());
+
+        a.apply_cmd(CmdAction::BufferDelete);
+        assert!(a.ws.borrow().buffers.get(dired_id).is_none(), "buffer closed");
+        assert!(a.dired.styled_lines(dired_id).is_none(), "dired caches dropped");
+        assert!(a.dired.dir_of(dired_id).is_none());
+        assert!(!a.diagnostics.contains_key(&dired_id), "diagnostics dropped");
+        assert!(!a.syntax.contains_key(&dired_id));
+        assert!(!a.lsp_docs.contains_key(&dired_id));
+        assert!(!a.terminals.contains_key(&dired_id));
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
@@ -6891,6 +6968,54 @@ mod tests {
         a.handle_key(CtKey::new(KeyCode::Char('g'), none));
         assert!(a.g_pending.is_none(), "second key resolves the menu");
         assert_eq!(a.ws.borrow().primary_head(), 0, "gg went to the top");
+    }
+
+    /// Backspace closes the `g` menu explicitly rather than falling into the
+    /// replay arm. Both paths happen to end up here — vim clears `pending_g` on
+    /// the next key either way — so this is a characterization test pinning the
+    /// contract, not a fix for an observable bug.
+    #[test]
+    fn backspace_cancels_the_g_menu_without_replaying() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("aaa\nbbb\nccc\n".into(), PathBuf::from("f.txt"));
+        a.handle_key(CtKey::new(KeyCode::Char('G'), none));
+        let before = a.ws.borrow().primary_head();
+        assert!(before > 0);
+
+        a.handle_key(CtKey::new(KeyCode::Char('g'), none));
+        assert!(a.g_pending.is_some(), "g starts the menu");
+        a.handle_key(CtKey::new(KeyCode::Backspace, none));
+        assert!(a.g_pending.is_none(), "Backspace closes the menu");
+        assert_eq!(
+            a.ws.borrow().primary_head(),
+            before,
+            "cancelling must not replay g into vim and move the cursor"
+        );
+    }
+
+    /// Backspace steps back out of a pending leader sequence. The tree is only
+    /// one level deep today, so popping the single group key empties the
+    /// sequence and cancels — the same visible result as Esc. The pop only
+    /// starts to matter once a group nests; this pins the behaviour until then.
+    #[test]
+    fn backspace_steps_back_out_of_the_leader_sequence() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+
+        a.handle_key(CtKey::new(KeyCode::Char(' '), none));
+        assert_eq!(a.leader_pending.as_deref(), Some(&[][..]), "SPC arms the leader");
+        a.handle_key(CtKey::new(KeyCode::Char('c'), none));
+        assert_eq!(a.leader_pending.as_deref(), Some(&['c'][..]), "c opens the code group");
+
+        a.handle_key(CtKey::new(KeyCode::Backspace, none));
+        assert!(a.leader_pending.is_none(), "popping the last key leaves the leader");
+
+        // Backspace straight after SPC also leaves cleanly.
+        a.handle_key(CtKey::new(KeyCode::Char(' '), none));
+        a.handle_key(CtKey::new(KeyCode::Backspace, none));
+        assert!(a.leader_pending.is_none());
     }
 
     #[test]
