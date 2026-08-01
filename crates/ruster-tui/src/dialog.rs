@@ -49,6 +49,17 @@ impl Field {
         }
     }
 
+    /// An action rather than a value: activating it submits the dialog and
+    /// reports which button was pressed.
+    pub fn button(label: &str) -> Self {
+        Self {
+            label: label.into(),
+            kind: ControlKind::Button,
+            value: String::new(),
+            options: Vec::new(),
+        }
+    }
+
     pub fn select(label: &str, options: &[&str], value: &str) -> Self {
         Self {
             label: label.into(),
@@ -66,8 +77,9 @@ pub enum DialogResponse {
     Pending,
     /// Dismissed without a result.
     Cancelled,
-    /// Accepted; read the values with [`DialogState::values`].
-    Submitted,
+    /// Accepted; read the values with [`DialogState::values`]. `button` is the
+    /// label of the button pressed, or `None` when submitted with Enter.
+    Submitted { button: Option<String> },
 }
 
 pub struct DialogState {
@@ -89,7 +101,11 @@ impl DialogState {
 
     /// `(label, value)` for every field, in declaration order.
     pub fn values(&self) -> Vec<(String, String)> {
-        self.fields.iter().map(|f| (f.label.clone(), f.value.clone())).collect()
+        self.fields
+            .iter()
+            .filter(|f| f.kind != ControlKind::Button)
+            .map(|f| (f.label.clone(), f.value.clone()))
+            .collect()
     }
 
     pub fn handle_key(&mut self, ck: crossterm::event::KeyEvent) -> DialogResponse {
@@ -127,7 +143,11 @@ impl DialogState {
             KeyCode::Char('k') | KeyCode::Up => {
                 self.selected = self.selected.saturating_sub(1);
             }
-            KeyCode::Char(' ') => self.activate(),
+            KeyCode::Char(' ') => {
+                if let Some(b) = self.activate() {
+                    return DialogResponse::Submitted { button: Some(b) };
+                }
+            }
             KeyCode::Char('h') | KeyCode::Left => self.cycle(-1),
             KeyCode::Char('l') | KeyCode::Right => self.cycle(1),
             KeyCode::Enter => {
@@ -135,8 +155,14 @@ impl DialogState {
                 // field still needs a way out: Enter again commits, then Enter
                 // submits.
                 match self.fields.get(self.selected).map(|f| f.kind) {
-                    Some(ControlKind::Text) | Some(ControlKind::Number) => self.activate(),
-                    _ => return DialogResponse::Submitted,
+                    Some(ControlKind::Text) | Some(ControlKind::Number) => {
+                        self.activate();
+                    }
+                    Some(ControlKind::Button) => {
+                        let b = self.fields[self.selected].label.clone();
+                        return DialogResponse::Submitted { button: Some(b) };
+                    }
+                    _ => return DialogResponse::Submitted { button: None },
                 }
             }
             _ => {}
@@ -145,8 +171,9 @@ impl DialogState {
     }
 
     /// Space/Enter on the selected field: toggle, cycle, or start editing.
-    fn activate(&mut self) {
-        let Some(f) = self.fields.get_mut(self.selected) else { return };
+    /// Returns the button's label when the field is one, since that submits.
+    fn activate(&mut self) -> Option<String> {
+        let f = self.fields.get_mut(self.selected)?;
         match f.kind {
             ControlKind::Toggle => {
                 f.value = if f.value == "on" { "off".into() } else { "on".into() };
@@ -155,7 +182,9 @@ impl DialogState {
             ControlKind::Text | ControlKind::Number => {
                 self.editing = Some(f.value.clone());
             }
+            ControlKind::Button => return Some(f.label.clone()),
         }
+        None
     }
 
     /// Step an enum field through its options, wrapping.
@@ -286,7 +315,47 @@ mod tests {
     #[test]
     fn enter_submits_from_a_non_text_field() {
         let mut d = dialog();
-        assert_eq!(d.handle_key(KeyEvent::from(KeyCode::Enter)), DialogResponse::Submitted);
+        assert_eq!(d.handle_key(KeyEvent::from(KeyCode::Enter)), DialogResponse::Submitted { button: None });
+    }
+
+    /// A button is an action, not a value: activating it submits and reports
+    /// which one was pressed, and it never appears in the values.
+    #[test]
+    fn a_button_submits_and_names_itself() {
+        let mut d = DialogState::new(
+            "Confirm",
+            vec![Field::toggle("Force", false), Field::button("OK"), Field::button("Apply")],
+        );
+        d.handle_key(key('j')); // onto OK
+        match d.handle_key(key(' ')) {
+            DialogResponse::Submitted { button } => assert_eq!(button.as_deref(), Some("OK")),
+            other => panic!("expected a submit, got {other:?}"),
+        }
+
+        let mut d = DialogState::new("Confirm", vec![Field::button("Apply")]);
+        match d.handle_key(KeyEvent::from(KeyCode::Enter)) {
+            DialogResponse::Submitted { button } => assert_eq!(button.as_deref(), Some("Apply")),
+            other => panic!("expected a submit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn buttons_are_not_values() {
+        let d = DialogState::new(
+            "Confirm",
+            vec![Field::toggle("Force", true), Field::button("OK"), Field::text("Note", "hi")],
+        );
+        let v = d.values();
+        assert_eq!(v.len(), 2, "the button is an action, not a field: {v:?}");
+        assert_eq!(v[0].0, "Force");
+        assert_eq!(v[1].0, "Note");
+    }
+
+    #[test]
+    fn a_button_renders_as_a_button() {
+        let d = DialogState::new("C", vec![Field::button("OK")]);
+        let row = &d.view().rows[0];
+        assert_eq!(ruster_render::control_display(row), "[ OK ]");
     }
 
     #[test]
@@ -326,6 +395,6 @@ mod tests {
         d.handle_key(key('j'));
         d.handle_key(key(' '));
         assert!(d.values().is_empty());
-        assert_eq!(d.handle_key(KeyEvent::from(KeyCode::Enter)), DialogResponse::Submitted);
+        assert_eq!(d.handle_key(KeyEvent::from(KeyCode::Enter)), DialogResponse::Submitted { button: None });
     }
 }

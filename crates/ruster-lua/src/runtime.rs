@@ -61,6 +61,9 @@ pub(crate) struct Shared {
     pub(crate) statusline: RefCell<Vec<(String, RegistryKey)>>,
     /// Window/buffer manipulation callbacks installed by the app.
     pub(crate) window_cb: RefCell<Option<WindowCallbacks>>,
+    /// `on_submit` for the dialog currently being shown. Held here rather than
+    /// travelling in `LuaAction` so the registry key never leaves this crate.
+    pub(crate) dialog_cb: RefCell<Option<RegistryKey>>,
 }
 
 pub struct LuaRuntime {
@@ -82,6 +85,7 @@ impl LuaRuntime {
             set_cursor: RefCell::new(None),
             statusline: RefCell::new(Vec::new()),
             window_cb: RefCell::new(None),
+            dialog_cb: RefCell::new(None),
         });
 
         // The closures capture a clone of `shared`, so moving the runtime out of
@@ -127,6 +131,34 @@ impl LuaRuntime {
             }
         }
         out
+    }
+
+    /// Hand a submitted dialog's values to its `on_submit`, if it had one.
+    ///
+    /// `button` is the label of the button pressed, or `None` when the form was
+    /// submitted with Enter. The callback is consumed either way — a dialog is
+    /// shown once.
+    pub fn fire_dialog_submit(&self, values: &[(String, String)], button: Option<&str>) {
+        let Some(key) = self.shared.dialog_cb.borrow_mut().take() else { return };
+        if let Ok(func) = self.lua.registry_value::<Function>(&key) {
+            let table = match self.lua.create_table() {
+                Ok(t) => t,
+                Err(_) => return,
+            };
+            for (k, v) in values {
+                let _ = table.set(k.as_str(), v.as_str());
+            }
+            let btn = button.map(|b| b.to_string());
+            let _ = func.call::<()>((table, btn));
+        }
+        let _ = self.lua.remove_registry_value(key);
+    }
+
+    /// Drop a dialog's callback without calling it (the user cancelled).
+    pub fn discard_dialog_callback(&self) {
+        if let Some(key) = self.shared.dialog_cb.borrow_mut().take() {
+            let _ = self.lua.remove_registry_value(key);
+        }
     }
 
     pub fn fire_event(&self, name: &str, args: &[mlua::Value]) {

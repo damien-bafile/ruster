@@ -88,7 +88,7 @@ pub fn create_table(lua: &mlua::Lua, shared: &Rc<Shared>) -> mlua::Result<Table>
     // ruster.ui.dialog{ title = "...", fields = { {label=, kind=, value=, options=} } }
     let ui = lua.create_table()?;
     let sh = shared.clone();
-    let dialog_fn = lua.create_function(move |_, spec: mlua::Table| {
+    let dialog_fn = lua.create_function(move |lua, spec: mlua::Table| {
         let title: String = spec.get::<Option<String>>("title")?.unwrap_or_default();
         let mut fields = Vec::new();
         if let Ok(list) = spec.get::<mlua::Table>("fields") {
@@ -102,6 +102,12 @@ pub fn create_table(lua: &mlua::Lua, shared: &Rc<Shared>) -> mlua::Result<Table>
                     options.extend(opts.sequence_values::<String>().flatten());
                 }
                 fields.push((label, kind, value, options));
+            }
+        }
+        // Stash on_submit here; the registry key never travels in LuaAction.
+        if let Ok(cb) = spec.get::<Function>("on_submit") {
+            if let Ok(key) = lua.create_registry_value(cb) {
+                *sh.dialog_cb.borrow_mut() = Some(key);
             }
         }
         {
@@ -400,6 +406,64 @@ mod tests {
             &actions[2],
             runtime::LuaAction::Dialog { title, fields } if title == "T" && fields.len() == 1
         ));
+    }
+
+    /// A dialog a plugin cannot get answers from is a display, not an API.
+    #[test]
+    fn dialog_on_submit_receives_the_values_and_the_button() {
+        let rt = make_runtime();
+        rt.lua
+            .load(
+                r#"
+                _G.got = nil
+                ruster.ui.dialog{
+                  title = "T",
+                  fields = { { label = "Force", kind = "toggle", value = "on" } },
+                  on_submit = function(values, button)
+                    _G.got = { force = values.Force, button = button }
+                  end,
+                }
+                "#,
+            )
+            .exec()
+            .unwrap();
+
+        rt.fire_dialog_submit(&[("Force".into(), "off".into())], Some("OK"));
+
+        let got: Table = rt.lua.globals().get("got").unwrap();
+        assert_eq!(got.get::<String>("force").unwrap(), "off");
+        assert_eq!(got.get::<String>("button").unwrap(), "OK");
+    }
+
+    /// Cancelling must not call it — and must not leave it armed for the next
+    /// dialog either.
+    #[test]
+    fn a_cancelled_dialog_never_calls_on_submit() {
+        let rt = make_runtime();
+        rt.lua
+            .load(
+                r#"
+                _G.calls = 0
+                ruster.ui.dialog{ title = "T", fields = {}, on_submit = function() _G.calls = _G.calls + 1 end }
+                "#,
+            )
+            .exec()
+            .unwrap();
+
+        rt.discard_dialog_callback();
+        rt.fire_dialog_submit(&[], None);
+        let calls: i64 = rt.lua.globals().get("calls").unwrap();
+        assert_eq!(calls, 0, "the discarded callback must not fire");
+    }
+
+    #[test]
+    fn a_dialog_without_on_submit_is_fine() {
+        let rt = make_runtime();
+        rt.lua
+            .load(r#"ruster.ui.dialog{ title = "T", fields = {} }"#)
+            .exec()
+            .unwrap();
+        rt.fire_dialog_submit(&[], None); // must not panic
     }
 
     #[test]

@@ -996,10 +996,15 @@ impl Renderer for RaylibRenderer {
                 if let Some(b) = rbg {
                     d.draw_rectangle(dx + 1, ry, dw - 2, line_h, b);
                 }
-                d.draw_text_ex(font, &r.label, Vector2::new((dx + 8) as f32, ry as f32), font_size as f32, 1.0, rfg);
                 let shown = ruster_render::control_display(r);
-                let vfg = if r.editing { accent } else { rfg };
-                d.draw_text_ex(font, &shown, Vector2::new(value_x as f32, ry as f32), font_size as f32, 1.0, vfg);
+                if r.kind == ruster_render::ControlKind::Button {
+                    // A button is one thing, not a label with a value beside it.
+                    d.draw_text_ex(font, &shown, Vector2::new((dx + 8) as f32, ry as f32), font_size as f32, 1.0, rfg);
+                } else {
+                    d.draw_text_ex(font, &r.label, Vector2::new((dx + 8) as f32, ry as f32), font_size as f32, 1.0, rfg);
+                    let vfg = if r.editing { accent } else { rfg };
+                    d.draw_text_ex(font, &shown, Vector2::new(value_x as f32, ry as f32), font_size as f32, 1.0, vfg);
+                }
             }
             let fy = dy + dh - 2 * line_h;
             d.draw_text_ex(font, &dlg.footer, Vector2::new((dx + 8) as f32, fy as f32), font_size as f32, 1.0, gutter_color);

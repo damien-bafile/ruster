@@ -1244,9 +1244,14 @@ impl Widget for DialogWidget {
                     }
                 }
             }
-            text(buf, area.x + 2, y, &r.label, rfg, rbg);
             let shown = control_display(r);
-            text(buf, value_col, y, &shown, if r.editing { accent } else { rfg }, rbg);
+            if r.kind == ruster_render::ControlKind::Button {
+                // A button is one thing, not a label with a value beside it.
+                text(buf, area.x + 2, y, &shown, rfg, rbg);
+            } else {
+                text(buf, area.x + 2, y, &r.label, rfg, rbg);
+                text(buf, value_col, y, &shown, if r.editing { accent } else { rfg }, rbg);
+            }
         }
         let fy = area.bottom().saturating_sub(2);
         text(buf, area.x + 2, fy, &self.view.footer, dim, bg);
@@ -1327,6 +1332,31 @@ mod tests {
 
     /// A float must paint over whatever is underneath, border included — that
     /// is the whole point of the primitive.
+    #[test]
+    fn dialog_widget_draws_a_button_row() {
+        use crate::widgets::DialogWidget;
+        let area = Rect::new(0, 0, 50, 6);
+        let mut buf = RBuffer::empty(area);
+        let view = ruster_render::DialogView {
+            title: "T".into(),
+            rows: vec![ruster_render::SettingRowView {
+                label: "OK".into(),
+                kind: ruster_render::ControlKind::Button,
+                value: String::new(),
+                selected: true,
+                editing: false,
+                help: String::new(),
+                swatch: None,
+            }],
+            footer: "f".into(),
+        };
+        DialogWidget::new(view).render(area, &mut buf);
+        let row: String = (0..area.width)
+            .filter_map(|x| buf.cell((x, 1)).map(|c| c.symbol().to_string()))
+            .collect();
+        assert!(row.contains("[ OK ]"), "button row was {row:?}");
+    }
+
     #[test]
     fn float_widget_paints_a_bordered_box_over_the_background() {
         let area = Rect::new(0, 0, 20, 6);

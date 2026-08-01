@@ -526,6 +526,9 @@ pub enum ControlKind {
     Enum,
     Number,
     Text,
+    /// An action, not a value: activating it submits the dialog it sits in.
+    /// Only dialogs use this — the settings page has no buttons.
+    Button,
 }
 
 /// One row on the settings page: a label, its control, and current value.
@@ -768,6 +771,7 @@ pub fn control_display(row: &SettingRowView) -> String {
             if row.value == "on" { "[x] on".to_string() } else { "[ ] off".to_string() }
         }
         ControlKind::Enum => format!("< {} >", row.value),
+        ControlKind::Button => format!("[ {} ]", row.label),
         ControlKind::Number | ControlKind::Text => {
             if row.editing {
                 format!("{}▏", row.value)

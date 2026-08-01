@@ -2553,6 +2553,7 @@ impl App {
                                     options: Vec::new(),
                                 },
                                 "select" => crate::dialog::Field::select(&label, &opts, &value),
+                                "button" => crate::dialog::Field::button(&label),
                                 // Anything unrecognised is a text field rather
                                 // than an error — a plugin typo should not stop
                                 // the dialog appearing.
@@ -4556,17 +4557,15 @@ impl App {
             DialogResponse::Pending => {}
             DialogResponse::Cancelled => {
                 self.dialog = None;
-                self.echo("Cancelled");
+                // Drop the callback: a cancelled dialog reports nothing.
+                self.lua.discard_dialog_callback();
             }
-            DialogResponse::Submitted => {
+            DialogResponse::Submitted { button } => {
                 let values = d.values();
                 self.dialog = None;
-                let summary = values
-                    .iter()
-                    .map(|(k, v)| format!("{k}={v}"))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                self.echo(format!("Submitted: {summary}"));
+                // Hand the values to the plugin that opened it. Without this the
+                // dialog is a display, not an API.
+                self.lua.fire_dialog_submit(&values, button.as_deref());
             }
         }
     }
