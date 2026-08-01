@@ -46,7 +46,7 @@ fn draw_titled_box<D: RaylibDraw>(
     m: TextMetrics<'_>,
     rect: (i32, i32, i32, i32),
     line_h: i32,
-    label: &str,
+    label: Option<&str>,
     label_fg: Color,
     rule_fg: Color,
 ) {
@@ -65,24 +65,29 @@ fn draw_titled_box<D: RaylibDraw>(
     let bottom_y = y + h - 1;
 
     // Title first, so its width is known and the top line can be split round it.
-    let label_x = x + (2.0 * m.char_w) as i32;
-    let label_w = m.font.measure_text(label, m.size as f32, 1.0).x as i32;
-    d.draw_text_ex(
-        m.font,
-        label,
-        Vector2::new(label_x as f32, y as f32),
-        m.size as f32,
-        1.0,
-        label_fg,
-    );
-
-    let pad = (m.char_w * 0.5) as i32;
-    let gap_start = label_x - pad;
-    let gap_end = (label_x + label_w + pad).min(x + w);
-    // Left stub, then the run past the title to the far corner.
-    d.draw_rectangle(x, rule_y, (gap_start - x).max(0), 1, rule_fg);
-    if gap_end < x + w {
-        d.draw_rectangle(gap_end, rule_y, x + w - gap_end, 1, rule_fg);
+    match label.filter(|l| !l.is_empty()) {
+        Some(label) => {
+            let label_x = x + (2.0 * m.char_w) as i32;
+            let label_w = m.font.measure_text(label, m.size as f32, 1.0).x as i32;
+            d.draw_text_ex(
+                m.font,
+                label,
+                Vector2::new(label_x as f32, y as f32),
+                m.size as f32,
+                1.0,
+                label_fg,
+            );
+            let pad = (m.char_w * 0.5) as i32;
+            let gap_start = label_x - pad;
+            let gap_end = (label_x + label_w + pad).min(x + w);
+            // Left stub, then the run past the title to the far corner.
+            d.draw_rectangle(x, rule_y, (gap_start - x).max(0), 1, rule_fg);
+            if gap_end < x + w {
+                d.draw_rectangle(gap_end, rule_y, x + w - gap_end, 1, rule_fg);
+            }
+        }
+        // Untitled: one unbroken rule.
+        None => d.draw_rectangle(x, rule_y, w, 1, rule_fg),
     }
 
     // Sides start on the rule, so the corners are a single joined pixel.
@@ -806,7 +811,7 @@ impl Renderer for RaylibRenderer {
                 d.draw_rectangle(box_x + list_w, div_y, 1, box_h - line_h / 2, accent);
             }
             // Drawn before the column scissors so it spans the whole box.
-            draw_titled_box(&mut d, metrics, (box_x, box_y, box_w, box_h), line_h, &picker.title, accent, divider);
+            draw_titled_box(&mut d, metrics, (box_x, box_y, box_w, box_h), line_h, Some(&picker.title), accent, divider);
             // List column — title, query, and rows, clipped to the list width
             // so long labels don't bleed across the divider into the preview.
             let list_clip_w = if has_preview { list_w } else { box_w };
@@ -958,7 +963,7 @@ impl Renderer for RaylibRenderer {
             let mut s = d.begin_scissor_mode(bx, by, bw, bh);
             s.draw_rectangle(bx, by, bw, bh, sbg);
             let title = format!("Settings{}", if settings.dirty { " [+]" } else { "" });
-            draw_titled_box(&mut s, metrics, (bx, by, bw, bh), line_h, &title, accent, divider);
+            draw_titled_box(&mut s, metrics, (bx, by, bw, bh), line_h, Some(&title), accent, divider);
 
             // Flatten groups into header/row lines.
             let mut lines: Vec<(bool, String, Option<&SettingRowView>)> = Vec::new();
@@ -1023,7 +1028,7 @@ impl Renderer for RaylibRenderer {
             let dx = (screen_w - dw) / 2;
             let dy = (screen_h - dh) / 2;
             d.draw_rectangle(dx, dy, dw, dh, bg);
-            draw_titled_box(&mut d, metrics, (dx, dy, dw, dh), line_h, &dlg.title, accent, divider);
+            draw_titled_box(&mut d, metrics, (dx, dy, dw, dh), line_h, Some(&dlg.title), accent, divider);
             let value_x = dx + (26.0 * char_w) as i32;
             for (i, r) in dlg.rows.iter().enumerate() {
                 let ry = dy + (1 + i as i32) * line_h;
@@ -1063,17 +1068,17 @@ impl Renderer for RaylibRenderer {
             let fh = f.rect.height as i32 * line_h;
             d.draw_rectangle(fx, fy, fw, fh, bg);
             if f.border {
-                d.draw_rectangle_lines(fx, fy, fw, fh, accent);
-                if let Some(title) = &f.title {
-                    d.draw_text_ex(
-                        font,
-                        title,
-                        Vector2::new((fx + (2.0 * char_w) as i32) as f32, fy as f32),
-                        font_size as f32,
-                        1.0,
-                        accent,
-                    );
-                }
+                // Same box as every other overlay, so a float's title sits in a
+                // gap in its top edge rather than painted over the border.
+                draw_titled_box(
+                    &mut d,
+                    metrics,
+                    (fx, fy, fw, fh),
+                    line_h,
+                    f.title.as_deref(),
+                    accent,
+                    accent,
+                );
             }
             let inner = f.inner();
             let ix = pad_x + (inner.x as f32 * char_w) as i32;
