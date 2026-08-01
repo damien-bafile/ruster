@@ -214,6 +214,7 @@ Press `g` in Normal mode; the which-key panel lists the goto commands (LazyVim-s
 | `:msgs/err` / `:msgs/warn` / `:msgs build` / `:msgs lsp` | Filter the messages buffer by level or source |
 | `:projects` | Switch to a recent project (picker) |
 | `:sidebar` | Toggle the file-explorer sidebar on/off |
+| `:SyntaxReload` | Re-read highlight queries from `~/.config/ruster/queries/` and rebuild all buffers |
 | `:config-errors` | Show config load/validation errors |
 
 ### Navigation
