@@ -1,10 +1,13 @@
 pub mod app;
+pub mod dired;
+pub mod file_prompt;
 pub mod key;
 pub mod picker;
 pub mod quickfix;
 pub mod runner;
 pub mod renderer;
 pub mod settings;
+pub mod sidebar;
 pub mod widgets;
 
 #[cfg(test)]

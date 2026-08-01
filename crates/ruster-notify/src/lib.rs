@@ -2,9 +2,9 @@ pub mod backend;
 pub mod manager;
 pub mod notification;
 
-pub use backend::{BackendConfig, BackendKind};
-pub use manager::NotificationManager;
-pub use notification::Notification;
+pub use backend::BackendKind;
+pub use manager::{NoiceSettings, NotificationManager};
+pub use notification::{Notification, Timeout};
 
 #[cfg(test)]
 mod tests {
@@ -26,8 +26,5 @@ mod tests {
         assert!(kinds.contains(&BackendKind::Mini));
         assert!(kinds.contains(&BackendKind::Notify));
         assert!(kinds.contains(&BackendKind::Split));
-        assert!(kinds.contains(&BackendKind::CmdlinePopup));
-        assert!(kinds.contains(&BackendKind::Popup));
-        assert!(kinds.contains(&BackendKind::Confirm));
     }
 }

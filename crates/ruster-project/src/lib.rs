@@ -14,13 +14,29 @@ pub const ROOT_MARKERS: &[&str] =
 /// Walk up from `from` (a file or directory) to the nearest ancestor containing
 /// a [`ROOT_MARKERS`] entry. Returns `None` if none is found up to the filesystem
 /// root (callers typically fall back to the current directory).
+///
+/// `from` is resolved against the current directory first. A bare filename has
+/// an empty parent, and `Path::new("").join(marker)` quietly resolves against
+/// the cwd — so walking a relative path directly would "find" a root and return
+/// an empty path, which every caller then treats as a real directory.
 pub fn project_root(from: &Path) -> Option<PathBuf> {
-    let mut dir: &Path = if from.is_dir() { from } else { from.parent()? };
+    let abs = absolutize(from)?;
+    let mut dir: &Path = if abs.is_dir() { abs.as_path() } else { abs.parent()? };
     loop {
         if ROOT_MARKERS.iter().any(|m| dir.join(m).exists()) {
             return Some(dir.to_path_buf());
         }
         dir = dir.parent()?;
+    }
+}
+
+/// Make `path` absolute against the current directory, without requiring it to
+/// exist (so a not-yet-created file still resolves to the right parent).
+fn absolutize(path: &Path) -> Option<PathBuf> {
+    if path.is_absolute() {
+        Some(path.to_path_buf())
+    } else {
+        Some(std::env::current_dir().ok()?.join(path))
     }
 }
 
@@ -75,12 +91,32 @@ impl ProjectConfig {
 
     /// The build command for a project type, honoring an override.
     pub fn build_command(&self, root: &Path) -> String {
-        self.build.command.clone().unwrap_or_else(|| default_build_command(root))
+        self.build_command_with(root, None)
+    }
+
+    /// The build command, resolved most-specific first: this project's
+    /// `ruster.toml`, then the user's configured default, then the built-in
+    /// default for the project type.
+    pub fn build_command_with(&self, root: &Path, user_default: Option<&str>) -> String {
+        self.build
+            .command
+            .clone()
+            .or_else(|| user_default.filter(|s| !s.is_empty()).map(str::to_string))
+            .unwrap_or_else(|| default_build_command(root))
+    }
+
+    /// See [`build_command_with`](Self::build_command_with) for precedence.
+    pub fn test_command_with(&self, root: &Path, user_default: Option<&str>) -> String {
+        self.test
+            .command
+            .clone()
+            .or_else(|| user_default.filter(|s| !s.is_empty()).map(str::to_string))
+            .unwrap_or_else(|| default_test_command(root))
     }
 
     /// The test command for a project type, honoring an override.
     pub fn test_command(&self, root: &Path) -> String {
-        self.test.command.clone().unwrap_or_else(|| default_test_command(root))
+        self.test_command_with(root, None)
     }
 }
 
@@ -161,6 +197,47 @@ mod tests {
             project_root(&file).unwrap().canonicalize().unwrap(),
             tmp.canonicalize().unwrap()
         );
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// A bare filename has an empty parent, and `Path::new("").join(marker)`
+    /// resolves against the cwd — so this used to "succeed" with `Some("")`.
+    /// Callers treated that as a real directory, which left the sidebar empty
+    /// and pointed `:Rg`, the pickers and tasks at nothing.
+    #[test]
+    fn a_relative_path_resolves_to_an_absolute_root() {
+        // Tests run with the cwd set to the crate root, which has a Cargo.toml.
+        let cwd = std::env::current_dir().unwrap();
+        let root = project_root(Path::new("Cargo.toml")).expect("cwd is a project root");
+        assert!(root.is_absolute(), "root must be absolute, got {root:?}");
+        assert!(!root.as_os_str().is_empty(), "root must not be the empty path");
+        assert_eq!(root.canonicalize().unwrap(), cwd.canonicalize().unwrap());
+    }
+
+    /// Precedence runs most-specific first: the project's own ruster.toml, then
+    /// the user's configured default, then the built-in project-type default.
+    #[test]
+    fn command_precedence_project_then_user_then_builtin() {
+        let tmp = std::env::temp_dir().join(format!("ruster_prec_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("Cargo.toml"), "[package]\n").unwrap();
+
+        // Nothing configured anywhere: the project type decides.
+        let empty = ProjectConfig::default();
+        assert_eq!(empty.build_command_with(&tmp, None), "cargo build");
+        // An empty user setting is "unset", not an empty command.
+        assert_eq!(empty.build_command_with(&tmp, Some("")), "cargo build");
+        // A user default beats the built-in.
+        assert_eq!(empty.build_command_with(&tmp, Some("just build")), "just build");
+
+        // A ruster.toml override beats the user default.
+        let proj = ProjectConfig::parse("[build]\ncommand = \"make all\"\n").unwrap();
+        assert_eq!(proj.build_command_with(&tmp, Some("just build")), "make all");
+
+        let proj = ProjectConfig::parse("[test]\ncommand = \"make check\"\n").unwrap();
+        assert_eq!(proj.test_command_with(&tmp, Some("just test")), "make check");
+        assert_eq!(empty.test_command_with(&tmp, Some("just test")), "just test");
 
         std::fs::remove_dir_all(&tmp).ok();
     }
