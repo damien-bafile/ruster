@@ -2801,7 +2801,8 @@ impl App {
         }
     }
 
-    /// Re-read highlight queries from disk and rebuild every buffer's engine.
+    /// Re-read highlight queries *and grammars* from disk and rebuild every
+    /// buffer's engine.
     ///
     /// Queries are read once when an engine is built, so without this an edit
     /// to `~/.config/ruster/queries/…` would need a restart to see — which
@@ -2816,7 +2817,7 @@ impl App {
         self.notify.push(Notification::new(
             ruster_core::message::MessageLevel::Info,
             ruster_core::message::MessageSource::System,
-            format!("Reloaded highlight queries ({count} buffers)"),
+            format!("Reloaded grammars and queries ({count} buffers)"),
         ));
     }
 
@@ -8289,7 +8290,7 @@ mod tests {
         assert!(!a.syntax_tried.is_empty(), "the rebuild re-marked it as tried");
 
         let last = a.notify.history().last().expect("a message was pushed");
-        assert!(last.text.contains("Reloaded highlight queries"), "{:?}", last.text);
+        assert!(last.text.contains("Reloaded grammars and queries"), "{:?}", last.text);
     }
 
     /// A buffer whose engine failed to build must be retried after a reload —

@@ -74,6 +74,23 @@ fn user_queries_are_discovered_read_and_degraded_from_the_config_dir() {
         "the fallback query still resolves comment captures"
     );
 
+    // A grammar file that is not a loadable library must degrade to the
+    // compiled-in grammar rather than taking the editor down — the same
+    // contract as a malformed query, but the failure mode is a segfault rather
+    // than a wrong colour, so it matters more.
+    write_query(&root, ""); // quiet the query warning so only the grammar speaks
+    let gdir = root.join("ruster").join("grammars");
+    std::fs::create_dir_all(&gdir).unwrap();
+    let libname = ruster_syntax::grammar::library_names("rust")[0].clone();
+    std::fs::write(gdir.join(&libname), "this is not a shared library").unwrap();
+
+    let degraded = SyntaxEngine::new(SRC, "rs").expect("still builds on a broken grammar");
+    let warns = degraded.warnings();
+    assert_eq!(warns.len(), 1, "one complaint about the grammar: {warns:?}");
+    assert!(warns[0].contains("grammar rust"), "{:?}", warns[0]);
+    assert!(warns[0].contains("built-in grammar"), "says it fell back: {:?}", warns[0]);
+    std::fs::remove_file(gdir.join(&libname)).unwrap();
+
     // A working custom query takes effect and stays quiet.
     write_query(&root, "(integer_literal) @number");
     let custom = SyntaxEngine::new(SRC, "rs").expect("a valid query builds");
