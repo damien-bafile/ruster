@@ -4128,19 +4128,30 @@ impl App {
     /// Apply a parsed cmdline action. `:q` closes the active window and only
     /// quits the app when it is the last window.
     fn apply_cmd(&mut self, action: CmdAction) {
-        // While the settings page is open, :w saves it and :q closes it.
+        // While the settings page is open, `:w` saves it and `:q` closes it.
+        //
+        // Anything else closes the page and then runs normally. It used to be
+        // swallowed — `_ => {}` and `return` — so with the settings page up,
+        // `:Git`, `:help` and every other command did nothing at all and said
+        // nothing about why. Asking for something else is a clear enough signal
+        // that the page has served its purpose.
         if self.settings.is_some() {
             match action {
-                CmdAction::Save(_) => self.save_settings(),
+                CmdAction::Save(_) => {
+                    self.save_settings();
+                    return;
+                }
                 CmdAction::SaveAndQuit => {
                     self.save_settings();
                     self.settings = None;
+                    return;
                 }
-                CmdAction::Quit | CmdAction::ForceQuit => self.settings = None,
-                CmdAction::Settings => {}
-                _ => {}
+                CmdAction::Quit | CmdAction::ForceQuit | CmdAction::Settings => {
+                    self.settings = None;
+                    return;
+                }
+                _ => self.settings = None,
             }
-            return;
         }
         match action {
             CmdAction::Save(force) => {
@@ -9450,6 +9461,35 @@ mod tests {
         assert!(!a.active_is_git_commit(), "no message buffer opened");
         let last = a.notify.history().last().expect("a message");
         assert!(last.text.contains("repository") || last.text.contains("staged"), "{:?}", last.text);
+    }
+
+    /// Regression: with the settings page open, every command that was not
+    /// settings-specific was silently swallowed — `:Git`, `:help` and the rest
+    /// did nothing and said nothing. Found in the GUI, and true in the TUI too.
+    #[test]
+    fn a_command_while_settings_is_open_closes_it_and_runs() {
+        let mut a = App::new("x".into(), PathBuf::from("f.rs"));
+        a.apply_cmd(CmdAction::Settings);
+        assert!(a.settings.is_some(), "the page is open");
+
+        a.apply_cmd(CmdAction::Help(None));
+        assert!(a.settings.is_none(), "the page stepped aside");
+        assert!(a.active_is_help(), "and the command actually ran");
+    }
+
+    /// The two that genuinely mean something different there still do.
+    #[test]
+    fn save_and_quit_still_belong_to_the_settings_page() {
+        let mut a = App::new("x".into(), PathBuf::from("f.rs"));
+        a.apply_cmd(CmdAction::Settings);
+        a.apply_cmd(CmdAction::Quit);
+        assert!(a.settings.is_none(), ":q closes the page");
+        assert!(!a.should_quit, "and does not quit the editor");
+
+        a.apply_cmd(CmdAction::Settings);
+        assert!(a.settings.is_some());
+        a.apply_cmd(CmdAction::Save(false));
+        assert!(a.settings.is_some(), ":w saves the page and leaves it open");
     }
 
     #[test]
