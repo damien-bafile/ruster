@@ -45,7 +45,7 @@ graph to navigate by.
 | **0 — Loose ends** | 1–6 | **1–3 done (PR #26), 5 done (PR #27)**; 4 needs a human; 6 deferred past Stage 1. |
 | **1 — Foundations** | 7–8 | Floating windows, then git plumbing. Everything later builds on these. |
 | **2 — Surfaces** | 9–12 | Trouble, todos, theme preview, widgets — all consume Stage 1. |
-| **3 — Ecosystem** | 13–15 | Mason, diff viewer, then the config/docs/CI sweep. |
+| **3 — Ecosystem** | 13–17 | Mason, diff viewer, syntax extensibility, then the config/docs/CI sweep. |
 
 Task 6 has since been deferred past Stage 1 outright — see the task for why. Task 4 needs
 a human at a GUI. Everything else in Stage 0 has landed, so Stage 1 is clear to start.
@@ -278,7 +278,58 @@ Completes the one partially-delivered Phase 6 item.
 - [ ] Synchronised scrolling between the two panes.
 - [ ] Tests: pane alignment across an unbalanced hunk.
 
-### Task 15: Config, docs, CI
+### Task 15: Load highlight queries from a user directory
+
+Today **neither** grammars nor queries can be changed without a rebuild. `queries/` looks
+like runtime data but is build input — `crates/ruster-syntax/src/lib.rs` pulls each file in
+with `include_str!` (12 of them). This task moves the query half out; the grammar half is
+Task 16, because it costs far more.
+
+- [ ] Have `query_files_for_lang` check `~/.config/ruster/queries/<lang>/highlights.scm`
+      (and `textobjects.scm`) first, falling back to the compiled-in copy. The theme loader
+      already discovers `~/.config/ruster/themes/*.lua` this way — follow it rather than
+      inventing a second discovery mechanism.
+- [ ] A malformed user query must not take the editor down: report it through the
+      notification pipeline and fall back to the built-in, the way a bad `config.lua`
+      already degrades.
+- [ ] Reload on `:e`/save of a query file, or expose `:SyntaxReload`. Requiring a restart to
+      test a capture rule defeats the point.
+- [ ] Document the directory and precedence in `docs/config-reference.md`.
+- [ ] Tests: user file wins over the built-in; a malformed file falls back rather than
+      panicking; an absent directory is the normal path and costs nothing.
+
+**Worth having on its own.** It makes highlighting editable and shareable for all 11
+supported languages, touches no `unsafe`, and stays inside `ruster-syntax` — only
+`ruster-tui` depends on that crate, so the blast radius is one boundary.
+
+### Task 16: Load grammars at runtime
+
+Genuinely harder than Task 15, and worth keeping separate so the easy half isn't held up.
+`language_for_ext` is a `match` returning statically linked crates
+(`tree_sitter_rust::LANGUAGE.into()`), so this replaces compile-time linking with dynamic
+loading.
+
+- [ ] Load `libtree-sitter-<lang>.{so,dylib,dll}` from a user directory via `libloading`,
+      keeping the compiled-in grammars as the fallback.
+- [ ] **Check the ABI version before calling in.** This is the whole risk: the boundary is
+      `unsafe`, and a grammar built against a different `tree-sitter` than the 0.25 this
+      workspace uses will segfault the editor rather than return an error. Verify
+      `ts_language_abi_version` against the supported range and refuse politely on a
+      mismatch — a refused grammar is a missing highlight, a wrong one is a crash.
+- [ ] Decide what a missing query means once grammars are dynamic.
+      `qcheck::every_parseable_language_has_a_highlight_query` asserts over a **hardcoded
+      list of 11 extensions** that each has both a grammar and a non-empty query. That
+      invariant only holds while the set is fixed at compile time. Once it isn't, a missing
+      query stops being a build failure and becomes a runtime condition to degrade on —
+      decide that deliberately rather than discovering it when the test blocks a change.
+- [ ] Tests: ABI mismatch is refused, not loaded; a missing library falls back to the
+      built-in grammar; the existing hardcoded-list check still guards the compiled-in set.
+
+**Where fetching belongs:** downloading and compiling grammars is Mason's job (Task 13),
+which currently only plans to install LSP and DAP binaries. Extend it there rather than
+growing a second installer inside `ruster-syntax`.
+
+### Task 17: Config, docs, CI
 
 - [ ] Schema settings for every option added above (`git.*`, `todo.*`, `trouble.*`).
 - [ ] Document commands and keys in `docs/{config-reference,keybindings}.md` **as each task
