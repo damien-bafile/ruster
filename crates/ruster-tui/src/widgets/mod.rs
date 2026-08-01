@@ -11,6 +11,42 @@ use ruster_render::{
     TermGridView, WelcomeView, Color as RColor,
 };
 
+/// Draw the standard panel header — `─ label ─` then ruled to the full width.
+///
+/// Every titled surface uses this: buffer windows, the picker, the settings
+/// page. Keeping one implementation is the point — the alternative is each
+/// overlay inventing its own title bar, which is how the picker ended up with a
+/// filled accent strip while the window beside it had a ruled line.
+pub(crate) fn ruled_header(
+    buf: &mut Buffer,
+    area: Rect,
+    label: &str,
+    label_fg: Color,
+    rule_fg: Color,
+    bg: Color,
+) {
+    let hdr = format!("─ {} ─", label);
+    let mut x = area.x;
+    for ch in hdr.chars() {
+        if x >= area.right() {
+            break;
+        }
+        if let Some(cell) = buf.cell_mut((x, area.y)) {
+            cell.set_char(ch);
+            cell.set_fg(label_fg);
+            cell.set_bg(bg);
+        }
+        x += 1;
+    }
+    for fill in x..area.right() {
+        if let Some(cell) = buf.cell_mut((fill, area.y)) {
+            cell.set_char('─');
+            cell.set_fg(rule_fg);
+            cell.set_bg(bg);
+        }
+    }
+}
+
 /// Convert a VimMode to a display string.
 pub fn mode_label(mode: &VimMode) -> &'static str {
     match mode {
@@ -739,7 +775,7 @@ impl Widget for SettingsWidget<'_> {
         let dim = c(Color::Rgb(127, 132, 156), |t| t.gutter);
         let sel = c(Color::Rgb(88, 91, 112), |t| t.selection_bg);
         let sel_fg = c(Color::Rgb(205, 214, 244), |t| t.selection_fg);
-        let accent_fg = c(Color::Rgb(30, 30, 46), |t| t.accent_fg);
+        let divider = c(Color::Rgb(69, 71, 90), |t| t.divider);
         let footer_bg = c(Color::Rgb(24, 24, 37), |t| t.bg);
         for y in area.top()..area.bottom() {
             for x in area.left()..area.right() {
@@ -764,12 +800,9 @@ impl Widget for SettingsWidget<'_> {
             }
         };
 
-        // Title row.
-        let title = format!(" Settings{} ", if self.view.dirty { " [+]" } else { "" });
-        for x in area.left()..area.right() {
-            put(buf, x, area.y, ' ', accent_fg, accent);
-        }
-        text(buf, area.x + 1, area.y, &title, accent_fg, accent);
+        // Title row, in the same ruled style as a buffer window's header.
+        let title = format!("Settings{}", if self.view.dirty { " [+]" } else { "" });
+        ruled_header(buf, area, &title, accent, divider, bg);
 
         // Flatten groups into header + row lines.
         let mut lines: Vec<SettingsLine> = Vec::new();
@@ -847,7 +880,6 @@ impl Widget for PickerWidget {
         let preview_bg = c(Color::Rgb(24, 24, 37), |t| t.bg);
         let accent = c(Color::Rgb(137, 180, 250), |t| t.accent);
         let fg = c(Color::Rgb(205, 214, 244), |t| t.fg);
-        let accent_fg = c(Color::Rgb(30, 30, 46), |t| t.accent_fg);
         let divider = c(Color::Rgb(69, 71, 90), |t| t.divider);
         for y in area.top()..area.bottom() {
             for x in area.left()..area.right() {
@@ -872,11 +904,11 @@ impl Widget for PickerWidget {
         let list_w = if has_preview { area.width * 2 / 5 } else { area.width };
         let list_right = area.x + list_w;
 
-        // Title row.
-        let title = format!(" {} ", self.view.title);
-        for (i, ch) in title.chars().enumerate() {
-            put(buf, area.x + i as u16, area.y, ch, accent_fg, accent);
-        }
+        // Title row, in the same ruled style as a buffer window's header. Scoped
+        // to the list column: the preview pane owns its own full height, so a
+        // full-width rule would strike through its first line.
+        let hdr_area = Rect::new(area.x, area.y, list_w, 1);
+        ruled_header(buf, hdr_area, &self.view.title, accent, divider, bg);
         // Query row.
         let query = format!(" > {}", self.view.query);
         for (i, ch) in query.chars().enumerate() {

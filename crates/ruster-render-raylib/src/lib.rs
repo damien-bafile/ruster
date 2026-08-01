@@ -38,6 +38,33 @@ fn draw_text_cells<D: RaylibDraw>(
     }
 }
 
+/// Draw the standard panel header — `─ label ─` then ruled to the full width.
+///
+/// Shared by buffer windows, the picker and the settings page so every titled
+/// surface reads as the same kind of thing. Placed on the cell grid, like all
+/// other text.
+#[allow(clippy::too_many_arguments)]
+fn draw_ruled_header<D: RaylibDraw>(
+    d: &mut D,
+    m: TextMetrics<'_>,
+    at: (i32, i32),
+    width_px: i32,
+    label: &str,
+    label_fg: Color,
+    rule_fg: Color,
+) {
+    let (x0, y) = at;
+    let hdr: Vec<char> = format!("─ {} ─", label).chars().collect();
+    let cols = (width_px as f32 / m.char_w).floor().max(0.0) as usize;
+    let mut colors = vec![label_fg; hdr.len().min(cols)];
+    let mut chars: Vec<char> = hdr.into_iter().take(cols).collect();
+    while chars.len() < cols {
+        chars.push('─');
+        colors.push(rule_fg);
+    }
+    draw_text_cells(d, m, (x0 as f32, y as f32), &chars, &colors);
+}
+
 /// The font metrics every text draw needs; they always travel together.
 #[derive(Clone, Copy)]
 struct TextMetrics<'a> {
@@ -351,18 +378,9 @@ impl Renderer for RaylibRenderer {
             // Panel header: draw a ruled line with the filename as stencil label
             // before the scissor region (the header spans the full window width).
             let label = if view.header.is_empty() { "untitled" } else { &view.header };
-            let hdr = format!("─ {} ─", label);
             let hdr_color = if view.active { accent } else { divider };
             d.draw_rectangle(px, py, pw, line_h, bg);
-            // We cannot use `s` (the scissor handle) here, so use `d` directly.
-            d.draw_text_ex(font, &hdr, Vector2::new(px as f32, py as f32), font_size as f32, 1.0, hdr_color);
-            // Fill the rest of the header row with rule characters.
-            let hdr_w = measure(&hdr);
-            let mut rule_x = px as f32 + hdr_w;
-            while (rule_x as i32) < px + pw {
-                d.draw_text_ex(font, "─", Vector2::new(rule_x, py as f32), font_size as f32, 1.0, divider);
-                rule_x += measure("─");
-            }
+            draw_ruled_header(&mut d, metrics, (px, py), pw, label, hdr_color, divider);
 
             // Vertical seam on the right edge of each window (drawn over the gap).
             if win_idx < window_list.len() - 1 {
@@ -739,7 +757,8 @@ impl Renderer for RaylibRenderer {
                     (list_clip_w - 2).max(1),
                     box_h - 2,
                 );
-                s.draw_text_ex(font, &format!(" {} ", picker.title), Vector2::new(box_x as f32 + 4.0, box_y as f32), font_size as f32, 1.0, accent);
+                // Scoped to the list column — the preview pane owns its own height.
+                draw_ruled_header(&mut s, metrics, (box_x, box_y), list_clip_w, &picker.title, accent, divider);
                 s.draw_text_ex(font, &format!(" > {}", picker.query), Vector2::new(box_x as f32 + 4.0, (box_y + line_h) as f32), font_size as f32, 1.0, default_color);
                 let max_visible = ((box_h - 2 * line_h) / line_h).max(0) as usize;
                 for (i, row) in picker.rows.iter().take(max_visible).enumerate() {
@@ -875,9 +894,8 @@ impl Renderer for RaylibRenderer {
             let by = (screen_h - bh) / 2;
             let mut s = d.begin_scissor_mode(bx, by, bw, bh);
             s.draw_rectangle(bx, by, bw, bh, sbg);
-            s.draw_rectangle(bx, by, bw, line_h, accent);
-            let title = format!(" Settings{} ", if settings.dirty { " [+]" } else { "" });
-            s.draw_text_ex(font, &title, Vector2::new((bx + 4) as f32, by as f32), font_size as f32, 1.0, accent_fg);
+            let title = format!("Settings{}", if settings.dirty { " [+]" } else { "" });
+            draw_ruled_header(&mut s, metrics, (bx, by), bw, &title, accent, divider);
 
             // Flatten groups into header/row lines.
             let mut lines: Vec<(bool, String, Option<&SettingRowView>)> = Vec::new();

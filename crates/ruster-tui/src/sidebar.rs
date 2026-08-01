@@ -361,6 +361,14 @@ impl SidebarState {
         // No cursor, gutter or flash labels — the rest comes from Default.
         WindowView {
             rect: RRect::new(rect.x, rect.y, rect.width, rect.height),
+            // Without this the shared window header falls back to "untitled".
+            // The root's own name says which project is open.
+            header: self
+                .tree
+                .as_ref()
+                .and_then(|t| t.root.file_name())
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "Explorer".to_string()),
             lines,
             statusline: StatuslineView {
                 left: "Sidebar".into(),
