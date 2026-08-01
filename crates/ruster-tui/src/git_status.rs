@@ -117,35 +117,52 @@ impl GitStatusState {
 
     /// The buffer text.
     pub fn render(&self, root: Option<&Path>) -> String {
-        let mut out = Vec::new();
-        out.push(self.header());
-        out.push(String::new());
+        self.layout(root).into_iter().map(|(text, _)| text).collect::<Vec<_>>().join("\n")
+    }
+
+    /// The row a rendered line belongs to, or `None` for the header, a blank,
+    /// or a section heading.
+    ///
+    /// Derived from the same layout `render` emits rather than by offsetting a
+    /// constant: the view puts a blank line before every section after the
+    /// first, so line and row numbers drift apart by one per section. Computing
+    /// it separately is how `Enter` on the second section opens the wrong file.
+    pub fn row_at_line(&self, line: usize) -> Option<usize> {
+        self.layout(None).get(line).and_then(|(_, row)| *row)
+    }
+
+    /// Every rendered line, paired with the row index it represents.
+    fn layout(&self, root: Option<&Path>) -> Vec<(String, Option<usize>)> {
+        let mut out: Vec<(String, Option<usize>)> = vec![(self.header(), None), (String::new(), None)];
 
         if self.status.is_clean() {
-            out.push("Nothing to commit, working tree clean.".to_string());
-            return out.join("\n");
+            out.push(("Nothing to commit, working tree clean.".to_string(), None));
+            return out;
         }
 
-        for row in self.rows() {
+        for (row_index, row) in self.rows().into_iter().enumerate() {
             match row {
                 Row::Section { section, count, collapsed } => {
-                    if !out.last().is_some_and(String::is_empty) {
-                        out.push(String::new());
+                    if !out.last().is_some_and(|(t, _)| t.is_empty()) {
+                        out.push((String::new(), None));
                     }
-                    out.push(format!(
-                        "{} {} ({count})",
-                        if collapsed { '▸' } else { '▾' },
-                        section.heading()
+                    out.push((
+                        format!(
+                            "{} {} ({count})",
+                            if collapsed { '▸' } else { '▾' },
+                            section.heading()
+                        ),
+                        None,
                     ));
                 }
                 Row::Entry { section, index } => {
                     let entries = self.entries(section);
                     let Some(e) = entries.get(index) else { continue };
-                    out.push(format!("    {}", entry_line(e, section, root)));
+                    out.push((format!("    {}", entry_line(e, section, root)), Some(row_index)));
                 }
             }
         }
-        out.join("\n")
+        out
     }
 
     fn header(&self) -> String {

@@ -323,11 +323,6 @@ fn diff_pane_text(rows: &[(Option<u32>, Option<u32>)], lines: &[&str], right: bo
         .join("\n")
 }
 
-/// Lines `GitStatusState::render` prints before its first foldable row: the
-/// branch header and the blank line under it. The key handler subtracts these
-/// to turn a cursor line into a row index.
-const GIT_HEADER_LINES: usize = 2;
-
 /// Report a problem loading a user highlight query.
 ///
 /// Warning rather than error: highlighting has already fallen back to the
@@ -6102,12 +6097,15 @@ impl App {
         )
     }
 
-    /// The screen row the cursor is on, minus the two header lines the view
-    /// prints before its first row.
+    /// The status row the cursor is on, asked of the view rather than computed
+    /// by offsetting a constant — the layout puts a blank line before every
+    /// section after the first, so the two drift apart.
     fn git_status_row(&self) -> Option<usize> {
-        let w = self.ws.borrow();
-        let doc = w.active_doc();
-        doc.buffer.char_to_line(w.primary_head()).checked_sub(GIT_HEADER_LINES)
+        let line = {
+            let w = self.ws.borrow();
+            w.active_doc().buffer.char_to_line(w.primary_head())
+        };
+        self.git_status.row_at_line(line)
     }
 
     /// Keys while the status view is focused. Unclaimed keys fall through, so
@@ -6139,6 +6137,14 @@ impl App {
                 }
                 true
             }
+            KeyCode::Char('s') => {
+                self.git_stage_at_cursor(true);
+                true
+            }
+            KeyCode::Char('u') => {
+                self.git_stage_at_cursor(false);
+                true
+            }
             KeyCode::Char('r') => {
                 self.open_git_status();
                 true
@@ -6149,6 +6155,59 @@ impl App {
             }
             _ => false,
         }
+    }
+
+    /// Stage or unstage the file under the cursor.
+    ///
+    /// Only the index is touched either way — `git add` and `git restore
+    /// --staged` cannot alter the working tree — so the worst a bug here can do
+    /// is stage the wrong file, never lose an edit.
+    fn git_stage_at_cursor(&mut self, stage: bool) {
+        let (Some(row), Some(root)) = (self.git_status_row(), self.project_root.clone()) else {
+            return;
+        };
+        let Some(path) = self.git_status.path_at(row) else {
+            self.echo_warn("Put the cursor on a file".to_string());
+            return;
+        };
+        let full = if path.is_absolute() { path.clone() } else { root.join(&path) };
+
+        let result = if stage {
+            ruster_git::stage(&root, &full)
+        } else {
+            ruster_git::unstage(&root, &full)
+        };
+        let name = path.display().to_string();
+        match result {
+            Ok(()) => {
+                let line = self.cursor_line_in_active();
+                self.open_git_status();
+                // The list just changed shape, so hold the cursor near where it
+                // was rather than flinging it to the top on every keypress.
+                self.restore_git_cursor(line);
+                self.echo(format!("{} {name}", if stage { "Staged" } else { "Unstaged" }));
+            }
+            Err(e) => self.echo_error(format!(
+                "Could not {} {name}: {e}",
+                if stage { "stage" } else { "unstage" }
+            )),
+        }
+    }
+
+    fn cursor_line_in_active(&self) -> usize {
+        let w = self.ws.borrow();
+        w.active_doc().buffer.char_to_line(w.primary_head())
+    }
+
+    /// Put the cursor back on `line`, clamped — the status list is usually
+    /// shorter after staging.
+    fn restore_git_cursor(&mut self, line: usize) {
+        let mut w = self.ws.borrow_mut();
+        let id = w.active_buffer();
+        let Some(doc) = w.buffers.get(id) else { return };
+        let last = doc.buffer.line_count().saturating_sub(1);
+        let off = doc.buffer.line_start_char(line.min(last));
+        w.windows.active_window_mut().cursors = ruster_core::cursor::CursorSet::single(off);
     }
 
     /// Re-render the status buffer from the state already parsed, without
@@ -8971,19 +9030,34 @@ mod tests {
         assert!(a.git_status.rows().len() < before, "folded from state alone");
     }
 
-    /// The cursor line has to be offset by the header the view prints, or every
-    /// row resolves to the one above it.
+    /// Regression: the view puts a blank line before every section after the
+    /// first, so a constant header offset drifts by one per section and a file
+    /// in the *second* section resolved to the wrong row — or to none at all.
+    /// Found by pressing `G` on an untracked file and being told to put the
+    /// cursor on a file.
     #[test]
-    fn the_cursor_line_maps_past_the_header_to_a_row() {
+    fn a_file_in_a_later_section_resolves_to_its_own_row() {
         let mut a = App::new("x".into(), PathBuf::from("f.rs"));
         a.git_status.set_status(ruster_git::parse_status(
-            "# branch.head main\n1 A. N... 0 0 0 a b one.txt\n",
+            "# branch.head main\n1 .M N... 0 0 0 a b edited.txt\n? untracked.txt\n",
         ));
         let text = a.git_status.render(None);
-        // Header, blank, then the section heading and its file.
-        let file_line = text.lines().position(|l| l.contains("one.txt")).expect("listed");
-        let row = file_line - GIT_HEADER_LINES;
-        assert_eq!(a.git_status.path_at(row), Some(PathBuf::from("one.txt")));
+
+        for name in ["edited.txt", "untracked.txt"] {
+            let line = text.lines().position(|l| l.contains(name)).expect("listed");
+            let row = a.git_status.row_at_line(line).expect("a row");
+            assert_eq!(
+                a.git_status.path_at(row),
+                Some(PathBuf::from(name)),
+                "{name} on line {line} resolved to the wrong row"
+            );
+        }
+
+        // Headings and blanks are not rows.
+        let heading = text.lines().position(|l| l.contains("Untracked")).unwrap();
+        assert_eq!(a.git_status.row_at_line(heading), None, "a heading is not a file");
+        assert_eq!(a.git_status.row_at_line(0), None, "nor is the branch header");
+        assert_eq!(a.git_status.row_at_line(9999), None);
     }
 
     #[test]

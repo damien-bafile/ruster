@@ -84,9 +84,9 @@ carries none of the risk below.
 
 ## Stage 2 — Staging, and the part that is actually hard
 
-### 2.1 Stage and unstage whole files
+### 2.1 Stage and unstage whole files ✅ (PR 2)
 
-- [ ] `s` → `git add -- <path>`, `u` → `git restore --staged -- <path>`.
+- [x] `s` → `git add -- <path>`, `u` → `git restore --staged -- <path>`.
       Straightforward, and worth landing before hunks.
 
 ### 2.2 Stage and unstage *hunks*

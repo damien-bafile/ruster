@@ -426,6 +426,41 @@ pub fn status(root: &Path) -> Option<Status> {
         .then(|| parse_status(&String::from_utf8_lossy(&out.stdout)))
 }
 
+/// Stage `path` — `git add -- <path>`.
+///
+/// Works for a modified, deleted or untracked file alike: `git add` on a
+/// deleted path stages the deletion, which is what the status view's Unstaged
+/// section shows for a `.D` entry.
+pub fn stage(root: &Path, path: &Path) -> Result<(), String> {
+    run_git(root, &["add", "--"], path)
+}
+
+/// Unstage `path` — `git restore --staged -- <path>`.
+///
+/// Only the index is touched, so the working tree is never at risk: unstaging
+/// can lose staging, never edits. `git restore --staged` rather than
+/// `git reset HEAD --` because it does the same thing without the word "reset",
+/// and behaves correctly in a repository with no commits yet.
+pub fn unstage(root: &Path, path: &Path) -> Result<(), String> {
+    run_git(root, &["restore", "--staged", "--"], path)
+}
+
+/// Run a git subcommand over one path, returning stderr on failure.
+fn run_git(root: &Path, args: &[&str], path: &Path) -> Result<(), String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .arg(path)
+        .output()
+        .map_err(|e| format!("could not run git: {e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    Err(if err.is_empty() { "git failed".to_string() } else { err })
+}
+
 /// Whether `root` looks like a git working tree. Cheap enough to call on a
 /// buffer switch.
 pub fn is_repo(root: &Path) -> bool {
@@ -689,6 +724,85 @@ u UU N... 100644 100644 100644 100644 df967b9 ba2906d e45c9c2 conflict.txt
     #[test]
     fn empty_output_is_a_clean_status() {
         assert_eq!(parse_status(""), Status::default());
+    }
+
+    /// A throwaway repository for the two functions that genuinely cannot be
+    /// tested against captured text, because their whole job is to *change* the
+    /// index. Skipped rather than failed if git is unavailable — the rule is
+    /// that no test may *require* a repository, and these create their own.
+    fn scratch_repo(name: &str) -> Option<PathBuf> {
+        let dir = std::env::temp_dir().join(format!("ruster_git_{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).ok()?;
+        let git = |args: &[&str]| {
+            Command::new("git").arg("-C").arg(&dir).args(args).output().ok().filter(|o| o.status.success())
+        };
+        git(&["init", "-q", "."])?;
+        git(&["config", "user.email", "t@e.st"])?;
+        git(&["config", "user.name", "test"])?;
+        std::fs::write(dir.join("tracked.txt"), "one\n").ok()?;
+        git(&["add", "-A"])?;
+        git(&["commit", "-qm", "init"])?;
+        Some(dir)
+    }
+
+    #[test]
+    fn staging_moves_a_file_from_unstaged_to_staged() {
+        let Some(dir) = scratch_repo("stage") else { return };
+        std::fs::write(dir.join("tracked.txt"), "one\ntwo\n").unwrap();
+
+        let before = status(&dir).expect("status");
+        assert!(before.unstaged().iter().any(|e| e.path.ends_with("tracked.txt")));
+        assert!(before.staged().is_empty());
+
+        stage(&dir, Path::new("tracked.txt")).expect("staged");
+        let after = status(&dir).expect("status");
+        assert!(after.staged().iter().any(|e| e.path.ends_with("tracked.txt")));
+        assert!(after.unstaged().is_empty(), "nothing left unstaged");
+
+        // And back again.
+        unstage(&dir, Path::new("tracked.txt")).expect("unstaged");
+        let back = status(&dir).expect("status");
+        assert!(back.staged().is_empty(), "unstaged again");
+        assert!(back.unstaged().iter().any(|e| e.path.ends_with("tracked.txt")));
+
+        // The round trip must not have touched the file itself.
+        assert_eq!(std::fs::read_to_string(dir.join("tracked.txt")).unwrap(), "one\ntwo\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn staging_an_untracked_file_adds_it() {
+        let Some(dir) = scratch_repo("untracked") else { return };
+        std::fs::write(dir.join("new.txt"), "hello\n").unwrap();
+        assert_eq!(status(&dir).unwrap().untracked().len(), 1);
+
+        stage(&dir, Path::new("new.txt")).expect("staged");
+        let s = status(&dir).unwrap();
+        assert!(s.untracked().is_empty(), "no longer untracked");
+        assert_eq!(s.staged().first().map(|e| e.staged), Some(Some(FileStatus::Added)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `git add` on a deleted path stages the deletion — the Unstaged section
+    /// shows `.D` entries, so `s` on one has to mean this.
+    #[test]
+    fn staging_a_deletion_stages_the_deletion() {
+        let Some(dir) = scratch_repo("deleted") else { return };
+        std::fs::remove_file(dir.join("tracked.txt")).unwrap();
+        stage(&dir, Path::new("tracked.txt")).expect("staged");
+        let s = status(&dir).unwrap();
+        assert_eq!(s.staged().first().map(|e| e.staged), Some(Some(FileStatus::Deleted)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failing_git_command_reports_its_error() {
+        let Some(dir) = scratch_repo("missing") else { return };
+        let err = stage(&dir, Path::new("does-not-exist.txt")).unwrap_err();
+        assert!(!err.is_empty(), "git said something");
+        assert!(err.contains("did not match") || err.contains("pathspec"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
