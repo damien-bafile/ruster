@@ -155,6 +155,7 @@ Keys are addressed as `group.key`.
 | `test.command` | string | _(detect)_ | Command for `:test`; empty detects from the project type |
 | `dap.adapter` | string | _(detect)_ | Debug adapter program for `:debug`; empty detects from the file's language |
 | `git.signs` | boolean | true | Mark added/changed/removed lines in the gutter |
+| `todo.keywords` | string | `TODO,FIXME,HACK,NOTE,XXX` | Comma-separated markers highlighted in comments; empty disables |
 
 > Colors are **not** listed here — they live in [themes](#themes).
 

@@ -7,7 +7,7 @@ use ratatui::style::{Color, Modifier};
 use ratatui::widgets::Widget;
 use ruster_core::vim::VimMode;
 use ruster_render::{
-    ControlKind, CursorKind, GutterView, SettingRowView, SettingsView, StatuslineView, StyledLine,
+    CursorKind, GutterView, SettingRowView, SettingsView, StatuslineView, StyledLine,
     TermGridView, WelcomeView, Color as RColor,
 };
 
@@ -745,17 +745,24 @@ fn draw_section_header(
 
 /// Renders a floating picker overlay (title, query line, selectable rows).
 pub struct PickerWidget {
+    /// First visible row, so a selection past the box stays on screen.
+    scroll: usize,
     view: ruster_render::PickerView,
     theme: Option<ruster_render::Theme>,
 }
 
 impl PickerWidget {
     pub fn new(view: ruster_render::PickerView) -> Self {
-        PickerWidget { view, theme: None }
+        PickerWidget { view, theme: None, scroll: 0 }
     }
 
     pub fn with_theme(mut self, theme: &ruster_render::Theme) -> Self {
         self.theme = Some(*theme);
+        self
+    }
+
+    pub fn with_scroll(mut self, scroll: usize) -> Self {
+        self.scroll = scroll;
         self
     }
 }
@@ -774,19 +781,7 @@ fn hex_rgb(s: &str) -> Option<(u8, u8, u8)> {
 
 /// Renders the label/value string for a settings control.
 pub fn control_display(row: &SettingRowView) -> String {
-    match row.kind {
-        ControlKind::Toggle => {
-            if row.value == "on" { "[x] on".to_string() } else { "[ ] off".to_string() }
-        }
-        ControlKind::Enum => format!("< {} >", row.value),
-        ControlKind::Number | ControlKind::Text => {
-            if row.editing {
-                format!("{}▏", row.value)
-            } else {
-                row.value.clone()
-            }
-        }
-    }
+    ruster_render::control_display(row)
 }
 
 /// One rendered line of the settings body: a group header or a setting row.
@@ -871,7 +866,7 @@ impl Widget for SettingsWidget<'_> {
         let body_top = area.y + 1;
         let body_h = area.height.saturating_sub(3) as usize; // title + footer + help
         *self.scroll =
-            ruster_render::settings_scroll(*self.scroll, selected, body_h, lines.len());
+            ruster_render::list_scroll(*self.scroll, selected, body_h, lines.len());
         let scroll = *self.scroll;
         let value_col = area.x + 32.min(area.width / 2);
 
@@ -964,7 +959,7 @@ impl Widget for PickerWidget {
             put(buf, area.x + 1 + i as u16, area.y + 1, ch, Color::White, bg);
         }
         // Item rows (clipped to the list column).
-        for (row, item) in self.view.rows.iter().enumerate() {
+        for (row, item) in self.view.rows.iter().skip(self.scroll).enumerate() {
             let y = area.y + 2 + row as u16;
             if y >= area.bottom().saturating_sub(1) { break; }
             let (row_fg, row_bg) = if item.selected {
@@ -1184,6 +1179,92 @@ impl Widget for FloatWidget {
     }
 }
 
+/// Renders a [`DialogView`](ruster_render::DialogView): a titled box of setting
+/// rows. Shares `titled_box` and the row layout with the settings page, because
+/// it is the same vocabulary — a dialog is a small settings page.
+pub struct DialogWidget {
+    view: ruster_render::DialogView,
+    theme: Option<ruster_render::Theme>,
+}
+
+impl DialogWidget {
+    pub fn new(view: ruster_render::DialogView) -> Self {
+        DialogWidget { view, theme: None }
+    }
+
+    pub fn with_theme(mut self, theme: &ruster_render::Theme) -> Self {
+        self.theme = Some(*theme);
+        self
+    }
+}
+
+impl Widget for DialogWidget {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let c = |fallback: Color, get: fn(&ruster_render::Theme) -> RColor| -> Color {
+            self.theme.as_ref().map(|t| ruster_render_color_to_tui(&get(t))).unwrap_or(fallback)
+        };
+        let bg = c(Color::Rgb(30, 30, 46), |t| t.bg);
+        let fg = c(Color::Rgb(205, 214, 244), |t| t.fg);
+        let accent = c(Color::Rgb(137, 180, 250), |t| t.accent);
+        let divider = c(Color::Rgb(69, 71, 90), |t| t.divider);
+        let sel = c(Color::Rgb(88, 91, 112), |t| t.selection_bg);
+        let sel_fg = c(Color::Rgb(205, 214, 244), |t| t.selection_fg);
+        let dim = c(Color::Rgb(127, 132, 156), |t| t.gutter);
+
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    cell.set_char(' ');
+                    cell.set_bg(bg);
+                }
+            }
+        }
+        titled_box(buf, area, &self.view.title, accent, divider, bg);
+
+        let text = |buf: &mut Buffer, x: u16, y: u16, s: &str, fg: Color, cb: Color| {
+            for (i, ch) in s.chars().enumerate() {
+                let cx = x + i as u16;
+                if cx >= area.right().saturating_sub(1) {
+                    break;
+                }
+                if let Some(cell) = buf.cell_mut((cx, y)) {
+                    cell.set_char(ch);
+                    cell.set_fg(fg);
+                    cell.set_bg(cb);
+                }
+            }
+        };
+
+        let value_col = area.x + 26.min(area.width / 2);
+        for (i, r) in self.view.rows.iter().enumerate() {
+            let y = area.y + 1 + i as u16;
+            if y >= area.bottom().saturating_sub(2) {
+                break;
+            }
+            let (rfg, rbg) = if r.selected { (sel_fg, sel) } else { (fg, bg) };
+            if r.selected {
+                for x in (area.left() + 1)..area.right().saturating_sub(1) {
+                    if let Some(cell) = buf.cell_mut((x, y)) {
+                        cell.set_char(' ');
+                        cell.set_bg(rbg);
+                        cell.set_fg(rfg);
+                    }
+                }
+            }
+            let shown = control_display(r);
+            if r.kind == ruster_render::ControlKind::Button {
+                // A button is one thing, not a label with a value beside it.
+                text(buf, area.x + 2, y, &shown, rfg, rbg);
+            } else {
+                text(buf, area.x + 2, y, &r.label, rfg, rbg);
+                text(buf, value_col, y, &shown, if r.editing { accent } else { rfg }, rbg);
+            }
+        }
+        let fy = area.bottom().saturating_sub(2);
+        text(buf, area.x + 2, fy, &self.view.footer, dim, bg);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{BufferWidget, FloatWidget, TerminalWidget};
@@ -1258,6 +1339,31 @@ mod tests {
 
     /// A float must paint over whatever is underneath, border included — that
     /// is the whole point of the primitive.
+    #[test]
+    fn dialog_widget_draws_a_button_row() {
+        use crate::widgets::DialogWidget;
+        let area = Rect::new(0, 0, 50, 6);
+        let mut buf = RBuffer::empty(area);
+        let view = ruster_render::DialogView {
+            title: "T".into(),
+            rows: vec![ruster_render::SettingRowView {
+                label: "OK".into(),
+                kind: ruster_render::ControlKind::Button,
+                value: String::new(),
+                selected: true,
+                editing: false,
+                help: String::new(),
+                swatch: None,
+            }],
+            footer: "f".into(),
+        };
+        DialogWidget::new(view).render(area, &mut buf);
+        let row: String = (0..area.width)
+            .filter_map(|x| buf.cell((x, 1)).map(|c| c.symbol().to_string()))
+            .collect();
+        assert!(row.contains("[ OK ]"), "button row was {row:?}");
+    }
+
     #[test]
     fn float_widget_paints_a_bordered_box_over_the_background() {
         let area = Rect::new(0, 0, 20, 6);

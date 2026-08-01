@@ -1,3 +1,4 @@
+use crate::dialog::{DialogResponse, DialogState};
 use crate::dired::{DiredResponse, DiredState};
 use crate::file_prompt::{self, FilePrompt, PromptOrigin, PromptStep};
 use crate::key::crossterm_to_ruster_key;
@@ -6,6 +7,7 @@ use crate::quickfix::{QuickfixItem, QuickfixList};
 use crate::renderer::TuiRenderer;
 use crate::settings::{SettingsState, SyntaxSeed};
 use crate::sidebar::{SidebarResponse, SidebarState};
+use crate::trouble::{Source as TroubleSource, TroubleItem, TroubleState};
 use ruster_core::action::{Action, EditOp, Motion};
 use ruster_core::buffer::Buffer;
 use ruster_core::cursor::CursorSet;
@@ -308,6 +310,38 @@ fn push_query_warning(notify: &mut NotificationManager, text: String) {
         ruster_core::message::MessageSource::System,
         text,
     ));
+    }
+
+/// The first `ruster-NNN.png` in `dir` that does not exist yet, so repeated
+/// `:screenshot` calls accumulate instead of overwriting one file.
+fn next_screenshot_path(dir: &std::path::Path) -> PathBuf {
+    (1u32..)
+        .map(|n| dir.join(format!("ruster-{n:03}.png")))
+        .find(|p| !p.exists())
+        // Unreachable short of four billion screenshots, but a fallback keeps
+        // this total rather than panicking on an exhausted range.
+        .unwrap_or_else(|| dir.join("ruster.png"))
+}
+
+/// Where `:screenshot [arg]` should write, resolved against `cwd`.
+///
+/// An absent argument, or one naming an existing directory, picks a fresh
+/// numbered file there. The extension is forced to `.png` because the backend
+/// chooses its encoder from it, and any other suffix would produce a file
+/// nothing can open.
+fn screenshot_path(arg: Option<&str>, cwd: &std::path::Path) -> PathBuf {
+    let Some(arg) = arg.map(str::trim).filter(|s| !s.is_empty()) else {
+        return next_screenshot_path(cwd);
+    };
+    let mut p = resolve_path(arg, cwd);
+    if p.is_dir() {
+        return next_screenshot_path(&p);
+    }
+    if p.extension().is_none_or(|e| !e.eq_ignore_ascii_case("png")) {
+        let name = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        p.set_file_name(format!("{name}.png"));
+    }
+    p
 }
 
 /// State for cmdline path completion (Tab/Shift-Tab cycling).
@@ -324,6 +358,17 @@ struct CmdlineCompletion {
 
 /// Build a sign column from a buffer's diagnostics: one glyph per line, the most
 /// severe (lowest severity number) winning when several land on the same line.
+/// The colour for a `TODO`-class keyword — the same amber the warning severity
+/// uses, so the gutter and the comment agree on what "needs attention" looks like.
+fn todo_style() -> ruster_render::SyntaxStyle {
+    ruster_render::SyntaxStyle {
+        fg: ruster_render::Color::Rgb(249, 226, 175),
+        bg: ruster_render::Color::Default,
+        bold: true,
+        italic: false,
+    }
+}
+
 fn diagnostics_to_signs(diags: &[ruster_lsp::Diagnostic]) -> ruster_render::SignsView {
     let mut best: std::collections::HashMap<u16, u8> = std::collections::HashMap::new();
     for d in diags {
@@ -534,11 +579,17 @@ enum CmdAction {
     /// Toggle the file-explorer sidebar (`:sidebar`).
     Sidebar,
     GitsignsToggle,
+    TodoList,
+    Trouble,
+    Themes,
     /// Resize the sidebar to N columns (`:Sidebar resize N`).
     SidebarResize(u16),
     /// Re-read highlight queries from disk and rebuild every engine
     /// (`:SyntaxReload`), so editing a query does not need a restart.
     SyntaxReload,
+    /// Save an image of the screen (`:screenshot [path]`). `None` picks the
+    /// next free `ruster-NNN.png` in the working directory.
+    Screenshot(Option<String>),
     /// Toggle the Noice notification-stack panel (`:Noice`).
     NoicePanel,
     /// Open the Noice split history buffer (`:Noice split` / `:Noice history`).
@@ -684,6 +735,7 @@ const PALETTE_COMMANDS: &[(&str, &str)] = &[
 
 #[derive(Clone, Copy)]
 enum LeaderAction {
+    Trouble,
     DebugStart,
     DebugToggleBreakpoint,
     DebugContinue,
@@ -793,6 +845,10 @@ static PROJECT_GROUP: &[(char, LeaderNode)] = &[
     ('p', LeaderNode::Action("switch project", LeaderAction::Projects)),
 ];
 
+static TROUBLE_GROUP: &[(char, LeaderNode)] = &[
+    ('x', LeaderNode::Action("problem list", LeaderAction::Trouble)),
+];
+
 static DEBUG_GROUP: &[(char, LeaderNode)] = &[
     ('d', LeaderNode::Action("start debugging", LeaderAction::DebugStart)),
     ('b', LeaderNode::Action("toggle breakpoint", LeaderAction::DebugToggleBreakpoint)),
@@ -819,6 +875,7 @@ static LEADER_ROOT: &[(char, LeaderNode)] = &[
     ('o', LeaderNode::Group("open", OPEN_GROUP)),
     ('p', LeaderNode::Group("project", PROJECT_GROUP)),
     ('d', LeaderNode::Group("debug", DEBUG_GROUP)),
+    ('x', LeaderNode::Group("diagnostics", TROUBLE_GROUP)),
     ('u', LeaderNode::Group("ui / toggle", UI_GROUP)),
     ('q', LeaderNode::Group("quit", QUIT_GROUP)),
 ];
@@ -1091,6 +1148,15 @@ pub struct App {
     /// Floating boxes drawn above the windows this frame. Rebuilt per frame by
     /// whatever owns them; empty most of the time.
     floats: Vec<ruster_render::FloatView>,
+    /// An open modal form, if any.
+    dialog: Option<DialogState>,
+    /// The theme in force before a theme picker opened, restored on cancel.
+    /// `Some` only while that picker is up, which is also how the picker knows
+    /// to preview as the selection moves.
+    theme_before_preview: Option<String>,
+    /// The aggregated problem list, and its pinned buffer.
+    trouble: TroubleState,
+    trouble_buf: Option<BufferId>,
     /// The file-explorer side panel.
     sidebar: SidebarState,
     /// The message log for editor/plugin messages.
@@ -1465,6 +1531,10 @@ impl App {
             git_tx: git_tx_init,
             git_signs: git_signs_init,
             floats: Vec::new(),
+            dialog: None,
+            theme_before_preview: None,
+            trouble: TroubleState::new(),
+            trouble_buf: None,
             sidebar: SidebarState::new(),
             messages: ruster_core::message::MessageLog::new(),
             messages_buf: None,
@@ -1607,6 +1677,11 @@ impl App {
         self.hover = None;
 
         // A dired file-operation prompt captures input until confirmed/cancelled.
+        // A modal dialog is modal: it takes every key until it closes.
+        if self.dialog.is_some() {
+            self.handle_dialog_key(ck);
+            return;
+        }
         if self.file_prompt.is_some() {
             self.handle_file_prompt_key(ck);
             return;
@@ -1680,6 +1755,15 @@ impl App {
         // command-line/search prompt (vim Cmdline or an Emacs isearch) is open,
         // or a search term containing a dired key (e.g. `d` in "docs") would be
         // hijacked. Unclaimed keys fall through to normal handling.
+        // The problem list claims Enter/Tab/r/q the same way dired claims its
+        // keys; everything else falls through so `:`, `/` and motions still work.
+        if self.active_is_trouble()
+            && self.vim.mode == VimMode::Normal
+            && self.emacs_isearch.is_none()
+            && self.handle_trouble_key(ck)
+        {
+            return;
+        }
         if self.active_is_dired()
             && self.vim.mode == VimMode::Normal
             && self.emacs_isearch.is_none()
@@ -2513,6 +2597,30 @@ impl App {
                         msg,
                     ));
                 }
+                LuaAction::Dialog { title, fields } => {
+                    let fields = fields
+                        .into_iter()
+                        .map(|(label, kind, value, options)| {
+                            let opts: Vec<&str> = options.iter().map(|s| s.as_str()).collect();
+                            match kind.as_str() {
+                                "toggle" => crate::dialog::Field::toggle(&label, value == "on"),
+                                "number" => crate::dialog::Field {
+                                    label,
+                                    kind: ruster_render::ControlKind::Number,
+                                    value,
+                                    options: Vec::new(),
+                                },
+                                "select" => crate::dialog::Field::select(&label, &opts, &value),
+                                "button" => crate::dialog::Field::button(&label),
+                                // Anything unrecognised is a text field rather
+                                // than an error — a plugin typo should not stop
+                                // the dialog appearing.
+                                _ => crate::dialog::Field::text(&label, &value),
+                            }
+                        })
+                        .collect();
+                    self.dialog = Some(DialogState::new(title, fields));
+                }
                 LuaAction::Notify(level, text) => {
                     let notif_level = match level {
                         1 => MessageLevel::Success,
@@ -2539,6 +2647,21 @@ impl App {
             let (line, col) = self.cursor_line_col();
             self.cursor_anim.update(dt, col, line, self.config.cursor_anim_enabled, self.config.cursor_anim_speed);
             self.render();
+            // Reported here rather than at the command, so the message reflects
+            // the file that was actually written — and so the toast announcing
+            // the screenshot never appears *in* it.
+            if let Some(result) = self.renderer.poll_screenshot() {
+                use ruster_core::message::MessageLevel;
+                let (level, text) = match result {
+                    Ok(p) => (MessageLevel::Success, format!("Screenshot saved to {}", p.display())),
+                    Err(e) => (MessageLevel::Error, format!("Screenshot failed: {e}")),
+                };
+                self.notify.push(Notification::new(
+                    level,
+                    ruster_core::message::MessageSource::Echo,
+                    text,
+                ));
+            }
             if self.renderer.should_close() || self.should_quit { break; }
             // No sleep here: raylib paces the loop from `gui.target_fps`
             // (see RaylibRenderer::set_gui_config). A fixed sleep on top of
@@ -2567,7 +2690,9 @@ impl App {
                     None => return Vec::new(),
                 }
             }
-            PickerAction::RunCmd(_) | PickerAction::RunTask(_) => return Vec::new(),
+            PickerAction::RunCmd(_)
+            | PickerAction::RunTask(_)
+            | PickerAction::SetTheme(_) => return Vec::new(),
         };
 
         // Load + highlight the file, reusing the cache when the path is unchanged.
@@ -2660,7 +2785,8 @@ impl App {
                     None => continue,
                 }
             };
-            if let Ok(engine) = SyntaxEngine::new(&content, &ext) {
+            if let Ok(mut engine) = SyntaxEngine::new(&content, &ext) {
+                engine.overlay_todo_highlights(&self.config.todo_keywords, todo_style());
                 for w in engine.warnings() {
                     push_query_warning(&mut self.notify, w.clone());
                 }
@@ -2670,6 +2796,8 @@ impl App {
         let active_content = self.ws.borrow().buffers.get(active).map(|d| d.buffer.to_string());
         if let (Some(c), Some(engine)) = (active_content.as_ref(), self.syntax.get_mut(&active)) {
             engine.reparse(c);
+            // reparse rebuilds the cached lines, so the overlay has to be reapplied.
+            engine.overlay_todo_highlights(&self.config.todo_keywords, todo_style());
         }
     }
 
@@ -2690,6 +2818,25 @@ impl App {
             ruster_core::message::MessageSource::System,
             format!("Reloaded highlight queries ({count} buffers)"),
         ));
+    }
+
+    /// Every `TODO`-class marker in the open buffers, newest file first.
+    ///
+    /// Only buffers that already have a syntax engine are scanned — markers come
+    /// from the tree's comment captures, so a file with no grammar has none.
+    fn todo_markers(&self) -> Vec<(PathBuf, ruster_syntax::TodoMarker)> {
+        let mut out = Vec::new();
+        let w = self.ws.borrow();
+        for (&buf, engine) in &self.syntax {
+            let Some(path) = w.buffers.get(buf).and_then(|d| d.file_path.clone()) else {
+                continue;
+            };
+            for m in engine.todo_markers(&self.config.todo_keywords) {
+                out.push((path.clone(), m));
+            }
+        }
+        out.sort_by(|a, b| (&a.0, a.1.line).cmp(&(&b.0, b.1.line)));
+        out
     }
 
     /// Sync the active buffer to its language server (didOpen/didChange) and
@@ -3680,6 +3827,7 @@ impl App {
             }
         }
         let state = FrameState {
+            dialog: self.dialog.as_ref().map(|d| d.view()),
             floats,
             windows: views,
             cmdline: cmdline.as_deref(),
@@ -3802,9 +3950,19 @@ impl App {
             "db_stop" if self.debug_session.is_some() => Ok(CmdAction::DebugStop),
             "db_toggle" | "B" => Ok(CmdAction::DebugToggleBreakpoint),
             "Gitsigns" | "gitsigns" => Ok(CmdAction::GitsignsToggle),
+            "TodoList" | "todolist" | "todo" => Ok(CmdAction::TodoList),
+            "Trouble" | "trouble" => Ok(CmdAction::Trouble),
+            "Themes" | "themes" | "theme" => Ok(CmdAction::Themes),
             _ if trimmed == "sidebar" => Ok(CmdAction::Sidebar),
             "SyntaxReload" | "syntaxreload" | "syntax reload" => Ok(CmdAction::SyntaxReload),
             _ if let Some(n) = trimmed.strip_prefix("sidebar resize ").and_then(|s| s.trim().parse::<u16>().ok()) => Ok(CmdAction::SidebarResize(n)),
+            "screenshot" | "Screenshot" => Ok(CmdAction::Screenshot(None)),
+            _ if let Some(rest) = trimmed
+                .strip_prefix("screenshot ")
+                .or_else(|| trimmed.strip_prefix("Screenshot ")) =>
+            {
+                Ok(CmdAction::Screenshot(Some(rest.trim().to_string())))
+            }
             "Noice" | "noice" => Ok(CmdAction::NoicePanel),
             _ if trimmed.starts_with("Noice ") || trimmed.starts_with("noice ") => {
                 let sub = trimmed.split_once(' ').map(|x| x.1).unwrap_or("").trim().to_string();
@@ -3919,6 +4077,9 @@ impl App {
             CmdAction::Messages => self.open_messages(),
             CmdAction::MessagesFilter(filter) => self.apply_messages_filter(&filter),
             CmdAction::Projects => self.open_projects(),
+            CmdAction::TodoList => self.open_todo_list(),
+            CmdAction::Trouble => self.open_trouble(),
+            CmdAction::Themes => self.open_themes_picker(),
             CmdAction::GitsignsToggle => {
                 self.git_signs = !self.git_signs;
                 if self.git_signs {
@@ -3934,6 +4095,19 @@ impl App {
             CmdAction::SyntaxReload => self.syntax_reload(),
             CmdAction::SidebarResize(n) => {
                 self.sidebar.set_width(n);
+            }
+            CmdAction::Screenshot(arg) => {
+                let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                let path = screenshot_path(arg.as_deref(), &cwd);
+                if !self.renderer.request_screenshot(&path) {
+                    self.notify.push(Notification::new(
+                        ruster_core::message::MessageLevel::Warning,
+                        ruster_core::message::MessageSource::Echo,
+                        "Screenshots need the GUI backend — run `just gui`".to_string(),
+                    ));
+                }
+                // On success there is nothing to say yet: the capture happens
+                // after the next frame, and `run_gui` reports the outcome.
             }
             CmdAction::DebugStart => self.debug_start(),
             CmdAction::DebugContinue => self.debug_continue(),
@@ -4494,6 +4668,25 @@ impl App {
     }
 
     /// Handle a key while a dired file-operation prompt is active.
+    fn handle_dialog_key(&mut self, ck: crossterm::event::KeyEvent) {
+        let Some(d) = self.dialog.as_mut() else { return };
+        match d.handle_key(ck) {
+            DialogResponse::Pending => {}
+            DialogResponse::Cancelled => {
+                self.dialog = None;
+                // Drop the callback: a cancelled dialog reports nothing.
+                self.lua.discard_dialog_callback();
+            }
+            DialogResponse::Submitted { button } => {
+                let values = d.values();
+                self.dialog = None;
+                // Hand the values to the plugin that opened it. Without this the
+                // dialog is a display, not an API.
+                self.lua.fire_dialog_submit(&values, button.as_deref());
+            }
+        }
+    }
+
     /// Feed a key to the active file prompt, then commit or drop it.
     ///
     /// The refresh is dispatched on the prompt's recorded origin, so the surface
@@ -4984,50 +5177,113 @@ impl App {
     /// Route a key to the open picker: type to filter, arrows/Ctrl-n/p to move,
     /// Enter to accept, Esc to cancel.
     fn handle_picker_key(&mut self, ck: crossterm::event::KeyEvent) {
+        /// What the key did, decided while the picker is borrowed and acted on
+        /// after — a theme preview needs `&mut self`, which that borrow forbids.
+        enum Step {
+            /// Picker stays open; the selection may have moved.
+            Stay,
+            Cancel,
+            Accept(Option<PickerAction>),
+        }
+
         let ctrl = ck.modifiers.contains(KeyModifiers::CONTROL);
-        let action = {
+        // A theme picker repaints the editor as the selection moves, so the
+        // choice is judged against real content rather than a swatch.
+        let previewing = self.theme_before_preview.is_some();
+
+        let step = {
             let picker = match self.picker.as_mut() {
                 Some(p) => p,
                 None => return,
             };
             match ck.code {
-                KeyCode::Esc => {
-                    self.picker = None;
-                    return;
-                }
-                KeyCode::Enter => picker.accept(),
+                KeyCode::Esc => Step::Cancel,
+                KeyCode::Enter => Step::Accept(picker.accept()),
                 KeyCode::Up => {
                     picker.move_selection(-1);
-                    return;
+                    Step::Stay
                 }
                 KeyCode::Down => {
                     picker.move_selection(1);
-                    return;
+                    Step::Stay
                 }
                 KeyCode::Char('p') if ctrl => {
                     picker.move_selection(-1);
-                    return;
+                    Step::Stay
                 }
                 KeyCode::Char('n') if ctrl => {
                     picker.move_selection(1);
-                    return;
+                    Step::Stay
                 }
                 KeyCode::Backspace => {
                     picker.pop_char();
-                    return;
+                    Step::Stay
                 }
                 KeyCode::Char(c) if !ctrl => {
                     picker.push_char(c);
-                    return;
+                    Step::Stay
                 }
-                _ => return,
+                _ => Step::Stay,
             }
         };
-        // Enter was pressed: close the picker and dispatch the chosen action.
-        self.picker = None;
-        if let Some(action) = action {
-            self.dispatch_picker_action(action);
+
+        match step {
+            Step::Stay => {
+                if previewing {
+                    self.preview_selected_theme();
+                }
+            }
+            Step::Cancel => {
+                self.picker = None;
+                // Cancelling a preview puts the previous theme back.
+                if let Some(prev) = self.theme_before_preview.take() {
+                    self.apply_theme(&prev);
+                }
+            }
+            Step::Accept(action) => {
+                self.picker = None;
+                // Accepting keeps whatever is on screen, so there is nothing to
+                // restore.
+                self.theme_before_preview = None;
+                if let Some(action) = action {
+                    self.dispatch_picker_action(action);
+                }
+            }
         }
+    }
+
+    /// `:Themes` — pick a theme, previewing each as the selection moves.
+    fn open_themes_picker(&mut self) {
+        let items: Vec<PickerItem> = self
+            .available_themes()
+            .into_iter()
+            .map(|name| {
+                PickerItem::new(name.clone(), PickerAction::SetTheme(name))
+            })
+            .collect();
+        self.theme_before_preview = Some(self.config.theme.clone());
+        self.picker = Some(PickerState::new("Themes", items));
+        // Preview the row the picker opens on, so the list is live immediately.
+        self.preview_selected_theme();
+    }
+
+    /// Apply the theme under the picker's cursor without committing it.
+    fn preview_selected_theme(&mut self) {
+        let name = self.picker.as_mut().and_then(|p| match p.selected_action() {
+            Some(PickerAction::SetTheme(n)) => Some(n),
+            _ => None,
+        });
+        if let Some(name) = name {
+            self.apply_theme(&name);
+        }
+    }
+
+    /// Resolve `name` and repaint with it. Does not persist — `:w` in the
+    /// settings page or accepting the picker is what makes it stick.
+    fn apply_theme(&mut self, name: &str) {
+        self.config.theme = name.to_string();
+        self.config.colors =
+            resolve_theme_colors(&self.lua, &self.config.theme, &self.config.color_overrides);
     }
 
     fn dispatch_picker_action(&mut self, action: PickerAction) {
@@ -5038,6 +5294,12 @@ impl App {
             PickerAction::OpenPath(path) => self.open_path(&path, None),
             PickerAction::OpenLocation(path, line, col) => {
                 self.open_path(&path, Some((line, col)));
+            }
+            PickerAction::SetTheme(name) => {
+                // Preview already applied it; this makes the choice the one that
+                // `:w` in the settings page would persist.
+                self.apply_theme(&name);
+                self.echo(format!("Theme: {name}"));
             }
             PickerAction::RunCmd(cmd) => match self.parse_cmdline(&cmd) {
                 Ok(a) => self.apply_cmd(a),
@@ -5238,6 +5500,7 @@ impl App {
             LeaderAction::Dashboard => self.open_dashboard(),
             LeaderAction::Messages => self.open_messages(),
             LeaderAction::Projects => self.open_projects(),
+            LeaderAction::Trouble => self.open_trouble(),
             LeaderAction::DebugStart => self.debug_start(),
             LeaderAction::DebugToggleBreakpoint => self.debug_toggle_breakpoint(),
             LeaderAction::DebugContinue => self.debug_continue(),
@@ -5372,8 +5635,171 @@ impl App {
 
     /// `:copen` — refresh the quickfix list from diagnostics and show it as a
     /// picker; choosing an entry jumps to it.
+    /// Gather every problem the editor knows about: LSP diagnostics, the
+    /// quickfix list, and TODO markers.
+    ///
+    /// Deliberately re-read on each open rather than kept in sync — all three
+    /// sources change underneath, and a stale panel is worse than a slow one.
+    fn collect_trouble(&self) -> Vec<TroubleItem> {
+        let mut out = Vec::new();
+        {
+            let w = self.ws.borrow();
+            for (&buf, diags) in &self.diagnostics {
+                let Some(path) = w.buffers.get(buf).and_then(|d| d.file_path.clone()) else {
+                    continue;
+                };
+                for d in diags {
+                    out.push(TroubleItem {
+                        path: path.clone(),
+                        line: d.start.line as usize,
+                        col: d.start.character as usize,
+                        message: d.message.clone(),
+                        severity: d.severity,
+                        source: TroubleSource::Diagnostic,
+                    });
+                }
+            }
+        }
+        for q in self.quickfix.items() {
+            out.push(TroubleItem {
+                path: q.path.clone(),
+                line: q.line,
+                col: q.col,
+                message: q.message.clone(),
+                severity: q.severity,
+                source: TroubleSource::Quickfix,
+            });
+        }
+        for (path, m) in self.todo_markers() {
+            out.push(TroubleItem {
+                path,
+                line: m.line,
+                col: m.col,
+                message: if m.text.is_empty() {
+                    m.keyword.clone()
+                } else {
+                    format!("{}: {}", m.keyword, m.text)
+                },
+                severity: 3,
+                source: TroubleSource::Todo,
+            });
+        }
+        out
+    }
+
+    /// `:Trouble` / `SPC x x` — open (or refresh) the pinned problem list.
+    fn open_trouble(&mut self) {
+        let items = self.collect_trouble();
+        self.trouble.set_items(items);
+        let id = self.ensure_trouble_buffer();
+        self.refresh_trouble_buffer(id);
+        self.ws.borrow_mut().set_active_buffer(id);
+    }
+
+    fn ensure_trouble_buffer(&mut self) -> BufferId {
+        if let Some(id) = self.trouble_buf {
+            if self.ws.borrow().buffers.get(id).is_some() {
+                return id;
+            }
+        }
+        let id = self
+            .ws
+            .borrow_mut()
+            .buffers
+            .create_special(ruster_core::document::SpecialKind::Trouble, "*trouble*");
+        if let Some(doc) = self.ws.borrow_mut().buffers.get_mut(id) {
+            doc.pinned = true;
+        }
+        self.trouble_buf = Some(id);
+        id
+    }
+
+    fn refresh_trouble_buffer(&mut self, id: BufferId) {
+        let text = self.trouble.render(self.project_root.as_deref());
+        let mut w = self.ws.borrow_mut();
+        if let Some(doc) = w.buffers.get_mut(id) {
+            doc.buffer = Buffer::from_str(&text);
+            doc.modified = false;
+        }
+    }
+
+    fn active_is_trouble(&self) -> bool {
+        matches!(
+            self.ws.borrow().active_doc().kind,
+            DocKind::Special(ruster_core::document::SpecialKind::Trouble)
+        )
+    }
+
+    /// Keys while the problem list is focused. Unclaimed keys fall through, so
+    /// `:`, `/` and motions keep working over the listing.
+    fn handle_trouble_key(&mut self, ck: crossterm::event::KeyEvent) -> bool {
+        let row = {
+            let w = self.ws.borrow();
+            w.buffer().char_to_line(w.primary_head())
+        };
+        match ck.code {
+            KeyCode::Enter => {
+                if let Some((path, line, col)) = self.trouble.target_at(row) {
+                    self.open_path(&path, Some((line, col)));
+                }
+                true
+            }
+            KeyCode::Tab | KeyCode::Char('z') => {
+                self.trouble.toggle_at(row);
+                if let Some(id) = self.trouble_buf {
+                    self.refresh_trouble_buffer(id);
+                }
+                true
+            }
+            KeyCode::Char('r') => {
+                self.open_trouble();
+                true
+            }
+            KeyCode::Char('q') => {
+                self.delete_active_buffer();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// `:TodoList` — collect TODO-class markers into the quickfix list and open
+    /// it. Routing through quickfix means `]q`/`[q` and the Trouble panel get
+    /// them for free rather than each growing its own list.
+    fn open_todo_list(&mut self) {
+        let markers = self.todo_markers();
+        if markers.is_empty() {
+            self.echo_warn("No TODO markers in open buffers".to_string());
+            return;
+        }
+        let items: Vec<QuickfixItem> = markers
+            .into_iter()
+            .map(|(path, m)| QuickfixItem {
+                path,
+                line: m.line,
+                col: m.col,
+                message: if m.text.is_empty() {
+                    m.keyword.clone()
+                } else {
+                    format!("{}: {}", m.keyword, m.text)
+                },
+                // Info: a marker is a note to self, not a compiler complaint.
+                severity: 3,
+            })
+            .collect();
+        self.quickfix = QuickfixList::new(items);
+        self.open_quickfix_picker("TODO");
+    }
+
     fn open_quickfix(&mut self) {
         self.rebuild_quickfix_from_diagnostics();
+        self.open_quickfix_picker("Quickfix");
+    }
+
+    /// Show whatever is already in the quickfix list. Split out so callers that
+    /// populate it themselves — `:TodoList` — aren't overwritten by the
+    /// diagnostics rebuild.
+    fn open_quickfix_picker(&mut self, title: &str) {
         if self.quickfix.is_empty() {
             self.echo_warn("Quickfix list is empty".to_string());
             return;
@@ -5400,7 +5826,7 @@ impl App {
                 )
             })
             .collect();
-        self.picker = Some(PickerState::new("Quickfix", items));
+        self.picker = Some(PickerState::new(title, items));
     }
 
     /// Jump to the current quickfix entry and report the position in the list.
@@ -6558,6 +6984,77 @@ mod tests {
         a.handle_key(CtKey::new(KeyCode::Char('['), none));
         a.handle_key(CtKey::new(KeyCode::Char('h'), none));
         assert_eq!(line_of(&a), 1, "[h goes back");
+    }
+
+    /// Moving the selection repaints immediately, and cancelling puts the
+    /// previous theme back — the picker must not leave the editor recoloured.
+    #[test]
+    fn theme_picker_previews_on_move_and_restores_on_cancel() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        let before_name = a.config.theme.clone();
+        let before_bg = a.config.colors.bg;
+
+        a.apply_cmd(CmdAction::Themes);
+        assert!(a.picker.is_some(), "picker opened");
+        assert_eq!(
+            a.theme_before_preview.as_deref(),
+            Some(before_name.as_str()),
+            "remembers what to restore"
+        );
+
+        // Step through until the palette actually differs from where we started.
+        let mut changed = false;
+        for _ in 0..6 {
+            a.handle_key(CtKey::new(KeyCode::Down, none));
+            if a.config.colors.bg != before_bg {
+                changed = true;
+                break;
+            }
+        }
+        assert!(changed, "moving the selection repainted the editor");
+
+        a.handle_key(CtKey::new(KeyCode::Esc, none));
+        assert!(a.picker.is_none());
+        assert_eq!(a.config.theme, before_name, "theme name restored");
+        assert_eq!(a.config.colors.bg, before_bg, "palette restored");
+        assert!(a.theme_before_preview.is_none(), "nothing left to restore");
+    }
+
+    #[test]
+    fn accepting_a_theme_keeps_it() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        let before_name = a.config.theme.clone();
+
+        a.apply_cmd(CmdAction::Themes);
+        for _ in 0..3 {
+            a.handle_key(CtKey::new(KeyCode::Down, none));
+        }
+        let previewed = a.config.theme.clone();
+        a.handle_key(CtKey::new(KeyCode::Enter, none));
+
+        assert!(a.picker.is_none());
+        assert_ne!(previewed, before_name, "moved off the starting theme");
+        assert_eq!(a.config.theme, previewed, "accept keeps what was previewed");
+        assert!(a.theme_before_preview.is_none(), "nothing to restore after accept");
+    }
+
+    /// The picker lists the built-ins, including all four Catppuccin variants.
+    #[test]
+    fn theme_discovery_lists_the_builtins() {
+        let a = App::new("x".into(), PathBuf::from("f.txt"));
+        let names = a.available_themes();
+        for want in [
+            "catppuccin-mocha",
+            "catppuccin-latte",
+            "catppuccin-frappe",
+            "catppuccin-macchiato",
+        ] {
+            assert!(names.iter().any(|n| n == want), "{want} missing from {names:?}");
+        }
     }
 
     #[test]
@@ -7809,5 +8306,94 @@ mod tests {
         // The retry happened (the set was cleared and repopulated) even though
         // it failed again, which is what lets a corrected query take effect.
         assert!(a.syntax.is_empty(), "still unsupported");
+    }
+
+    static SHOT_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    /// A unique empty temp dir per call, so these stay parallel-safe.
+    fn shot_dir() -> PathBuf {
+        let id = SHOT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!("ruster_shot_{id}"));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn a_bare_screenshot_numbers_from_one_in_the_working_directory() {
+        let dir = shot_dir();
+        assert_eq!(screenshot_path(None, &dir), dir.join("ruster-001.png"));
+        // Blank and whitespace-only arguments mean the same as none at all.
+        assert_eq!(screenshot_path(Some("   "), &dir), dir.join("ruster-001.png"));
+    }
+
+    /// Two screenshots in a row must not silently overwrite the first.
+    #[test]
+    fn numbering_skips_files_that_already_exist() {
+        let dir = shot_dir();
+        std::fs::write(dir.join("ruster-001.png"), "x").unwrap();
+        std::fs::write(dir.join("ruster-002.png"), "x").unwrap();
+        assert_eq!(screenshot_path(None, &dir), dir.join("ruster-003.png"));
+    }
+
+    #[test]
+    fn a_relative_argument_resolves_against_the_working_directory() {
+        let dir = shot_dir();
+        assert_eq!(screenshot_path(Some("shot.png"), &dir), dir.join("shot.png"));
+        assert_eq!(screenshot_path(Some("sub/shot.png"), &dir), dir.join("sub/shot.png"));
+    }
+
+    #[test]
+    fn an_absolute_argument_is_left_alone() {
+        let dir = shot_dir();
+        let abs = dir.join("elsewhere.png");
+        assert_eq!(
+            screenshot_path(Some(abs.to_str().unwrap()), std::path::Path::new("/nowhere")),
+            abs
+        );
+    }
+
+    /// The backend picks its encoder from the extension, so anything else would
+    /// write a file that no viewer can open.
+    #[test]
+    fn a_non_png_argument_gains_the_extension() {
+        let dir = shot_dir();
+        assert_eq!(screenshot_path(Some("shot"), &dir), dir.join("shot.png"));
+        assert_eq!(screenshot_path(Some("shot.jpg"), &dir), dir.join("shot.jpg.png"));
+        // Already a PNG, in any case: left exactly as typed.
+        assert_eq!(screenshot_path(Some("shot.PNG"), &dir), dir.join("shot.PNG"));
+    }
+
+    /// `:screenshot ~/Pictures` names a folder, not a file to be clobbered.
+    #[test]
+    fn a_directory_argument_gets_a_numbered_file_inside_it() {
+        let dir = shot_dir();
+        let sub = dir.join("pics");
+        std::fs::create_dir_all(&sub).unwrap();
+        assert_eq!(screenshot_path(Some("pics"), &dir), sub.join("ruster-001.png"));
+    }
+
+    #[test]
+    fn screenshot_parses_with_and_without_a_path() {
+        let a = App::new("content".into(), PathBuf::from("f.txt"));
+        assert_eq!(a.parse_cmdline(":screenshot"), Ok(CmdAction::Screenshot(None)));
+        assert_eq!(a.parse_cmdline(":Screenshot"), Ok(CmdAction::Screenshot(None)));
+        assert_eq!(
+            a.parse_cmdline(":screenshot ~/x.png"),
+            Ok(CmdAction::Screenshot(Some("~/x.png".to_string())))
+        );
+    }
+
+    /// The TUI cannot produce an image, and must say so rather than appear to
+    /// have saved one.
+    #[test]
+    fn screenshot_on_a_backend_without_support_warns() {
+        let target = shot_dir().join("unsupported.png");
+        let mut a = App::new("content".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::Screenshot(Some(target.to_string_lossy().into_owned())));
+        let last = a.notify.history().last().expect("a message was pushed");
+        assert_eq!(last.level, ruster_core::message::MessageLevel::Warning);
+        assert!(last.text.contains("GUI backend"), "{:?}", last.text);
+        assert!(!target.exists(), "nothing was written");
     }
 }

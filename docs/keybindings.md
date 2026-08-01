@@ -166,6 +166,7 @@ Press `SPC` in Normal mode; the which-key panel lists continuations.
 | `SPC o m` | Open messages buffer (`:messages`) |
 | `SPC o r` | Run a `ruster.toml` task (picker) |
 | `SPC p p` | Switch project (`:projects`) |
+| `SPC x x` | Problem list (`:Trouble`) |
 | `SPC d d` | Start debugging (`:debug`) |
 | `SPC d b` | Toggle breakpoint |
 | `SPC d c` | Continue |
@@ -215,6 +216,7 @@ Press `g` in Normal mode; the which-key panel lists the goto commands (LazyVim-s
 | `:projects` | Switch to a recent project (picker) |
 | `:sidebar` | Toggle the file-explorer sidebar on/off |
 | `:SyntaxReload` | Re-read highlight queries from `~/.config/ruster/queries/` and rebuild all buffers |
+| `:screenshot [path]` | Save a PNG of the window (GUI only). No path writes the next free `ruster-NNN.png` in the working directory; a directory writes a numbered file inside it; any other extension gains `.png` |
 | `:config-errors` | Show config load/validation errors |
 
 ### Navigation
@@ -259,6 +261,42 @@ outside a repository or when git is missing. Turn it off with `git.signs = false
 |---------|--------|
 | `]h` / `[h` | Jump to the next / previous hunk (wraps) |
 | `:Gitsigns` | Toggle git signs for this session |
+
+### TODO markers
+`TODO`, `FIXME`, `HACK`, `NOTE` and `XXX` are highlighted where they appear **in a
+comment**. The ranges come from the syntax tree, so a keyword inside a string
+literal is not marked — and a file whose language has no grammar has no markers
+rather than guessed ones. Set `todo.keywords` to change the set.
+
+| Command | Action |
+|---------|--------|
+| `:TodoList` (or `:todo`) | Collect markers from open buffers into the quickfix list and open it |
+
+### Problem list (Trouble)
+`:Trouble` (or `SPC x x`) opens a pinned `*trouble*` buffer aggregating **LSP
+diagnostics, the quickfix list and TODO markers**, grouped by file.
+
+The same problem reaching the list from two sources is shown once — the quickfix
+list is a container that `:TodoList` and the build runner copy into, so its copy
+loses to the specific source. Each line is tagged with where it came from: `D`
+diagnostic, `Q` quickfix, `T` todo, followed by severity.
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Jump to the entry under the cursor |
+| `Tab` / `z` | Fold or unfold the file group |
+| `r` | Refresh from the current sources |
+| `q` | Close the panel |
+
+### Themes
+`:Themes` lists every theme — the built-ins (including all four Catppuccin
+variants) plus any `~/.config/ruster/themes/*.lua`. **Moving the selection
+repaints the editor immediately**, so a theme is judged against real code rather
+than a swatch. `Enter` keeps it, `Esc` restores the one you started with.
+
+Accepting sets the theme for the session; `:settings` then `:w` persists it.
+
+Unclaimed keys fall through, so `:`, `/` and motions still work over the listing.
 
 ### Debugger (DAP)
 Breakpoints show as `●` in the sign column. While a session is stopped, an overlay

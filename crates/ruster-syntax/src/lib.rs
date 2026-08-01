@@ -39,6 +39,11 @@ struct TreeBackend {
     source: String,
     bracket_depths: Vec<Option<usize>>,
     textobject_scm: String,
+    /// The highlight query **actually in use** — the user's when it loaded, the
+    /// built-in when theirs was rejected. Kept so `todo_markers` can re-query
+    /// the tree for `@comment` captures; re-querying with the rejected text
+    /// would fail every time.
+    highlight_scm: String,
 }
 
 /// The highlighting strategy for a buffer: a tree-sitter grammar, or the
@@ -71,14 +76,21 @@ impl SyntaxEngine {
             // A malformed *user* query must not leave the buffer unhighlighted:
             // report it and fall back to the built-in, the way a bad config.lua
             // already degrades. A malformed built-in is a bug, and still fatal.
-            let mut highlighter = match Highlighter::new(language.clone(), &loaded.highlights, key) {
-                Ok(h) => h,
+            // Bound first: holding the borrow of `loaded.highlights` across the
+            // match would stop the `Ok` arm moving it out.
+            let attempt = Highlighter::new(language.clone(), &loaded.highlights, key);
+            let (mut highlighter, highlight_scm) = match attempt {
+                Ok(h) => (h, loaded.highlights.into_owned()),
                 Err(e) if loaded.highlights_from_user => {
                     warnings.push(format!(
                         "{key}/highlights.scm: {e} — using the built-in query"
                     ));
-                    Highlighter::new(language.clone(), builtin_queries(key).0, key)
-                        .map_err(SyntaxError::QueryError)?
+                    let builtin = builtin_queries(key).0;
+                    let h = Highlighter::new(language.clone(), builtin, key)
+                        .map_err(SyntaxError::QueryError)?;
+                    // The built-in, not the rejected text: `todo_markers`
+                    // re-runs this query and would otherwise fail every call.
+                    (h, builtin.to_string())
                 }
                 Err(e) => return Err(SyntaxError::QueryError(e)),
             };
@@ -93,6 +105,7 @@ impl SyntaxEngine {
                     source: text.to_string(),
                     bracket_depths,
                     textobject_scm: loaded.textobjects.into_owned(),
+                    highlight_scm,
                 })),
                 cached,
                 warnings,
@@ -199,11 +212,115 @@ impl SyntaxEngine {
         }
         None
     }
+
+    /// Colour every `TODO`-class keyword found in a comment.
+    ///
+    /// Call after [`reparse`](Self::reparse) or [`recolor`](Self::recolor), which
+    /// rebuild the cached lines and drop the overlay. Applied here rather than in
+    /// the highlight query so the keyword set stays configurable at runtime —
+    /// a query would bake it in per language.
+    pub fn overlay_todo_highlights(&mut self, keywords: &[String], style: SyntaxStyle) {
+        if keywords.is_empty() {
+            return;
+        }
+        let markers = self.todo_markers(keywords);
+        for m in markers {
+            let Some(line) = self.cached.get_mut(m.line) else { continue };
+            // Push last so it wins over the comment colour underneath.
+            line.highlights.push((m.col, m.keyword.chars().count(), style));
+        }
+    }
+
+    /// `TODO`-class markers, taken from the syntax tree's `@comment` captures.
+    ///
+    /// Sourcing the ranges from the tree rather than scanning text is what keeps
+    /// `"TODO: not a real todo"` in a string literal from matching. Buffers with
+    /// no grammar return nothing rather than guessing.
+    pub fn todo_markers(&self, keywords: &[String]) -> Vec<TodoMarker> {
+        let Backend::Tree(tb) = &self.backend else { return Vec::new() };
+        let Ok(query) = tree_sitter::Query::new(&tb.language, &tb.highlight_scm) else {
+            return Vec::new();
+        };
+        let comment_idx: Vec<u32> = query
+            .capture_names()
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| **n == "comment")
+            .map(|(i, _)| i as u32)
+            .collect();
+        if comment_idx.is_empty() {
+            return Vec::new();
+        }
+
+        // Line starts, so a byte offset can become (line, col) without rescanning.
+        let mut line_start: Vec<usize> = vec![0];
+        for (i, b) in tb.source.bytes().enumerate() {
+            if b == b'\n' {
+                line_start.push(i + 1);
+            }
+        }
+
+        let mut out = Vec::new();
+        let mut cursor = tree_sitter::QueryCursor::new();
+        let mut matches = cursor.matches(&query, tb.tree.root_node(), tb.source.as_bytes());
+        while let Some(m) = matches.next() {
+            for cap in m.captures {
+                if !comment_idx.contains(&cap.index) {
+                    continue;
+                }
+                let range = cap.node.byte_range();
+                let Some(text) = tb.source.get(range.clone()) else { continue };
+                for kw in keywords {
+                    let mut from = 0;
+                    while let Some(rel) = text[from..].find(kw.as_str()) {
+                        let at = from + rel;
+                        from = at + kw.len();
+                        // Whole word only: `TODOS` and `XTODO` are not markers.
+                        let before_ok = at == 0
+                            || !text[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_');
+                        let after = &text[at + kw.len()..];
+                        let after_ok = !after.chars().next().is_some_and(|c| c.is_alphanumeric() || c == '_');
+                        if !(before_ok && after_ok) {
+                            continue;
+                        }
+                        let abs = range.start + at;
+                        let line = line_start.partition_point(|&s| s <= abs) - 1;
+                        let col = tb.source[line_start[line]..abs].chars().count();
+                        let rest = after.trim_start_matches([':', ' ', '\t']);
+                        let rest = rest.lines().next().unwrap_or("").trim_end();
+                        out.push(TodoMarker {
+                            keyword: kw.clone(),
+                            line,
+                            col,
+                            text: rest.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+        out.sort_by_key(|m| (m.line, m.col));
+        out
+    }
 }
 
 fn byte_to_char_pos(source: &str, byte: usize) -> usize {
     source.char_indices().position(|(i, _)| i >= byte).unwrap_or(source.chars().count())
 }
+
+/// A `TODO`-class marker found inside a comment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TodoMarker {
+    pub keyword: String,
+    /// 0-based line in the file.
+    pub line: usize,
+    /// 0-based character column of the keyword.
+    pub col: usize,
+    /// The comment text following the keyword, trimmed.
+    pub text: String,
+}
+
+/// The keywords recognised when none are configured.
+pub const DEFAULT_TODO_KEYWORDS: &[&str] = &["TODO", "FIXME", "HACK", "NOTE", "XXX"];
 
 pub fn language_for_ext(ext: &str) -> Option<tree_sitter::Language> {
     match ext {
@@ -497,6 +614,72 @@ mod tests {
     fn the_user_query_dir_sits_under_the_ruster_config_dir() {
         let dir = user_query_dir().expect("a home directory in the test environment");
         assert!(dir.ends_with("ruster/queries"), "{}", dir.display());
+    }
+
+    fn kws() -> Vec<String> {
+        super::DEFAULT_TODO_KEYWORDS.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The whole point of sourcing ranges from the tree: a keyword inside a
+    /// string literal is not a marker, however much it looks like one.
+    #[test]
+    fn todo_markers_come_from_comments_not_string_literals() {
+        let src = "// TODO: real one\nfn main() {\n    let s = \"TODO: not a marker\";\n    let t = \"FIXME also not\";\n}\n// FIXME: second real one\n";
+        let e = SyntaxEngine::new(src, "rs").expect("rust grammar");
+        let m = e.todo_markers(&kws());
+        assert_eq!(m.len(), 2, "only the two comments count, got {m:?}");
+        assert_eq!(m[0].keyword, "TODO");
+        assert_eq!(m[0].line, 0);
+        assert_eq!(m[0].text, "real one");
+        assert_eq!(m[1].keyword, "FIXME");
+        assert_eq!(m[1].line, 5);
+        assert_eq!(m[1].text, "second real one");
+    }
+
+    #[test]
+    fn todo_markers_match_whole_words_only() {
+        let src = "// TODOS are not TODO markers, and XTODO is not either\n";
+        let e = SyntaxEngine::new(src, "rs").expect("rust grammar");
+        let m = e.todo_markers(&kws());
+        assert_eq!(m.len(), 1, "only the standalone TODO, got {m:?}");
+    }
+
+    #[test]
+    fn todo_markers_report_line_and_column() {
+        let src = "fn a() {}\n    // HACK: indented\n";
+        let e = SyntaxEngine::new(src, "rs").expect("rust grammar");
+        let m = e.todo_markers(&kws());
+        assert_eq!(m.len(), 1);
+        assert_eq!((m[0].line, m[0].col), (1, 7), "0-based line and char column");
+        assert_eq!(m[0].text, "indented");
+    }
+
+    #[test]
+    fn todo_markers_handle_block_comments_and_multiple_per_comment() {
+        let src = "/* TODO: one\n   FIXME: two */\n";
+        let e = SyntaxEngine::new(src, "rs").expect("rust grammar");
+        let m = e.todo_markers(&kws());
+        assert_eq!(m.len(), 2, "both keywords inside one block comment: {m:?}");
+        assert_eq!(m[0].line, 0);
+        assert_eq!(m[1].line, 1);
+    }
+
+    #[test]
+    fn todo_markers_respect_the_configured_keyword_set() {
+        let src = "// TODO: ignored\n// REVIEW: wanted\n";
+        let e = SyntaxEngine::new(src, "rs").expect("rust grammar");
+        let m = e.todo_markers(&["REVIEW".to_string()]);
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].keyword, "REVIEW");
+    }
+
+    /// A buffer with no grammar returns nothing rather than falling back to a
+    /// text scan, which would reintroduce the string-literal false positives.
+    #[test]
+    fn todo_markers_are_empty_without_a_grammar() {
+        let e = SyntaxEngine::new("# TODO: markdown has no comment capture\n", "md")
+            .expect("markup backend");
+        assert!(e.todo_markers(&kws()).is_empty());
     }
 
     #[test]

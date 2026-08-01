@@ -1,4 +1,5 @@
 pub mod app;
+pub mod dialog;
 pub mod dired;
 pub mod file_prompt;
 pub mod key;
@@ -8,6 +9,7 @@ pub mod runner;
 pub mod renderer;
 pub mod settings;
 pub mod sidebar;
+pub mod trouble;
 pub mod widgets;
 
 #[cfg(test)]

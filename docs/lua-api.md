@@ -163,3 +163,42 @@ ruster.config.tabstop = 2
 ruster.config.number = true
 ruster.config.format_on_save = true
 ```
+
+## `ruster.ui.dialog(spec)`
+
+Show a modal form. The editor owns the widgets; Lua describes the fields and
+receives the answers.
+
+```lua
+ruster.ui.dialog{
+  title = "Deploy",
+  fields = {
+    { label = "Dry run", kind = "toggle", value = "on" },
+    { label = "Target",  kind = "select", value = "staging", options = { "staging", "prod" } },
+    { label = "Message", kind = "text",   value = "ship it" },
+    { label = "Retries", kind = "number", value = "3" },
+    { label = "OK",      kind = "button" },
+    { label = "Cancel",  kind = "button" },
+  },
+  on_submit = function(values, button)
+    -- values is keyed by label; button is the one pressed, or nil for Enter.
+    ruster.print(values.Target .. " " .. tostring(button))
+  end,
+}
+```
+
+| `kind` | Behaviour |
+|--------|-----------|
+| `toggle` | `Space` flips it; value is `"on"` / `"off"` |
+| `select` | `Space`/`h`/`l` cycle `options`, wrapping |
+| `text` | `Enter` edits in place, `Enter` again commits, `Esc` abandons the edit |
+| `number` | as `text` |
+| `button` | `Space`/`Enter` submits, reporting this label |
+
+Anything else is treated as `text`, so a typo still shows the dialog.
+
+`j`/`k` move, `Enter` submits from a non-text field, `Esc` cancels. **A button
+always submits** — including one labelled "Cancel"; the plugin decides what each
+label means. `on_submit` is not called when the dialog is cancelled with `Esc`.
+
+`values` excludes buttons, since they are actions rather than fields.

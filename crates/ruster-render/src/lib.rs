@@ -526,6 +526,9 @@ pub enum ControlKind {
     Enum,
     Number,
     Text,
+    /// An action, not a value: activating it submits the dialog it sits in.
+    /// Only dialogs use this — the settings page has no buttons.
+    Button,
 }
 
 /// One row on the settings page: a label, its control, and current value.
@@ -562,7 +565,10 @@ pub struct SettingsView {
 /// holds its position until the selection crosses an edge, then scrolls just
 /// enough to keep it on-screen — the behavior of a normal list widget. `prev`
 /// is the last frame's top line; returns the new top line.
-pub fn settings_scroll(prev: usize, selected: usize, viewport: usize, total: usize) -> usize {
+///
+/// Shared by the settings page and the picker; a wrapping selection relies on
+/// it to jump the view to the far end rather than leaving the cursor off-screen.
+pub fn list_scroll(prev: usize, selected: usize, viewport: usize, total: usize) -> usize {
     let viewport = viewport.max(1);
     let mut top = prev;
     if selected < top {
@@ -624,6 +630,8 @@ pub struct FrameState<'a> {
     pub debug_overlay: Option<DebugOverlayView>,
     /// Floating boxes drawn above the window views, lowest `z` first.
     pub floats: Vec<FloatView>,
+    /// A modal form, drawn above everything else.
+    pub dialog: Option<DialogView>,
 }
 
 /// Where a float wants to sit. Resolved against the frame area by
@@ -754,6 +762,42 @@ pub fn floats_in_draw_order(floats: &[FloatView]) -> Vec<&FloatView> {
     out
 }
 
+/// How a setting row's value is shown: `[x] on`, `< enum >`, or the raw text
+/// with a caret while editing.
+///
+/// Lives here, beside the type it formats, because both backends draw these
+/// rows and each previously kept an identical private copy — the sort of
+/// duplication that silently drifts.
+pub fn control_display(row: &SettingRowView) -> String {
+    match row.kind {
+        ControlKind::Toggle => {
+            if row.value == "on" { "[x] on".to_string() } else { "[ ] off".to_string() }
+        }
+        ControlKind::Enum => format!("< {} >", row.value),
+        ControlKind::Button => format!("[ {} ]", row.label),
+        ControlKind::Number | ControlKind::Text => {
+            if row.editing {
+                format!("{}▏", row.value)
+            } else {
+                row.value.clone()
+            }
+        }
+    }
+}
+
+/// A modal form: a title, rows built from the same [`SettingRowView`] the
+/// settings page uses, and a footer of key hints.
+///
+/// Deliberately the settings page's vocabulary rather than a new widget set —
+/// both backends already draw these rows, and a widget crate could only serve
+/// the ratatui half of the editor.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DialogView {
+    pub title: String,
+    pub rows: Vec<SettingRowView>,
+    pub footer: String,
+}
+
 /// Debugger overlay rendered above the window area.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DebugOverlayView {
@@ -811,6 +855,28 @@ pub trait Renderer {
     /// Re-apply GUI metrics + theme (and reload the font) at runtime, for live
     /// re-theming from the Settings page. Default no-op (e.g. the TUI backend).
     fn set_gui_config(&mut self, _gui: &GuiConfig, _font: Option<&str>) {}
+
+    /// Ask for an image of the screen to be written to `path`, returning whether
+    /// this backend can produce one at all.
+    ///
+    /// Deliberately *deferred* rather than immediate: a backend captures by
+    /// reading its framebuffer, and this is called from command handling —
+    /// between frames, where the buffer holds a stale frame or nothing. The
+    /// capture therefore happens at the end of the next [`render_frame`], so
+    /// what lands on disk is a frame that was actually drawn.
+    ///
+    /// [`render_frame`]: Renderer::render_frame
+    fn request_screenshot(&mut self, _path: &std::path::Path) -> bool {
+        false
+    }
+
+    /// The outcome of a [`request_screenshot`], once the frame it captured has
+    /// been drawn — `None` until then, and once taken it does not repeat.
+    ///
+    /// [`request_screenshot`]: Renderer::request_screenshot
+    fn poll_screenshot(&mut self) -> Option<Result<std::path::PathBuf, String>> {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -890,21 +956,40 @@ mod tests {
     }
 
     #[test]
-    fn settings_scroll_holds_until_edge_then_follows() {
-        use crate::settings_scroll;
+    fn list_scroll_holds_until_edge_then_follows() {
+        use crate::list_scroll;
         // 20 items, viewport 5. Moving down within view doesn't scroll.
-        assert_eq!(settings_scroll(0, 3, 5, 20), 0);
+        assert_eq!(list_scroll(0, 3, 5, 20), 0);
         // Crossing the bottom edge scrolls just enough to keep it visible.
-        assert_eq!(settings_scroll(0, 5, 5, 20), 1);
-        assert_eq!(settings_scroll(0, 6, 5, 20), 2);
+        assert_eq!(list_scroll(0, 5, 5, 20), 1);
+        assert_eq!(list_scroll(0, 6, 5, 20), 2);
         // Moving back up while still on-screen holds position (no re-center).
-        assert_eq!(settings_scroll(2, 4, 5, 20), 2);
+        assert_eq!(list_scroll(2, 4, 5, 20), 2);
         // Crossing the top edge scrolls up.
-        assert_eq!(settings_scroll(2, 1, 5, 20), 1);
+        assert_eq!(list_scroll(2, 1, 5, 20), 1);
         // Never scrolls past the end (max top = total - viewport).
-        assert_eq!(settings_scroll(99, 19, 5, 20), 15);
+        assert_eq!(list_scroll(99, 19, 5, 20), 15);
         // Fewer items than the viewport: no scroll.
-        assert_eq!(settings_scroll(3, 0, 5, 3), 0);
+        assert_eq!(list_scroll(3, 0, 5, 3), 0);
+    }
+
+    /// A picker wraps its selection from the first item to the last. The view
+    /// has to follow, or the cursor lands off-screen and the list looks stuck
+    /// at the top.
+    #[test]
+    fn list_scroll_follows_a_selection_that_wraps_to_the_end() {
+        use crate::list_scroll;
+        // 40 items, 10 visible, sitting at the top; selection wraps to the last.
+        let top = list_scroll(0, 39, 10, 40);
+        assert_eq!(top, 30, "scrolled so item 39 is the last visible row");
+        assert!(39 >= top && 39 < top + 10, "selection is on screen");
+    }
+
+    #[test]
+    fn list_scroll_follows_a_selection_that_wraps_back_to_the_start() {
+        use crate::list_scroll;
+        let top = list_scroll(30, 0, 10, 40);
+        assert_eq!(top, 0, "jumped back to the top with the selection");
     }
 
     fn sample_window() -> WindowView {

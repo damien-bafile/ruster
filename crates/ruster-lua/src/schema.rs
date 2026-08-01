@@ -236,6 +236,7 @@ pub const GROUPS: &[(&str, &str)] = &[
     ("sidebar", "Sidebar panel"),
     ("noice", "Notifications and messages"),
     ("git", "Git integration"),
+    ("todo", "TODO comment markers"),
     ("build", "Build command"),
     ("test", "Test command"),
     ("dap", "Debug adapter"),
@@ -314,6 +315,9 @@ pub fn schema() -> Vec<SettingSpec> {
     // wins over anything set here.
     // --- git ---
     add("git", "signs", "Git signs", Bool, b(true), "Mark added/changed/removed lines in the gutter");
+
+    // --- todo ---
+    add("todo", "keywords", "Keywords", Text, t("TODO,FIXME,HACK,NOTE,XXX"), "Comma-separated markers highlighted in comments; empty disables");
 
     add("build", "command", "Build command", Text, t(""), "Command for :build; empty = detect from the project type");
     add("test", "command", "Test command", Text, t(""), "Command for :test; empty = detect from the project type");

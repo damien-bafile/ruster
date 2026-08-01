@@ -29,6 +29,9 @@ pub enum SpecialKind {
     Dashboard,
     /// A general-purpose message log (build, LSP, echo, etc.).
     Message,
+    /// The aggregated problem list: diagnostics, quickfix entries and TODO
+    /// markers, grouped by file.
+    Trouble,
 }
 
 /// What a document represents.

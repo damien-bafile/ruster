@@ -23,17 +23,18 @@ pub fn ruster_style_to_ratatui(s: &SyntaxStyle) -> ratatui::style::Style {
 pub struct TuiRenderer {
     terminal: Option<Terminal<CrosstermBackend<Stdout>>>,
     settings_scroll: usize,
+    picker_scroll: usize,
 }
 
 impl TuiRenderer {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let stdout = std::io::stdout();
         let terminal = Terminal::new(CrosstermBackend::new(stdout))?;
-        Ok(TuiRenderer { terminal: Some(terminal), settings_scroll: 0 })
+        Ok(TuiRenderer { terminal: Some(terminal), settings_scroll: 0, picker_scroll: 0 })
     }
 
     pub fn dummy() -> Self {
-        TuiRenderer { terminal: None, settings_scroll: 0 }
+        TuiRenderer { terminal: None, settings_scroll: 0, picker_scroll: 0 }
     }
 }
 
@@ -48,6 +49,7 @@ impl Renderer for TuiRenderer {
 
     fn render_frame(&mut self, state: &FrameState) {
         let sscroll = &mut self.settings_scroll;
+        let pscroll = &mut self.picker_scroll;
         let term = match &mut self.terminal {
             Some(t) => t,
             None => return,
@@ -206,8 +208,15 @@ impl Renderer for TuiRenderer {
                     let py = area.y + (area.height.saturating_sub(ph)) / 2;
                     Rect::new(px, py, pw, ph)
                 };
+                // Keep the selection on screen; a wrap to the last item has to
+                // take the view with it.
+                let vis = parea.height.saturating_sub(3) as usize;
+                let sel = picker.rows.iter().position(|r| r.selected).unwrap_or(0);
+                *pscroll = ruster_render::list_scroll(*pscroll, sel, vis, picker.rows.len());
                 frame.render_widget(
-                    crate::widgets::PickerWidget::new(picker.clone()).with_theme(&state.theme),
+                    crate::widgets::PickerWidget::new(picker.clone())
+                        .with_theme(&state.theme)
+                        .with_scroll(*pscroll),
                     parea,
                 );
             }
@@ -235,6 +244,18 @@ impl Renderer for TuiRenderer {
                     crate::widgets::SettingsWidget::new(settings.clone(), sscroll)
                         .with_theme(&state.theme),
                     sarea,
+                );
+            }
+
+            // A modal dialog sits above the floats.
+            if let Some(dlg) = &state.dialog {
+                let dw = (area.width * 6 / 10).clamp(30, area.width.saturating_sub(4));
+                let dh = (dlg.rows.len() as u16 + 4).min(area.height.saturating_sub(2));
+                let dx = area.x + (area.width.saturating_sub(dw)) / 2;
+                let dy = area.y + (area.height.saturating_sub(dh)) / 2;
+                frame.render_widget(
+                    crate::widgets::DialogWidget::new(dlg.clone()).with_theme(&state.theme),
+                    Rect::new(dx, dy, dw, dh),
                 );
             }
 
