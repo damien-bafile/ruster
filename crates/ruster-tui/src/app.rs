@@ -4716,6 +4716,20 @@ impl App {
 
     /// Delete the active buffer, switching the active window to another open
     /// buffer first. Refuses when it is the only buffer, or when it is modified.
+    /// Drop every per-buffer cache keyed by `id`.
+    ///
+    /// Call this whenever a buffer is closed. Each of these maps is keyed by
+    /// `BufferId` and none of them was cleaned up before, so they grew for the
+    /// life of the session — and a leaked `TerminalSession` keeps its child
+    /// process alive, since the kill happens in its `Drop`.
+    fn forget_buffer(&mut self, id: BufferId) {
+        self.dired.forget(id);
+        self.syntax.remove(&id);
+        self.lsp_docs.remove(&id);
+        self.diagnostics.remove(&id);
+        self.terminals.remove(&id);
+    }
+
     fn delete_active_buffer(&mut self) {
         let mut w = self.ws.borrow_mut();
         let cur = w.active_buffer();
@@ -4729,6 +4743,8 @@ impl App {
                 }
                 w.set_active_buffer(o);
                 w.buffers.close(cur);
+                drop(w);
+                self.forget_buffer(cur);
             }
             None => {
                 drop(w);
@@ -6215,6 +6231,35 @@ mod tests {
         // scratch + dashboard + messages
         assert_eq!(a.ws.borrow().buffers.len(), 3);
         assert!(a.ws.borrow().buffers.get(orig).is_none());
+    }
+
+    /// Closing a buffer must drop its per-buffer caches. None of these maps was
+    /// cleaned up before, so they grew for the life of the session.
+    #[test]
+    fn bdelete_forgets_the_buffers_caches() {
+        let tmp = std::env::temp_dir().join("ruster_forget_caches");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("a.txt"), "x").unwrap();
+
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::Dired(Some(tmp.to_string_lossy().into_owned())));
+        let dired_id = a.ws.borrow().active_buffer();
+        assert!(a.dired.styled_lines(dired_id).is_some(), "dired cached its listing");
+
+        // Give it a diagnostics entry too, so the sweep is covered beyond dired.
+        a.diagnostics.insert(dired_id, Vec::new());
+
+        a.apply_cmd(CmdAction::BufferDelete);
+        assert!(a.ws.borrow().buffers.get(dired_id).is_none(), "buffer closed");
+        assert!(a.dired.styled_lines(dired_id).is_none(), "dired caches dropped");
+        assert!(a.dired.dir_of(dired_id).is_none());
+        assert!(!a.diagnostics.contains_key(&dired_id), "diagnostics dropped");
+        assert!(!a.syntax.contains_key(&dired_id));
+        assert!(!a.lsp_docs.contains_key(&dired_id));
+        assert!(!a.terminals.contains_key(&dired_id));
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
