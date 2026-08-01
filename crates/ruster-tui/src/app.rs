@@ -608,6 +608,8 @@ enum CmdAction {
     Help(Option<String>),
     /// Open the git status view (`:Git`).
     GitStatus,
+    /// Stage the hunk under the cursor (`:GitStageHunk`).
+    GitStageHunk,
     /// Save the open files and window layout for this project (`:SessionSave`).
     SessionSave,
     /// Reopen this project's saved session (`:SessionRestore`).
@@ -4036,6 +4038,7 @@ impl App {
             _ if trimmed == "sidebar" => Ok(CmdAction::Sidebar),
             "Mason" | "mason" => Ok(CmdAction::Mason),
             "Git" | "git" | "G" => Ok(CmdAction::GitStatus),
+            "GitStageHunk" | "gitstagehunk" | "stagehunk" => Ok(CmdAction::GitStageHunk),
             "help" | "h" | "Help" => Ok(CmdAction::Help(None)),
             _ if let Some(t) = trimmed.strip_prefix("help ").or_else(|| trimmed.strip_prefix("h ")) => {
                 Ok(CmdAction::Help(Some(t.trim().to_string())))
@@ -4183,6 +4186,7 @@ impl App {
             CmdAction::Sidebar => self.toggle_sidebar(),
             CmdAction::Mason => self.open_mason(),
             CmdAction::GitStatus => self.open_git_status(),
+            CmdAction::GitStageHunk => self.git_stage_hunk(),
             CmdAction::Help(topic) => self.open_help(topic.as_deref()),
             CmdAction::SessionSave => self.save_session(false),
             CmdAction::SessionRestore => self.restore_session(false),
@@ -6154,6 +6158,63 @@ impl App {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// Stage the hunk the cursor is inside, in the file being edited.
+    ///
+    /// Driven from the *file* buffer rather than the status view because that
+    /// is where hunks are visible: the gutter already marks them and `]h`/`[h`
+    /// already move between them. The cursor line is a working-file line, which
+    /// is exactly the coordinate system of the index→worktree diff being
+    /// staged.
+    ///
+    /// There is deliberately no cursor-driven *unstage*: that would need the
+    /// HEAD→index diff, whose line numbers are the index's, and those do not
+    /// match the buffer whenever the file also has unstaged edits — which is
+    /// precisely when someone would reach for it. Unstaging stays at file
+    /// granularity (`u` in `:Git`) until there is a view of the staged diff to
+    /// point at.
+    fn git_stage_hunk(&mut self) {
+        let Some(root) = self.project_root.clone() else {
+            self.echo_warn("Not in a project".to_string());
+            return;
+        };
+        // Resolve inside the narrowest scope, then act with the borrow dropped.
+        let target = {
+            let w = self.ws.borrow();
+            let id = w.active_buffer();
+            w.buffers.get(id).and_then(|d| d.file_path.clone()).map(|p| {
+                (p, w.active_doc().buffer.char_to_line(w.primary_head()) as u32)
+            })
+        };
+        let Some((path, line)) = target else {
+            self.echo_warn("No file in this window".to_string());
+            return;
+        };
+
+        let Some(diff) = ruster_git::diff_text(&root, &path, false) else {
+            self.echo_warn("Could not read the diff".to_string());
+            return;
+        };
+        let hunks = ruster_git::parse_diff_hunks(&diff);
+        let Some(index) = ruster_git::hunk_index_at(&hunks, line) else {
+            self.echo_warn("No unstaged hunk under the cursor".to_string());
+            return;
+        };
+        let patches = ruster_git::split_hunks(&diff);
+        let Some(patch) = patches.get(index) else {
+            self.echo_error("Could not isolate that hunk".to_string());
+            return;
+        };
+
+        match ruster_git::apply_to_index(&root, patch, false) {
+            Ok(()) => {
+                let id = self.ws.borrow().active_buffer();
+                self.refresh_git_hunks(id);
+                self.echo(format!("Staged hunk {} of {}", index + 1, patches.len()));
+            }
+            Err(e) => self.echo_error(format!("Could not stage that hunk: {e}")),
         }
     }
 
@@ -8991,6 +9052,41 @@ mod tests {
         assert_eq!(a.buffer_offset_at(after.x, after.y).map(|(_, o)| o), Some(0));
         // A click in the sidebar column is not buffer text.
         assert_eq!(a.buffer_offset_at(before, after.y), None);
+    }
+
+    #[test]
+    fn git_stage_hunk_parses() {
+        let a = App::new("x".into(), PathBuf::from("f.rs"));
+        assert_eq!(a.parse_cmdline(":GitStageHunk"), Ok(CmdAction::GitStageHunk));
+        assert_eq!(a.parse_cmdline(":stagehunk"), Ok(CmdAction::GitStageHunk));
+    }
+
+    /// Outside a repository the command must decline rather than shell out.
+    #[test]
+    fn git_stage_hunk_outside_a_project_warns() {
+        let dir = shot_dir();
+        let f = dir.join("loose.rs");
+        std::fs::write(&f, "x\n").unwrap();
+        let mut a = App::new("x".into(), f);
+        a.project_root = None;
+        a.apply_cmd(CmdAction::GitStageHunk);
+        let last = a.notify.history().last().expect("a message");
+        assert!(last.text.contains("Not in a project"), "{:?}", last.text);
+    }
+
+    /// A buffer with no file on disk has no hunks to stage.
+    #[test]
+    fn git_stage_hunk_needs_a_file() {
+        let dir = shot_dir();
+        let mut a = App::new("scratch".into(), PathBuf::from(""));
+        a.project_root = Some(dir);
+        {
+            let id = a.ws.borrow().active_buffer();
+            a.ws.borrow_mut().buffers.get_mut(id).unwrap().file_path = None;
+        }
+        a.apply_cmd(CmdAction::GitStageHunk);
+        let last = a.notify.history().last().expect("a message");
+        assert!(last.text.contains("No file"), "{:?}", last.text);
     }
 
     #[test]
