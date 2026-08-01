@@ -35,6 +35,8 @@ pub enum SpecialKind {
     Git,
     /// A commit message being composed (`:GitCommit`), written by `:w`.
     GitCommit,
+    /// The staged diff (`:GitStaged`), where `u` unstages a hunk.
+    GitStaged,
     /// The Dashboard / welcome screen — a static page that cannot be closed.
     Dashboard,
     /// A general-purpose message log (build, LSP, echo, etc.).

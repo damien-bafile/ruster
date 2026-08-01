@@ -90,7 +90,7 @@ carries none of the risk below.
 - [x] `s` → `git add -- <path>`, `u` → `git restore --staged -- <path>`.
       Straightforward, and worth landing before hunks.
 
-### 2.2 Stage and unstage *hunks* ✅ (PR 3, staging only)
+### 2.2 Stage and unstage *hunks* ✅ (PR 3 staged, PR 5 unstaged)
 
 This is the whole difficulty of the task and should be planned before it is
 started.
@@ -106,13 +106,13 @@ one hunk instead of several.
 - [x] Rebuild the `@@ -a,b +c,d @@` header for the single hunk. `DiffHunk`
       already carries both sides, which is why Task 14's two-sided coordinates
       were worth keeping.
-- [~] Unstaging is the same patch applied with `--cached --reverse`. The
-      *mechanism* works and is tested, but there is no cursor-driven unstage:
-      that needs the HEAD→index diff, whose line numbers are the index's and do
-      not match the buffer whenever the file also has unstaged edits — which is
-      exactly when someone would reach for it. Unstaging stays at file
-      granularity (`u` in `:Git`) until there is a view of the staged diff to
-      point at.
+- [x] Unstaging is the same patch applied with `--cached --reverse`, done from
+      `:GitStaged` — the view of the staged diff this bullet said it was waiting
+      for. Doing it from a *file* buffer never could work: it needs the
+      HEAD→index diff, whose line numbers are the index's and stop matching the
+      file the moment it also has unstaged edits, which is exactly when someone
+      reaches for it. In a diff buffer the line numbers are the diff's own, so a
+      cursor line resolves to a hunk with no translation at all.
 - [x] **Never write to the working tree.** `--cached` only touches the index, so
       a bug loses staging, not the user's edits. Discarding changes (a
       `git checkout --` equivalent) is genuinely destructive and belongs behind

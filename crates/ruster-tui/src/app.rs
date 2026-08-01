@@ -610,6 +610,8 @@ enum CmdAction {
     GitStatus,
     /// Stage the hunk under the cursor (`:GitStageHunk`).
     GitStageHunk,
+    /// Show the staged diff, where `u` unstages a hunk (`:GitStaged`).
+    GitStaged,
     /// Compose a commit message (`:GitCommit`).
     GitCommit,
     /// Push to the remote, after confirmation (`:GitPush`).
@@ -1829,6 +1831,13 @@ impl App {
         // hijacked. Unclaimed keys fall through to normal handling.
         // The problem list claims Enter/Tab/r/q the same way dired claims its
         // keys; everything else falls through so `:`, `/` and motions still work.
+        if self.active_is_git_staged()
+            && self.vim.mode == VimMode::Normal
+            && self.emacs_isearch.is_none()
+            && self.handle_git_staged_key(ck)
+        {
+            return;
+        }
         if self.active_is_git_status()
             && self.vim.mode == VimMode::Normal
             && self.emacs_isearch.is_none()
@@ -4059,6 +4068,7 @@ impl App {
             "Mason" | "mason" => Ok(CmdAction::Mason),
             "Git" | "git" | "G" => Ok(CmdAction::GitStatus),
             "GitStageHunk" | "gitstagehunk" | "stagehunk" => Ok(CmdAction::GitStageHunk),
+            "GitStaged" | "gitstaged" | "staged" => Ok(CmdAction::GitStaged),
             "GitCommit" | "gitcommit" | "commit" => Ok(CmdAction::GitCommit),
             "GitPush" | "gitpush" | "push" => Ok(CmdAction::GitPush),
             "GitPull" | "gitpull" | "pull" => Ok(CmdAction::GitPull),
@@ -4218,6 +4228,7 @@ impl App {
             CmdAction::Mason => self.open_mason(),
             CmdAction::GitStatus => self.open_git_status(),
             CmdAction::GitStageHunk => self.git_stage_hunk(),
+            CmdAction::GitStaged => self.open_git_staged(),
             CmdAction::GitCommit => self.open_git_commit(),
             CmdAction::GitPush => self.confirm_git_remote("Push"),
             CmdAction::GitPull => self.confirm_git_remote("Pull"),
@@ -6198,6 +6209,10 @@ impl App {
                 self.open_git_commit();
                 true
             }
+            KeyCode::Char('d') => {
+                self.open_git_staged();
+                true
+            }
             KeyCode::Char('P') => {
                 self.confirm_git_remote("Push");
                 true
@@ -6325,6 +6340,114 @@ impl App {
         }
         let cmd = format!("git {}", verb.to_lowercase());
         self.confirm_command(format!("{verb}?"), verb, cmd, RunnerKind::Git);
+    }
+
+    /// Open the staged diff, where `u` unstages the hunk under the cursor.
+    ///
+    /// This is what makes hunk unstaging well defined. Doing it from a *file*
+    /// buffer cannot work: it needs the HEAD→index diff, whose line numbers are
+    /// the index's, and those stop matching the file the moment it also has
+    /// unstaged edits — exactly when someone reaches for it. Here the buffer
+    /// *is* that diff, so a cursor line resolves to a hunk with no translation
+    /// at all.
+    fn open_git_staged(&mut self) {
+        let Some(root) = self.git_root() else {
+            self.echo_warn("Not a git repository".to_string());
+            return;
+        };
+        let Some(diff) = ruster_git::staged_diff(&root) else {
+            self.echo_error("Could not read the staged diff".to_string());
+            return;
+        };
+        // Unstaging the last hunk empties the diff. If the view is open it must
+        // say so rather than keep showing what is no longer staged.
+        let text = if diff.trim().is_empty() {
+            self.echo("Nothing staged".to_string());
+            if !self.active_is_git_staged() {
+                return;
+            }
+            "Nothing staged.\n".to_string()
+        } else {
+            diff
+        };
+        let id = {
+            let mut w = self.ws.borrow_mut();
+            let existing = w
+                .buffers
+                .ids()
+                .iter()
+                .copied()
+                .find(|&id| w.buffers.get(id).is_some_and(|d| d.name == "*git-staged*"));
+            let id = existing.unwrap_or_else(|| {
+                w.buffers
+                    .create_special(ruster_core::document::SpecialKind::GitStaged, "*git-staged*")
+            });
+            if let Some(doc) = w.buffers.get_mut(id) {
+                doc.buffer = Buffer::from_str(&text);
+            }
+            id
+        };
+        self.ws.borrow_mut().set_active_buffer(id);
+    }
+
+    fn active_is_git_staged(&self) -> bool {
+        matches!(
+            self.ws.borrow().active_doc().kind,
+            DocKind::Special(ruster_core::document::SpecialKind::GitStaged)
+        )
+    }
+
+    /// Keys in the staged diff. `u` unstages the hunk under the cursor.
+    fn handle_git_staged_key(&mut self, ck: crossterm::event::KeyEvent) -> bool {
+        if !ck.modifiers.is_empty() {
+            return false;
+        }
+        match ck.code {
+            KeyCode::Char('u') => {
+                self.git_unstage_hunk_at_cursor();
+                true
+            }
+            KeyCode::Char('r') | KeyCode::Char('g') => {
+                self.open_git_staged();
+                true
+            }
+            KeyCode::Char('q') => {
+                self.delete_active_buffer();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Unstage the hunk the cursor is inside, in the staged diff buffer.
+    ///
+    /// Everything derives from the buffer text — it is the diff — so there is
+    /// no cached patch list to fall out of step with what is on screen.
+    fn git_unstage_hunk_at_cursor(&mut self) {
+        let Some(root) = self.git_root() else { return };
+        let (diff, line) = {
+            let w = self.ws.borrow();
+            (w.active_doc().buffer.to_string(), w.active_doc().buffer.char_to_line(w.primary_head()))
+        };
+        let Some(index) = ruster_git::hunk_of_line(&diff).get(line).copied().flatten() else {
+            self.echo_warn("No hunk under the cursor".to_string());
+            return;
+        };
+        let patches = ruster_git::split_hunks(&diff);
+        let Some(patch) = patches.get(index) else {
+            self.echo_error("Could not isolate that hunk".to_string());
+            return;
+        };
+
+        match ruster_git::apply_to_index(&root, patch, true) {
+            Ok(()) => {
+                let total = patches.len();
+                // Re-read: the diff just changed, and the buffer is the diff.
+                self.open_git_staged();
+                self.echo(format!("Unstaged hunk {} of {total}", index + 1));
+            }
+            Err(e) => self.echo_error(format!("Could not unstage that hunk: {e}")),
+        }
     }
 
     /// Stage the hunk the cursor is inside, in the file being edited.
@@ -9327,6 +9450,57 @@ mod tests {
         assert!(!a.active_is_git_commit(), "no message buffer opened");
         let last = a.notify.history().last().expect("a message");
         assert!(last.text.contains("repository") || last.text.contains("staged"), "{:?}", last.text);
+    }
+
+    #[test]
+    fn git_staged_parses() {
+        let a = App::new("x".into(), PathBuf::from("f.rs"));
+        assert_eq!(a.parse_cmdline(":GitStaged"), Ok(CmdAction::GitStaged));
+        assert_eq!(a.parse_cmdline(":staged"), Ok(CmdAction::GitStaged));
+    }
+
+    /// The cursor line in a diff buffer maps straight to a hunk — that is the
+    /// whole reason unstaging happens here rather than in the file buffer.
+    #[test]
+    fn a_cursor_line_in_the_staged_diff_resolves_to_its_hunk() {
+        let diff = "\
+diff --git a/f.txt b/f.txt
+index 1..2 100644
+--- a/f.txt
++++ b/f.txt
+@@ -1,3 +1,3 @@
+ a
+-b
++B
+@@ -10,3 +10,3 @@
+ c
+-d
++D
+";
+        let map = ruster_git::hunk_of_line(diff);
+        let lines: Vec<&str> = diff.lines().collect();
+        let first_change = lines.iter().position(|l| *l == "+B").unwrap();
+        let second_change = lines.iter().position(|l| *l == "+D").unwrap();
+        assert_eq!(map[first_change], Some(0));
+        assert_eq!(map[second_change], Some(1));
+        // A file header belongs to no hunk, so `u` there declines.
+        assert_eq!(map[0], None);
+
+        // And those indices address the right patches.
+        let patches = ruster_git::split_hunks(diff);
+        assert!(patches[0].contains("+B") && !patches[0].contains("+D"));
+        assert!(patches[1].contains("+D") && !patches[1].contains("+B"));
+    }
+
+    #[test]
+    fn git_staged_outside_a_repository_warns() {
+        let dir = shot_dir();
+        let mut a = App::new("x".into(), dir.join("f.rs"));
+        a.project_root = Some(dir);
+        a.apply_cmd(CmdAction::GitStaged);
+        assert!(!a.active_is_git_staged(), "no diff buffer opened");
+        let last = a.notify.history().last().expect("a message");
+        assert!(last.text.contains("git repository"), "{:?}", last.text);
     }
 
     #[test]

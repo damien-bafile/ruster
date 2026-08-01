@@ -530,6 +530,31 @@ pub fn split_hunks(diff: &str) -> Vec<String> {
     out
 }
 
+/// Which hunk each line of a unified diff belongs to, or `None` for the file
+/// headers between them.
+///
+/// Indices match [`split_hunks`] — both count hunks in the order they appear,
+/// across every file in the diff — so a cursor line resolves straight to the
+/// patch that will be applied. This is what makes unstaging by cursor
+/// well-defined: in a *diff* buffer the line numbers are the diff's own, so
+/// there is no translation between the index's coordinates and the buffer's.
+pub fn hunk_of_line(diff: &str) -> Vec<Option<usize>> {
+    let mut out = Vec::new();
+    let mut current: Option<usize> = None;
+    let mut seen = 0usize;
+    for line in diff.lines() {
+        if line.starts_with("diff --git ") {
+            // A new file's header: not part of any hunk until the next `@@`.
+            current = None;
+        } else if line.starts_with("@@") {
+            current = Some(seen);
+            seen += 1;
+        }
+        out.push(current);
+    }
+    out
+}
+
 /// The staged-or-unstaged diff for one path, with enough context to apply.
 ///
 /// `staged` picks `--cached` (HEAD→index) over the default (index→worktree).
@@ -540,6 +565,17 @@ pub fn diff_text(root: &Path, path: &Path, staged: bool) -> Option<String> {
         cmd.arg("--cached");
     }
     let out = cmd.arg("--").arg(path).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// The whole staged diff (`git diff --cached -U3`), for a view to point at.
+pub fn staged_diff(root: &Path) -> Option<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["diff", "--no-color", "--cached", "-U3"])
+        .output()
+        .ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
@@ -1272,6 +1308,99 @@ diff --git a/tracked.txt b/tracked.txt
         std::fs::create_dir_all(&dir).unwrap();
         // A temp dir is not inside a working tree.
         assert_eq!(repo_root(&dir), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn every_diff_line_maps_to_the_hunk_it_belongs_to() {
+        let map = hunk_of_line(TWO_HUNKS);
+        let lines: Vec<&str> = TWO_HUNKS.lines().collect();
+        assert_eq!(map.len(), lines.len());
+
+        // The file header belongs to no hunk.
+        for (i, l) in lines.iter().enumerate().take(4) {
+            assert_eq!(map[i], None, "header line {i}: {l:?}");
+        }
+        // The `@@` line and its body are hunk 0; the second `@@` starts hunk 1.
+        let first_at = lines.iter().position(|l| l.starts_with("@@")).unwrap();
+        let second_at = lines.iter().rposition(|l| l.starts_with("@@")).unwrap();
+        assert_eq!(map[first_at], Some(0));
+        assert_eq!(map[first_at + 1], Some(0), "context after the header");
+        assert_eq!(map[second_at], Some(1));
+        assert_eq!(map[lines.len() - 1], Some(1), "the last line is in the last hunk");
+    }
+
+    /// The indices have to line up with `split_hunks`, or the cursor picks one
+    /// hunk and the patch applies another.
+    #[test]
+    fn line_map_indices_match_the_split_patches() {
+        for diff in [TWO_HUNKS, "\
+diff --git a/one.txt b/one.txt
+--- a/one.txt
++++ b/one.txt
+@@ -1 +1 @@
+-a
++b
+diff --git a/two.txt b/two.txt
+--- a/two.txt
++++ b/two.txt
+@@ -5 +5 @@
+-c
++d
+"] {
+            let patches = split_hunks(diff);
+            let map = hunk_of_line(diff);
+            let highest = map.iter().flatten().copied().max().map(|m| m + 1).unwrap_or(0);
+            assert_eq!(highest, patches.len(), "one index per patch");
+
+            // The line carrying each `@@` must map to the patch containing it.
+            for (i, line) in diff.lines().enumerate() {
+                if line.starts_with("@@") {
+                    let h = map[i].expect("a hunk");
+                    assert!(patches[h].contains(line), "line {i} maps to the wrong patch");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_diff_with_no_hunks_maps_nothing() {
+        assert!(hunk_of_line("").is_empty());
+        assert_eq!(hunk_of_line("diff --git a/f b/f\n--- a/f\n"), vec![None, None]);
+    }
+
+    /// The end-to-end claim for unstaging: with two hunks staged, reversing one
+    /// leaves the other staged and never touches the working tree.
+    #[test]
+    fn unstaging_one_staged_hunk_leaves_the_other_staged() {
+        let Some(dir) = scratch_repo("unstagehunk") else { return };
+        let original: String = (1..=20).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(dir.join("f.txt"), &original).unwrap();
+        let git = |args: &[&str]| Command::new("git").arg("-C").arg(&dir).args(args).output().unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "twenty"]);
+
+        let mut lines: Vec<String> = (1..=20).map(|i| format!("line {i}\n")).collect();
+        lines[2] = "CHANGED 3\n".into();
+        lines[15] = "CHANGED 16\n".into();
+        let edited: String = lines.concat();
+        std::fs::write(dir.join("f.txt"), &edited).unwrap();
+        stage(&dir, Path::new("f.txt")).unwrap();
+
+        // Both changes are staged; now unstage only the first.
+        let diff = staged_diff(&dir).expect("a staged diff");
+        let patches = split_hunks(&diff);
+        assert_eq!(patches.len(), 2, "two staged hunks:\n{diff}");
+        apply_to_index(&dir, &patches[0], true).expect("unstaged the first hunk");
+
+        let staged = String::from_utf8_lossy(&git(&["show", ":f.txt"]).stdout).into_owned();
+        assert!(!staged.contains("CHANGED 3"), "the first hunk is no longer staged");
+        assert!(staged.contains("CHANGED 16"), "the second still is");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("f.txt")).unwrap(),
+            edited,
+            "the working tree is untouched"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
