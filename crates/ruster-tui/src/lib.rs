@@ -8,6 +8,7 @@ pub mod runner;
 pub mod renderer;
 pub mod settings;
 pub mod sidebar;
+pub mod trouble;
 pub mod widgets;
 
 #[cfg(test)]

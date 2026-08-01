@@ -551,6 +551,8 @@ pub struct Config {
     pub dired_show_hidden: bool,
     /// `git.signs` — show added/changed/removed markers in the gutter.
     pub git_signs: bool,
+    /// `todo.keywords` — markers highlighted in comments and listed by `:TodoList`.
+    pub todo_keywords: Vec<String>,
     /// `:build` command override; `None` = detect from the project type.
     /// A project's `ruster.toml` still takes precedence over this.
     pub build_command: Option<String>,
@@ -696,6 +698,9 @@ impl Config {
             terminal_default_mode: st("terminal", "default_mode").unwrap_or(d.terminal_default_mode),
             dired_show_hidden: bl("dired", "show_hidden", d.dired_show_hidden),
             git_signs: bl("git", "signs", d.git_signs),
+            todo_keywords: st("todo", "keywords")
+                .map(|v| split_keywords(&v))
+                .unwrap_or(d.todo_keywords),
             build_command: ostr("build", "command"),
             test_command: ostr("test", "command"),
             dap_adapter: ostr("dap", "adapter"),
@@ -747,6 +752,18 @@ impl Config {
     }
 }
 
+/// Split a comma-separated keyword list, dropping blanks so a trailing comma or
+/// an empty setting doesn't produce a marker that matches everywhere.
+fn split_keywords(v: &str) -> Vec<String> {
+    v.split(',').map(|k| k.trim().to_string()).filter(|k| !k.is_empty()).collect()
+}
+
+/// The built-in marker set. Duplicated as strings rather than depending on
+/// `ruster-syntax` — `ruster-lua` sits below it in the crate graph.
+fn ruster_syntax_default_todo_keywords() -> Vec<String> {
+    ["TODO", "FIXME", "HACK", "NOTE", "XXX"].iter().map(|s| s.to_string()).collect()
+}
+
 impl Default for Config {
     fn default() -> Self {
         Config {
@@ -785,6 +802,7 @@ impl Default for Config {
             terminal_default_mode: "insert".into(),
             dired_show_hidden: false,
             git_signs: true,
+            todo_keywords: ruster_syntax_default_todo_keywords(),
             build_command: None,
             test_command: None,
             dap_adapter: None,

@@ -6,6 +6,7 @@ use crate::quickfix::{QuickfixItem, QuickfixList};
 use crate::renderer::TuiRenderer;
 use crate::settings::{SettingsState, SyntaxSeed};
 use crate::sidebar::{SidebarResponse, SidebarState};
+use crate::trouble::{Source as TroubleSource, TroubleItem, TroubleState};
 use ruster_core::action::{Action, EditOp, Motion};
 use ruster_core::buffer::Buffer;
 use ruster_core::cursor::CursorSet;
@@ -311,6 +312,17 @@ struct CmdlineCompletion {
 
 /// Build a sign column from a buffer's diagnostics: one glyph per line, the most
 /// severe (lowest severity number) winning when several land on the same line.
+/// The colour for a `TODO`-class keyword — the same amber the warning severity
+/// uses, so the gutter and the comment agree on what "needs attention" looks like.
+fn todo_style() -> ruster_render::SyntaxStyle {
+    ruster_render::SyntaxStyle {
+        fg: ruster_render::Color::Rgb(249, 226, 175),
+        bg: ruster_render::Color::Default,
+        bold: true,
+        italic: false,
+    }
+}
+
 fn diagnostics_to_signs(diags: &[ruster_lsp::Diagnostic]) -> ruster_render::SignsView {
     let mut best: std::collections::HashMap<u16, u8> = std::collections::HashMap::new();
     for d in diags {
@@ -521,6 +533,8 @@ enum CmdAction {
     /// Toggle the file-explorer sidebar (`:sidebar`).
     Sidebar,
     GitsignsToggle,
+    TodoList,
+    Trouble,
     /// Resize the sidebar to N columns (`:Sidebar resize N`).
     SidebarResize(u16),
     /// Toggle the Noice notification-stack panel (`:Noice`).
@@ -668,6 +682,7 @@ const PALETTE_COMMANDS: &[(&str, &str)] = &[
 
 #[derive(Clone, Copy)]
 enum LeaderAction {
+    Trouble,
     DebugStart,
     DebugToggleBreakpoint,
     DebugContinue,
@@ -777,6 +792,10 @@ static PROJECT_GROUP: &[(char, LeaderNode)] = &[
     ('p', LeaderNode::Action("switch project", LeaderAction::Projects)),
 ];
 
+static TROUBLE_GROUP: &[(char, LeaderNode)] = &[
+    ('x', LeaderNode::Action("problem list", LeaderAction::Trouble)),
+];
+
 static DEBUG_GROUP: &[(char, LeaderNode)] = &[
     ('d', LeaderNode::Action("start debugging", LeaderAction::DebugStart)),
     ('b', LeaderNode::Action("toggle breakpoint", LeaderAction::DebugToggleBreakpoint)),
@@ -803,6 +822,7 @@ static LEADER_ROOT: &[(char, LeaderNode)] = &[
     ('o', LeaderNode::Group("open", OPEN_GROUP)),
     ('p', LeaderNode::Group("project", PROJECT_GROUP)),
     ('d', LeaderNode::Group("debug", DEBUG_GROUP)),
+    ('x', LeaderNode::Group("diagnostics", TROUBLE_GROUP)),
     ('u', LeaderNode::Group("ui / toggle", UI_GROUP)),
     ('q', LeaderNode::Group("quit", QUIT_GROUP)),
 ];
@@ -1075,6 +1095,9 @@ pub struct App {
     /// Floating boxes drawn above the windows this frame. Rebuilt per frame by
     /// whatever owns them; empty most of the time.
     floats: Vec<ruster_render::FloatView>,
+    /// The aggregated problem list, and its pinned buffer.
+    trouble: TroubleState,
+    trouble_buf: Option<BufferId>,
     /// The file-explorer side panel.
     sidebar: SidebarState,
     /// The message log for editor/plugin messages.
@@ -1445,6 +1468,8 @@ impl App {
             git_tx: git_tx_init,
             git_signs: git_signs_init,
             floats: Vec::new(),
+            trouble: TroubleState::new(),
+            trouble_buf: None,
             sidebar: SidebarState::new(),
             messages: ruster_core::message::MessageLog::new(),
             messages_buf: None,
@@ -1657,6 +1682,15 @@ impl App {
         // command-line/search prompt (vim Cmdline or an Emacs isearch) is open,
         // or a search term containing a dired key (e.g. `d` in "docs") would be
         // hijacked. Unclaimed keys fall through to normal handling.
+        // The problem list claims Enter/Tab/r/q the same way dired claims its
+        // keys; everything else falls through so `:`, `/` and motions still work.
+        if self.active_is_trouble()
+            && self.vim.mode == VimMode::Normal
+            && self.emacs_isearch.is_none()
+            && self.handle_trouble_key(ck)
+        {
+            return;
+        }
         if self.active_is_dired()
             && self.vim.mode == VimMode::Normal
             && self.emacs_isearch.is_none()
@@ -2637,14 +2671,36 @@ impl App {
                     None => continue,
                 }
             };
-            if let Ok(engine) = SyntaxEngine::new(&content, &ext) {
+            if let Ok(mut engine) = SyntaxEngine::new(&content, &ext) {
+                engine.overlay_todo_highlights(&self.config.todo_keywords, todo_style());
                 self.syntax.insert(buf, engine);
             }
         }
         let active_content = self.ws.borrow().buffers.get(active).map(|d| d.buffer.to_string());
         if let (Some(c), Some(engine)) = (active_content.as_ref(), self.syntax.get_mut(&active)) {
             engine.reparse(c);
+            // reparse rebuilds the cached lines, so the overlay has to be reapplied.
+            engine.overlay_todo_highlights(&self.config.todo_keywords, todo_style());
         }
+    }
+
+    /// Every `TODO`-class marker in the open buffers, newest file first.
+    ///
+    /// Only buffers that already have a syntax engine are scanned — markers come
+    /// from the tree's comment captures, so a file with no grammar has none.
+    fn todo_markers(&self) -> Vec<(PathBuf, ruster_syntax::TodoMarker)> {
+        let mut out = Vec::new();
+        let w = self.ws.borrow();
+        for (&buf, engine) in &self.syntax {
+            let Some(path) = w.buffers.get(buf).and_then(|d| d.file_path.clone()) else {
+                continue;
+            };
+            for m in engine.todo_markers(&self.config.todo_keywords) {
+                out.push((path.clone(), m));
+            }
+        }
+        out.sort_by(|a, b| (&a.0, a.1.line).cmp(&(&b.0, b.1.line)));
+        out
     }
 
     /// Sync the active buffer to its language server (didOpen/didChange) and
@@ -3757,6 +3813,8 @@ impl App {
             "db_stop" if self.debug_session.is_some() => Ok(CmdAction::DebugStop),
             "db_toggle" | "B" => Ok(CmdAction::DebugToggleBreakpoint),
             "Gitsigns" | "gitsigns" => Ok(CmdAction::GitsignsToggle),
+            "TodoList" | "todolist" | "todo" => Ok(CmdAction::TodoList),
+            "Trouble" | "trouble" => Ok(CmdAction::Trouble),
             _ if trimmed == "sidebar" => Ok(CmdAction::Sidebar),
             _ if let Some(n) = trimmed.strip_prefix("sidebar resize ").and_then(|s| s.trim().parse::<u16>().ok()) => Ok(CmdAction::SidebarResize(n)),
             "Noice" | "noice" => Ok(CmdAction::NoicePanel),
@@ -3873,6 +3931,8 @@ impl App {
             CmdAction::Messages => self.open_messages(),
             CmdAction::MessagesFilter(filter) => self.apply_messages_filter(&filter),
             CmdAction::Projects => self.open_projects(),
+            CmdAction::TodoList => self.open_todo_list(),
+            CmdAction::Trouble => self.open_trouble(),
             CmdAction::GitsignsToggle => {
                 self.git_signs = !self.git_signs;
                 if self.git_signs {
@@ -5191,6 +5251,7 @@ impl App {
             LeaderAction::Dashboard => self.open_dashboard(),
             LeaderAction::Messages => self.open_messages(),
             LeaderAction::Projects => self.open_projects(),
+            LeaderAction::Trouble => self.open_trouble(),
             LeaderAction::DebugStart => self.debug_start(),
             LeaderAction::DebugToggleBreakpoint => self.debug_toggle_breakpoint(),
             LeaderAction::DebugContinue => self.debug_continue(),
@@ -5325,8 +5386,171 @@ impl App {
 
     /// `:copen` — refresh the quickfix list from diagnostics and show it as a
     /// picker; choosing an entry jumps to it.
+    /// Gather every problem the editor knows about: LSP diagnostics, the
+    /// quickfix list, and TODO markers.
+    ///
+    /// Deliberately re-read on each open rather than kept in sync — all three
+    /// sources change underneath, and a stale panel is worse than a slow one.
+    fn collect_trouble(&self) -> Vec<TroubleItem> {
+        let mut out = Vec::new();
+        {
+            let w = self.ws.borrow();
+            for (&buf, diags) in &self.diagnostics {
+                let Some(path) = w.buffers.get(buf).and_then(|d| d.file_path.clone()) else {
+                    continue;
+                };
+                for d in diags {
+                    out.push(TroubleItem {
+                        path: path.clone(),
+                        line: d.start.line as usize,
+                        col: d.start.character as usize,
+                        message: d.message.clone(),
+                        severity: d.severity,
+                        source: TroubleSource::Diagnostic,
+                    });
+                }
+            }
+        }
+        for q in self.quickfix.items() {
+            out.push(TroubleItem {
+                path: q.path.clone(),
+                line: q.line,
+                col: q.col,
+                message: q.message.clone(),
+                severity: q.severity,
+                source: TroubleSource::Quickfix,
+            });
+        }
+        for (path, m) in self.todo_markers() {
+            out.push(TroubleItem {
+                path,
+                line: m.line,
+                col: m.col,
+                message: if m.text.is_empty() {
+                    m.keyword.clone()
+                } else {
+                    format!("{}: {}", m.keyword, m.text)
+                },
+                severity: 3,
+                source: TroubleSource::Todo,
+            });
+        }
+        out
+    }
+
+    /// `:Trouble` / `SPC x x` — open (or refresh) the pinned problem list.
+    fn open_trouble(&mut self) {
+        let items = self.collect_trouble();
+        self.trouble.set_items(items);
+        let id = self.ensure_trouble_buffer();
+        self.refresh_trouble_buffer(id);
+        self.ws.borrow_mut().set_active_buffer(id);
+    }
+
+    fn ensure_trouble_buffer(&mut self) -> BufferId {
+        if let Some(id) = self.trouble_buf {
+            if self.ws.borrow().buffers.get(id).is_some() {
+                return id;
+            }
+        }
+        let id = self
+            .ws
+            .borrow_mut()
+            .buffers
+            .create_special(ruster_core::document::SpecialKind::Trouble, "*trouble*");
+        if let Some(doc) = self.ws.borrow_mut().buffers.get_mut(id) {
+            doc.pinned = true;
+        }
+        self.trouble_buf = Some(id);
+        id
+    }
+
+    fn refresh_trouble_buffer(&mut self, id: BufferId) {
+        let text = self.trouble.render(self.project_root.as_deref());
+        let mut w = self.ws.borrow_mut();
+        if let Some(doc) = w.buffers.get_mut(id) {
+            doc.buffer = Buffer::from_str(&text);
+            doc.modified = false;
+        }
+    }
+
+    fn active_is_trouble(&self) -> bool {
+        matches!(
+            self.ws.borrow().active_doc().kind,
+            DocKind::Special(ruster_core::document::SpecialKind::Trouble)
+        )
+    }
+
+    /// Keys while the problem list is focused. Unclaimed keys fall through, so
+    /// `:`, `/` and motions keep working over the listing.
+    fn handle_trouble_key(&mut self, ck: crossterm::event::KeyEvent) -> bool {
+        let row = {
+            let w = self.ws.borrow();
+            w.buffer().char_to_line(w.primary_head())
+        };
+        match ck.code {
+            KeyCode::Enter => {
+                if let Some((path, line, col)) = self.trouble.target_at(row) {
+                    self.open_path(&path, Some((line, col)));
+                }
+                true
+            }
+            KeyCode::Tab | KeyCode::Char('z') => {
+                self.trouble.toggle_at(row);
+                if let Some(id) = self.trouble_buf {
+                    self.refresh_trouble_buffer(id);
+                }
+                true
+            }
+            KeyCode::Char('r') => {
+                self.open_trouble();
+                true
+            }
+            KeyCode::Char('q') => {
+                self.delete_active_buffer();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// `:TodoList` — collect TODO-class markers into the quickfix list and open
+    /// it. Routing through quickfix means `]q`/`[q` and the Trouble panel get
+    /// them for free rather than each growing its own list.
+    fn open_todo_list(&mut self) {
+        let markers = self.todo_markers();
+        if markers.is_empty() {
+            self.echo_warn("No TODO markers in open buffers".to_string());
+            return;
+        }
+        let items: Vec<QuickfixItem> = markers
+            .into_iter()
+            .map(|(path, m)| QuickfixItem {
+                path,
+                line: m.line,
+                col: m.col,
+                message: if m.text.is_empty() {
+                    m.keyword.clone()
+                } else {
+                    format!("{}: {}", m.keyword, m.text)
+                },
+                // Info: a marker is a note to self, not a compiler complaint.
+                severity: 3,
+            })
+            .collect();
+        self.quickfix = QuickfixList::new(items);
+        self.open_quickfix_picker("TODO");
+    }
+
     fn open_quickfix(&mut self) {
         self.rebuild_quickfix_from_diagnostics();
+        self.open_quickfix_picker("Quickfix");
+    }
+
+    /// Show whatever is already in the quickfix list. Split out so callers that
+    /// populate it themselves — `:TodoList` — aren't overwritten by the
+    /// diagnostics rebuild.
+    fn open_quickfix_picker(&mut self, title: &str) {
         if self.quickfix.is_empty() {
             self.echo_warn("Quickfix list is empty".to_string());
             return;
@@ -5353,7 +5577,7 @@ impl App {
                 )
             })
             .collect();
-        self.picker = Some(PickerState::new("Quickfix", items));
+        self.picker = Some(PickerState::new(title, items));
     }
 
     /// Jump to the current quickfix entry and report the position in the list.
