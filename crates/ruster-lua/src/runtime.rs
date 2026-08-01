@@ -10,6 +10,10 @@ pub enum LuaAction {
     Cmd(String),
     Print(String),
     Notify(u8, String),  // 0=Info, 1=Success, 2=Warning, 3=Error
+    /// Show a modal form. Fields are `(label, kind, value, options)` where kind
+    /// is one of `toggle`/`text`/`number`/`select`; the app owns the widgets, so
+    /// Lua describes the form rather than drawing it.
+    Dialog { title: String, fields: Vec<(String, String, String, Vec<String>)> },
 }
 
 /// Callbacks the app installs so Lua can query and manipulate buffers and

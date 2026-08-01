@@ -1,3 +1,4 @@
+use crate::dialog::{DialogResponse, DialogState};
 use crate::dired::{DiredResponse, DiredState};
 use crate::file_prompt::{self, FilePrompt, PromptOrigin, PromptStep};
 use crate::key::crossterm_to_ruster_key;
@@ -1096,6 +1097,8 @@ pub struct App {
     /// Floating boxes drawn above the windows this frame. Rebuilt per frame by
     /// whatever owns them; empty most of the time.
     floats: Vec<ruster_render::FloatView>,
+    /// An open modal form, if any.
+    dialog: Option<DialogState>,
     /// The theme in force before a theme picker opened, restored on cancel.
     /// `Some` only while that picker is up, which is also how the picker knows
     /// to preview as the selection moves.
@@ -1473,6 +1476,7 @@ impl App {
             git_tx: git_tx_init,
             git_signs: git_signs_init,
             floats: Vec::new(),
+            dialog: None,
             theme_before_preview: None,
             trouble: TroubleState::new(),
             trouble_buf: None,
@@ -1615,6 +1619,11 @@ impl App {
         self.hover = None;
 
         // A dired file-operation prompt captures input until confirmed/cancelled.
+        // A modal dialog is modal: it takes every key until it closes.
+        if self.dialog.is_some() {
+            self.handle_dialog_key(ck);
+            return;
+        }
         if self.file_prompt.is_some() {
             self.handle_file_prompt_key(ck);
             return;
@@ -2529,6 +2538,29 @@ impl App {
                         MessageSource::Echo,
                         msg,
                     ));
+                }
+                LuaAction::Dialog { title, fields } => {
+                    let fields = fields
+                        .into_iter()
+                        .map(|(label, kind, value, options)| {
+                            let opts: Vec<&str> = options.iter().map(|s| s.as_str()).collect();
+                            match kind.as_str() {
+                                "toggle" => crate::dialog::Field::toggle(&label, value == "on"),
+                                "number" => crate::dialog::Field {
+                                    label,
+                                    kind: ruster_render::ControlKind::Number,
+                                    value,
+                                    options: Vec::new(),
+                                },
+                                "select" => crate::dialog::Field::select(&label, &opts, &value),
+                                // Anything unrecognised is a text field rather
+                                // than an error — a plugin typo should not stop
+                                // the dialog appearing.
+                                _ => crate::dialog::Field::text(&label, &value),
+                            }
+                        })
+                        .collect();
+                    self.dialog = Some(DialogState::new(title, fields));
                 }
                 LuaAction::Notify(level, text) => {
                     let notif_level = match level {
@@ -3699,6 +3731,7 @@ impl App {
             }
         }
         let state = FrameState {
+            dialog: self.dialog.as_ref().map(|d| d.view()),
             floats,
             windows: views,
             cmdline: cmdline.as_deref(),
@@ -4517,6 +4550,27 @@ impl App {
     }
 
     /// Handle a key while a dired file-operation prompt is active.
+    fn handle_dialog_key(&mut self, ck: crossterm::event::KeyEvent) {
+        let Some(d) = self.dialog.as_mut() else { return };
+        match d.handle_key(ck) {
+            DialogResponse::Pending => {}
+            DialogResponse::Cancelled => {
+                self.dialog = None;
+                self.echo("Cancelled");
+            }
+            DialogResponse::Submitted => {
+                let values = d.values();
+                self.dialog = None;
+                let summary = values
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                self.echo(format!("Submitted: {summary}"));
+            }
+        }
+    }
+
     /// Feed a key to the active file prompt, then commit or drop it.
     ///
     /// The refresh is dispatched on the prompt's recorded origin, so the surface

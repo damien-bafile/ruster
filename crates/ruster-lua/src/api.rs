@@ -81,6 +81,40 @@ pub fn create_table(runtime: &LuaRuntime) -> mlua::Result<Table> {
     statusline.set("section", section_fn)?;
     t.set("statusline", statusline)?;
 
+    // ruster.ui.dialog{ title = "...", fields = { {label=, kind=, value=, options=} } }
+    //
+    // NOTE: unusable from a real init.lua until the runtime's dangling-pointer
+    // bug is fixed — `LuaRuntime::new` hands `&runtime` to these closures as a
+    // raw pointer and then moves the struct out, so every `(*rt)` here reads
+    // freed memory. The same flaw affects `print`, `cmd` and `keymap`; this
+    // follows the existing idiom rather than inventing a second one, and both
+    // are fixed together.
+    let ui = runtime.lua.create_table()?;
+    let rt = runtime as *const LuaRuntime;
+    let dialog_fn = runtime.lua.create_function(move |_, spec: mlua::Table| {
+        let title: String = spec.get::<Option<String>>("title")?.unwrap_or_default();
+        let mut fields = Vec::new();
+        if let Ok(list) = spec.get::<mlua::Table>("fields") {
+            for f in list.sequence_values::<mlua::Table>().flatten() {
+                let label: String = f.get::<Option<String>>("label")?.unwrap_or_default();
+                let kind: String =
+                    f.get::<Option<String>>("kind")?.unwrap_or_else(|| "text".into());
+                let value: String = f.get::<Option<String>>("value")?.unwrap_or_default();
+                let mut options = Vec::new();
+                if let Ok(opts) = f.get::<mlua::Table>("options") {
+                    options.extend(opts.sequence_values::<String>().flatten());
+                }
+                fields.push((label, kind, value, options));
+            }
+        }
+        unsafe {
+            (*rt).pending.borrow_mut().push(runtime::LuaAction::Dialog { title, fields });
+        }
+        Ok(())
+    })?;
+    ui.set("dialog", dialog_fn)?;
+    t.set("ui", ui)?;
+
     // ruster.api table
     let api = runtime.lua.create_table()?;
 
