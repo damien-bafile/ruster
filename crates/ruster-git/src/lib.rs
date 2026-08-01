@@ -35,6 +35,108 @@ impl Hunk {
     }
 }
 
+/// A hunk in **raw diff coordinates**: both sides, 0-based, unadjusted.
+///
+/// Separate from [`Hunk`] on purpose. `Hunk` is the *gutter's* view — one side
+/// only, with a deletion pulled back onto the preceding line so it has somewhere
+/// to draw. A side-by-side diff needs the position the deletion actually
+/// occupies and needs the old side too, so it reads this instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiffHunk {
+    pub old_start: u32,
+    pub old_count: u32,
+    pub new_start: u32,
+    pub new_count: u32,
+}
+
+/// Parse `@@` headers into raw two-sided coordinates.
+///
+/// `@@ -old_start[,old_count] +new_start[,new_count] @@`, where an omitted count
+/// means 1 and a count of 0 means the range is empty — in which case git reports
+/// the 1-based position the lines *would* have taken, so the 0-based start is
+/// that number rather than one less.
+pub fn parse_diff_hunks(diff: &str) -> Vec<DiffHunk> {
+    diff.lines().filter_map(parse_diff_header).collect()
+}
+
+fn parse_diff_header(line: &str) -> Option<DiffHunk> {
+    let rest = line.strip_prefix("@@ ")?;
+    let end = rest.find(" @@")?;
+    let mut parts = rest[..end].split_whitespace();
+    let (old_start, old_count) = split_range(parts.next()?.strip_prefix('-')?)?;
+    let (new_start, new_count) = split_range(parts.next()?.strip_prefix('+')?)?;
+    // An empty range's reported position is already where the lines belong; a
+    // non-empty one is 1-based and needs converting.
+    let zero = |start: u32, count: u32| if count == 0 { start } else { start - 1 };
+    Some(DiffHunk {
+        old_start: zero(old_start, old_count),
+        old_count,
+        new_start: zero(new_start, new_count),
+        new_count,
+    })
+}
+
+/// Pair up the lines of the two sides so they render level with each other.
+///
+/// Returns one row per display line as `(old_line, new_line)`, 0-based, with
+/// `None` where that side has nothing — an added line has no old counterpart and
+/// a deleted one has no new counterpart. Unchanged runs pair 1:1, so the two
+/// panes stay in step and a hunk that adds more than it removes pushes both
+/// sides down together rather than sliding out of alignment.
+pub fn align(hunks: &[DiffHunk], old_len: u32, new_len: u32) -> Vec<(Option<u32>, Option<u32>)> {
+    let mut rows = Vec::new();
+    let (mut o, mut n) = (0u32, 0u32);
+    let mut sorted: Vec<DiffHunk> = hunks.to_vec();
+    sorted.sort_by_key(|h| (h.new_start, h.old_start));
+
+    for h in sorted {
+        // Context before the hunk, which corresponds line for line.
+        while o < h.old_start && n < h.new_start {
+            rows.push((Some(o), Some(n)));
+            o += 1;
+            n += 1;
+        }
+        // The hunk itself: both sides run in parallel, the shorter one padded.
+        for i in 0..h.old_count.max(h.new_count) {
+            let old = (i < h.old_count).then(|| h.old_start + i);
+            let new = (i < h.new_count).then(|| h.new_start + i);
+            rows.push((old, new));
+        }
+        o = h.old_start + h.old_count;
+        n = h.new_start + h.new_count;
+    }
+
+    // Trailing context, then whatever is left over if the two disagree.
+    while o < old_len && n < new_len {
+        rows.push((Some(o), Some(n)));
+        o += 1;
+        n += 1;
+    }
+    while o < old_len {
+        rows.push((Some(o), None));
+        o += 1;
+    }
+    while n < new_len {
+        rows.push((None, Some(n)));
+        n += 1;
+    }
+    rows
+}
+
+/// The committed contents of `path` at HEAD, or `None` when the file is
+/// untracked, HEAD does not exist (an empty repository), or git is unavailable.
+pub fn file_at_head(root: &Path, path: &Path) -> Option<String> {
+    let rel = path.strip_prefix(root).unwrap_or(path);
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .arg("show")
+        .arg(format!("HEAD:{}", rel.to_str()?.replace('\\', "/")))
+        .output()
+        .ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
 /// Parse the hunk headers out of `git diff --no-color -U0` output.
 ///
 /// Only `@@` lines matter at `-U0`: with no context, every header's line counts
@@ -48,39 +150,25 @@ impl Hunk {
 ///   sign goes on the line above the gap (see below).
 /// - otherwise the new lines replaced old ones, so they are **modified**.
 pub fn parse_hunks(diff: &str) -> Vec<Hunk> {
-    diff.lines().filter_map(parse_hunk_header).collect()
+    parse_diff_hunks(diff).into_iter().map(Hunk::from).collect()
 }
 
-fn parse_hunk_header(line: &str) -> Option<Hunk> {
-    let rest = line.strip_prefix("@@ ")?;
-    let end = rest.find(" @@")?;
-    let mut parts = rest[..end].split_whitespace();
-    let old = parts.next()?.strip_prefix('-')?;
-    let new = parts.next()?.strip_prefix('+')?;
-    let (_, old_count) = split_range(old)?;
-    let (new_start, new_count) = split_range(new)?;
-
-    Some(if old_count == 0 {
-        Hunk {
-            kind: HunkKind::Added,
-            // `+N,M` counts from 1; the gutter indexes from 0.
-            start: new_start.saturating_sub(1),
-            count: new_count,
+impl From<DiffHunk> for Hunk {
+    /// Reduce a two-sided hunk to the gutter's one-sided view.
+    fn from(h: DiffHunk) -> Hunk {
+        if h.old_count == 0 {
+            Hunk { kind: HunkKind::Added, start: h.new_start, count: h.new_count }
+        } else if h.new_count == 0 {
+            // A deletion leaves no lines to mark, so the sign goes on the line
+            // above the gap. `new_start` is where the removed lines *would* have
+            // sat, so stepping back one both lands on the preceding line and
+            // keeps a deletion at end-of-file inside the buffer, instead of one
+            // line past it where it would never render.
+            Hunk { kind: HunkKind::Removed, start: h.new_start.saturating_sub(1), count: 0 }
+        } else {
+            Hunk { kind: HunkKind::Modified, start: h.new_start, count: h.new_count }
         }
-    } else if new_count == 0 {
-        // A deletion leaves no lines to mark, so the sign goes on the line above
-        // the gap. git reports the 1-based position the removed lines *would*
-        // have occupied, so subtracting one both converts to 0-based and steps
-        // onto the preceding line — which keeps a deletion at end-of-file inside
-        // the buffer instead of one line past it, where it would never render.
-        Hunk { kind: HunkKind::Removed, start: new_start.saturating_sub(1), count: 0 }
-    } else {
-        Hunk {
-            kind: HunkKind::Modified,
-            start: new_start.saturating_sub(1),
-            count: new_count,
-        }
-    })
+    }
 }
 
 /// `start[,count]` — an absent count means 1, as in the diff format.
@@ -95,6 +183,12 @@ fn split_range(s: &str) -> Option<(u32, u32)> {
 /// path is untracked, or the command fails — all of which are normal and must
 /// not surface as errors.
 pub fn diff_hunks(root: &Path, path: &Path) -> Option<Vec<Hunk>> {
+    Some(parse_hunks(&raw_diff(root, path)?))
+}
+
+/// `git diff --no-color -U0` for one path, or `None` when git is unavailable,
+/// the path is untracked, or the command fails — all normal, none an error.
+fn raw_diff(root: &Path, path: &Path) -> Option<String> {
     let out = Command::new("git")
         .arg("-C")
         .arg(root)
@@ -102,10 +196,12 @@ pub fn diff_hunks(root: &Path, path: &Path) -> Option<Vec<Hunk>> {
         .arg(path)
         .output()
         .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    Some(parse_hunks(&String::from_utf8_lossy(&out.stdout)))
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// [`diff_hunks`] in raw two-sided coordinates, for the side-by-side view.
+pub fn diff_hunks_two_sided(root: &Path, path: &Path) -> Option<Vec<DiffHunk>> {
+    Some(parse_diff_hunks(&raw_diff(root, path)?))
 }
 
 /// Whether `root` looks like a git working tree. Cheap enough to call on a
@@ -261,5 +357,98 @@ index 1..2 100644
     fn navigation_on_an_unchanged_file_finds_nothing() {
         assert!(next_hunk(&[], 3).is_none());
         assert!(prev_hunk(&[], 3).is_none());
+    }
+
+    #[test]
+    fn diff_hunks_keep_both_sides_unadjusted() {
+        let h = parse_diff_hunks(SAMPLE);
+        assert_eq!(h.len(), 3);
+        // `@@ -12 +12 @@` — one line replaced one, both 1-based.
+        assert_eq!(h[0], DiffHunk { old_start: 11, old_count: 1, new_start: 11, new_count: 1 });
+        // `@@ -20,0 +21,3 @@` — the old side is empty, so its position is as
+        // reported rather than one less.
+        assert_eq!(h[1], DiffHunk { old_start: 20, old_count: 0, new_start: 20, new_count: 3 });
+        // `@@ -30,2 +32,0 @@` — and the new side is the empty one here.
+        assert_eq!(h[2], DiffHunk { old_start: 29, old_count: 2, new_start: 32, new_count: 0 });
+    }
+
+    /// An unchanged file is one row per line, both sides in step.
+    #[test]
+    fn align_pairs_unchanged_lines_one_to_one() {
+        let rows = align(&[], 3, 3);
+        assert_eq!(rows, [(Some(0), Some(0)), (Some(1), Some(1)), (Some(2), Some(2))]);
+    }
+
+    /// The case the panes have to survive: a hunk that removes two lines and
+    /// adds five. The short side pads, and — the point of the whole exercise —
+    /// the context *after* the hunk is still level on both sides.
+    #[test]
+    fn align_pads_the_short_side_of_an_unbalanced_hunk() {
+        // 6-line old file, 9-line new file: lines 2-3 became lines 2-6.
+        let h = DiffHunk { old_start: 2, old_count: 2, new_start: 2, new_count: 5 };
+        let rows = align(&[h], 6, 9);
+
+        assert_eq!(&rows[..2], &[(Some(0), Some(0)), (Some(1), Some(1))], "context before");
+        assert_eq!(
+            &rows[2..7],
+            &[
+                (Some(2), Some(2)),
+                (Some(3), Some(3)),
+                (None, Some(4)),
+                (None, Some(5)),
+                (None, Some(6)),
+            ],
+            "the old side runs out and pads"
+        );
+        assert_eq!(
+            &rows[7..],
+            &[(Some(4), Some(7)), (Some(5), Some(8))],
+            "context after is level again despite the offset"
+        );
+    }
+
+    #[test]
+    fn align_handles_a_pure_addition_and_a_pure_deletion() {
+        // Three lines added after the first: the old side pads.
+        let add = DiffHunk { old_start: 1, old_count: 0, new_start: 1, new_count: 3 };
+        let rows = align(&[add], 1, 4);
+        assert_eq!(rows[0], (Some(0), Some(0)));
+        assert_eq!(&rows[1..], &[(None, Some(1)), (None, Some(2)), (None, Some(3))]);
+
+        // Two lines deleted: the new side pads instead.
+        let del = DiffHunk { old_start: 1, old_count: 2, new_start: 1, new_count: 0 };
+        let rows = align(&[del], 3, 1);
+        assert_eq!(rows, [(Some(0), Some(0)), (Some(1), None), (Some(2), None)]);
+    }
+
+    /// Every line of both files must appear exactly once, whatever the hunks —
+    /// otherwise a pane silently drops content.
+    #[test]
+    fn align_never_loses_or_repeats_a_line() {
+        let hunks = [
+            DiffHunk { old_start: 1, old_count: 2, new_start: 1, new_count: 1 },
+            DiffHunk { old_start: 6, old_count: 0, new_start: 5, new_count: 3 },
+        ];
+        let (old_len, new_len) = (9, 11);
+        let rows = align(&hunks, old_len, new_len);
+        let olds: Vec<u32> = rows.iter().filter_map(|r| r.0).collect();
+        let news: Vec<u32> = rows.iter().filter_map(|r| r.1).collect();
+        assert_eq!(olds, (0..old_len).collect::<Vec<_>>(), "old side complete and in order");
+        assert_eq!(news, (0..new_len).collect::<Vec<_>>(), "new side complete and in order");
+    }
+
+    #[test]
+    fn align_handles_empty_files() {
+        assert!(align(&[], 0, 0).is_empty());
+        assert_eq!(align(&[], 0, 2), [(None, Some(0)), (None, Some(1))], "a new file");
+        assert_eq!(align(&[], 2, 0), [(Some(0), None), (Some(1), None)], "a deleted file");
+    }
+
+    /// Hunks arrive in order from git, but alignment must not depend on it.
+    #[test]
+    fn align_sorts_hunks_before_walking_them() {
+        let a = DiffHunk { old_start: 0, old_count: 1, new_start: 0, new_count: 2 };
+        let b = DiffHunk { old_start: 4, old_count: 1, new_start: 5, new_count: 1 };
+        assert_eq!(align(&[a, b], 6, 7), align(&[b, a], 6, 7));
     }
 }
