@@ -397,9 +397,17 @@ not an identity. Replacing it is one PNG and `just icon`.
 
 ### Task 15: Wire it up per platform
 
-- [ ] **Runtime window icon** — `RaylibHandle::set_window_icon`, so the running
-      window and the dock/taskbar entry stop showing the default. Cheapest win
-      and works on all three platforms; do this one first.
+- [x] **Runtime window icon** — embedded with `include_bytes!` rather than read
+      from a path, which would work from a bundle and fail from `cargo run`.
+      Downscaled to 64px before handing it over: this becomes a taskbar entry,
+      and a megapixel image for a 32px slot wastes memory and scales worse.
+
+      Honest about reach: this is a **no-op on macOS**. GLFW cannot set a window
+      icon there and the Dock reads the `.icns` from the bundle, which is
+      already wired. So it is the Windows and Linux window/taskbar entry that
+      this actually fixes, and the visual result cannot be checked on this
+      machine. What was checked is that the GUI still launches and renders with
+      the call in place.
 - [x] **macOS** — `scripts/bundle-macos.sh` and `just bundle`. Verified: macOS
       reports `bundleID="dev.ruster.editor"`, names the app *ruster*, and the
       bundled binary opens a window. Ad-hoc codesigned, because Apple silicon
@@ -407,12 +415,42 @@ not an identity. Replacing it is one PNG and `just icon`.
       needs Apple Event handling, since a bundled app receives files by `odoc`
       rather than argv, and declaring the types without it would advertise
       something broken.
-- [ ] **Windows** — `.ico` embedded in the executable via a build script
-      (`embed-resource` or `winres`).
-- [ ] **Linux** — hicolor PNGs plus a `.desktop` entry.
-- [ ] Tests: the asset is present and non-empty, and the build script runs on
-      the platform that needs it. Nobody can test "looks right" — that is a
-      look, and the `gui-check` skill is how to take it.
+- [x] **Windows** — a multi-resolution `.ico` (256/128/64/48/32/16) embedded via
+      `embed-resource` in `crates/ruster-bin/build.rs`. Windows reads a
+      program's icon from its resource table rather than a file beside it, and
+      picks per context — 16px in the tray, 32px in the taskbar, 256px in
+      Explorer — so a single size would be scaled badly in most of them.
+
+      Gated on `cfg(windows)`, the **host**, not the target: build scripts
+      compile for the host and `embed-resource` is only a dependency there.
+      Cross-compiling from another host therefore yields no embedded icon,
+      which is better than failing the build. A missing `.ico` warns rather
+      than errors, for the same reason.
+
+      Unverifiable locally — the branch does not compile on macOS at all, by
+      construction. CI's `windows-latest` job is what exercises it, and the
+      asset guard checks the `.rc` points at a file that exists so the failure
+      surfaces here rather than only there.
+- [x] **Linux** — `assets/ruster.desktop` plus hicolor PNGs at seven sizes, and
+      `scripts/install-linux.sh` to place them. Per-user (`$XDG_DATA_HOME`)
+      rather than `/usr/share`: no sudo, nothing for a package manager to own,
+      and it suits a machine where ruster was built rather than packaged.
+
+      `Exec=ruster %F`, not `%f` — ruster takes several paths, and a file
+      manager passing two files should open both rather than launching twice.
+- [x] Tests: `ruster-render-raylib/tests/icon_assets.rs`, 7 of them. Each reads
+      the file's **magic bytes** rather than trusting its extension, because the
+      way `just icon` fails on a machine without ImageMagick is a truncated file
+      with the right name. They also pin that the embedded PNG *is* the master,
+      that the `.ico` holds several resolutions, and that the `.desktop` entry
+      names a bare `Icon=ruster` rather than a path into a source tree that will
+      not be there once it is installed.
+
+      Nobody can test "looks right" — that is a look, and `gui-check` is how to
+      take it.
+
+- [x] `just icon` now derives all three platforms' assets from the one master,
+      so replacing the artwork stays one PNG and one command.
 
 ---
 
