@@ -151,6 +151,38 @@ Plan: [docs/superpowers/plans/2026-08-02-phase8-finetuning.md](docs/superpowers/
 
 ---
 
+## Phase 9: Cleanup
+*(Leftovers from Phases 6–8 — deferred work now unblocked, and small features the plans parked)*
+
+| Item | What |
+| :--- | :--- |
+| **Which-key key accent** | `WhichKeyView::rows` → `Vec<WhichKeyEntry {key, desc}>` so the key letter takes its own `colors.whichkey_key`; teach both backends. |
+| **Notification popup backends** | Re-introduce `BackendKind::{CmdlinePopup, Popup, Confirm}` now that floats render; `Confirm` as a modal dialog. |
+| **`:hover` GUI capture** | Unblocked by `ruster.defer` (PR #59): deferred `:screenshot` after an LSP round-trip. |
+| **Raylib GUI surface check** | Verify sidebar, debugger overlay and noice toast with the `gui-check` skill. |
+| **`:Music`** | Control a running `mpd` over its plain-text protocol. **Decide at execution** — Phase 7 called it the least defensible feature. |
+| **`:Browse <url>`** | Text-mode HTTP fetch rendered as markup, reusing the `:help` path. Both backends, no engine. |
+| **Email (compose-only)** | Editor buffer handed to `mailto:`/`sendmail`. No IMAP, no credentials. |
+| **Doc hygiene** | Tick the completed-but-unticked plan boxes (Phase 6 T10/T11); close stale status headers. |
+
+Plan: [docs/superpowers/plans/2026-08-02-phase9-cleanup.md](docs/superpowers/plans/2026-08-02-phase9-cleanup.md)
+
+---
+
+## Phase 10: Verification
+*(Capture every user-visible surface in both backends, committed as artifacts — the check, not the build)*
+
+| Area | What |
+| :--- | :--- |
+| **Harness** | `scripts/verify-capture.sh` + `just verify <surface>`: TUI via tmux `capture-pane`, GUI via the gui-check recipe, defer-driven where a round-trip must settle. |
+| **Surface matrix** | ~32 user-visible surfaces (dashboard, editor, statusline, gutter, sidebar, git, diffview, trouble, todos, which-key, dialog, hover, settings, themes, help, sessions, Mason, terminal, debugger, flash, etc.), each captured in **both** backends. |
+| **Artifacts** | `docs/verification/<surface>-tui.txt` and `<surface>-gui.png`, committed, with a README per surface and a status matrix in the plan. |
+| **Defect routing** | A capture showing a defect becomes a Phase 9 bug entry — fix there, recapture. The matrix is not done until no row is red. |
+
+Plan: [docs/superpowers/plans/2026-08-02-phase10-verification.md](docs/superpowers/plans/2026-08-02-phase10-verification.md)
+
+---
+
 ## Cross-Cutting Technical Decisions
 
 - **Configuration**: Stored in `~/.config/ruster/ruster.toml` (TOML) with Lua overrides for dynamic logic.
