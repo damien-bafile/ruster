@@ -1125,6 +1125,14 @@ pub struct App {
     /// Buffers we've already attempted to build a syntax engine for, so an
     /// unsupported filetype isn't retried every frame.
     syntax_tried: std::collections::HashSet<BufferId>,
+    /// The buffer revision each engine was last parsed at, so an unchanged
+    /// buffer is not re-parsed every frame.
+    syntax_revision: std::collections::HashMap<BufferId, u64>,
+    /// How many reparses have actually run. The dirty check is a performance
+    /// guard, and a guard whose effect nothing observes is one that can be
+    /// removed without any test noticing — as a mutation of the condition
+    /// demonstrated.
+    syntax_reparses: u64,
     lua: LuaRuntime,
     config: Config,
     timer: FrameTimer,
@@ -1586,7 +1594,9 @@ impl App {
         }
         let mut app = App {
             ws, vim, renderer,
-            should_quit: false, syntax, syntax_tried, lua, config, timer, notify,
+            should_quit: false, syntax, syntax_tried,
+            syntax_revision: std::collections::HashMap::new(),
+            syntax_reparses: 0, lua, config, timer, notify,
             has_smooth_cursor: false, cursor_anim, pending_ctrl_w: false, picker: None,
             leader_pending: None,
             pending_results: None,
@@ -2946,11 +2956,24 @@ impl App {
                 self.syntax.insert(buf, engine);
             }
         }
-        let active_content = self.ws.borrow().buffers.get(active).map(|d| d.buffer.to_string());
-        if let (Some(c), Some(engine)) = (active_content.as_ref(), self.syntax.get_mut(&active)) {
-            engine.reparse(c);
-            // reparse rebuilds the cached lines, so the overlay has to be reapplied.
-            engine.overlay_todo_highlights(&self.config.todo_keywords, todo_style());
+        // Only reparse when the text actually changed. This runs from `render`,
+        // so without the guard a 10k-line file re-parsed every frame: 107 ms
+        // against a 16.7 ms budget, or about 7 fps, for a buffer nobody had
+        // touched.
+        let revision = self.ws.borrow().buffers.get(active).map(|d| d.buffer.revision());
+        let stale = revision.is_some_and(|r| self.syntax_revision.get(&active) != Some(&r));
+        if stale {
+            let content = self.ws.borrow().buffers.get(active).map(|d| d.buffer.to_string());
+            if let (Some(c), Some(engine)) = (content.as_ref(), self.syntax.get_mut(&active)) {
+                engine.reparse(c);
+                self.syntax_reparses += 1;
+                // reparse rebuilds the cached lines, so the overlay has to be
+                // reapplied — and it is not cheap either (22 ms on that file).
+                engine.overlay_todo_highlights(&self.config.todo_keywords, todo_style());
+                if let Some(r) = revision {
+                    self.syntax_revision.insert(active, r);
+                }
+            }
         }
     }
 
@@ -10162,6 +10185,52 @@ index 1..2 100644
         let w = a.ws.borrow();
         let diffs = w.buffers.ids().iter().filter(|&&id| a.is_diff_buffer(&w, id)).count();
         assert_eq!(diffs, 0, "no panes opened");
+    }
+
+    /// The guard that took a 10k-line file from ~7 fps to full speed: an
+    /// untouched buffer must not be re-parsed, and a touched one must be.
+    ///
+    /// Counts reparses rather than inspecting the recorded revision — the
+    /// record looks identical whether or not the work was skipped, so asserting
+    /// on it passes even with the condition mutated to `true`.
+    #[test]
+    fn an_unchanged_buffer_is_not_reparsed() {
+        let mut a = App::new("fn main() {}\n".into(), PathBuf::from("f.rs"));
+        a.update_syntax();
+        let after_first = a.syntax_reparses;
+        assert!(after_first >= 1, "the first pass parses");
+
+        // Nothing changed: no work.
+        a.update_syntax();
+        a.update_syntax();
+        assert_eq!(a.syntax_reparses, after_first, "an untouched buffer is not reparsed");
+
+        // An edit earns exactly one reparse, however many passes follow.
+        let buf = a.ws.borrow().active_buffer();
+        {
+            let mut w = a.ws.borrow_mut();
+            w.buffers.get_mut(buf).unwrap().buffer.insert(0, "// x\n");
+        }
+        a.update_syntax();
+        a.update_syntax();
+        assert_eq!(a.syntax_reparses, after_first + 1, "one edit, one reparse");
+    }
+
+    /// The point of the guard is that highlighting still tracks edits.
+    #[test]
+    fn highlighting_follows_an_edit() {
+        let mut a = App::new("fn a() {}\n".into(), PathBuf::from("f.rs"));
+        a.update_syntax();
+        let buf = a.ws.borrow().active_buffer();
+        let before = a.syntax.get(&buf).map(|e| e.styled_lines().len()).unwrap_or(0);
+
+        {
+            let mut w = a.ws.borrow_mut();
+            w.buffers.get_mut(buf).unwrap().buffer.insert(0, "fn b() {}\n");
+        }
+        a.update_syntax();
+        let after = a.syntax.get(&buf).map(|e| e.styled_lines().len()).unwrap_or(0);
+        assert!(after > before, "the new line is highlighted too ({before} -> {after})");
     }
 
     #[test]

@@ -116,7 +116,7 @@ panel.
 
 ## Stage 3 — Performance, where it is actually spent
 
-### Task 9: Incremental parsing
+### Task 9: Incremental parsing — **measured; the guard landed first**
 
 The single largest win available, and currently switched off.
 
@@ -127,13 +127,35 @@ let mut parser = tree_sitter::Parser::new();   // fresh parser, every frame
 parser.parse(text, None)                        // full reparse — no old tree
 ```
 
+**Measured 2026-08-02** on `crates/ruster-tui/src/app.rs` (10,294 lines), via
+`cargo run --release -p ruster-syntax --example parse_bench`:
+
+| | per call |
+| --- | --- |
+| `reparse` | **106 ms** |
+| TODO overlay | **21 ms** |
+| rope `to_string` | 0.03 ms |
+
+Against a 16.7 ms frame budget that is roughly **7 fps** for a buffer nobody had
+touched. The `to_string` worry in the original bullet was wrong — it is
+negligible, and the plan said so before anyone measured.
+
+- [x] **Skip the work entirely when nothing changed.** `Buffer` gains a
+      revision counter, and `update_syntax` reparses only when it moves. This
+      was not in the original plan and is worth more than everything else in
+      this task: idle frames go from 127 ms to nothing.
 - [ ] Reuse one `Parser` rather than allocating per frame.
 - [ ] Track edits as `InputEdit` and pass `Some(&old_tree)`, which is the whole
       point of tree-sitter and is what `None` here discards.
 - [ ] `buffer.to_string()` also materialises the entire rope each frame to feed
       it; consider a chunk-based callback.
-- [ ] Measure first and after. **Do not** reach for threads before this: the
-      work being parallelised should not exist.
+- [x] Measure first. **Do not** reach for threads before this: the work being
+      parallelised should not exist.
+
+**Still worth doing.** The guard fixes idle, not typing: every keystroke in a
+10k-line file still costs ~127 ms, which is a visible stall. Incremental
+parsing is what fixes that, and it needs `InputEdit` plumbed from the edit path
+into `reparse` — a bigger change, kept separate deliberately.
 
 ---
 

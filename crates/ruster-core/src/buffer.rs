@@ -9,6 +9,14 @@ pub struct Change {
 
 pub struct Buffer {
     rope: Rope,
+    /// Bumped on every mutation, so a consumer can tell "unchanged since I last
+    /// looked" without comparing contents.
+    ///
+    /// Exists because syntax highlighting re-parsed the whole buffer *every
+    /// frame* — 107 ms on a 10k-line file, against a 16.7 ms budget — with no
+    /// way to know nothing had changed. Comparing text would be the same O(n)
+    /// walk the reparse was doing.
+    revision: u64,
 }
 
 impl std::fmt::Display for Buffer {
@@ -18,10 +26,14 @@ impl std::fmt::Display for Buffer {
 }
 
 impl Buffer {
-    pub fn new() -> Self { Self { rope: Rope::new() } }
+    pub fn new() -> Self { Self { rope: Rope::new(), revision: 0 } }
     // An infallible constructor, not the fallible `FromStr` trait.
     #[allow(clippy::should_implement_trait)]
-    pub fn from_str(s: &str) -> Self { Self { rope: Rope::from_str(s) } }
+    pub fn from_str(s: &str) -> Self { Self { rope: Rope::from_str(s), revision: 0 } }
+
+    /// A counter that changes whenever the text does. Equal revisions mean
+    /// equal contents; unequal ones mean it *may* have changed.
+    pub fn revision(&self) -> u64 { self.revision }
 
     pub fn len_chars(&self) -> usize { self.rope.len_chars() }
     pub fn line_count(&self) -> usize { self.rope.len_lines() }
@@ -60,6 +72,7 @@ impl Buffer {
 
     pub fn insert(&mut self, at: usize, text: &str) -> Change {
         self.rope.insert(at, text);
+        self.revision += 1;
         Change { at, deleted: String::new(), inserted: text.to_string() }
     }
 
@@ -67,6 +80,7 @@ impl Buffer {
         let deleted = self.rope.slice(range.clone()).to_string();
         let at = range.start;
         self.rope.remove(range);
+        self.revision += 1;
         Change { at, deleted, inserted: String::new() }
     }
 
@@ -117,4 +131,42 @@ mod tests {
         assert_eq!(b.to_string(), "llo");
         assert_eq!(inv2, ch);
     }
+
+#[cfg(test)]
+mod revision_tests {
+    use super::*;
+
+    #[test]
+    fn the_revision_changes_only_when_the_text_does() {
+        let mut b = Buffer::from_str("hello");
+        let start = b.revision();
+
+        // Reads do not count as changes.
+        let _ = b.to_string();
+        let _ = b.line_count();
+        assert_eq!(b.revision(), start, "reading is not a change");
+
+        b.insert(5, " world");
+        let after_insert = b.revision();
+        assert_ne!(after_insert, start, "an insert is a change");
+
+        b.delete(0..1);
+        assert_ne!(b.revision(), after_insert, "a delete is a change");
+    }
+
+    /// Two edits must not collide onto one revision, or the second is missed.
+    #[test]
+    fn every_edit_gets_its_own_revision() {
+        let mut b = Buffer::new();
+        let mut seen = vec![b.revision()];
+        for i in 0..5 {
+            b.insert(i, "x");
+            seen.push(b.revision());
+        }
+        let mut sorted = seen.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), seen.len(), "revisions repeat: {seen:?}");
+    }
+}
 }
