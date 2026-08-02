@@ -219,11 +219,46 @@ by −4.3%, while moving `App`'s cross-crate *field references* changed it by
 −91%. That number measures being the composition root, which every application
 has. Method count and line count are the metrics that track the real problem.
 
-- [ ] Extract the LSP glue (14 methods) and the DAP glue (9) — both are already
-      separate crates, so these are the least entangled.
-- [ ] Extract the git surface, which Phase 7 added wholesale.
-- [ ] Follow the `sidebar`/`dired`/`trouble` shape: state in its own module, one
-      field on `App`, a thin adapter.
+- [x] **LSP state extracted** to `crates/ruster-tui/src/lsp_state.rs`. Four
+      fields — the manager, per-buffer document sync, the diagnostics map and
+      the in-flight request table — became one, behind an API that names what
+      they are for.
+
+      | | before | after |
+      | --- | --- | --- |
+      | `App` fields | 70 | **67** |
+      | `app.rs` non-test lines | 7,673 | **7,633** |
+      | methods in `impl App` | 188 | 188 |
+
+      **The method count did not move, and that is the honest result.** This
+      extracted *state*, not the fourteen `lsp_*` methods. Those build request
+      parameters from the cursor and then interpret replies by jumping windows,
+      opening pickers and writing the quickfix list — moving them wholesale
+      would relocate the entanglement rather than remove it. What moved is the
+      part with a real boundary; the methods now talk to a named interface
+      instead of four bare maps, which is the prerequisite for moving them.
+
+      Generic over the pending-action type, so `App`'s `LspAction` stays where
+      it is dispatched rather than dragging the response `match` along with it.
+
+      One invariant became the module's job rather than each caller's:
+      `forget()` clears the document registration *and* the diagnostics, which
+      were previously two lines a caller had to remember to keep together.
+
+- [x] Seven unit tests, including that pending requests are keyed by
+      `(language, id)` — request ids are only unique per server, so keying on
+      the id alone hands one server's reply to another's request.
+
+- [x] A test was quietly weakened by the new API and is now stronger: it
+      asserted a diagnostics key was *absent* after closing a buffer, but the
+      accessor reports absent and empty alike, and the test inserted an empty
+      vector. It would have passed whether or not anything was dropped. It now
+      inserts a real diagnostic.
+
+- [ ] **DAP (9 methods) and the git surface still to do.** Stopped here
+      deliberately rather than rushing two more extractions at the end of a long
+      session — this is the file every other change touches, and a botched
+      refactor here is expensive to unpick.
 
 ---
 

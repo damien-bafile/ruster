@@ -5,6 +5,7 @@ pub mod file_prompt;
 pub mod git_status;
 pub mod help;
 pub mod key;
+pub mod lsp_state;
 pub mod mason;
 pub mod picker;
 pub mod quickfix;

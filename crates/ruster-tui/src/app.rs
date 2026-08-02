@@ -29,7 +29,7 @@ use ruster_render::{
     StatuslineView, StyledLine, SyntaxStyle, WelcomeView, WhichKeyView, WindowView,
 };
 use ruster_syntax::SyntaxEngine;
-use ruster_lsp::{LspManager, LspPosition, ServerMessage};
+use ruster_lsp::{LspPosition, ServerMessage};
 use ruster_terminal::{encode_key, Key as TKey, Mods as TMods, TerminalSession};
 use std::cell::RefCell;
 use std::io::IsTerminal;
@@ -992,14 +992,6 @@ enum LspAction {
     CallHierarchy(bool),
 }
 
-/// Per-buffer LSP document state (registered with `didOpen`).
-struct LspDoc {
-    uri: String,
-    lang: String,
-    version: i64,
-    /// Last text synced to the server, to detect changes for `didChange`.
-    synced: String,
-}
 
 /// Resolve a full leader sequence: is it a group prefix, a complete action, or
 /// an unknown/invalid path?
@@ -1171,13 +1163,8 @@ pub struct App {
     /// dired and the sidebar.
     file_prompt: Option<FilePrompt>,
     /// Language server manager (one server per language).
-    lsp: LspManager,
-    /// Per-buffer LSP document registration state.
-    lsp_docs: std::collections::HashMap<BufferId, LspDoc>,
-    /// Diagnostics per buffer, from `publishDiagnostics`.
-    diagnostics: std::collections::HashMap<BufferId, Vec<ruster_lsp::Diagnostic>>,
-    /// Outstanding LSP requests: (lang, request id) -> what to do with the reply.
-    lsp_pending: std::collections::HashMap<(String, i64), LspAction>,
+    /// Language servers, document sync, diagnostics and in-flight requests.
+    lsp: crate::lsp_state::LspState<LspAction>,
     /// Hover popup contents (syntax-highlighted lines), shown until the next key.
     hover: Option<Vec<StyledLine>>,
     /// Loaded snippet definitions (built-in + `~/.config/ruster/snippets/`).
@@ -1480,7 +1467,7 @@ impl App {
 
         lua.fire_event("VimEnter", &[]);
         // Apply Lua LSP server overrides (ruster.lsp.servers).
-        let mut lsp = LspManager::new();
+        let mut lsp: crate::lsp_state::LspState<LspAction> = crate::lsp_state::LspState::new();
         for (lang, cmd, args) in lua.lsp_servers() {
             lsp.set_server(&lang, ruster_lsp::ServerConfig { cmd, args });
         }
@@ -1610,9 +1597,6 @@ impl App {
             dired: DiredState::new(dired_show_hidden),
             file_prompt: None,
             lsp,
-            lsp_docs: std::collections::HashMap::new(),
-            diagnostics: std::collections::HashMap::new(),
-            lsp_pending: std::collections::HashMap::new(),
             hover: None,
             snippets: {
                 let mut s = ruster_core::snippets::SnippetSet::builtin();
@@ -3032,7 +3016,7 @@ impl App {
         if !self.config.lsp_autostart {
             return;
         }
-        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let root = crate::lsp_state::LspState::<LspAction>::root();
         // Register / update the active buffer if it's a supported file.
         let active = self.ws.borrow().active_buffer();
         let info = {
@@ -3048,29 +3032,7 @@ impl App {
             })
         };
         if let Some((path, lang, text)) = info {
-            if self.lsp.ensure(&lang, &root) {
-                // The server needs an absolute file URI to match its index.
-                let abs = std::fs::canonicalize(&path).unwrap_or_else(|_| {
-                    if path.is_absolute() { path.clone() } else { root.join(&path) }
-                });
-                let uri = ruster_lsp::protocol::uri_from_path(&abs);
-                match self.lsp_docs.get_mut(&active) {
-                    None => {
-                        let language_id = ruster_lsp::registry::language_id(&lang).to_string();
-                        self.lsp.did_open(&lang, &uri, &language_id, 0, &text);
-                        self.lsp_docs.insert(active, LspDoc { uri, lang, version: 0, synced: text });
-                    }
-                    Some(doc) if doc.synced != text => {
-                        doc.version += 1;
-                        let version = doc.version;
-                        let uri = doc.uri.clone();
-                        let lang = doc.lang.clone();
-                        doc.synced = text.clone();
-                        self.lsp.did_change(&lang, &uri, version, &text);
-                    }
-                    Some(_) => {}
-                }
-            }
+            self.lsp.sync(active, &path, &lang, &text, &root);
         }
         // Drain and dispatch server messages.
         for routed in self.lsp.poll() {
@@ -3082,7 +3044,7 @@ impl App {
                     let n_err = diags.iter().filter(|d| d.severity == 1).count();
                     let n_warn = diags.iter().filter(|d| d.severity == 2).count();
                     if let Some(buf) = self.buffer_for_path(&path) {
-                        self.diagnostics.insert(buf, diags);
+                        self.lsp.set_diagnostics(buf, diags);
                     }
                     if n_err > 0 || n_warn > 0 {
                         let file = std::path::Path::new(&path)
@@ -3097,7 +3059,7 @@ impl App {
                     }
                 }
                 ServerMessage::Response { id, result, .. } => {
-                    if let Some(action) = self.lsp_pending.remove(&(routed.lang.clone(), id)) {
+                    if let Some(action) = self.lsp.take_pending(&routed.lang, id) {
                         self.handle_lsp_response(action, result);
                     }
                 }
@@ -3158,7 +3120,7 @@ impl App {
             return None;
         }
         let active = self.ws.borrow().active_buffer();
-        let diags = self.diagnostics.get(&active)?;
+        let diags = Some(self.lsp.diagnostics(active)).filter(|d| !d.is_empty())?;
         let line = {
             let w = self.ws.borrow();
             w.buffer().char_to_line(w.primary_head()) as u32
@@ -3190,7 +3152,7 @@ impl App {
     /// The active buffer's (lang, uri, cursor position) for an LSP request.
     fn active_lsp_target(&self) -> Option<(String, String, LspPosition)> {
         let active = self.ws.borrow().active_buffer();
-        let doc = self.lsp_docs.get(&active)?;
+        let doc = self.lsp.doc(active)?;
         let (content, head) = {
             let w = self.ws.borrow();
             let d = w.buffers.get(active)?;
@@ -3210,8 +3172,7 @@ impl App {
                 return false;
             }
         };
-        if let Some(id) = self.lsp.request(&lang, method, params) {
-            self.lsp_pending.insert((lang, id), action);
+        if self.lsp.request(&lang, method, params, action) {
             true
         } else {
             self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Lsp, "Language server still starting…".to_string()));
@@ -3780,7 +3741,7 @@ impl App {
                     // win, so these go in first.
                     let mut s = self.git_signs_for(buf_id);
                     if let Some(diag) =
-                        self.diagnostics.get(&buf_id).map(|d| diagnostics_to_signs(d))
+                        Some(self.lsp.diagnostics(buf_id)).filter(|d| !d.is_empty()).map(diagnostics_to_signs)
                     {
                         s.width = s.width.max(diag.width);
                         s.signs.extend(diag.signs);
@@ -5535,8 +5496,7 @@ impl App {
     fn forget_buffer(&mut self, id: BufferId) {
         self.dired.forget(id);
         self.syntax.remove(&id);
-        self.lsp_docs.remove(&id);
-        self.diagnostics.remove(&id);
+        self.lsp.forget(id);
         self.terminals.remove(&id);
     }
 
@@ -5999,7 +5959,7 @@ impl App {
     fn open_diagnostics_picker(&mut self) {
         let active = self.ws.borrow().active_buffer();
         let path = self.ws.borrow().active_doc().file_path.clone();
-        let diags = self.diagnostics.get(&active).cloned().unwrap_or_default();
+        let diags = self.lsp.diagnostics(active).to_vec();
         if diags.is_empty() {
             self.echo_warn("No diagnostics".to_string());
             return;
@@ -6035,8 +5995,8 @@ impl App {
         let mut items: Vec<QuickfixItem> = Vec::new();
         {
             let w = self.ws.borrow();
-            for (id, diags) in &self.diagnostics {
-                let path = match w.buffers.get(*id).and_then(|d| d.file_path.clone()) {
+            for (id, diags) in self.lsp.all_diagnostics() {
+                let path = match w.buffers.get(id).and_then(|d| d.file_path.clone()) {
                     Some(p) => p,
                     None => continue,
                 };
@@ -6068,7 +6028,7 @@ impl App {
         let mut out = Vec::new();
         {
             let w = self.ws.borrow();
-            for (&buf, diags) in &self.diagnostics {
+            for (buf, diags) in self.lsp.all_diagnostics() {
                 let Some(path) = w.buffers.get(buf).and_then(|d| d.file_path.clone()) else {
                     continue;
                 };
@@ -7442,7 +7402,7 @@ impl App {
         // Format-on-save: format via LSP first, then write when the edits arrive.
         if self.config.format_on_save && !self.pending_format_save {
             let active = self.ws.borrow().active_buffer();
-            if self.lsp_docs.contains_key(&active) {
+            if self.lsp.is_tracked(active) {
                 self.pending_format_save = true;
                 if self.lsp_format() {
                     return; // write deferred until the format response
@@ -8304,15 +8264,26 @@ mod tests {
         assert!(a.dired.styled_lines(dired_id).is_some(), "dired cached its listing");
 
         // Give it a diagnostics entry too, so the sweep is covered beyond dired.
-        a.diagnostics.insert(dired_id, Vec::new());
+        // A *non-empty* one: the accessor reports absent and empty alike, so an
+        // empty vec here would satisfy the assertion below whether or not the
+        // entry was actually dropped.
+        a.lsp.set_diagnostics(
+            dired_id,
+            vec![ruster_lsp::Diagnostic {
+                start: ruster_lsp::results::LspPositionEq { line: 0, character: 0 },
+                end: ruster_lsp::results::LspPositionEq { line: 0, character: 1 },
+                severity: 1,
+                message: "x".into(),
+            }],
+        );
 
         a.apply_cmd(CmdAction::BufferDelete);
         assert!(a.ws.borrow().buffers.get(dired_id).is_none(), "buffer closed");
         assert!(a.dired.styled_lines(dired_id).is_none(), "dired caches dropped");
         assert!(a.dired.dir_of(dired_id).is_none());
-        assert!(!a.diagnostics.contains_key(&dired_id), "diagnostics dropped");
+        assert!(a.lsp.diagnostics(dired_id).is_empty(), "diagnostics dropped");
         assert!(!a.syntax.contains_key(&dired_id));
-        assert!(!a.lsp_docs.contains_key(&dired_id));
+        assert!(!a.lsp.is_tracked(dired_id));
         assert!(!a.terminals.contains_key(&dired_id));
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -8900,7 +8871,7 @@ mod tests {
     fn diagnostics_stored_and_surfaced_on_line() {
         let mut a = App::new("let x = 1;\n".into(), PathBuf::from("f.rs"));
         let buf = a.ws.borrow().active_buffer();
-        a.diagnostics.insert(
+        a.lsp.set_diagnostics(
             buf,
             vec![ruster_lsp::Diagnostic {
                 start: ruster_lsp::results::LspPositionEq { line: 0, character: 4 },
