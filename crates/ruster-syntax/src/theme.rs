@@ -47,6 +47,18 @@ fn override_fg(group: &str) -> Option<Color> {
     ov.get(&lang)?.get(group).copied()
 }
 
+/// The override fg for `group` in `lang`, naming the language rather than
+/// relying on whatever `set_current_lang` last set.
+///
+/// The thread-local exists for the highlight pass, which sets it once and then
+/// resolves thousands of captures. Everything else — the pseudo-languages
+/// below, drawn a handful of glyphs at a time — is better off saying which
+/// language it means, so forgetting the setter cannot silently drop overrides.
+fn override_fg_in(lang: &str, group: &str) -> Option<Color> {
+    let ov = overrides().read().ok()?;
+    ov.get(lang)?.get(group).copied()
+}
+
 /// Base (dotless) group for a capture/markup name, e.g. `function.method` →
 /// `function` — the key used for overrides and shown in the Settings editor.
 pub fn base_group(name: &str) -> &str {
@@ -64,9 +76,18 @@ pub fn groups_for_lang(key: &str) -> &'static [&'static str] {
         "keyword", "block", "todo", "done",
     ];
     const DIFF: &[&str] = &["added", "removed", "hunk", "header"];
+    const SIGNS: &[&str] = &[
+        "added", "modified", "removed", "breakpoint", "error", "warning", "info", "hint",
+        "todo",
+    ];
+    const DIRED: &[&str] = &["directory", "executable", "symlink"];
+    const FLASH: &[&str] = &["label", "pending"];
     match key {
         "markdown" | "org" => MARKUP,
         "diff" => DIFF,
+        "signs" => SIGNS,
+        "dired" => DIRED,
+        "flash" => FLASH,
         _ => CODE,
     }
 }
@@ -94,6 +115,9 @@ pub fn default_fg_for(lang: &str, group: &str) -> Color {
     match lang {
         "markdown" | "org" => default_markup_style(group).fg,
         "diff" => default_diff_style(group).fg,
+        "signs" => default_sign_style(group).fg,
+        "dired" => default_dired_style(group).fg,
+        "flash" => default_flash_style(group).fg,
         _ => default_code_style(group).fg,
     }
 }
@@ -105,11 +129,79 @@ pub fn default_fg_for(lang: &str, group: &str) -> Color {
 /// Settings syntax editor and honours `ruster.config.syntax.diff.*` for free,
 /// instead of needing a second theming system for four colours.
 pub fn diff_style(kind: &str) -> SyntaxStyle {
-    let mut style = default_diff_style(kind);
-    if let Some(fg) = override_fg(kind) {
+    styled("diff", kind, default_diff_style(kind))
+}
+
+/// Apply `lang`'s override for `group` to `base`, if one is set.
+fn styled(lang: &str, group: &str, base: SyntaxStyle) -> SyntaxStyle {
+    let mut style = base;
+    if let Some(fg) = override_fg_in(lang, group) {
         style.fg = fg;
     }
     style
+}
+
+/// Colours for the sign column, with `ruster.config.syntax.signs.*` applied.
+///
+/// One pseudo-language for every glyph in the gutter — git hunks, breakpoints,
+/// failing tests, TODO markers — rather than a group per feature. They share a
+/// column, so a theme wants to pick them together.
+pub fn sign_style(kind: &str) -> SyntaxStyle {
+    styled("signs", kind, default_sign_style(kind))
+}
+
+/// The built-in default sign style for `kind` (no overrides applied).
+pub fn default_sign_style(kind: &str) -> SyntaxStyle {
+    match kind {
+        "added"      => SyntaxStyle { fg: rgb(166, 227, 161), bg: Color::Default, bold: false, italic: false },
+        "modified"   => SyntaxStyle { fg: rgb(249, 226, 175), bg: Color::Default, bold: false, italic: false },
+        "removed"    => SyntaxStyle { fg: rgb(243, 139, 168), bg: Color::Default, bold: false, italic: false },
+        "breakpoint" => SyntaxStyle { fg: rgb(255,  50,  50), bg: Color::Default, bold: false, italic: false },
+        // Diagnostic severities 1-4. `error` doubles as the failing-test sign:
+        // both mean "this line is broken", and a theme that wanted them apart
+        // would be picking two reds.
+        "error"      => SyntaxStyle { fg: rgb(243, 139, 168), bg: Color::Default, bold: false, italic: false },
+        "warning"    => SyntaxStyle { fg: rgb(249, 226, 175), bg: Color::Default, bold: false, italic: false },
+        "info"       => SyntaxStyle { fg: rgb(137, 180, 250), bg: Color::Default, bold: false, italic: false },
+        "hint"       => SyntaxStyle { fg: rgb(148, 226, 213), bg: Color::Default, bold: false, italic: false },
+        // Bold: a TODO marker is drawn over the comment colour and has to win.
+        "todo"       => SyntaxStyle { fg: rgb(249, 226, 175), bg: Color::Default, bold: true,  italic: false },
+        _            => SyntaxStyle::default(),
+    }
+}
+
+/// Colours for a dired listing, with `ruster.config.syntax.dired.*` applied.
+pub fn dired_style(kind: &str) -> SyntaxStyle {
+    styled("dired", kind, default_dired_style(kind))
+}
+
+/// The built-in default dired style for `kind` (no overrides applied).
+pub fn default_dired_style(kind: &str) -> SyntaxStyle {
+    match kind {
+        "directory"  => SyntaxStyle { fg: rgb(137, 180, 250), bg: Color::Default, bold: true,  italic: false },
+        "executable" => SyntaxStyle { fg: rgb(166, 227, 161), bg: Color::Default, bold: false, italic: false },
+        "symlink"    => SyntaxStyle { fg: rgb(137, 220, 235), bg: Color::Default, bold: false, italic: false },
+        _            => SyntaxStyle::default(),
+    }
+}
+
+/// Colours for flash-jump labels, with `ruster.config.syntax.flash.*` applied.
+///
+/// Their own group rather than part of `signs`: they are transient overlays on
+/// the text, not gutter glyphs, and a theme will want them loud in a way it
+/// never wants a sign column to be.
+pub fn flash_style(kind: &str) -> SyntaxStyle {
+    styled("flash", kind, default_flash_style(kind))
+}
+
+/// The built-in default flash-label style for `kind` (no overrides applied).
+pub fn default_flash_style(kind: &str) -> SyntaxStyle {
+    match kind {
+        // The first key has been typed; this is the remainder still to type.
+        "pending" => SyntaxStyle { fg: rgb(255, 255,   0), bg: Color::Default, bold: false, italic: false },
+        "label"   => SyntaxStyle { fg: rgb(  0, 200, 255), bg: Color::Default, bold: false, italic: false },
+        _         => SyntaxStyle::default(),
+    }
 }
 
 /// The built-in default diff style for `kind` (no overrides applied).

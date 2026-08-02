@@ -32,40 +32,61 @@ machinery, appears in the Settings syntax editor, and honours
 `ruster.config.syntax.diff.*` — without a second theming system. Each item below
 follows that pattern.
 
-### Task 1: Git gutter signs
+### Tasks 1-5 ✅
 
-- [ ] `app.rs:5384-86` — added / modified / removed sign colours.
-- [ ] Groups under a `signs` pseudo-language: `added`, `modified`, `removed`.
+Three new pseudo-languages beside `diff`, and one parity fix.
 
-### Task 2: Diagnostic and debug signs
+- [x] **`signs`** — the whole gutter in one group, because the glyphs share a
+      column and a theme wants to pick them together: `added`, `modified`,
+      `removed` (git hunks), `breakpoint`, `error`, `warning`, `info`, `hint`
+      (diagnostics, with `error` doubling as the failing-test sign), and `todo`.
+- [x] **`dired`** — `directory`, `executable`, `symlink`.
+- [x] **`flash`** — `label` and `pending`, their own group rather than part of
+      `signs`: they are transient overlays on the text, not gutter glyphs, and
+      a theme wants them loud in a way it never wants a sign column to be.
+- [x] The TUI toast background. The GUI paints it `theme.whichkey_bg`; the TUI
+      hardcoded `Rgb(30, 30, 50)` against a default of `Rgb(30, 30, 46)`, so the
+      two backends disagreed *before* anyone changed a theme. Same source now.
 
-- [ ] `app.rs:3733` breakpoint, `app.rs:7313` test failure, `app.rs:389` the
-      TODO keyword colour.
-- [ ] Extend `signs` with `breakpoint`, `error`, `todo` rather than inventing a
-      third group.
+**The audit missed one, and it was the most visible.** `severity_sign` in
+`app.rs` hardcoded all four diagnostic severity colours — the E/W/I/H glyphs in
+the gutter, which are on screen far more often than a breakpoint. The plan
+listed the failing-test sign but not these. Found by scraping for literals
+rather than by re-reading the list, which is the argument for the guard below.
 
-### Task 3: Dired entry types
+**A footgun removed on the way.** `diff_style` read the override map through a
+thread-local that the caller had to set with `set_current_lang("diff")` first —
+correct only by convention, and the convention was one call site deep. The
+accessors now name their language at the lookup. The thread-local stays for the
+highlight pass, which sets it once and resolves thousands of captures.
 
-- [ ] `dired.rs:429-33` — directories blue, executables green, symlinks teal.
-- [ ] A `dired` pseudo-language with `directory`, `executable`, `symlink`.
+**Tests:** `ruster-syntax/tests/pseudo_languages.rs` (6) and
+`ruster-tui/tests/colors_are_themeable.rs` (6).
 
-### Task 4: Flash-jump labels
+The first pair are the interesting ones: every group the Settings editor lists
+must resolve to a real colour, *and* the style function the drawing code calls
+must know every group the editor offers. Either direction failing means a knob
+that exists and does nothing. Mutation-tested — adding a group to the Settings
+list without a match arm, making a style function ignore overrides, and keying
+overrides globally instead of per language are each caught by two tests.
 
-- [ ] `app.rs:3759-61` — the two label colours.
-- [ ] Group them with the signs or give them their own; decide when doing it,
-      not now.
+The second is a source scrape, in the shape of `commands_discoverable.rs`: a
+colour literal at a draw site fails the build unless the file is allow-listed
+with a reason. Most literals in the tree are legitimate — the `unwrap_or` arm of
+`c(fallback, |t| t.field)`, where the theme wins whenever there is one — so the
+list separates those from real hardcoding.
 
-### Task 5: The TUI-only toast background
+That guard was **vacuous when first written**, and mutation testing is the only
+reason that was found. It truncated each file at the first `#[cfg(test)]` to
+skip test modules; `dired.rs` has a test-only accessor at line 156 and its test
+module at 470, so the scrape never saw the 300 lines in between — including
+every colour it was written to watch. It passed with a hardcoded colour put back
+by hand. It now looks for the test *module* specifically, and a test pins that.
 
-- [ ] `renderer.rs:152,166` paint the noice toast `Rgb(30, 30, 50)`
-      unconditionally, **in the TUI only**. The GUI themes it. So a themed GUI
-      and an unthemed TUI disagree, which is a parity break rather than a
-      missing setting.
-- [ ] Use the theme's `cmdline_bg`/`whichkey_bg` as the GUI already does.
-
-**Tests, per task:** an override reaches the rendered line, and the groups are
-visually distinct from each other. Both patterns exist in
-`git_status::tests::a_syntax_override_recolours_the_diff`.
+**Verified in the editor, not only by test:** with
+`dired = { directory = "#ff0000", executable = "#00ff00" }` a listing renders
+`255;0;0` and `0;255;0`; with `signs = { added = "#ff00ff", modified = "#00ffff" }`
+the gutter renders `+` magenta and `~` cyan.
 
 ---
 

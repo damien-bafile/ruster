@@ -100,10 +100,22 @@ cycles the **selected theme's palette** (same picker as the Colors group) and sh
 `default` when left at the built-in color; `dd`/`Delete` resets a group. Overrides are
 **per language** and apply to open buffers on `:w` (no restart).
 
-`diff` appears in that list too. It is a pseudo-language — nothing parses it —
-but routing the staged-diff view's colours through the same machinery means
-`:GitStaged` follows the active theme instead of four hardcoded values. Its
-groups are `added`, `removed`, `hunk` and `header`.
+Four entries in that list are **pseudo-languages**: nothing parses them, but
+routing their colours through the same machinery means they follow the active
+theme and are settable like any syntax group, instead of being fixed RGB values
+written at the point they are drawn.
+
+| Pseudo-language | Groups | Where it shows |
+|---|---|---|
+| `diff` | `added`, `removed`, `hunk`, `header` | `:GitStaged`, `:Diffview` |
+| `signs` | `added`, `modified`, `removed`, `breakpoint`, `error`, `warning`, `info`, `hint`, `todo` | the gutter — git hunks, breakpoints, diagnostics, failing tests, TODO markers |
+| `dired` | `directory`, `executable`, `symlink` | `:Dired` listings and the sidebar tree |
+| `flash` | `label`, `pending` | flash-jump labels (`pending` is the remainder after the first key) |
+
+`signs` is one group for the whole gutter rather than one per feature, because
+they share a column and a theme wants to pick them together. `signs.error`
+covers both a diagnostic error and a failing test: both mean "this line is
+broken", and separating them would only mean choosing two reds.
 
 They persist to a `ruster.config.syntax` table:
 
@@ -111,6 +123,8 @@ They persist to a `ruster.config.syntax` table:
 ruster.config.syntax = {
   rust   = { keyword = "#cba6f7", string = "#a6e3a1" },
   python = { comment = "#6c7086" },
+  signs  = { added = "#a6e3a1", error = "#f38ba8" },
+  dired  = { directory = "#89b4fa" },
 }
 ```
 
