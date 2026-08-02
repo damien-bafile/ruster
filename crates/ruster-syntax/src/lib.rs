@@ -43,11 +43,6 @@ struct TreeBackend {
     source: String,
     bracket_depths: Vec<Option<usize>>,
     textobject_scm: String,
-    /// The highlight query **actually in use** — the user's when it loaded, the
-    /// built-in when theirs was rejected. Kept so `todo_markers` can re-query
-    /// the tree for `@comment` captures; re-querying with the rejected text
-    /// would fail every time.
-    highlight_scm: String,
 }
 
 /// The highlighting strategy for a buffer: a tree-sitter grammar, or the
@@ -63,6 +58,13 @@ pub struct SyntaxEngine {
     cached: Vec<StyledLine>,
     /// Non-fatal query-loading problems, for the caller to surface.
     warnings: Vec<String>,
+    /// The line range the cached highlights are valid for, or `None` for the
+    /// whole buffer.
+    ///
+    /// Set from the window's scroll position. Lines outside it are cached as
+    /// plain text, so this must be kept in step with what is on screen —
+    /// [`set_viewport`](Self::set_viewport) is the only way to move it.
+    viewport: Option<std::ops::Range<usize>>,
 }
 
 impl SyntaxEngine {
@@ -85,24 +87,20 @@ impl SyntaxEngine {
             // Bound first: holding the borrow of `loaded.highlights` across the
             // match would stop the `Ok` arm moving it out.
             let attempt = Highlighter::new(language.clone(), &loaded.highlights, key);
-            let (mut highlighter, highlight_scm) = match attempt {
-                Ok(h) => (h, loaded.highlights.into_owned()),
+            let mut highlighter = match attempt {
+                Ok(h) => h,
                 Err(e) if loaded.highlights_from_user => {
                     warnings.push(format!(
                         "{key}/highlights.scm: {e} — using the built-in query"
                     ));
-                    let builtin = builtin_queries(key).0;
-                    let h = Highlighter::new(language.clone(), builtin, key)
-                        .map_err(SyntaxError::QueryError)?;
-                    // The built-in, not the rejected text: `todo_markers`
-                    // re-runs this query and would otherwise fail every call.
-                    (h, builtin.to_string())
+                    Highlighter::new(language.clone(), builtin_queries(key).0, key)
+                        .map_err(SyntaxError::QueryError)?
                 }
                 Err(e) => return Err(SyntaxError::QueryError(e)),
             };
 
             let bracket_depths = compute_bracket_depths(text);
-            let cached = highlighter.highlight_lines(&tree, text, &bracket_depths);
+            let cached = highlighter.highlight_lines(&tree, text, &bracket_depths, None);
             Ok(SyntaxEngine {
                 backend: Backend::Tree(Box::new(TreeBackend {
                     // The parse above already used a parser; keep one for the
@@ -114,14 +112,19 @@ impl SyntaxEngine {
                     source: text.to_string(),
                     bracket_depths,
                     textobject_scm: loaded.textobjects.into_owned(),
-                    highlight_scm,
                 })),
                 cached,
+            viewport: None,
                 warnings,
             })
         } else if let Some(mlang) = markup::markup_lang(key) {
             let cached = markup::highlight_markup(mlang, text);
-            Ok(SyntaxEngine { backend: Backend::Markup(mlang), cached, warnings: Vec::new() })
+            Ok(SyntaxEngine {
+                backend: Backend::Markup(mlang),
+                cached,
+                warnings: Vec::new(),
+                viewport: None,
+            })
         } else {
             Err(SyntaxError::UnsupportedLanguage)
         }
@@ -153,6 +156,7 @@ impl SyntaxEngine {
     }
 
     fn reparse_inner(&mut self, text: &str, edits: &[ruster_core::buffer::Edit]) {
+        let vp = self.viewport.clone();
         match &mut self.backend {
             Backend::Tree(tb) => {
                 let point = |(row, column): (usize, usize)| tree_sitter::Point { row, column };
@@ -181,7 +185,7 @@ impl SyntaxEngine {
                     tb.source = text.to_string();
                     tb.bracket_depths = compute_bracket_depths(text);
                     self.cached =
-                        tb.highlighter.highlight_lines(&tb.tree, text, &tb.bracket_depths);
+                        tb.highlighter.highlight_lines(&tb.tree, text, &tb.bracket_depths, vp);
                 }
             }
             Backend::Markup(mlang) => {
@@ -190,15 +194,57 @@ impl SyntaxEngine {
         }
     }
 
+    /// Lines above and below the viewport that are highlighted anyway.
+    ///
+    /// Scrolling within the margin costs nothing, so this trades a little work
+    /// per re-highlight for far fewer of them. At 200 it covers several screens
+    /// and still leaves the query looking at a few hundred lines instead of ten
+    /// thousand.
+    const VIEWPORT_MARGIN: usize = 200;
+
+    /// Tell the engine which lines are on screen, re-highlighting if they are
+    /// not already covered. Returns whether it did any work.
+    ///
+    /// Cheap to call every frame: the common case is a range comparison. Note
+    /// that a caller which has applied overlays on top of the cached lines —
+    /// [`overlay_todo_highlights`](Self::overlay_todo_highlights) — must
+    /// re-apply them when this returns `true`, because the cache was rebuilt.
+    pub fn set_viewport(&mut self, first_line: usize, last_line: usize) -> bool {
+        if matches!(self.backend, Backend::Markup(_)) {
+            return false;
+        }
+        if let Some(cur) = &self.viewport {
+            if cur.start <= first_line && last_line < cur.end {
+                return false;
+            }
+        }
+        self.viewport = Some(
+            first_line.saturating_sub(Self::VIEWPORT_MARGIN)
+                ..last_line.saturating_add(Self::VIEWPORT_MARGIN + 1),
+        );
+        let vp = self.viewport.clone();
+        if let Backend::Tree(tb) = &mut self.backend {
+            self.cached =
+                tb.highlighter.highlight_lines(&tb.tree, &tb.source, &tb.bracket_depths, vp);
+        }
+        true
+    }
+
+    /// The line range the cached highlights cover, or `None` for all of them.
+    pub fn viewport(&self) -> Option<std::ops::Range<usize>> {
+        self.viewport.clone()
+    }
+
     /// Recompute the cached highlights with the currently-installed
     /// [`set_syntax_overrides`](crate::theme::set_syntax_overrides) — no reparse
     /// for tree-sitter buffers (reuses the existing tree). Call after the syntax
     /// colors change. `text` is only needed for the line-based markup backend.
     pub fn recolor(&mut self, text: &str) {
+        let vp = self.viewport.clone();
         match &mut self.backend {
             Backend::Tree(tb) => {
                 self.cached =
-                    tb.highlighter.highlight_lines(&tb.tree, &tb.source, &tb.bracket_depths);
+                    tb.highlighter.highlight_lines(&tb.tree, &tb.source, &tb.bracket_depths, vp);
             }
             Backend::Markup(mlang) => {
                 self.cached = markup::highlight_markup(*mlang, text);
@@ -284,68 +330,25 @@ impl SyntaxEngine {
     /// no grammar return nothing rather than guessing.
     pub fn todo_markers(&self, keywords: &[String]) -> Vec<TodoMarker> {
         let Backend::Tree(tb) = &self.backend else { return Vec::new() };
-        let Ok(query) = tree_sitter::Query::new(&tb.language, &tb.highlight_scm) else {
-            return Vec::new();
-        };
-        let comment_idx: Vec<u32> = query
-            .capture_names()
-            .iter()
-            .enumerate()
-            .filter(|(_, n)| **n == "comment")
-            .map(|(i, _)| i as u32)
-            .collect();
-        if comment_idx.is_empty() {
-            return Vec::new();
-        }
+        // Comment ranges come from the last highlight pass, which already ran
+        // this query over the tree. Running it again here — and recompiling it
+        // from source each time — was almost all of what this scan cost.
+        //
+        // Those ranges cover the viewport, not the file, so this returns the
+        // markers that can be drawn. Use `all_todo_markers` for a list.
+        scan_comments(&tb.source, tb.highlighter.comments(), keywords)
+    }
 
-        // Line starts, so a byte offset can become (line, col) without rescanning.
-        let mut line_start: Vec<usize> = vec![0];
-        for (i, b) in tb.source.bytes().enumerate() {
-            if b == b'\n' {
-                line_start.push(i + 1);
-            }
-        }
-
-        let mut out = Vec::new();
-        let mut cursor = tree_sitter::QueryCursor::new();
-        let mut matches = cursor.matches(&query, tb.tree.root_node(), tb.source.as_bytes());
-        while let Some(m) = matches.next() {
-            for cap in m.captures {
-                if !comment_idx.contains(&cap.index) {
-                    continue;
-                }
-                let range = cap.node.byte_range();
-                let Some(text) = tb.source.get(range.clone()) else { continue };
-                for kw in keywords {
-                    let mut from = 0;
-                    while let Some(rel) = text[from..].find(kw.as_str()) {
-                        let at = from + rel;
-                        from = at + kw.len();
-                        // Whole word only: `TODOS` and `XTODO` are not markers.
-                        let before_ok = at == 0
-                            || !text[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_');
-                        let after = &text[at + kw.len()..];
-                        let after_ok = !after.chars().next().is_some_and(|c| c.is_alphanumeric() || c == '_');
-                        if !(before_ok && after_ok) {
-                            continue;
-                        }
-                        let abs = range.start + at;
-                        let line = line_start.partition_point(|&s| s <= abs) - 1;
-                        let col = tb.source[line_start[line]..abs].chars().count();
-                        let rest = after.trim_start_matches([':', ' ', '\t']);
-                        let rest = rest.lines().next().unwrap_or("").trim_end();
-                        out.push(TodoMarker {
-                            keyword: kw.clone(),
-                            line,
-                            col,
-                            text: rest.to_string(),
-                        });
-                    }
-                }
-            }
-        }
-        out.sort_by_key(|m| (m.line, m.col));
-        out
+    /// Every marker in the buffer, not just the ones on screen.
+    ///
+    /// [`todo_markers`](Self::todo_markers) reads comment ranges left over from
+    /// the last highlight pass, which only looked at the visible lines — right
+    /// for drawing, wrong for a panel that claims to list a file's TODOs. This
+    /// pays for a full-tree query, so call it on demand, not per frame.
+    pub fn all_todo_markers(&mut self, keywords: &[String]) -> Vec<TodoMarker> {
+        let Backend::Tree(tb) = &mut self.backend else { return Vec::new() };
+        let comments = tb.highlighter.comments_in(&tb.tree, &tb.source);
+        scan_comments(&tb.source, &comments, keywords)
     }
 }
 
@@ -977,3 +980,50 @@ mod tests {
 
 #[cfg(test)]
 mod qcheck;
+
+/// Find `keywords` inside `comments`, as whole words, and turn each hit into a
+/// marker. Shared by the cached-viewport and whole-file entry points.
+fn scan_comments(source: &str, comments: &[(usize, usize)], keywords: &[String]) -> Vec<TodoMarker> {
+    if comments.is_empty() || keywords.is_empty() {
+        return Vec::new();
+    }
+    // Line starts, so a byte offset can become (line, col) without rescanning.
+    let mut line_start: Vec<usize> = vec![0];
+    for (i, b) in source.bytes().enumerate() {
+        if b == b'\n' {
+            line_start.push(i + 1);
+        }
+    }
+
+    let mut out = Vec::new();
+    for range in comments.iter().map(|(s, e)| *s..*e) {
+        let Some(text) = source.get(range.clone()) else { continue };
+        for kw in keywords {
+            let mut from = 0;
+            while let Some(rel) = text[from..].find(kw.as_str()) {
+                let at = from + rel;
+                from = at + kw.len();
+                // Whole word only: `TODOS` and `XTODO` are not markers.
+                let before_ok = at == 0
+                    || !text[..at]
+                        .chars()
+                        .next_back()
+                        .is_some_and(|c| c.is_alphanumeric() || c == '_');
+                let after = &text[at + kw.len()..];
+                let after_ok =
+                    !after.chars().next().is_some_and(|c| c.is_alphanumeric() || c == '_');
+                if !(before_ok && after_ok) {
+                    continue;
+                }
+                let abs = range.start + at;
+                let line = line_start.partition_point(|&s| s <= abs) - 1;
+                let col = source[line_start[line]..abs].chars().count();
+                let rest = after.trim_start_matches([':', ' ', '\t']);
+                let rest = rest.lines().next().unwrap_or("").trim_end();
+                out.push(TodoMarker { keyword: kw.clone(), line, col, text: rest.to_string() });
+            }
+        }
+    }
+    out.sort_by_key(|m| (m.line, m.col));
+    out
+}
