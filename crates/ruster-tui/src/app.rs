@@ -25,7 +25,7 @@ use crossterm::event::{
 use ruster_lua::{config::Config, schema::{SettingKind, SettingValue}, LuaAction, LuaRuntime};
 use ruster_notify::{BackendKind, Notification, NotificationManager};
 use ruster_render::{
-    Color, CursorKind, FlashLabelRender, FrameState, Rect as RRect, Renderer, SelectionView,
+    CursorKind, FlashLabelRender, FrameState, Rect as RRect, Renderer, SelectionView,
     StatuslineView, StyledLine, SyntaxStyle, WelcomeView, WhichKeyView, WindowView,
 };
 use ruster_syntax::SyntaxEngine;
@@ -260,13 +260,19 @@ fn syntax_overrides_to_colors(
 
 /// A diagnostic severity's sign glyph + color (1=error … 4=hint).
 fn severity_sign(severity: u8) -> (char, ruster_render::Color) {
-    use ruster_render::Color::Rgb;
-    match severity {
-        1 => ('E', Rgb(243, 139, 168)), // error  — red
-        2 => ('W', Rgb(249, 226, 175)), // warn   — yellow
-        3 => ('I', Rgb(137, 180, 250)), // info   — blue
-        _ => ('H', Rgb(148, 226, 213)), // hint   — teal
-    }
+    let group = match severity {
+        1 => "error",
+        2 => "warning",
+        3 => "info",
+        _ => "hint",
+    };
+    let glyph = match severity {
+        1 => 'E',
+        2 => 'W',
+        3 => 'I',
+        _ => 'H',
+    };
+    (glyph, ruster_syntax::sign_style(group).fg)
 }
 
 fn vim_mode_to_ui_mode(mode: ruster_core::vim::VimMode) -> ruster_render::UIMode {
@@ -385,12 +391,7 @@ struct CmdlineCompletion {
 /// The colour for a `TODO`-class keyword — the same amber the warning severity
 /// uses, so the gutter and the comment agree on what "needs attention" looks like.
 fn todo_style() -> ruster_render::SyntaxStyle {
-    ruster_render::SyntaxStyle {
-        fg: ruster_render::Color::Rgb(249, 226, 175),
-        bg: ruster_render::Color::Default,
-        bold: true,
-        italic: false,
-    }
+    ruster_syntax::sign_style("todo")
 }
 
 fn diagnostics_to_signs(diags: &[ruster_lsp::Diagnostic]) -> ruster_render::SignsView {
@@ -3805,7 +3806,7 @@ impl App {
                                 s.width = s.width.max(1);
                                 let bp_signs: Vec<(u16, char, ruster_render::Color)> = bps
                                     .iter()
-                                    .map(|&l| (l, '●', ruster_render::Color::Rgb(255, 50, 50)))
+                                    .map(|&l| (l, '●', ruster_syntax::sign_style("breakpoint").fg))
                                     .collect();
                                 s.signs.extend(bp_signs);
                             }
@@ -3831,9 +3832,9 @@ impl App {
                                     } else {
                                         fl.label.clone()
                                     };
-                                    (sub, Color::Rgb(255, 255, 0))
+                                    (sub, ruster_syntax::flash_style("pending").fg)
                                 } else {
-                                    (fl.label.clone(), Color::Rgb(0, 200, 255))
+                                    (fl.label.clone(), ruster_syntax::flash_style("label").fg)
                                 };
                                 result.push(FlashLabelRender {
                                     row: screen_row as u16,
@@ -5456,9 +5457,9 @@ impl App {
         let mut signs: Vec<(u16, char, ruster_render::Color)> = Vec::new();
         for h in hunks {
             let (glyph, color) = match h.kind {
-                ruster_git::HunkKind::Added => ('+', ruster_render::Color::Rgb(166, 227, 161)),
-                ruster_git::HunkKind::Modified => ('~', ruster_render::Color::Rgb(249, 226, 175)),
-                ruster_git::HunkKind::Removed => ('_', ruster_render::Color::Rgb(243, 139, 168)),
+                ruster_git::HunkKind::Added => ('+', ruster_syntax::sign_style("added").fg),
+                ruster_git::HunkKind::Modified => ('~', ruster_syntax::sign_style("modified").fg),
+                ruster_git::HunkKind::Removed => ('_', ruster_syntax::sign_style("removed").fg),
             };
             match h.kind {
                 // A deletion has no lines of its own — mark the boundary.
@@ -7400,7 +7401,11 @@ impl App {
             let key = path.canonicalize().unwrap_or(path);
             let entry = self.result_signs.entry(key).or_default();
             entry.width = 1;
-            entry.signs.push((line.saturating_sub(1) as u16, '✗', ruster_render::Color::Rgb(243, 139, 168)));
+            entry.signs.push((
+                line.saturating_sub(1) as u16,
+                '✗',
+                ruster_syntax::sign_style("error").fg,
+            ));
         }
         self.quickfix = QuickfixList::new(items);
         let status = if run.failed == 0 && code == Some(0) { "ok" } else { "FAILED" };

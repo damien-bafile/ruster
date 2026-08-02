@@ -420,19 +420,21 @@ fn copy_dir_recursive(src: &std::path::Path, dest: &std::path::Path) -> std::io:
 /// Colour a directory listing by entry type: directories blue, executables
 /// green, symlinks teal, regular files default.
 pub fn styled_lines(entries: &[core::DirEntry]) -> Vec<StyledLine> {
-    let style = |fg: Color, bold: bool| SyntaxStyle { fg, bg: Color::Default, bold, italic: false };
+    // Colours come from the `dired` pseudo-language in `ruster-syntax`, so they
+    // follow the active theme and honour `ruster.config.syntax.dired.*` like
+    // every other syntax group.
     entries
         .iter()
         .map(|e| {
             let text = if e.is_dir { format!("{}/", e.name) } else { e.name.clone() };
             let s = if e.is_symlink {
-                style(Color::Rgb(137, 220, 235), false) // teal
+                ruster_syntax::dired_style("symlink")
             } else if e.is_dir {
-                style(Color::Rgb(137, 180, 250), true) // blue, bold
+                ruster_syntax::dired_style("directory")
             } else if e.is_exec {
-                style(Color::Rgb(166, 227, 161), false) // green
+                ruster_syntax::dired_style("executable")
             } else {
-                style(Color::Default, false)
+                SyntaxStyle::default()
             };
             let len = text.chars().count();
             let highlights = if matches!(s.fg, Color::Default) { Vec::new() } else { vec![(0, len, s)] };

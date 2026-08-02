@@ -147,9 +147,12 @@ impl Renderer for TuiRenderer {
             for (i, text) in state.noice_mini.iter().enumerate() {
                 let w = text.len() as u16;
                 let x = area.width.saturating_sub(w + 2);
+                // The GUI paints both of these with `theme.whichkey_bg`; the
+                // TUI used to hardcode a near-but-not-equal grey, so a themed
+                // GUI and an unthemed TUI disagreed. Same source now.
                 let toast = crate::widgets::noice_toast::NoiceToast::new(
                     text,
-                    ratatui::style::Color::Rgb(30, 30, 50),
+                    ruster_color_to_ratatui(&state.theme.whichkey_bg),
                     ratatui::style::Color::White,
                 );
                 frame.render_widget(toast, Rect::new(x, 1 + i as u16, w, 1));
@@ -163,7 +166,8 @@ impl Renderer for TuiRenderer {
                     panel_width,
                     area.height,
                 );
-                let bg = ratatui::style::Style::default().bg(ratatui::style::Color::Rgb(30, 30, 50));
+                let bg = ratatui::style::Style::default()
+                    .bg(ruster_color_to_ratatui(&state.theme.whichkey_bg));
                 frame.render_widget(ratatui::widgets::Clear, panel_area);
                 for (i, line) in notify_lines.iter().enumerate() {
                     if i as u16 >= panel_area.height {

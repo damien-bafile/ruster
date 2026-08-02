@@ -9,8 +9,8 @@ use markup::MarkupLang;
 use ruster_render::{StyledLine, SyntaxStyle};
 
 pub use theme::{
-    base_group, default_fg_for, diff_style, groups_for_lang, set_current_lang,
-    set_syntax_overrides, SyntaxOverrides,
+    base_group, default_fg_for, dired_style, diff_style, flash_style, groups_for_lang,
+    set_current_lang, set_syntax_overrides, sign_style, SyntaxOverrides,
 };
 
 /// Canonical keys of the languages that have real syntax-group highlighting
@@ -23,7 +23,8 @@ pub use theme::{
 pub fn highlighted_languages() -> &'static [&'static str] {
     &[
         "rust", "python", "javascript", "typescript", "c", "lua", "json", "toml",
-        "yaml", "scheme", "just", "markdown", "org", "diff",
+        "yaml", "scheme", "just", "markdown", "org", "diff", "signs", "dired",
+        "flash",
     ]
 }
 
