@@ -200,22 +200,31 @@ thing anyone adds.
 
 GUI-only, so no TUI parity question arises.
 
-### Task 14: The artwork
+### Task 14: The artwork ✅
 
-- [ ] Decide the mark. This wants a designer rather than a generated
-      placeholder — an obviously-programmatic icon is worse than none, because
-      it looks finished. If a placeholder ships first, make it visibly a
-      placeholder and track replacing it.
-- [ ] Source: one square master (1024×1024) that everything else derives from.
+- [x] Decide the mark. A phosphor-green prompt caret and an amber block cursor
+      on CRT black — the palette `docs/config-reference.md` already defines for
+      the Starship direction, rather than one invented for the icon. Checked at
+      16px, where the two shapes stay distinct; an earlier draft sat too small
+      in the canvas and merged into a blob.
+- [x] Source: one square master, `assets/icon.png` at 1024×1024, with
+      `just icon` deriving everything else.
+
+**Still worth a designer.** This is a competent mark from the existing palette,
+not an identity. Replacing it is one PNG and `just icon`.
 
 ### Task 15: Wire it up per platform
 
 - [ ] **Runtime window icon** — `RaylibHandle::set_window_icon`, so the running
       window and the dock/taskbar entry stop showing the default. Cheapest win
       and works on all three platforms; do this one first.
-- [ ] **macOS** — an `.app` bundle with `Contents/Resources/*.icns`. Without a
-      bundle there is no Dock icon however the window is configured, so this is
-      packaging work, not icon work.
+- [x] **macOS** — `scripts/bundle-macos.sh` and `just bundle`. Verified: macOS
+      reports `bundleID="dev.ruster.editor"`, names the app *ruster*, and the
+      bundled binary opens a window. Ad-hoc codesigned, because Apple silicon
+      refuses unsigned bundles outright. **No document types**: "Open With"
+      needs Apple Event handling, since a bundled app receives files by `odoc`
+      rather than argv, and declaring the types without it would advertise
+      something broken.
 - [ ] **Windows** — `.ico` embedded in the executable via a build script
       (`embed-resource` or `winres`).
 - [ ] **Linux** — hicolor PNGs plus a `.desktop` entry.
