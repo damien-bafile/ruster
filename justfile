@@ -34,3 +34,22 @@ doc:
 
 release:
     cargo build --release
+
+# Assemble the macOS .app bundle (icon, Dock identity, menu-bar name).
+bundle profile="release":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "{{profile}}" = "release" ]; then cargo build --release; else cargo build; fi
+    ./scripts/bundle-macos.sh {{profile}}
+
+# Regenerate assets/ruster.icns from assets/icon.png.
+icon:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rm -rf /tmp/ruster.iconset && mkdir -p /tmp/ruster.iconset
+    for s in 16 32 128 256 512; do
+        magick assets/icon.png -resize ${s}x${s} /tmp/ruster.iconset/icon_${s}x${s}.png
+        magick assets/icon.png -resize $((s*2))x$((s*2)) /tmp/ruster.iconset/icon_${s}x${s}@2x.png
+    done
+    iconutil -c icns /tmp/ruster.iconset -o assets/ruster.icns
+    echo "wrote assets/ruster.icns"
