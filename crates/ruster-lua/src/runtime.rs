@@ -370,6 +370,7 @@ impl LuaRuntime {
         };
         let bg = get("bg", d.bg);
         let fg = get("fg", d.fg);
+        let accent = get("accent", d.accent);
         let roles = ThemeColors {
             bg,
             fg,
@@ -383,10 +384,11 @@ impl LuaRuntime {
             divider: get("divider", d.divider),
             statusline_fg: get("statusline_fg", fg),
             statusline_bg: get("statusline_bg", d.statusline_bg),
-            accent: get("accent", d.accent),
+            accent,
             accent_fg: get("accent_fg", bg),
             whichkey_bg: get("whichkey_bg", d.whichkey_bg),
             whichkey_fg: get("whichkey_fg", fg),
+            whichkey_key: get("whichkey_key", accent),
             cmdline_bg: get("cmdline_bg", d.cmdline_bg),
             cmdline_fg: get("cmdline_fg", fg),
             mode_normal_bg: get("mode_normal_bg", d.mode_normal_bg),

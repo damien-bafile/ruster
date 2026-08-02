@@ -47,6 +47,8 @@ pub struct ThemeColors {
     pub whichkey_bg: Rgb,
     /// Which-key panel text.
     pub whichkey_fg: Rgb,
+    /// Which-key key-letter accent.
+    pub whichkey_key: Rgb,
     /// Cmdline / mini-buffer background.
     pub cmdline_bg: Rgb,
     /// Cmdline / mini-buffer text.
@@ -91,6 +93,7 @@ impl Default for ThemeColors {
             accent_fg: Rgb::new(30, 30, 30),
             whichkey_bg: Rgb::new(30, 30, 46),
             whichkey_fg: Rgb::new(205, 214, 244),
+            whichkey_key: Rgb::new(243, 139, 168),
             cmdline_bg: Rgb::new(30, 30, 30),
             cmdline_fg: Rgb::new(205, 214, 244),
             mode_normal_bg: Rgb::new(69, 71, 90),
@@ -131,7 +134,7 @@ impl Theme {
             "  bg = {:?}, fg = {:?}, gutter = {:?}, gutter_bg = {:?},\n  \
              cursor_bg = {:?}, selection_bg = {:?}, selection_fg = {:?}, cursor_fg = {:?},\n  \
              divider = {:?}, statusline_fg = {:?}, statusline_bg = {:?}, accent = {:?}, accent_fg = {:?},\n  \
-             whichkey_bg = {:?}, whichkey_fg = {:?}, cmdline_bg = {:?}, cmdline_fg = {:?},\n  \
+             whichkey_bg = {:?}, whichkey_fg = {:?}, whichkey_key = {:?}, cmdline_bg = {:?}, cmdline_fg = {:?},\n  \
              mode_normal_bg = {:?}, mode_normal_fg = {:?},\n  \
              mode_insert_bg = {:?}, mode_insert_fg = {:?},\n  \
              mode_visual_bg = {:?}, mode_visual_fg = {:?},\n  \
@@ -140,7 +143,7 @@ impl Theme {
             r.bg.to_hex(), r.fg.to_hex(), r.gutter.to_hex(), r.gutter_bg.to_hex(),
             r.cursor_bg.to_hex(), r.selection_bg.to_hex(), r.selection_fg.to_hex(), r.cursor_fg.to_hex(),
             r.divider.to_hex(), r.statusline_fg.to_hex(), r.statusline_bg.to_hex(), r.accent.to_hex(), r.accent_fg.to_hex(),
-            r.whichkey_bg.to_hex(), r.whichkey_fg.to_hex(),
+            r.whichkey_bg.to_hex(), r.whichkey_fg.to_hex(), r.whichkey_key.to_hex(),
             r.cmdline_bg.to_hex(), r.cmdline_fg.to_hex(),
             r.mode_normal_bg.to_hex(), r.mode_normal_fg.to_hex(),
             r.mode_insert_bg.to_hex(), r.mode_insert_fg.to_hex(),
@@ -252,6 +255,7 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                     statusline_bg: Rgb::new(17, 26, 17),
                     accent: Rgb::new(255, 136, 0), accent_fg: Rgb::new(10, 14, 10),
                     whichkey_bg: Rgb::new(10, 14, 10), whichkey_fg: Rgb::new(51, 255, 102),
+                    whichkey_key: Rgb::new(255, 136, 0),
                     cmdline_bg: Rgb::new(10, 14, 10), cmdline_fg: Rgb::new(51, 255, 102),
                     mode_normal_bg: Rgb::new(17, 26, 17), mode_normal_fg: Rgb::new(51, 255, 102),
                     mode_insert_bg: Rgb::new(17, 26, 51), mode_insert_fg: Rgb::new(51, 255, 102),
@@ -283,6 +287,7 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                     statusline_bg: Rgb::new(60, 56, 54),
                     accent: Rgb::new(250, 189, 47), accent_fg: Rgb::new(40, 40, 40),
                     whichkey_bg: Rgb::new(40, 40, 40), whichkey_fg: Rgb::new(235, 219, 178),
+                    whichkey_key: Rgb::new(250, 189, 47),
                     cmdline_bg: Rgb::new(40, 40, 40), cmdline_fg: Rgb::new(235, 219, 178),
                     mode_normal_bg: Rgb::new(60, 56, 54), mode_normal_fg: Rgb::new(235, 219, 178),
                     mode_insert_bg: Rgb::new(40, 60, 40), mode_insert_fg: Rgb::new(235, 219, 178),
@@ -311,6 +316,7 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                     statusline_bg: Rgb::new(65, 72, 104),
                     accent: Rgb::new(122, 162, 247), accent_fg: Rgb::new(26, 27, 38),
                     whichkey_bg: Rgb::new(30, 30, 46), whichkey_fg: Rgb::new(192, 202, 245),
+                    whichkey_key: Rgb::new(122, 162, 247),
                     cmdline_bg: Rgb::new(26, 27, 38), cmdline_fg: Rgb::new(192, 202, 245),
                     mode_normal_bg: Rgb::new(65, 72, 104), mode_normal_fg: Rgb::new(192, 202, 245),
                     mode_insert_bg: Rgb::new(40, 72, 50), mode_insert_fg: Rgb::new(192, 202, 245),
@@ -338,6 +344,7 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                     statusline_bg: Rgb::new(59, 66, 82),
                     accent: Rgb::new(136, 192, 208), accent_fg: Rgb::new(46, 52, 64),
                     whichkey_bg: Rgb::new(46, 52, 64), whichkey_fg: Rgb::new(216, 222, 233),
+                    whichkey_key: Rgb::new(136, 192, 208),
                     cmdline_bg: Rgb::new(46, 52, 64), cmdline_fg: Rgb::new(216, 222, 233),
                     mode_normal_bg: Rgb::new(59, 66, 82), mode_normal_fg: Rgb::new(216, 222, 233),
                     mode_insert_bg: Rgb::new(40, 66, 50), mode_insert_fg: Rgb::new(216, 222, 233),
@@ -360,6 +367,7 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                     statusline_bg: Rgb::new(49, 50, 68),
                     accent: Rgb::new(203, 166, 247), accent_fg: Rgb::new(30, 30, 46),
                     whichkey_bg: Rgb::new(30, 30, 46), whichkey_fg: Rgb::new(205, 214, 244),
+                    whichkey_key: Rgb::new(203, 166, 247),
                     cmdline_bg: Rgb::new(30, 30, 46), cmdline_fg: Rgb::new(205, 214, 244),
                     mode_normal_bg: Rgb::new(49, 50, 68), mode_normal_fg: Rgb::new(205, 214, 244),
                     mode_insert_bg: Rgb::new(30, 60, 45), mode_insert_fg: Rgb::new(205, 214, 244),
@@ -382,6 +390,7 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                     statusline_bg: Rgb::new(230, 233, 239),
                     accent: Rgb::new(136, 57, 239), accent_fg: Rgb::new(239, 241, 245),
                     whichkey_bg: Rgb::new(239, 241, 245), whichkey_fg: Rgb::new(76, 79, 105),
+                    whichkey_key: Rgb::new(136, 57, 239),
                     cmdline_bg: Rgb::new(239, 241, 245), cmdline_fg: Rgb::new(76, 79, 105),
                     mode_normal_bg: Rgb::new(230, 233, 239), mode_normal_fg: Rgb::new(76, 79, 105),
                     mode_insert_bg: Rgb::new(215, 235, 215), mode_insert_fg: Rgb::new(76, 79, 105),
@@ -404,6 +413,7 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                     statusline_bg: Rgb::new(65, 69, 89),
                     accent: Rgb::new(202, 158, 230), accent_fg: Rgb::new(48, 52, 70),
                     whichkey_bg: Rgb::new(48, 52, 70), whichkey_fg: Rgb::new(198, 208, 245),
+                    whichkey_key: Rgb::new(202, 158, 230),
                     cmdline_bg: Rgb::new(48, 52, 70), cmdline_fg: Rgb::new(198, 208, 245),
                     mode_normal_bg: Rgb::new(65, 69, 89), mode_normal_fg: Rgb::new(198, 208, 245),
                     mode_insert_bg: Rgb::new(48, 65, 55), mode_insert_fg: Rgb::new(198, 208, 245),
@@ -426,6 +436,7 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                     statusline_bg: Rgb::new(54, 58, 79),
                     accent: Rgb::new(198, 160, 246), accent_fg: Rgb::new(36, 39, 58),
                     whichkey_bg: Rgb::new(36, 39, 58), whichkey_fg: Rgb::new(202, 211, 245),
+                    whichkey_key: Rgb::new(198, 160, 246),
                     cmdline_bg: Rgb::new(36, 39, 58), cmdline_fg: Rgb::new(202, 211, 245),
                     mode_normal_bg: Rgb::new(54, 58, 79), mode_normal_fg: Rgb::new(202, 211, 245),
                     mode_insert_bg: Rgb::new(36, 55, 50), mode_insert_fg: Rgb::new(202, 211, 245),
@@ -458,6 +469,7 @@ pub struct ColorOverrides {
     pub accent_fg: String,
     pub whichkey_bg: String,
     pub whichkey_fg: String,
+    pub whichkey_key: String,
     pub cmdline_bg: String,
     pub cmdline_fg: String,
     pub mode_normal_bg: String,
@@ -632,6 +644,7 @@ impl Config {
             (("colors", "accent_fg"), Text(self.color_overrides.accent_fg.clone())),
             (("colors", "whichkey_bg"), Text(self.color_overrides.whichkey_bg.clone())),
             (("colors", "whichkey_fg"), Text(self.color_overrides.whichkey_fg.clone())),
+            (("colors", "whichkey_key"), Text(self.color_overrides.whichkey_key.clone())),
             (("colors", "cmdline_bg"), Text(self.color_overrides.cmdline_bg.clone())),
             (("colors", "cmdline_fg"), Text(self.color_overrides.cmdline_fg.clone())),
             (("colors", "mode_normal_bg"), Text(self.color_overrides.mode_normal_bg.clone())),
@@ -733,6 +746,7 @@ impl Config {
                 accent_fg: st("colors", "accent_fg").unwrap_or_default(),
                 whichkey_bg: st("colors", "whichkey_bg").unwrap_or_default(),
                 whichkey_fg: st("colors", "whichkey_fg").unwrap_or_default(),
+                whichkey_key: st("colors", "whichkey_key").unwrap_or_default(),
                 cmdline_bg: st("colors", "cmdline_bg").unwrap_or_default(),
                 cmdline_fg: st("colors", "cmdline_fg").unwrap_or_default(),
                 mode_normal_bg: st("colors", "mode_normal_bg").unwrap_or_default(),

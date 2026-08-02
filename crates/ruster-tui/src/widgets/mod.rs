@@ -1041,6 +1041,7 @@ impl Widget for WhichKeyWidget {
         let bg = c(Color::Rgb(30, 30, 46), |t| t.whichkey_bg);
         let accent = c(Color::Rgb(137, 180, 250), |t| t.accent);
         let fg = c(Color::Rgb(205, 214, 244), |t| t.whichkey_fg);
+        let key_accent = c(accent, |t| t.whichkey_key);
         for y in area.top()..area.bottom() {
             for x in area.left()..area.right() {
                 if let Some(cell) = buf.cell_mut((x, y)) {
@@ -1063,12 +1064,20 @@ impl Widget for WhichKeyWidget {
         for (i, ch) in title.chars().enumerate() {
             put(buf, area.x + i as u16, area.y, ch, accent);
         }
-        // One binding per line below the title.
+        // One binding per line below the title. The key letter takes its own
+        // accent colour, then two spaces and the description in the panel fg.
         for (row, entry) in self.view.rows.iter().enumerate() {
             let y = area.y + 1 + row as u16;
             if y >= area.bottom() { break; }
-            for (i, ch) in format!("  {}", entry).chars().enumerate() {
-                put(buf, area.x + i as u16, y, ch, fg);
+            let mut x = area.x + 2;
+            for ch in entry.key.chars() {
+                put(buf, x, y, ch, key_accent);
+                x += 1;
+            }
+            x += 2;
+            for ch in entry.desc.chars() {
+                put(buf, x, y, ch, fg);
+                x += 1;
             }
         }
     }
@@ -1422,5 +1431,33 @@ mod tests {
         FloatWidget::new(f).render(r, &mut buf);
         // The right border survives; nothing was written past it.
         assert_eq!(buf.cell((r.right() - 1, r.y + 1)).unwrap().symbol(), "\u{2502}");
+    }
+
+    /// The key letter and its description are distinct colours: the key takes
+    /// `whichkey_key` (its own accent), the description `whichkey_fg`.
+    #[test]
+    fn whichkey_widget_accentuates_the_key_letter() {
+        use crate::widgets::WhichKeyWidget;
+        let area = Rect::new(0, 0, 30, 3);
+        let mut buf = RBuffer::empty(area);
+        let view = ruster_render::WhichKeyView {
+            title: "SPC".into(),
+            rows: vec![
+                ruster_render::WhichKeyEntry { key: "h".into(), desc: "windows".into() },
+                ruster_render::WhichKeyEntry { key: "q".into(), desc: "quit".into() },
+            ],
+            anim: 1.0,
+        };
+        let theme = ruster_render::Theme {
+            whichkey_fg: RColor::Rgb(200, 200, 200),
+            whichkey_key: RColor::Rgb(10, 200, 10),
+            ..ruster_render::Theme::default()
+        };
+        WhichKeyWidget::new(view).with_theme(&theme).render(area, &mut buf);
+        let (k, d) = (buf.cell((2, 1)).unwrap(), buf.cell((5, 1)).unwrap());
+        assert_eq!(k.symbol(), "h");
+        assert_eq!(k.fg, ratatui::style::Color::Rgb(10, 200, 10), "key letter takes whichkey_key");
+        assert_eq!(d.symbol(), "w");
+        assert_eq!(d.fg, ratatui::style::Color::Rgb(200, 200, 200), "description takes whichkey_fg");
     }
 }

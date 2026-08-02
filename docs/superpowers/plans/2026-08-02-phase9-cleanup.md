@@ -60,7 +60,7 @@ and no longer applies — **reimplement it, do not cherry-pick.**
 - Produces: `WhichKeyEntry { key: String, desc: String }` in `ruster-render`;
   `WhichKeyView.rows: Vec<WhichKeyEntry>`; `Colors::whichkey_key`.
 
-- [ ] **Step 1: Add `WhichKeyEntry` and change `WhichKeyView.rows`**
+- [x] **Step 1: Add `WhichKeyEntry` and change `WhichKeyView.rows`**
 
 ```rust
 // crates/ruster-render/src/lib.rs
@@ -77,7 +77,7 @@ pub struct WhichKeyView {
 }
 ```
 
-- [ ] **Step 2: Add `colors.whichkey_key` to the theme and schema**
+- [x] **Step 2: Add `colors.whichkey_key` to the theme and schema**
 
 Follow the exact `whichkey_bg`/`whichkey_fg` pattern already in
 `crates/ruster-render/src/lib.rs:63-99` and
@@ -85,31 +85,31 @@ Follow the exact `whichkey_bg`/`whichkey_fg` pattern already in
 `Colors` field, and the default. Fix `app.rs:224-225` (`set(...)` for the new
 field).
 
-- [ ] **Step 3: Change the construction sites to build `WhichKeyEntry`**
+- [x] **Step 3: Change the construction sites to build `WhichKeyEntry`**
 
 `leader_whichkey` builds each row as `format!("{}  {}", k, desc)` — split into
 `WhichKeyEntry { key: k, desc }`. Do the same in `g_whichkey` and the picker
 that opens the which-key panel.
 
-- [ ] **Step 4: Draw the accent in the TUI**
+- [x] **Step 4: Draw the accent in the TUI**
 
 In `WhichKeyWidget::render`, draw the key letter in `whichkey_key` and the
 description in `whichkey_fg`.
 
-- [ ] **Step 5: Draw the accent in raylib**
+- [x] **Step 5: Draw the accent in raylib**
 
 In `crates/ruster-render-raylib/src/lib.rs:1036-1050`, draw each key letter in
 `whichkey_key`. Use `MeasureTextEx` to advance past the key column, matching
 the TUI's column layout.
 
-- [ ] **Step 6: Tests**
+- [x] **Step 6: Tests**
 
 Add to `colors_are_themeable.rs`: with `whichkey_key = "#ff0000"` set, the TUI
 renderer styles the key span red and the description the default fg; the
 raylib backend resolves the accent and doesn't render `?` for the key glyphs.
 Both backends must agree the accent is distinct from `whichkey_fg`.
 
-- [ ] **Step 7: Verify in the running editor**
+- [x] **Step 7: Verify in the running editor**
 
 `just run` a file, press `SPC`, confirm the key letters take the accent colour
 and the descriptions stay `whichkey_fg`. Then `just gui`, same check.

@@ -342,6 +342,7 @@ pub fn schema() -> Vec<SettingSpec> {
     add("colors", "accent_fg", "Accent text", Text, t(""), "Override text drawn on accent bars");
     add("colors", "whichkey_bg", "Which-key background", Text, t(""), "Override the which-key panel background");
     add("colors", "whichkey_fg", "Which-key text", Text, t(""), "Override the which-key panel text");
+    add("colors", "whichkey_key", "Which-key key accent", Text, t(""), "Override the which-key key-letter accent");
     add("colors", "cmdline_bg", "Cmdline background", Text, t(""), "Override the cmdline background");
     add("colors", "cmdline_fg", "Cmdline text", Text, t(""), "Override the cmdline text");
     add("colors", "mode_normal_bg", "Normal mode bg", Text, t(""), "Statusline background in Normal mode");

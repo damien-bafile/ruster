@@ -63,6 +63,8 @@ pub struct Theme {
     pub whichkey_bg: Color,
     /// Which-key panel text.
     pub whichkey_fg: Color,
+    /// Which-key key-letter accent (defaults to `accent`).
+    pub whichkey_key: Color,
     /// Cmdline / mini-buffer background.
     pub cmdline_bg: Color,
     /// Cmdline / mini-buffer text.
@@ -97,6 +99,7 @@ impl Default for Theme {
             accent_fg: Color::Rgb(30, 30, 30),
             whichkey_bg: Color::Rgb(30, 30, 46),
             whichkey_fg: Color::Rgb(205, 214, 244),
+            whichkey_key: Color::Rgb(243, 139, 168),
             cmdline_bg: Color::Rgb(30, 30, 30),
             cmdline_fg: Color::Rgb(205, 214, 244),
         }
@@ -511,11 +514,18 @@ pub struct PickerView {
 
 /// A which-key hint panel that slides up from the bottom mini-buffer. `anim` is
 /// the slide progress in `0.0..=1.0` (0 = fully hidden below the screen edge,
-/// 1 = fully visible).
+/// 1 = fully visible). Each `row` is a `(key, description)` pair so the key
+/// letter can take its own accent colour.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WhichKeyEntry {
+    pub key: String,
+    pub desc: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct WhichKeyView {
     pub title: String,
-    pub rows: Vec<String>,
+    pub rows: Vec<WhichKeyEntry>,
     pub anim: f32,
 }
 
@@ -1240,5 +1250,16 @@ mod tests {
     fn frame_state_defaults_to_no_floats() {
         let st = FrameState::default();
         assert!(st.floats.is_empty());
+    }
+
+    /// Both backends draw the which-key key letter in `whichkey_key` and the
+    /// description in `whichkey_fg`; the two must differ or the accent is a
+    /// no-op. The default key accent is the theme accent, as it was before the
+    /// split.
+    #[test]
+    fn whichkey_key_accent_is_distinct_from_whichkey_fg() {
+        let t = crate::Theme::default();
+        assert_ne!(t.whichkey_key, t.whichkey_fg, "the key letter must stand out");
+        assert_eq!(t.whichkey_key, t.accent, "the key accent defaults to the theme accent");
     }
 }
