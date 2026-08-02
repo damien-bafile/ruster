@@ -3010,14 +3010,18 @@ impl App {
     ///
     /// Only buffers that already have a syntax engine are scanned — markers come
     /// from the tree's comment captures, so a file with no grammar has none.
-    fn todo_markers(&self) -> Vec<(PathBuf, ruster_syntax::TodoMarker)> {
+    fn todo_markers(&mut self) -> Vec<(PathBuf, ruster_syntax::TodoMarker)> {
         let mut out = Vec::new();
         let w = self.ws.borrow();
-        for (&buf, engine) in &self.syntax {
+        // `all_todo_markers`, not `todo_markers`: the latter reads the comment
+        // ranges left by the last highlight pass, which now only covers the
+        // visible rows. Right for drawing the overlay, wrong for a panel that
+        // claims to list every marker in the file.
+        for (&buf, engine) in &mut self.syntax {
             let Some(path) = w.buffers.get(buf).and_then(|d| d.file_path.clone()) else {
                 continue;
             };
-            for m in engine.todo_markers(&self.config.todo_keywords) {
+            for m in engine.all_todo_markers(&self.config.todo_keywords) {
                 out.push((path.clone(), m));
             }
         }
@@ -3701,8 +3705,25 @@ impl App {
                     Some(styled) => styled.to_vec(),
                     // A staged diff is coloured as a diff, not as source.
                     None if is_diff => crate::git_status::diff_styled_lines(&content),
-                    None => match self.syntax.get(&buf_id) {
-                        Some(engine) => engine.styled_lines().to_vec(),
+                    None => match self.syntax.get_mut(&buf_id) {
+                        Some(engine) => {
+                            // Highlighting is bounded to what this window shows.
+                            // Doing it here rather than in `update_syntax` is
+                            // deliberate: this is the only place the scroll
+                            // offset is settled, and reading a stale one would
+                            // leave the top or bottom row unstyled for a frame.
+                            //
+                            // Almost always a range comparison; it re-highlights
+                            // only when the scroll leaves the margin.
+                            if engine.set_viewport(scroll, scroll + buf_h) {
+                                // The rebuild dropped the TODO overlay with it.
+                                engine.overlay_todo_highlights(
+                                    &self.config.todo_keywords,
+                                    todo_style(),
+                                );
+                            }
+                            engine.styled_lines().to_vec()
+                        }
                         None => plain_lines(&content),
                     },
                 };
@@ -6064,7 +6085,7 @@ impl App {
     ///
     /// Deliberately re-read on each open rather than kept in sync — all three
     /// sources change underneath, and a stale panel is worse than a slow one.
-    fn collect_trouble(&self) -> Vec<TroubleItem> {
+    fn collect_trouble(&mut self) -> Vec<TroubleItem> {
         let mut out = Vec::new();
         {
             let w = self.ws.borrow();

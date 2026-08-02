@@ -27,6 +27,28 @@ fn main() {
     }
     println!("  reparse (edit)   {:>7.2} ms", t.elapsed().as_secs_f64() * 1000.0 / 20.0);
 
+    // The same edit with the highlight bounded to a screenful, which is what
+    // the editor does — a window is about 50 lines tall.
+    let mut b = ruster_core::buffer::Buffer::from_str(&text);
+    let mut vp = ruster_syntax::SyntaxEngine::new(&text, "rs").unwrap();
+    let at_line = text.lines().count() / 2;
+    vp.set_viewport(at_line, at_line + 50);
+    let t = std::time::Instant::now();
+    for i in 0..20 {
+        b.insert(at + i, "x");
+        let s = b.to_string();
+        vp.reparse_with_edits(&s, &b.take_edits());
+    }
+    println!("  reparse (viewport) {:>5.2} ms", t.elapsed().as_secs_f64() * 1000.0 / 20.0);
+
+    // Scrolling far enough to leave the margin: the worst case a user can
+    // provoke by holding a movement key.
+    let t = std::time::Instant::now();
+    for i in 0..20 {
+        vp.set_viewport(i * 500, i * 500 + 50);
+    }
+    println!("  scroll past margin {:>5.2} ms", t.elapsed().as_secs_f64() * 1000.0 / 20.0);
+
     // What `render` pays every frame: cloning every styled line into the
     // frame state, even though the widget draws only what fits on screen.
     let all = e.styled_lines().to_vec();

@@ -181,25 +181,67 @@ capture and an `RwLock` read per capture cost about 1 ms between them.
 | originally | 127 ms |
 | after the highlight-pass fix | 74 ms |
 | after incremental parsing | 43 ms |
-| after fixing the TODO overlay | **21 ms** |
+| after fixing the TODO overlay | 21 ms |
+| after bounding the highlight to the viewport | **2.7 ms** |
 
-Down from 127 ms to 21 ms, six times faster. What remains is a single item: the
-highlight pass still builds a `StyledLine` for every line in the file when the
-renderer draws about fifty. Cloning those into the frame state costs a further
-0.7 ms per frame, measured — real but not the problem.
+**Down from 127 ms to 2.7 ms — this task is done.** Roughly 47x, and comfortably
+inside a 16.7 ms frame with room for everything else the frame has to do.
 
 ### Task 9b: Only highlight what is visible
 
-- [ ] `highlight_lines` builds a `StyledLine` for every line in the file; the
-      renderer reads roughly fifty. `QueryCursor::set_byte_range` limits the
-      query, but the cache is then partial and callers must handle a miss —
-      an API change, not a tweak, which is why it is its own task.
+- [x] `highlight_lines` built a `StyledLine` for every line in the file; the
+      renderer reads roughly fifty.
+
+      Split the 20 ms first, because the obvious suspect was wrong. The
+      per-line build loop — a `String` per line, a character scan for rainbow
+      brackets — is only **1.2 ms**. Running the query is **15.7 ms**, and the
+      incremental tree-sitter parse underneath it is **0.30 ms**, exactly what
+      it should be. So the query was the whole problem and cloning styled lines
+      (0.70 ms, measured earlier) never was.
+
+      `SyntaxEngine` now carries a viewport, set from the window's scroll in
+      `render` — the only place the offset is settled — and bounds the query to
+      it with `QueryCursor::set_byte_range`. **20.6 ms -> 2.7 ms per keystroke.**
+
+      The cache is *not* partial: it stays one entry per line, with off-screen
+      rows holding their text and no highlights. No caller handles a miss, and
+      `styled_lines()` is unchanged. The API change the plan feared was
+      avoidable.
+
+      A 200-line margin either side means scrolling re-highlights only when it
+      leaves the margin; the worst case a user can provoke, holding a movement
+      key past it, is **1.5 ms**.
+- [x] Bound the rainbow-bracket pass too. It walked every character of every
+      line regardless, which both cost time and left off-screen rows
+      half-styled — brackets coloured, nothing else. Found by a test asserting
+      those rows were plain and getting colours back.
+- [x] Keep the TODO panel honest. `todo_markers` reads comment ranges from the
+      last highlight pass, so it now sees only the visible rows — correct for
+      drawing the overlay, wrong for a panel listing a file's markers. Added
+      `all_todo_markers`, a full-tree scan, and pointed the panel at it. Paid
+      once per invocation, never per frame.
 - [x] The TODO overlay — fixed differently and more cheaply than range-limiting.
       It was *recompiling the highlight query from source* and then re-running it
       over the whole tree, to find comments the highlight pass had just walked
       past. It now reads the ranges that pass recorded: **21.7 ms -> 0.26 ms**.
-- [ ] Tests: a range-limited pass must agree with the full one over the lines
-      it covers.
+- [x] Tests: `tests/viewport_equivalence.rs`, 11 of them. A 20-line window
+      walks the whole of a 1,200-line fixture and every covered row must equal
+      the unbounded result, so the suite stays honest if the grammar changes.
+
+      The load-bearing claim is that `set_byte_range` matches nodes which
+      *overlap* the range rather than ones contained in it — otherwise a comment
+      or string opening above the viewport would render as plain text. Verified
+      against tree-sitter directly before relying on it, then guarded.
+
+      Mutation-tested, which was necessary: deleting the bound entirely left
+      nine of the eleven passing, because the off-screen skip in the build loop
+      hides it. The test named for the bound was testing the output, not the
+      query. Split into two, and now both die when the bound goes.
+
+      One incidental finding, left alone as out of scope: the Rust highlight
+      query captures nothing inside `raw_string_literal` bodies, so raw strings
+      render unhighlighted in a full pass too. It cost a test premise before it
+      was noticed.
 
 ---
 

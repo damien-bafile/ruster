@@ -48,6 +48,6 @@ fn main() {
     let mut h = ruster_syntax::highlighter::Highlighter::new(
         lang.clone(), ruster_syntax::bench_builtin_query("rust"), "rust").unwrap();
     let t = std::time::Instant::now();
-    for _ in 0..5 { std::hint::black_box(h.highlight_lines(&tree, &edited, &depths)); }
+    for _ in 0..5 { std::hint::black_box(h.highlight_lines(&tree, &edited, &depths, None)); }
     println!("  highlight_lines   {:>7.2} ms", t.elapsed().as_secs_f64() * 1000.0 / 5.0);
 }
