@@ -636,6 +636,9 @@ enum CmdAction {
     /// Save an image of the screen (`:screenshot [path]`). `None` picks the
     /// next free `ruster-NNN.png` in the working directory.
     Screenshot(Option<String>),
+    /// `:16` — jump to a line. `None` is `:$`, the last line.
+    GotoLine(Option<usize>),
+    Hover,
     /// Toggle the Noice notification-stack panel (`:Noice`).
     NoicePanel,
     /// Open the Noice split history buffer (`:Noice split` / `:Noice history`).
@@ -1253,7 +1256,6 @@ pub struct App {
     git_signs: bool,
     /// Floating boxes drawn above the windows this frame. Rebuilt per frame by
     /// whatever owns them; empty most of the time.
-    floats: Vec<ruster_render::FloatView>,
     /// An open modal form, if any.
     dialog: Option<DialogState>,
     /// The theme in force before a theme picker opened, restored on cancel.
@@ -1652,7 +1654,6 @@ impl App {
             git_rx: git_rx_init,
             git_tx: git_tx_init,
             git_signs: git_signs_init,
-            floats: Vec::new(),
             dialog: None,
             theme_before_preview: None,
             trouble: TroubleState::new(),
@@ -4008,9 +4009,15 @@ impl App {
         } else {
             None
         };
-        // The hover popup is an ordinary float now, so it shares one clamping
-        // and drawing path with every other floating surface.
-        let mut floats = self.floats.clone();
+        // The hover popup is an ordinary float, so it shares one clamping and
+        // drawing path with every other floating surface.
+        //
+        // Built fresh each frame rather than kept on `App`. There was a
+        // `floats` field for this, cloned into every `FrameState` and never
+        // written to by anything — the hover popup was always pushed here, to
+        // the local. Nothing can raise a float except hover, so the field was
+        // an empty vector with a clone.
+        let mut floats: Vec<ruster_render::FloatView> = Vec::new();
         if let Some(lines) = &self.hover {
             if !lines.is_empty() {
                 floats.push(ruster_render::FloatView::anchored(
@@ -4204,6 +4211,17 @@ impl App {
                 let text = trimmed.strip_prefix("echoe ").unwrap_or("").to_string();
                 Ok(CmdAction::Echo(text, ruster_core::message::MessageLevel::Error))
             }
+            // `:16` and `:$`. Vim users type these constantly, and until now the
+            // cmdline answered "Unknown command: 16" — which reads as a bug in
+            // whatever you were doing, not a missing feature. I misread it as
+            // one myself while verifying something else.
+            "hover" | "Hover" => Ok(CmdAction::Hover),
+            "$" => Ok(CmdAction::GotoLine(None)),
+            _ if !trimmed.is_empty() && trimmed.bytes().all(|b| b.is_ascii_digit()) => {
+                // Saturating: `:99999999999999999999` is a typo, not an error
+                // worth a message. Clamped to the buffer when it is applied.
+                Ok(CmdAction::GotoLine(Some(trimmed.parse().unwrap_or(usize::MAX))))
+            }
             _ => Err(format!("Unknown command: {}", cmdline)),
         }
     }
@@ -4333,6 +4351,25 @@ impl App {
             CmdAction::Diffview => self.open_diffview(),
             CmdAction::SidebarResize(n) => {
                 self.sidebar.set_width(n);
+            }
+            CmdAction::Hover => self.lsp_hover(),
+            CmdAction::GotoLine(target) => {
+                // Clamped, not rejected: `:9999` in a short file goes to the
+                // end, which is what vim does and what the typist meant.
+                let pos = {
+                    let w = self.ws.borrow();
+                    let buf = w.buffer();
+                    let last = buf.line_count().saturating_sub(1);
+                    // 1-based on the way in; `:0` means the first line.
+                    let line = match target {
+                        Some(n) => n.saturating_sub(1).min(last),
+                        None => last,
+                    };
+                    buf.line_start_char(line)
+                };
+                self.ws.borrow_mut().execute(Action::Move(Motion::To(pos)));
+                // No explicit scroll: `render` already pulls the window to the
+                // cursor, which is the same path `G` and a quickfix jump take.
             }
             CmdAction::Screenshot(arg) => {
                 let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -10344,6 +10381,68 @@ index 1..2 100644
         let sub = dir.join("pics");
         std::fs::create_dir_all(&sub).unwrap();
         assert_eq!(screenshot_path(Some("pics"), &dir), sub.join("ruster-001.png"));
+    }
+
+    #[test]
+    fn a_bare_line_number_parses_as_a_jump() {
+        let a = App::new("content".into(), PathBuf::from("f.txt"));
+        assert_eq!(a.parse_cmdline(":16"), Ok(CmdAction::GotoLine(Some(16))));
+        assert_eq!(a.parse_cmdline(":1"), Ok(CmdAction::GotoLine(Some(1))));
+        assert_eq!(a.parse_cmdline(":0"), Ok(CmdAction::GotoLine(Some(0))));
+        assert_eq!(a.parse_cmdline(":$"), Ok(CmdAction::GotoLine(None)));
+        // Whitespace around it is still a line number.
+        assert_eq!(a.parse_cmdline(": 16 "), Ok(CmdAction::GotoLine(Some(16))));
+    }
+
+    #[test]
+    fn a_number_does_not_swallow_commands_that_merely_contain_one() {
+        // The arm is `all digits`, not `starts with a digit`, or `:2vsplit`
+        // and `:w2` would become jumps.
+        let a = App::new("content".into(), PathBuf::from("f.txt"));
+        assert!(a.parse_cmdline(":16x").is_err(), ":16x is not a line number");
+        assert!(a.parse_cmdline(":x16").is_err(), ":x16 is not a line number");
+        assert!(a.parse_cmdline(":-4").is_err(), "negatives are not supported");
+        assert_eq!(a.parse_cmdline(":w"), Ok(CmdAction::Save(false)), "still a save");
+    }
+
+    #[test]
+    fn a_line_jump_moves_the_cursor_and_clamps_to_the_buffer() {
+        let text = (1..=20).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let mut a = App::new(text, PathBuf::from("f.txt"));
+
+        let line_of = |a: &App| {
+            let w = a.ws.borrow();
+            let head = w.cursors().primary().head;
+            w.buffer().char_to_line(head)
+        };
+
+        a.apply_cmd(CmdAction::GotoLine(Some(16)));
+        assert_eq!(line_of(&a), 15, ":16 is the 16th line, which is index 15");
+
+        // `:0` and `:1` both mean the first line, as in vim.
+        a.apply_cmd(CmdAction::GotoLine(Some(0)));
+        assert_eq!(line_of(&a), 0);
+        a.apply_cmd(CmdAction::GotoLine(Some(1)));
+        assert_eq!(line_of(&a), 0);
+
+        // Past the end clamps rather than erroring — the typist meant the end.
+        a.apply_cmd(CmdAction::GotoLine(Some(9999)));
+        assert_eq!(line_of(&a), 19, "clamped to the last line");
+
+        a.apply_cmd(CmdAction::GotoLine(Some(5)));
+        a.apply_cmd(CmdAction::GotoLine(None));
+        assert_eq!(line_of(&a), 19, ":$ is the last line");
+    }
+
+    #[test]
+    fn a_line_jump_lands_at_the_start_of_the_line() {
+        // Not merely on the right line: `:16` in vim puts you at its first
+        // character, and anything else makes the next `d`/`y` do the wrong thing.
+        let mut a = App::new("aaa\nbbbbbbbb\nccc\n".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::GotoLine(Some(2)));
+        let w = a.ws.borrow();
+        let head = w.cursors().primary().head;
+        assert_eq!(head, w.buffer().line_start_char(1), "cursor is at the line start");
     }
 
     #[test]
