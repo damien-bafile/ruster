@@ -1,0 +1,131 @@
+# Phase 10 — Verification
+
+**Status:** planning, 2026-08-02.
+
+Phases 0–9 built an editor, and every phase ended with tests that prove the
+code does what it claims. None of them proved it **looks** like anything. This
+phase captures every user-visible surface in **both** backends — TUI as text,
+GUI as PNG — and commits the artifacts so a later session can see what "done"
+looked like and a human can check the things a unit test cannot: legibility,
+glyph rendering, theme colours, and TUI/GUI agreement.
+
+**This is a check, not a build.** Nothing here should require a code change
+unless a capture reveals a defect — in which case that defect is a Phase 9
+(cleanup) bug and gets fixed there, then recaptured.
+
+## Global constraints
+
+- **Both backends, every surface.** A surface with only one capture is an
+  unfinished verification; the parity rule has been a standing constraint since
+  Phase 6, and this is where it gets checked with eyes.
+- **Deterministic where possible.** Drive surfaces with an `init.lua` queue
+  applied before the first frame. For LSP/debugger-dependent surfaces, use
+  `ruster.defer` to let a round-trip settle before the capture fires (unblocked
+  by PR #59).
+- **Artifacts live in the repo.** `docs/verification/<surface>-tui.txt` and
+  `docs/verification/<surface>-gui.png`, committed. The matrix below links
+  each.
+- **No test may require a live LSP/debugger/network.** Where a surface needs
+  one, capture the most static faithful approximation and mark the row with the
+  manual step, or seed the fixture so it is deterministic.
+
+## Capture harness
+
+**Files:**
+- Create: `scripts/verify-capture.sh`
+- Create: `docs/verification/README.md` — one paragraph per surface: how it was
+  driven, what to look for, and any manual caveat
+- Modify: `justfile` — a `verify` recipe calling the script
+
+**Interfaces:**
+- Produces: `scripts/verify-capture.sh <surface> [args]` which writes
+  `docs/verification/<surface>-tui.txt` and `docs/verification/<surface>-gui.png`.
+  TUI via tmux `capture-pane -p`; GUI via the gui-check recipe (XDG_CONFIG_HOME
+  + init.lua queue + deferred `:screenshot`), gated on the screen being unlocked
+  (`ioreg -n Root -d1 -a | grep CGSSessionScreenIsLocked` must be absent).
+
+- [ ] **Step 1: Write the TUI half.** Launch `ruster <file>` under a fresh
+      tmux session with an `init.lua` in a temp `XDG_CONFIG_HOME` that queues
+      the drive commands, wait ~1s for the first frame, `tmux capture-pane -p`,
+      write the text file, kill the session.
+- [ ] **Step 2: Write the GUI half.** The gui-check recipe exactly, with the
+      screen-unlock guard at the top and a clear "screen is locked — ask the
+      user" message instead of the raylib panic.
+- [ ] **Step 3: Add `just verify <surface>`** wiring both halves and reporting
+      which artifacts were written.
+- [ ] **Step 4: Smoke-test the harness** on the dashboard surface (bare launch,
+      no drive commands) in both backends and confirm the artifacts render.
+
+---
+
+## Surface matrix
+
+Every row is one capture pair. The `Drive` column is the `init.lua` queue (or
+the manual step, marked `*`). All captures target a small fixture file
+(`docs/verification/fixtures/demo.rs`) so syntax highlighting, the gutter and
+the statusline are exercised identically every time.
+
+| # | Surface | Drive | TUI | GUI | Phase first shipped |
+|---|---|---|---|---|---|
+| 1 | Dashboard / welcome | bare launch | ✅ | ✅ | 0 |
+| 2 | Editor + syntax highlight | open `demo.rs` | ✅ | ✅ | 0 |
+| 3 | Statusline | open `demo.rs` | ✅ | ✅ | 2 |
+| 4 | Gutter (signs) | `:Gitsigns toggle`, `:TodoList` on a fixture with hunks + a TODO | ✅ | ✅ | 2 |
+| 5 | Sidebar | `:sidebar` | ✅ | ✅ | 2 |
+| 6 | Dired / file explorer | `:Files` picker, `:e` completion | ✅ | ✅ | 2 |
+| 7 | Which-key | press `SPC` | ✅ | ✅ | 2 |
+| 8 | Which-key key accent (P9 T1) | press `SPC` with `whichkey_key` set | ✅ | ✅ | 9 |
+| 9 | Cmdline + completion | `:e ~/De` + Tab | ✅ | ✅ | 2 |
+| 10 | Git status / staged | `:Git`, `:GitStaged` on a dirty fixture | ✅ | ✅ | 7 |
+| 11 | Diffview | `:Diffview` on a dirty fixture | ✅ | ✅ | 6 |
+| 12 | Trouble | `:Trouble` (needs diagnostics — seed a fixture with known LSP errors, or `*` manual) | ✅ | ✅ | 6 |
+| 13 | Todo list | `:TodoList` on a fixture with `TODO`/`FIXME` | ✅ | ✅ | 6 |
+| 14 | Notifications (noice) | `:echo hello`, `:Noice` | ✅ | ✅ | 6 |
+| 15 | Notification popup (P9 T2) | `:Noice popup` | ✅ | ✅ | 9 |
+| 16 | Dialog | `ruster.ui.dialog{...}` | ✅ | ✅ | 6 |
+| 17 | Hover (LSP) | `:hover` + `ruster.defer(1500, screenshot)` `*` needs live rust-analyzer | ✅ | ✅ | 3/8 |
+| 18 | Settings / config browser | `:settings` | ✅ | ✅ | 6 |
+| 19 | Theme picker | `:Themes` | ✅ | ✅ | 6 |
+| 20 | Help | `:help`, `:help :sidebar` | ✅ | ✅ | 7 |
+| 21 | Sessions | `:SessionSave`, `:SessionRestore` | ✅ | ✅ | 7 |
+| 22 | Messages panel | `:messages` | ✅ | ✅ | 7 |
+| 23 | Mason | `:Mason` | ✅ | ✅ | 6 |
+| 24 | Terminal | `:terminal` | ✅ | ✅ | 4 |
+| 25 | Debugger overlay + breakpoints | set a breakpoint, `:DebugStart` `*` needs a real debug target | ✅ | ✅ | 5 |
+| 26 | Flash jump mode | press `s` then two chars | ✅ | ✅ | 6 |
+| 27 | Projects / workspaces | `:Projects` | ✅ | ✅ | 5 |
+| 28 | Multi-cursor | `Ctrl+D` on a repeated token | ✅ | ✅ | 5 |
+| 29 | Ibuffer | `:Ibuffer` | ✅ | ✅ | 2 |
+| 30 | `:16` / goto line | `:16` | ✅ | ✅ | 8 |
+| 31 | `:Browse` (P9 T6) | `:Browse <url>` `*` needs network | ✅ | ✅ | 9 |
+| 32 | `:Music` (P9 T5, if built) | `:Music` `*` needs mpd | ✅ | ✅ | 9 |
+
+Rows 17, 12, 25, 31, 32 depend on a live service. For each, attempt the
+defer-driven capture first (guarded: skip silently if the service isn't
+reachable, mark the row). If no service is available, capture the surrounding
+surface (the float, the overlay, the error toast) and mark the row `manual` in
+the README.
+
+- [ ] **Task: capture rows 1–32 in both backends.** One row per commit or in
+      coherent groups (all of one phase's surfaces together), each with its
+      `docs/verification/README.md` entry. A row is done when both artifacts
+      exist, are legible, glyphs render (no `?`), and theme colours apply.
+- [ ] **Task: adjudicate defects.** Any capture showing a defect (glyph `?`,
+      misaligned pane, unthemed colour, TUI/GUI disagreement) becomes a Phase 9
+      bug entry: fix, recapture, mark the row green. The matrix is not done
+      until no row is red.
+- [ ] **Task: final sweep.** `just verify all` produces every pair; confirm the
+      tree is clean, docs/verification is committed, and the matrix has no
+      empty cells.
+
+---
+
+## Out of scope, deliberately
+
+- **Fixing what the captures reveal is Phase 9's job**, not this phase's — this
+  phase records and routes defects.
+- **Video / animation capture.** `:screenshot` is a still; slide animations,
+  the cursor blink and the flash jump are captured as a settled frame, not a
+  movie.
+- **Every plan checkbox.** The matrix is the curated user-visible surface set;
+  a screenshot of `:GotoLine` parsing internals proves nothing a test doesn't.
