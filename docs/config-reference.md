@@ -379,3 +379,70 @@ are tabstops:
 ```
 fn	fn ${1:name}(${2:args}) {\n    $0\n}
 ```
+
+## Lua: reacting to the editor
+
+`ruster.cmd(":Whatever")` makes every `:` command a Lua API, so the command
+surface is not the limitation. The limitation was that a plugin could be
+*invoked* but barely *react*. These are what closed that gap.
+
+### Events
+
+`ruster.on(name, fn)` registers a handler.
+
+| Event | Arguments | Fires |
+|---|---|---|
+| `VimEnter` | — | once at startup |
+| `ModeChanged` | mode name | on any mode change |
+| `InsertEnter` / `InsertLeave` | mode name | entering/leaving insert |
+| `BufEnter` / `BufLeave` | path | active buffer changed; leave names the buffer being *left* |
+| `WinEnter` | path | focused window changed |
+| `FileType` | language key | the active buffer's language changed |
+| `CursorMoved` | line (1-based), col (0-based) | the cursor moved |
+| `BufWritePre` / `BufWritePost` | path | around a write |
+| `Frame` | delta seconds | every frame |
+
+`CursorMoved` is **debounced to once per frame**. Holding `j` moves the cursor
+many times between frames and fires one event, so a handler doing real work does
+not become a performance problem.
+
+A handler that raises an error is caught: the remaining handlers still run and
+the editor stays up.
+
+### Timers
+
+```lua
+local id = ruster.defer(200, function() ... end)   -- once, after 200ms
+local id = ruster.timer(1000, function() ... end)  -- every 1000ms
+ruster.timer_stop(id)                              -- cancel either
+```
+
+Callbacks run on the frame drain, not a thread — the Lua runtime is `!Send` by
+design, so a timer can touch the editor with no locking. Resolution is therefore
+one frame, and a repeating timer fires **at most once per frame** however far
+behind it has fallen: a slow frame must not turn into a catch-up burst.
+
+A callback may schedule another timer, or cancel itself, from inside itself.
+
+### Read-only queries
+
+Deliberately small — what a statusline or a lightweight plugin needs, and no
+more. Each returns an empty value rather than erroring if called before the
+editor has finished starting.
+
+| Call | Returns |
+|---|---|
+| `ruster.api.buf_path()` | path of the active buffer, `""` for a scratch buffer |
+| `ruster.api.filetype()` | language key (`rust`, `lua`, …) |
+| `ruster.api.diagnostics()` | list of `{ line, col, severity, message }` for the active buffer |
+| `ruster.api.git_status()` | `{ branch, staged, unstaged }` — see the note below |
+
+Lines are 1-based and columns 0-based throughout, matching
+`nvim_win_get_cursor` and `CursorMoved`, so one can be passed straight to the
+other.
+
+`git_status()` reflects the last time the git status view was refreshed, which
+today means it stays empty until `:Git` has been opened once in the session.
+A statusline wanting the branch on startup needs a periodic refresh that does
+not exist yet; that is a deliberate follow-up rather than an oversight, because
+it means running `git status` on a timer and choosing how often.

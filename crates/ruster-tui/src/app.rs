@@ -258,6 +258,45 @@ fn syntax_overrides_to_colors(
     out
 }
 
+/// What `ruster.api.buf_path()` and friends read.
+///
+/// A snapshot the app refreshes each frame rather than callbacks reaching into
+/// `App`. The Lua closures are installed before `App` exists — they capture the
+/// workspace `Rc`, and there is no `&mut self` for them to hold — so anything
+/// living on `App` (diagnostics, git state) has to be pushed here instead of
+/// pulled from there.
+#[derive(Default, Clone)]
+struct QuerySnapshot {
+    path: String,
+    filetype: String,
+    diagnostics: Vec<ruster_lua::runtime::LuaDiagnostic>,
+    branch: String,
+    staged: usize,
+    unstaged: usize,
+}
+
+/// The editor state the Lua event layer watches, so a change becomes an event.
+///
+/// Diffed once per frame rather than firing from each mutation site. There are
+/// far too many places that can change the active buffer — every open, close,
+/// split, pick, jump and `:bd` — and an event that fires from most of them is
+/// worse than one that fires from all of them, because a plugin cannot tell
+/// which case it missed.
+///
+/// It also debounces `CursorMoved` for free: a held `j` moves the cursor many
+/// times between frames and fires one event, which is the behaviour the plan
+/// asked for and would otherwise need its own timer.
+#[derive(Default, Clone, PartialEq, Eq)]
+struct WatchedState {
+    buffer: Option<BufferId>,
+    /// Path of `buffer`, resolved when it changed so `BufLeave` can name the
+    /// buffer being left after the switch has already happened.
+    path: String,
+    window: Option<ruster_core::windows::WindowId>,
+    cursor: (usize, usize),
+    filetype: String,
+}
+
 /// A diagnostic severity's sign glyph + color (1=error … 4=hint).
 fn severity_sign(severity: u8) -> (char, ruster_render::Color) {
     use ruster_render::Color::Rgb;
@@ -1133,6 +1172,10 @@ pub struct App {
     /// removed without any test noticing — as a mutation of the condition
     /// demonstrated.
     syntax_reparses: u64,
+    /// Previous frame's watched state; see [`WatchedState`].
+    watched: WatchedState,
+    /// What Lua's read-only queries see; see [`QuerySnapshot`].
+    query_snapshot: Rc<RefCell<QuerySnapshot>>,
     lua: LuaRuntime,
     config: Config,
     timer: FrameTimer,
@@ -1336,6 +1379,8 @@ impl App {
         }
         let mut syntax_tried = std::collections::HashSet::new();
         syntax_tried.insert(initial_buffer);
+        let query_snapshot: Rc<RefCell<QuerySnapshot>> =
+            Rc::new(RefCell::new(QuerySnapshot::default()));
         let mut lua = LuaRuntime::new().unwrap_or_else(|e| {
             eprintln!("Lua init failed: {}", e);
             panic!("Lua init required");
@@ -1435,6 +1480,22 @@ impl App {
             let ws_wsb = ws.clone();
             let ws_ow = ws.clone();
             let ws_cl = ws.clone();
+            // Read-only queries, served from a snapshot the frame loop keeps
+            // current. See `QuerySnapshot` for why this is a push rather than
+            // the pull the other callbacks use.
+            let snap = query_snapshot.clone();
+            let s1 = snap.clone();
+            let s2 = snap.clone();
+            let s3 = snap.clone();
+            lua.set_query_callbacks(ruster_lua::runtime::QueryCallbacks {
+                buf_path: Box::new(move || s1.borrow().path.clone()),
+                filetype: Box::new(move || s2.borrow().filetype.clone()),
+                diagnostics: Box::new(move || s3.borrow().diagnostics.clone()),
+                git_status: Box::new(move || {
+                    let s = snap.borrow();
+                    (s.branch.clone(), s.staged, s.unstaged)
+                }),
+            });
             lua.set_window_callbacks(ruster_lua::WindowCallbacks {
                 list_bufs: Box::new(move || {
                     ws_lb.borrow().buffers.ids().iter().map(|id| id.0 as i32).collect()
@@ -1596,7 +1657,9 @@ impl App {
             ws, vim, renderer,
             should_quit: false, syntax, syntax_tried,
             syntax_revision: std::collections::HashMap::new(),
-            syntax_reparses: 0, lua, config, timer, notify,
+            syntax_reparses: 0,
+            watched: WatchedState::default(),
+            query_snapshot, lua, config, timer, notify,
             has_smooth_cursor: false, cursor_anim, pending_ctrl_w: false, picker: None,
             leader_pending: None,
             pending_results: None,
@@ -2332,6 +2395,15 @@ impl App {
             let mode_str = format!("{:?}", self.vim.mode);
             self.lua.set_mode(&mode_str);
             self.lua.fire_event_str("ModeChanged", &[&mode_str]);
+            // Insert is the one mode plugins overwhelmingly care about, and
+            // deriving it here rather than making every plugin parse
+            // `ModeChanged` keeps that logic in one place.
+            if prev_mode == VimMode::Insert {
+                self.lua.fire_event_str("InsertLeave", &[&mode_str]);
+            }
+            if self.vim.mode == VimMode::Insert {
+                self.lua.fire_event_str("InsertEnter", &[&mode_str]);
+            }
         }
     }
 
@@ -2715,6 +2787,7 @@ impl App {
                 _ = interval.tick() => {}
             }
 
+            self.fire_watched_events();
             self.drain_lua_actions();
 
             let dt = self.timer.tick();
@@ -2730,6 +2803,92 @@ impl App {
         }
 
         Ok(())
+    }
+
+    /// Turn changes since the last frame into Lua events.
+    ///
+    /// Called once per frame, before the Lua drain, so a handler's `ruster.cmd`
+    /// runs on the same frame the event fired.
+    fn fire_watched_events(&mut self) {
+        let now = {
+            let w = self.ws.borrow();
+            let buffer = w.active_buffer();
+            let doc = w.buffers.get(buffer);
+            let path = doc
+                .and_then(|d| d.file_path.as_ref())
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let filetype = doc
+                .and_then(|d| d.file_path.as_ref())
+                .map(|p| ruster_syntax::lang_ext_for_path(p))
+                .unwrap_or_default();
+            let head = w.primary_head();
+            let buf = w.buffer();
+            let line = buf.char_to_line(head);
+            let col = head - buf.line_start_char(line);
+            WatchedState {
+                buffer: Some(buffer),
+                path,
+                window: Some(w.windows.active()),
+                cursor: (line, col),
+                filetype,
+            }
+        };
+        // Refresh what Lua's read-only queries see, while the path and
+        // filetype are already to hand.
+        {
+            let active = now.buffer;
+            let mut snap = self.query_snapshot.borrow_mut();
+            snap.path = now.path.clone();
+            snap.filetype = now.filetype.clone();
+            snap.diagnostics = active
+                .and_then(|b| self.diagnostics.get(&b))
+                .map(|ds| {
+                    ds.iter()
+                        .map(|d| ruster_lua::runtime::LuaDiagnostic {
+                            // 1-based line to match `CursorMoved` and
+                            // `nvim_win_get_cursor`; column stays 0-based.
+                            line: d.start.line as i64 + 1,
+                            col: d.start.character as i64,
+                            severity: d.severity,
+                            message: d.message.clone(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let status = self.git_status.status();
+            snap.branch = status.branch.clone().unwrap_or_default();
+            snap.staged = status.entries.iter().filter(|e| e.staged.is_some()).count();
+            snap.unstaged = status.entries.iter().filter(|e| e.unstaged.is_some()).count();
+        }
+
+        let prev = std::mem::replace(&mut self.watched, now.clone());
+
+        // First frame: record the state without firing. `VimEnter` already
+        // covers startup, and a plugin does not want a BufEnter storm for a
+        // buffer that was open before it loaded.
+        if prev == WatchedState::default() {
+            return;
+        }
+        if prev.buffer != now.buffer {
+            // Leave before enter, and name the buffer being left rather than
+            // the one arriving — a handler saving state needs the old path.
+            self.lua.fire_event_str("BufLeave", &[&prev.path]);
+            self.lua.fire_event_str("BufEnter", &[&now.path]);
+        }
+        if prev.window != now.window {
+            self.lua.fire_event_str("WinEnter", &[&now.path]);
+        }
+        if prev.filetype != now.filetype && !now.filetype.is_empty() {
+            self.lua.fire_event_str("FileType", &[&now.filetype]);
+        }
+        if prev.cursor != now.cursor {
+            let (line, col) = now.cursor;
+            // 1-based line, 0-based column: the same convention
+            // `nvim_win_get_cursor` already uses, so a handler can pass one
+            // straight to the other.
+            self.lua.fire_event_nums("CursorMoved", &[line as i64 + 1, col as i64]);
+        }
     }
 
     /// Run whatever Lua queued since the last frame: `vim.cmd()`, `print()` and
@@ -2799,6 +2958,7 @@ impl App {
             while let Some(key) = self.renderer.poll_input() {
                 self.handle_key(key);
             }
+            self.fire_watched_events();
             self.drain_lua_actions();
             let secs = dt.as_secs_f64();
             self.lua.set_frame_dt(secs);
@@ -10344,6 +10504,194 @@ index 1..2 100644
         let sub = dir.join("pics");
         std::fs::create_dir_all(&sub).unwrap();
         assert_eq!(screenshot_path(Some("pics"), &dir), sub.join("ruster-001.png"));
+    }
+
+    /// Load `src` into the app's Lua and run one frame of the event pass.
+    fn lua_app(src: &str) -> App {
+        let mut a = App::new("one\ntwo\nthree\n".into(), PathBuf::from("f.rs"));
+        a.lua.lua.load(src).exec().expect("lua loaded");
+        // First pass records the baseline without firing; see `fire_watched_events`.
+        a.fire_watched_events();
+        a
+    }
+
+    fn lua_int(a: &App, name: &str) -> i64 {
+        a.lua.lua.globals().get::<i64>(name).unwrap_or(-1)
+    }
+
+    fn lua_str(a: &App, name: &str) -> String {
+        a.lua.lua.globals().get::<String>(name).unwrap_or_default()
+    }
+
+    #[test]
+    fn moving_the_cursor_fires_cursor_moved_once_per_frame() {
+        let mut a = lua_app(
+            "n = 0; last = ''
+             ruster.on('CursorMoved', function(l, c) n = n + 1; last = l .. ',' .. c end)",
+        );
+        // Several moves within one frame must still be one event: this is the
+        // debounce the plan asked for, and it falls out of diffing per frame
+        // rather than firing per keystroke.
+        for _ in 0..3 {
+            a.ws.borrow_mut().execute(Action::Move(Motion::Line(1)));
+        }
+        a.fire_watched_events();
+        assert_eq!(lua_int(&a, "n"), 1, "three moves in one frame is one event");
+        assert_eq!(lua_str(&a, "last"), "4,0", "1-based line, 0-based column");
+
+        // A frame with no movement fires nothing.
+        a.fire_watched_events();
+        assert_eq!(lua_int(&a, "n"), 1);
+    }
+
+    #[test]
+    fn the_first_pass_does_not_fire_a_storm() {
+        // A plugin loading into an editor that already has a buffer open should
+        // not receive BufEnter/CursorMoved for state that predates it —
+        // `VimEnter` is what covers startup.
+        let mut a = App::new("one\ntwo\n".into(), PathBuf::from("f.rs"));
+        a.lua
+            .lua
+            .load(
+                "n = 0
+                 ruster.on('CursorMoved', function() n = n + 1 end)
+                 ruster.on('BufEnter', function() n = n + 1 end)",
+            )
+            .exec()
+            .unwrap();
+        a.fire_watched_events();
+        assert_eq!(lua_int(&a, "n"), 0, "the baseline pass fired events");
+    }
+
+    #[test]
+    fn switching_buffers_fires_leave_then_enter_with_the_right_paths() {
+        let dir = std::env::temp_dir().join(format!("ruster_ev_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let other = dir.join("other.rs");
+        std::fs::write(&other, "fn other() {}\n").unwrap();
+
+        let mut a = lua_app(
+            "log = {}
+             ruster.on('BufLeave', function(p) log[#log+1] = 'leave:' .. p end)
+             ruster.on('BufEnter', function(p) log[#log+1] = 'enter:' .. p end)",
+        );
+        a.open_path(&other, None);
+        a.fire_watched_events();
+
+        a.lua
+            .lua
+            .load("first = log[1] or ''; second = log[2] or ''; n = #log")
+            .exec()
+            .unwrap();
+        assert_eq!(lua_int(&a, "n"), 2, "exactly one leave and one enter");
+        // Leave must name the buffer being *left*. It fires after the switch has
+        // already happened, so the obvious implementation reports the new path
+        // for both — and a handler saving per-file state would write it against
+        // the wrong file.
+        assert!(
+            lua_str(&a, "first").starts_with("leave:") && lua_str(&a, "first").ends_with("f.rs"),
+            "first event was {:?}",
+            lua_str(&a, "first")
+        );
+        assert!(
+            lua_str(&a, "second").starts_with("enter:")
+                && lua_str(&a, "second").ends_with("other.rs"),
+            "second event was {:?}",
+            lua_str(&a, "second")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn entering_and_leaving_insert_fires_both_events() {
+        let mut a = lua_app(
+            "enter = 0; leave = 0
+             ruster.on('InsertEnter', function() enter = enter + 1 end)
+             ruster.on('InsertLeave', function() leave = leave + 1 end)",
+        );
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        a.handle_key(CtKey::new(KeyCode::Char('i'), none));
+        assert_eq!(lua_int(&a, "enter"), 1, "InsertEnter");
+        assert_eq!(lua_int(&a, "leave"), 0);
+        a.handle_key(CtKey::new(KeyCode::Esc, none));
+        assert_eq!(lua_int(&a, "enter"), 1);
+        assert_eq!(lua_int(&a, "leave"), 1, "InsertLeave");
+    }
+
+    #[test]
+    fn a_handler_that_errors_does_not_take_the_editor_down() {
+        let mut a = lua_app(
+            "ok = 0
+             ruster.on('CursorMoved', function() error('boom') end)
+             ruster.on('CursorMoved', function() ok = ok + 1 end)",
+        );
+        a.ws.borrow_mut().execute(Action::Move(Motion::Line(1)));
+        a.fire_watched_events();
+        assert_eq!(lua_int(&a, "ok"), 1, "the second handler still ran");
+    }
+
+    #[test]
+    fn lua_can_read_the_path_and_filetype_of_the_active_buffer() {
+        let a = lua_app("");
+        a.lua
+            .lua
+            .load("p = ruster.api.buf_path(); ft = ruster.api.filetype()")
+            .exec()
+            .unwrap();
+        assert!(lua_str(&a, "p").ends_with("f.rs"), "got {:?}", lua_str(&a, "p"));
+        assert_eq!(lua_str(&a, "ft"), "rs");
+    }
+
+    #[test]
+    fn lua_sees_diagnostics_for_the_active_buffer() {
+        let mut a = lua_app("");
+        let buf = a.ws.borrow().active_buffer();
+        a.diagnostics.insert(
+            buf,
+            vec![ruster_lsp::Diagnostic {
+                start: ruster_lsp::results::LspPositionEq { line: 3, character: 7 },
+                end: ruster_lsp::results::LspPositionEq { line: 3, character: 9 },
+                severity: 1,
+                message: "something is wrong".to_string(),
+            }],
+        );
+        a.fire_watched_events();
+        a.lua
+            .lua
+            .load(
+                "d = ruster.api.diagnostics()
+                 count = #d
+                 line = d[1].line
+                 col = d[1].col
+                 sev = d[1].severity
+                 msg = d[1].message",
+            )
+            .exec()
+            .unwrap();
+        assert_eq!(lua_int(&a, "count"), 1);
+        assert_eq!(lua_int(&a, "line"), 4, "1-based, matching CursorMoved");
+        assert_eq!(lua_int(&a, "col"), 7, "0-based column");
+        assert_eq!(lua_int(&a, "sev"), 1);
+        assert_eq!(lua_str(&a, "msg"), "something is wrong");
+    }
+
+    #[test]
+    fn the_introspection_api_degrades_rather_than_erroring() {
+        // A plugin that runs before the app finished wiring itself up should
+        // get an empty answer, not a Lua error it cannot do anything about.
+        let rt = ruster_lua::runtime::LuaRuntime::new().unwrap();
+        rt.lua
+            .load(
+                "p = ruster.api.buf_path()
+                 d = #ruster.api.diagnostics()
+                 g = ruster.api.git_status().branch",
+            )
+            .exec()
+            .expect("no callbacks installed, but the calls still work");
+        assert_eq!(rt.lua.globals().get::<String>("p").unwrap(), "");
+        assert_eq!(rt.lua.globals().get::<i64>("d").unwrap(), 0);
+        assert_eq!(rt.lua.globals().get::<String>("g").unwrap(), "");
     }
 
     #[test]

@@ -30,6 +30,34 @@ pub struct WindowCallbacks {
     pub close_win: Box<dyn FnMut(i32)>,
 }
 
+/// A diagnostic as Lua sees it.
+#[derive(Clone)]
+pub struct LuaDiagnostic {
+    pub line: i64,
+    pub col: i64,
+    /// 1=error, 2=warning, 3=info, 4=hint — the LSP numbering, unchanged.
+    pub severity: u8,
+    pub message: String,
+}
+
+/// Read-only queries the app installs so a plugin can *ask* rather than only
+/// act.
+///
+/// Deliberately small. Every getter here is API surface that has to keep
+/// working, so this is what a statusline or a lightweight plugin actually
+/// needs and nothing beyond it — anything else can be added when something
+/// concrete wants it.
+pub struct QueryCallbacks {
+    /// Absolute path of the active buffer, empty for a scratch buffer.
+    pub buf_path: Box<dyn FnMut() -> String>,
+    /// Language key of the active buffer (`rust`, `lua`, …), empty if unknown.
+    pub filetype: Box<dyn FnMut() -> String>,
+    /// Diagnostics for the active buffer.
+    pub diagnostics: Box<dyn FnMut() -> Vec<LuaDiagnostic>>,
+    /// `(branch, staged, unstaged)`. Branch is empty outside a repository.
+    pub git_status: Box<dyn FnMut() -> (String, usize, usize)>,
+}
+
 /// Buffer/cursor bridge callbacks the app installs so Lua can read and edit the
 /// active buffer. Boxed because their concrete closures live in the frontend.
 type GetLinesFn = Box<dyn FnMut(i32, Option<i32>) -> Vec<String>>;
@@ -61,9 +89,13 @@ pub(crate) struct Shared {
     pub(crate) statusline: RefCell<Vec<(String, RegistryKey)>>,
     /// Window/buffer manipulation callbacks installed by the app.
     pub(crate) window_cb: RefCell<Option<WindowCallbacks>>,
+    /// Read-only queries; see [`QueryCallbacks`].
+    pub(crate) query_cb: RefCell<Option<QueryCallbacks>>,
     /// `on_submit` for the dialog currently being shown. Held here rather than
     /// travelling in `LuaAction` so the registry key never leaves this crate.
     pub(crate) dialog_cb: RefCell<Option<RegistryKey>>,
+    /// `ruster.defer` / `ruster.timer` callbacks, drained on the frame tick.
+    pub(crate) timers: RefCell<crate::timer::Timers>,
 }
 
 pub struct LuaRuntime {
@@ -85,7 +117,9 @@ impl LuaRuntime {
             set_cursor: RefCell::new(None),
             statusline: RefCell::new(Vec::new()),
             window_cb: RefCell::new(None),
+            query_cb: RefCell::new(None),
             dialog_cb: RefCell::new(None),
+            timers: RefCell::new(crate::timer::Timers::new()),
         });
 
         // The closures capture a clone of `shared`, so moving the runtime out of
@@ -111,6 +145,10 @@ impl LuaRuntime {
     /// Install the window/buffer manipulation callbacks.
     pub fn set_window_callbacks(&self, cb: WindowCallbacks) {
         self.shared.window_cb.replace(Some(cb));
+    }
+
+    pub fn set_query_callbacks(&self, cb: QueryCallbacks) {
+        *self.shared.query_cb.borrow_mut() = Some(cb);
     }
 
     /// Evaluate all Lua statusline sections registered for `pos`
@@ -169,6 +207,33 @@ impl LuaRuntime {
         *self.shared.current_dt.borrow_mut() = dt;
         let val = mlua::Value::Number(dt);
         self.fire_event("Frame", &[val]);
+        self.run_due_timers(dt * 1000.0);
+    }
+
+    /// Fire every `ruster.defer` / `ruster.timer` callback that has come due.
+    ///
+    /// The borrow of `timers` is dropped before anything is called, so a
+    /// callback may schedule another timer — or cancel itself — without a
+    /// `BorrowMutError`. That is not hypothetical: rescheduling from inside the
+    /// callback is how you write a backoff.
+    pub fn run_due_timers(&self, dt_ms: f64) {
+        let due = { self.shared.timers.borrow_mut().take_due(&self.lua, dt_ms) };
+        for func in due {
+            if let Err(e) = func.call::<()>(()) {
+                // A broken timer must not take the editor down, and must not
+                // fail silently either — a plugin author with neither an effect
+                // nor an error has nothing to go on.
+                self.shared
+                    .pending
+                    .borrow_mut()
+                    .push(LuaAction::Notify(3, format!("timer callback failed: {e}")));
+            }
+        }
+    }
+
+    /// How many timers are outstanding. For tests and `:messages` diagnostics.
+    pub fn timer_count(&self) -> usize {
+        self.shared.timers.borrow().len()
     }
 
     pub fn set_mode(&self, mode: &str) {
@@ -183,6 +248,13 @@ impl LuaRuntime {
         if let Ok(ruster) = self.lua.globals().get::<mlua::Table>("ruster") {
             let _ = ruster.set("editmode", editmode);
         }
+    }
+
+    /// Fire with numeric arguments — `CursorMoved(line, col)` and anything else
+    /// where handing Lua a string would make every handler call `tonumber`.
+    pub fn fire_event_nums(&self, name: &str, nums: &[i64]) {
+        let args: Vec<mlua::Value> = nums.iter().map(|n| mlua::Value::Integer(*n)).collect();
+        self.fire_event(name, &args);
     }
 
     pub fn fire_event_str(&self, name: &str, string_args: &[&str]) {
