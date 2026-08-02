@@ -364,6 +364,29 @@ impl RaylibRenderer {
         rl.get_font_default()
     }
 
+    /// The window icon, embedded so it travels with the binary.
+    ///
+    /// A path would work from a bundle and fail from `cargo run`, and the icon
+    /// is 40 KB — not worth a runtime file lookup that can be wrong.
+    const ICON_PNG: &'static [u8] = include_bytes!("../../../assets/icon.png");
+
+    /// Set the window and taskbar icon.
+    ///
+    /// Downscaled from the 1024x1024 master: this ends up as a taskbar entry,
+    /// and handing the compositor a megapixel image for a 32px slot wastes both
+    /// memory and the scaler's quality.
+    ///
+    /// A no-op on macOS by design — GLFW cannot set a window icon there, and
+    /// the Dock reads the `.icns` from the `.app` bundle instead, which
+    /// `scripts/bundle-macos.sh` already installs. Failure is silent for the
+    /// same reason: a missing icon must never stop the editor opening.
+    fn apply_window_icon(rl: &mut RaylibHandle) {
+        if let Ok(mut img) = raylib::texture::Image::load_image_from_mem(".png", Self::ICON_PNG) {
+            img.resize(64, 64);
+            rl.set_window_icon(&img);
+        }
+    }
+
     pub fn new(title: &str, gui: GuiConfig, font_override: Option<&str>) -> Self {
         let (mut rl, thread) = raylib::init()
             .size(gui.window_width, gui.window_height)
@@ -372,6 +395,7 @@ impl RaylibRenderer {
             .log_level(raylib::ffi::TraceLogLevel::LOG_ERROR)
             .resizable()
             .build();
+        Self::apply_window_icon(&mut rl);
         rl.set_target_fps(gui.target_fps as u32);
         rl.set_exit_key(None);
         let font = Self::try_load_mono_font(&mut rl, &thread, font_override, gui.font_size);
