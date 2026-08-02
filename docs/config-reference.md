@@ -435,14 +435,15 @@ editor has finished starting.
 | `ruster.api.buf_path()` | path of the active buffer, `""` for a scratch buffer |
 | `ruster.api.filetype()` | language key (`rust`, `lua`, …) |
 | `ruster.api.diagnostics()` | list of `{ line, col, severity, message }` for the active buffer |
-| `ruster.api.git_status()` | `{ branch, staged, unstaged }` — see the note below |
+| `ruster.api.git_status()` | `{ branch, staged, unstaged }` |
 
 Lines are 1-based and columns 0-based throughout, matching
 `nvim_win_get_cursor` and `CursorMoved`, so one can be passed straight to the
 other.
 
-`git_status()` reflects the last time the git status view was refreshed, which
-today means it stays empty until `:Git` has been opened once in the session.
-A statusline wanting the branch on startup needs a periodic refresh that does
-not exist yet; that is a deliberate follow-up rather than an oversight, because
-it means running `git status` on a timer and choosing how often.
+`git_status()` is kept current by a background refresh every two seconds, so a
+statusline sees the branch from startup rather than only after `:Git` has been
+opened. The interval is a compromise: fast enough that the branch is not
+visibly stale after a commit or a checkout, slow enough not to spawn `git` at
+frame rate on a large repository. The refresh runs on a worker thread and never
+blocks a frame.

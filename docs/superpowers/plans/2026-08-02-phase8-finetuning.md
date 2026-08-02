@@ -282,11 +282,17 @@ The decision rule this implies, worth writing down:
       changed. Writing to a file from the callback instead showed the API had
       been correct the whole time. The measurement was wrong, not the code.
 
-- [ ] `git_status()` stays empty until `:Git` has been opened once, because
-      `App::git_status` is only populated by that view. A statusline wants the
-      branch at startup. Fixing it means running `git status` on a timer and
-      picking a period — a deliberate design call, not something to bolt on at
-      the end of a session.
+- [x] `git_status()` is now kept current by a background refresh every two
+      seconds, rather than staying empty until `:Git` was opened. Two seconds is
+      a compromise, not a right answer: fast enough that the branch is not
+      visibly stale after a commit, slow enough not to run `git` at frame rate
+      on a large repository.
+
+      An in-flight guard stops a slow repository accumulating processes — and
+      the worker reports back **even when it finds nothing**, because a guard
+      that only clears on success latches on the first failure and silently
+      stops polling for the rest of the session. That was in the first version
+      of this and would have looked exactly like the bug it replaced.
 
 ---
 

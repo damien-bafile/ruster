@@ -1176,6 +1176,18 @@ pub struct App {
     watched: WatchedState,
     /// What Lua's read-only queries see; see [`QuerySnapshot`].
     query_snapshot: Rc<RefCell<QuerySnapshot>>,
+    /// Background `git status` results, for the branch and counts a statusline
+    /// wants without the user having opened `:Git`.
+    /// `None` means the worker ran and found nothing — outside a repository,
+    /// or git missing. It still has to report back, or the in-flight guard
+    /// below would latch on and stop polling for the rest of the session.
+    git_status_rx: std::sync::mpsc::Receiver<Option<ruster_git::Status>>,
+    git_status_tx: std::sync::mpsc::Sender<Option<ruster_git::Status>>,
+    /// When the last background `git status` was started, and whether one is
+    /// still running. Without the in-flight guard a slow repository would have
+    /// a new process spawned every tick while the previous ones piled up.
+    git_status_polled: Option<std::time::Instant>,
+    git_status_in_flight: bool,
     lua: LuaRuntime,
     config: Config,
     timer: FrameTimer,
@@ -1379,6 +1391,7 @@ impl App {
         }
         let mut syntax_tried = std::collections::HashSet::new();
         syntax_tried.insert(initial_buffer);
+        let (git_status_tx_init, git_status_rx_init) = std::sync::mpsc::channel();
         let query_snapshot: Rc<RefCell<QuerySnapshot>> =
             Rc::new(RefCell::new(QuerySnapshot::default()));
         let mut lua = LuaRuntime::new().unwrap_or_else(|e| {
@@ -1659,7 +1672,11 @@ impl App {
             syntax_revision: std::collections::HashMap::new(),
             syntax_reparses: 0,
             watched: WatchedState::default(),
-            query_snapshot, lua, config, timer, notify,
+            query_snapshot,
+            git_status_rx: git_status_rx_init,
+            git_status_tx: git_status_tx_init,
+            git_status_polled: None,
+            git_status_in_flight: false, lua, config, timer, notify,
             has_smooth_cursor: false, cursor_anim, pending_ctrl_w: false, picker: None,
             leader_pending: None,
             pending_results: None,
@@ -2809,7 +2826,48 @@ impl App {
     ///
     /// Called once per frame, before the Lua drain, so a handler's `ruster.cmd`
     /// runs on the same frame the event fired.
+    /// How often a background `git status` may run.
+    ///
+    /// It spawns a process, so this is a compromise rather than a right
+    /// answer: fast enough that a statusline is not visibly stale after a
+    /// commit, slow enough not to run `git` at frame rate on a large repo.
+    const GIT_STATUS_POLL: std::time::Duration = std::time::Duration::from_secs(2);
+
+    /// Keep `git_status` fresh in the background.
+    ///
+    /// Without this it was only ever populated by `:Git`, so
+    /// `ruster.api.git_status()` returned an empty branch until the user
+    /// happened to open the status view — which a statusline plugin, the main
+    /// reason the query exists, never does.
+    fn poll_git_status(&mut self) {
+        while let Ok(result) = self.git_status_rx.try_recv() {
+            self.git_status_in_flight = false;
+            if let Some(status) = result {
+                self.git_status.set_status(status);
+            }
+        }
+        if self.git_status_in_flight {
+            return;
+        }
+        let due = self
+            .git_status_polled
+            .is_none_or(|t| t.elapsed() >= Self::GIT_STATUS_POLL);
+        if !due {
+            return;
+        }
+        let Some(root) = self.git_root() else { return };
+        self.git_status_polled = Some(std::time::Instant::now());
+        self.git_status_in_flight = true;
+        let tx = self.git_status_tx.clone();
+        std::thread::spawn(move || {
+            // Always sends, including on failure — see the field comment.
+            let _ = tx.send(ruster_git::status(&root));
+        });
+    }
+
     fn fire_watched_events(&mut self) {
+        // Before the snapshot below reads it.
+        self.poll_git_status();
         let now = {
             let w = self.ws.borrow();
             let buffer = w.active_buffer();
