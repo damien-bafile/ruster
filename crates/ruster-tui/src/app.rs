@@ -1290,15 +1290,8 @@ pub struct App {
     pending_confirm: Option<PendingConfirm>,
     /// Per-file gutter signs from the last test run (✓/✗), merged with diagnostics.
     result_signs: std::collections::HashMap<PathBuf, ruster_render::SignsView>,
-    /// Git hunks per buffer, refreshed in the background on open and on save.
-    git_hunks: std::collections::HashMap<BufferId, Vec<ruster_git::Hunk>>,
-    /// Results from the background `git diff` workers.
-    git_rx: std::sync::mpsc::Receiver<(BufferId, Vec<ruster_git::Hunk>)>,
-    git_tx: std::sync::mpsc::Sender<(BufferId, Vec<ruster_git::Hunk>)>,
-    /// `git.signs` — whether the gutter shows git status at all.
-    git_signs: bool,
-    /// Floating boxes drawn above the windows this frame. Rebuilt per frame by
-    /// whatever owns them; empty most of the time.
+    /// Per-buffer git hunks for the gutter, and their background workers.
+    git: crate::git_gutter::GitGutter,
     /// An open modal form, if any.
     dialog: Option<DialogState>,
     /// The theme in force before a theme picker opened, restored on cancel.
@@ -1319,10 +1312,8 @@ pub struct App {
     messages_filter_level: Option<ruster_core::message::MessageLevel>,
     /// State for cmdline path completion (Tab/Shift-Tab cycling).
     cmdline_completion: Option<CmdlineCompletion>,
-    /// Active DAP debug session, if any.
-    debug_session: Option<ruster_dap::session::DebugSession>,
-    /// File-local breakpoints: (canonical path, line number).
-    debug_breakpoints: std::collections::HashMap<PathBuf, Vec<u16>>,
+    /// The debug session and its breakpoints.
+    debug: crate::debug_state::DebugState,
     /// When true, the Noice notification-stack panel is shown as a right-side bar.
     pub show_noice_panel: bool,
 }
@@ -1634,7 +1625,6 @@ impl App {
                 ruster_project::record_recent(state_dir, root, 30);
             }
         }
-        let (git_tx_init, git_rx_init) = std::sync::mpsc::channel();
         let git_signs_init = config.git_signs;
         let mut notify = NotificationManager::new(ruster_notify::NoiceSettings {
             mini_enabled: config.noice.mini_enabled,
@@ -1715,10 +1705,7 @@ impl App {
             git_status: crate::git_status::GitStatusState::new(),
             pending_confirm: None,
             result_signs: std::collections::HashMap::new(),
-            git_hunks: std::collections::HashMap::new(),
-            git_rx: git_rx_init,
-            git_tx: git_tx_init,
-            git_signs: git_signs_init,
+            git: crate::git_gutter::GitGutter::new(git_signs_init),
             dialog: None,
             theme_before_preview: None,
             trouble: TroubleState::new(),
@@ -1729,8 +1716,7 @@ impl App {
             messages_filter_source: None,
             messages_filter_level: None,
             cmdline_completion: None,
-            debug_session: None,
-            debug_breakpoints: std::collections::HashMap::new(),
+            debug: crate::debug_state::DebugState::new(),
             show_noice_panel: false,
         };
         // Create background buffers (pinned, not navigated to).
@@ -2886,7 +2872,8 @@ impl App {
             snap.path = now.path.clone();
             snap.filetype = now.filetype.clone();
             snap.diagnostics = active
-                .and_then(|b| self.diagnostics.get(&b))
+                .map(|b| self.lsp.diagnostics(b))
+                .filter(|ds| !ds.is_empty())
                 .map(|ds| {
                     ds.iter()
                         .map(|d| ruster_lua::runtime::LuaDiagnostic {
@@ -3988,8 +3975,14 @@ impl App {
                         s.signs.extend(diag.signs);
                     }
                     if !self.result_signs.is_empty() {
+                        // `w`, not `self.ws.borrow()`: a mutable borrow is
+                        // already live in this scope, and re-borrowing panics
+                        // with `RefCell already mutably borrowed`. Both this
+                        // branch and the breakpoint one below did exactly that
+                        // — silently, because each is behind a guard that is
+                        // false until a test has been run or a breakpoint set.
                         if let Some(p) =
-                            self.ws.borrow().buffers.get(buf_id).and_then(|d| d.file_path.clone())
+                            w.buffers.get(buf_id).and_then(|d| d.file_path.clone())
                         {
                             let key = p.canonicalize().unwrap_or(p);
                             if let Some(rs) = self.result_signs.get(&key) {
@@ -3998,12 +3991,13 @@ impl App {
                             }
                         }
                     }
-                    if !self.debug_breakpoints.is_empty() {
+                    if self.debug.any_breakpoints() {
                         if let Some(p) =
-                            self.ws.borrow().buffers.get(buf_id).and_then(|d| d.file_path.clone())
+                            w.buffers.get(buf_id).and_then(|d| d.file_path.clone())
                         {
                             let key = p.canonicalize().unwrap_or(p);
-                            if let Some(bps) = self.debug_breakpoints.get(&key) {
+                            {
+                                let bps = self.debug.breakpoints_in(&key);
                                 s.width = s.width.max(1);
                                 let bp_signs: Vec<(u16, char, ruster_render::Color)> = bps
                                     .iter()
@@ -4345,11 +4339,11 @@ impl App {
             }
             _ if trimmed == "projects" => Ok(CmdAction::Projects),
             "db" | "debug" => Ok(CmdAction::DebugStart),
-            "db_continue" | "continue" if self.debug_session.is_some() => Ok(CmdAction::DebugContinue),
-            "db_next" | "n" if self.debug_session.is_some() => Ok(CmdAction::DebugNext),
-            "db_stepin" | "s" if self.debug_session.is_some() => Ok(CmdAction::DebugStepIn),
-            "db_stepout" | "finish" if self.debug_session.is_some() => Ok(CmdAction::DebugStepOut),
-            "db_stop" if self.debug_session.is_some() => Ok(CmdAction::DebugStop),
+            "db_continue" | "continue" if self.debug.is_running() => Ok(CmdAction::DebugContinue),
+            "db_next" | "n" if self.debug.is_running() => Ok(CmdAction::DebugNext),
+            "db_stepin" | "s" if self.debug.is_running() => Ok(CmdAction::DebugStepIn),
+            "db_stepout" | "finish" if self.debug.is_running() => Ok(CmdAction::DebugStepOut),
+            "db_stop" if self.debug.is_running() => Ok(CmdAction::DebugStop),
             "db_toggle" | "B" => Ok(CmdAction::DebugToggleBreakpoint),
             "Gitsigns" | "gitsigns" => Ok(CmdAction::GitsignsToggle),
             "TodoList" | "todolist" | "todo" => Ok(CmdAction::TodoList),
@@ -4527,13 +4521,13 @@ impl App {
             CmdAction::Trouble => self.open_trouble(),
             CmdAction::Themes => self.open_themes_picker(),
             CmdAction::GitsignsToggle => {
-                self.git_signs = !self.git_signs;
-                if self.git_signs {
+                // `set_enabled` drops the cache when turning off, so the
+                // "clear" half of this no longer has to be remembered here.
+                if self.git.set_enabled(!self.git.enabled()) {
                     let id = self.ws.borrow().active_buffer();
                     self.refresh_git_hunks(id);
                     self.echo("Git signs on");
                 } else {
-                    self.git_hunks.clear();
                     self.echo("Git signs off");
                 }
             }
@@ -5682,13 +5676,8 @@ impl App {
     /// Empty when `git.signs` is off or the buffer has no hunks, which is the
     /// common case and must cost nothing.
     fn git_signs_for(&self, buf_id: BufferId) -> ruster_render::SignsView {
-        if !self.git_signs {
-            return ruster_render::SignsView::default();
-        }
-        let Some(hunks) = self.git_hunks.get(&buf_id) else {
-            return ruster_render::SignsView::default();
-        };
-        if hunks.is_empty() {
+        let hunks = self.git.hunks(buf_id);
+        if !self.git.enabled() || hunks.is_empty() {
             return ruster_render::SignsView::default();
         }
         let mut signs: Vec<(u16, char, ruster_render::Color)> = Vec::new();
@@ -5713,7 +5702,7 @@ impl App {
     /// an mpsc channel that `render` drains. Silently does nothing when the file
     /// is untracked, outside a repo, or git is missing.
     fn refresh_git_hunks(&mut self, buf_id: BufferId) {
-        if !self.git_signs {
+        if !self.git.enabled() {
             return;
         }
         let Some(path) = self.ws.borrow().buffers.get(buf_id).and_then(|d| d.file_path.clone())
@@ -5727,28 +5716,22 @@ impl App {
                 None => return,
             },
         };
-        let tx = self.git_tx.clone();
-        std::thread::spawn(move || {
-            if let Some(hunks) = ruster_git::diff_hunks(&root, &path) {
-                let _ = tx.send((buf_id, hunks));
-            }
-        });
+        self.git.request(buf_id, path, root);
     }
 
     /// Take whatever the git workers finished since the last frame.
     fn drain_git_hunks(&mut self) {
-        while let Ok((id, hunks)) = self.git_rx.try_recv() {
-            self.git_hunks.insert(id, hunks);
-        }
+        self.git.drain();
     }
 
     /// `]h` / `[h` — jump to the next/previous hunk, wrapping.
     fn jump_hunk(&mut self, forward: bool) {
         let buf_id = self.ws.borrow().active_buffer();
-        let Some(hunks) = self.git_hunks.get(&buf_id).filter(|h| !h.is_empty()).cloned() else {
+        let hunks = self.git.hunks(buf_id).to_vec();
+        if hunks.is_empty() {
             self.echo("No git hunks");
             return;
-        };
+        }
         let line = {
             let w = self.ws.borrow();
             w.buffer().char_to_line(w.primary_head()) as u32
@@ -5775,6 +5758,10 @@ impl App {
         self.syntax.remove(&id);
         self.lsp.forget(id);
         self.terminals.remove(&id);
+        // Added with the extraction: this sweep cleared four caches and missed
+        // the git hunks, so a long session of opening and closing files grew
+        // that map without bound.
+        self.git.forget(id);
     }
 
     fn delete_active_buffer(&mut self) {
@@ -7483,7 +7470,7 @@ impl App {
 
     /// Poll the active debug session (if any) for DAP events, updating state.
     fn drain_debug_events(&mut self) {
-        let Some(session) = &mut self.debug_session else { return };
+        let Some(session) = self.debug.session_mut() else { return };
         for ev in session.poll_events() {
             match ev {
                 ruster_dap::session::DapEvent::Stopped { reason: _, thread_id } => {
@@ -7491,8 +7478,7 @@ impl App {
                     session.state = ruster_dap::session::SessionState::Paused;
                 }
                 ruster_dap::session::DapEvent::Terminated => {
-                    self.debug_session = None;
-                    self.debug_breakpoints.clear();
+                    self.debug.stop();
                     return;
                 }
                 _ => {}
@@ -7768,7 +7754,7 @@ impl App {
     }
 
     fn build_debug_overlay(&self) -> Option<ruster_render::DebugOverlayView> {
-        let session = self.debug_session.as_ref()?;
+        let session = self.debug.session()?;
         let status = if session.stopped() { "PAUSED" } else { "RUNNING" };
         let toolbar = format!("[Debug: {}] F5:Continue F10:Next F11:StepIn S-F5:Stop", status);
         let stack: Vec<(u16, String, String)> = session
@@ -7792,7 +7778,7 @@ impl App {
     }
 
     fn debug_start(&mut self) {
-        if self.debug_session.is_some() {
+        if self.debug.is_running() {
             self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::System, "Debug session already active"));
             return;
         }
@@ -7836,7 +7822,12 @@ impl App {
             Ok(mut session) => {
                 session.send_initialize().ok();
                 session.send_launch(serde_json::json!({})).ok();
-                self.debug_session = Some(session);
+                // `start` pushes the breakpoint table. Before this, the
+                // session was merely stored and `toggle_breakpoint` only
+                // pushed when one was already running — so breakpoints placed
+                // before `:DebugStart`, which is the normal order, were never
+                // sent and the debugger ran straight past them.
+                self.debug.start(session);
                 self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::System, format!("Debug started: {}", cfg.name)));
             }
             Err(e) => { self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::System, format!("Debug start failed: {}", e))); },
@@ -7844,32 +7835,31 @@ impl App {
     }
 
     fn debug_stop(&mut self) {
-        if let Some(mut session) = self.debug_session.take() {
+        if let Some(mut session) = self.debug.stop() {
             session.disconnect().ok();
-            self.debug_breakpoints.clear();
         }
     }
 
     fn debug_continue(&mut self) {
-        if let Some(session) = &mut self.debug_session {
+        if let Some(session) = self.debug.session_mut() {
             session.continue_exec().ok();
         }
     }
 
     fn debug_step_over(&mut self) {
-        if let Some(session) = &mut self.debug_session {
+        if let Some(session) = self.debug.session_mut() {
             session.step_over().ok();
         }
     }
 
     fn debug_step_in(&mut self) {
-        if let Some(session) = &mut self.debug_session {
+        if let Some(session) = self.debug.session_mut() {
             session.step_into().ok();
         }
     }
 
     fn debug_step_out(&mut self) {
-        if let Some(session) = &mut self.debug_session {
+        if let Some(session) = self.debug.session_mut() {
             session.step_out().ok();
         }
     }
@@ -7892,23 +7882,10 @@ impl App {
                 return;
             }
         };
-        let lines = self.debug_breakpoints.entry(path.clone()).or_default();
-        if let Some(pos) = lines.iter().position(|&l| l == line) {
-            lines.remove(pos);
-            if lines.is_empty() {
-                self.debug_breakpoints.remove(&path);
-            }
-        } else {
-            lines.push(line);
-            lines.sort();
-        }
-        if let Some(session) = &mut self.debug_session {
-            let file_bps: Vec<(PathBuf, Vec<u16>)> = self.debug_breakpoints
-                .iter()
-                .map(|(p, ls)| (p.clone(), ls.clone()))
-                .collect();
-            session.set_breakpoints_all(file_bps).ok();
-        }
+        // The push to a running session lives in `DebugState::toggle_breakpoint`
+        // now, so there is no longer a way to edit the table without the
+        // debugger hearing about it.
+        self.debug.toggle_breakpoint(&path, line);
     }
 }
 
@@ -8359,12 +8336,44 @@ mod tests {
     /// Git status is the weakest signal in the gutter: when a line is both
     /// changed and carries a diagnostic, the diagnostic must win. Signs are
     /// merged later-wins, so this pins the ordering.
+    /// Setting a single breakpoint used to crash the editor on the next frame.
+    ///
+    /// The sign-column code re-borrowed the workspace inside a scope that
+    /// already held a mutable borrow, panicking with `RefCell already mutably
+    /// borrowed`. It survived because the branch is behind
+    /// `any_breakpoints()` — false until someone actually sets one, which no
+    /// test did and which is the first thing anyone using the debugger does.
+    #[test]
+    fn setting_a_breakpoint_does_not_panic_on_the_next_render() {
+        let mut a = App::new("one\ntwo\nthree\n".into(), PathBuf::from("f.rs"));
+        a.debug.toggle_breakpoint(std::path::Path::new("f.rs"), 1);
+        assert!(a.debug.any_breakpoints(), "precondition: the branch is now live");
+        a.render();
+    }
+
+    /// The same re-borrow, in the branch next to it. Guarded by
+    /// `!result_signs.is_empty()`, so it needs a test run to fire rather than a
+    /// breakpoint — equally reachable, equally fatal, and fixed together.
+    #[test]
+    fn a_test_result_sign_does_not_panic_on_the_next_render() {
+        let mut a = App::new("one\ntwo\nthree\n".into(), PathBuf::from("f.rs"));
+        a.result_signs.insert(
+            PathBuf::from("f.rs"),
+            ruster_render::SignsView {
+                width: 1,
+                signs: vec![(0, '\u{2717}', ruster_render::Color::Default)],
+            },
+        );
+        assert!(!a.result_signs.is_empty(), "precondition: the branch is now live");
+        a.render();
+    }
+
     #[test]
     fn a_diagnostic_outranks_a_git_sign_on_the_same_line() {
         let mut a = App::new("one\ntwo\nthree\n".into(), PathBuf::from("f.txt"));
         let id = a.ws.borrow().active_buffer();
-        a.git_signs = true;
-        a.git_hunks.insert(
+        a.git.set_enabled(true);
+        a.git.set_hunks(
             id,
             vec![ruster_git::Hunk { kind: ruster_git::HunkKind::Modified, start: 1, count: 1 }],
         );
@@ -8386,8 +8395,8 @@ mod tests {
     fn git_signs_map_each_hunk_kind_to_its_glyph() {
         let mut a = App::new("a\nb\nc\nd\ne\n".into(), PathBuf::from("f.txt"));
         let id = a.ws.borrow().active_buffer();
-        a.git_signs = true;
-        a.git_hunks.insert(
+        a.git.set_enabled(true);
+        a.git.set_hunks(
             id,
             vec![
                 ruster_git::Hunk { kind: ruster_git::HunkKind::Added, start: 0, count: 2 },
@@ -8407,11 +8416,11 @@ mod tests {
     fn git_signs_disabled_produces_nothing() {
         let mut a = App::new("x\n".into(), PathBuf::from("f.txt"));
         let id = a.ws.borrow().active_buffer();
-        a.git_hunks.insert(
+        a.git.set_hunks(
             id,
             vec![ruster_git::Hunk { kind: ruster_git::HunkKind::Added, start: 0, count: 1 }],
         );
-        a.git_signs = false;
+        a.git.set_enabled(false);
         assert!(a.git_signs_for(id).signs.is_empty(), "git.signs = false draws nothing");
     }
 
@@ -8419,15 +8428,15 @@ mod tests {
     fn gitsigns_command_toggles_and_clears() {
         let mut a = App::new("x\n".into(), PathBuf::from("f.txt"));
         let id = a.ws.borrow().active_buffer();
-        a.git_hunks.insert(
+        a.git.set_hunks(
             id,
             vec![ruster_git::Hunk { kind: ruster_git::HunkKind::Added, start: 0, count: 1 }],
         );
         assert_eq!(a.parse_cmdline(":Gitsigns"), Ok(CmdAction::GitsignsToggle));
-        assert!(a.git_signs, "on by default");
+        assert!(a.git.enabled(), "on by default");
         a.apply_cmd(CmdAction::GitsignsToggle);
-        assert!(!a.git_signs);
-        assert!(a.git_hunks.is_empty(), "toggling off drops the cached hunks");
+        assert!(!a.git.enabled());
+        assert_eq!(a.git.tracked(), 0, "toggling off drops the cached hunks");
     }
 
     /// `]h` / `[h` move the cursor between hunks and wrap.
@@ -8437,8 +8446,8 @@ mod tests {
         let none = KeyModifiers::NONE;
         let mut a = App::new("l0\nl1\nl2\nl3\nl4\nl5\n".into(), PathBuf::from("f.txt"));
         let id = a.ws.borrow().active_buffer();
-        a.git_signs = true;
-        a.git_hunks.insert(
+        a.git.set_enabled(true);
+        a.git.set_hunks(
             id,
             vec![
                 ruster_git::Hunk { kind: ruster_git::HunkKind::Modified, start: 1, count: 1 },
@@ -10739,7 +10748,7 @@ index 1..2 100644
     fn lua_sees_diagnostics_for_the_active_buffer() {
         let mut a = lua_app("");
         let buf = a.ws.borrow().active_buffer();
-        a.diagnostics.insert(
+        a.lsp.set_diagnostics(
             buf,
             vec![ruster_lsp::Diagnostic {
                 start: ruster_lsp::results::LspPositionEq { line: 3, character: 7 },
