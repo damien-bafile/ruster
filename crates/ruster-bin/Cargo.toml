@@ -8,6 +8,9 @@ ruster-render = { path = "../ruster-render" }
 ruster-tui = { path = "../ruster-tui" }
 ruster-render-raylib = { path = "../ruster-render-raylib" }
 
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "3"
+
 [[bin]]
 name = "ruster"
 path = "src/main.rs"

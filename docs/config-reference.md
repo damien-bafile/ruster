@@ -100,10 +100,22 @@ cycles the **selected theme's palette** (same picker as the Colors group) and sh
 `default` when left at the built-in color; `dd`/`Delete` resets a group. Overrides are
 **per language** and apply to open buffers on `:w` (no restart).
 
-`diff` appears in that list too. It is a pseudo-language — nothing parses it —
-but routing the staged-diff view's colours through the same machinery means
-`:GitStaged` follows the active theme instead of four hardcoded values. Its
-groups are `added`, `removed`, `hunk` and `header`.
+Four entries in that list are **pseudo-languages**: nothing parses them, but
+routing their colours through the same machinery means they follow the active
+theme and are settable like any syntax group, instead of being fixed RGB values
+written at the point they are drawn.
+
+| Pseudo-language | Groups | Where it shows |
+|---|---|---|
+| `diff` | `added`, `removed`, `hunk`, `header` | `:GitStaged`, `:Diffview` |
+| `signs` | `added`, `modified`, `removed`, `breakpoint`, `error`, `warning`, `info`, `hint`, `todo` | the gutter — git hunks, breakpoints, diagnostics, failing tests, TODO markers |
+| `dired` | `directory`, `executable`, `symlink` | `:Dired` listings and the sidebar tree |
+| `flash` | `label`, `pending` | flash-jump labels (`pending` is the remainder after the first key) |
+
+`signs` is one group for the whole gutter rather than one per feature, because
+they share a column and a theme wants to pick them together. `signs.error`
+covers both a diagnostic error and a failing test: both mean "this line is
+broken", and separating them would only mean choosing two reds.
 
 They persist to a `ruster.config.syntax` table:
 
@@ -111,6 +123,8 @@ They persist to a `ruster.config.syntax` table:
 ruster.config.syntax = {
   rust   = { keyword = "#cba6f7", string = "#a6e3a1" },
   python = { comment = "#6c7086" },
+  signs  = { added = "#a6e3a1", error = "#f38ba8" },
+  dired  = { directory = "#89b4fa" },
 }
 ```
 
@@ -379,3 +393,71 @@ are tabstops:
 ```
 fn	fn ${1:name}(${2:args}) {\n    $0\n}
 ```
+
+## Lua: reacting to the editor
+
+`ruster.cmd(":Whatever")` makes every `:` command a Lua API, so the command
+surface is not the limitation. The limitation was that a plugin could be
+*invoked* but barely *react*. These are what closed that gap.
+
+### Events
+
+`ruster.on(name, fn)` registers a handler.
+
+| Event | Arguments | Fires |
+|---|---|---|
+| `VimEnter` | — | once at startup |
+| `ModeChanged` | mode name | on any mode change |
+| `InsertEnter` / `InsertLeave` | mode name | entering/leaving insert |
+| `BufEnter` / `BufLeave` | path | active buffer changed; leave names the buffer being *left* |
+| `WinEnter` | path | focused window changed |
+| `FileType` | language key | the active buffer's language changed |
+| `CursorMoved` | line (1-based), col (0-based) | the cursor moved |
+| `BufWritePre` / `BufWritePost` | path | around a write |
+| `Frame` | delta seconds | every frame |
+
+`CursorMoved` is **debounced to once per frame**. Holding `j` moves the cursor
+many times between frames and fires one event, so a handler doing real work does
+not become a performance problem.
+
+A handler that raises an error is caught: the remaining handlers still run and
+the editor stays up.
+
+### Timers
+
+```lua
+local id = ruster.defer(200, function() ... end)   -- once, after 200ms
+local id = ruster.timer(1000, function() ... end)  -- every 1000ms
+ruster.timer_stop(id)                              -- cancel either
+```
+
+Callbacks run on the frame drain, not a thread — the Lua runtime is `!Send` by
+design, so a timer can touch the editor with no locking. Resolution is therefore
+one frame, and a repeating timer fires **at most once per frame** however far
+behind it has fallen: a slow frame must not turn into a catch-up burst.
+
+A callback may schedule another timer, or cancel itself, from inside itself.
+
+### Read-only queries
+
+Deliberately small — what a statusline or a lightweight plugin needs, and no
+more. Each returns an empty value rather than erroring if called before the
+editor has finished starting.
+
+| Call | Returns |
+|---|---|
+| `ruster.api.buf_path()` | path of the active buffer, `""` for a scratch buffer |
+| `ruster.api.filetype()` | language key (`rust`, `lua`, …) |
+| `ruster.api.diagnostics()` | list of `{ line, col, severity, message }` for the active buffer |
+| `ruster.api.git_status()` | `{ branch, staged, unstaged }` |
+
+Lines are 1-based and columns 0-based throughout, matching
+`nvim_win_get_cursor` and `CursorMoved`, so one can be passed straight to the
+other.
+
+`git_status()` is kept current by a background refresh every two seconds, so a
+statusline sees the branch from startup rather than only after `:Git` has been
+opened. The interval is a compromise: fast enough that the branch is not
+visibly stale after a commit or a checkout, slow enough not to spawn `git` at
+frame rate on a large repository. The refresh runs on a worker thread and never
+blocks a frame.

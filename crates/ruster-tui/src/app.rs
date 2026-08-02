@@ -25,11 +25,11 @@ use crossterm::event::{
 use ruster_lua::{config::Config, schema::{SettingKind, SettingValue}, LuaAction, LuaRuntime};
 use ruster_notify::{BackendKind, Notification, NotificationManager};
 use ruster_render::{
-    Color, CursorKind, FlashLabelRender, FrameState, Rect as RRect, Renderer, SelectionView,
+    CursorKind, FlashLabelRender, FrameState, Rect as RRect, Renderer, SelectionView,
     StatuslineView, StyledLine, SyntaxStyle, WelcomeView, WhichKeyView, WindowView,
 };
 use ruster_syntax::SyntaxEngine;
-use ruster_lsp::{LspManager, LspPosition, ServerMessage};
+use ruster_lsp::{LspPosition, ServerMessage};
 use ruster_terminal::{encode_key, Key as TKey, Mods as TMods, TerminalSession};
 use std::cell::RefCell;
 use std::io::IsTerminal;
@@ -258,15 +258,60 @@ fn syntax_overrides_to_colors(
     out
 }
 
+/// What `ruster.api.buf_path()` and friends read.
+///
+/// A snapshot the app refreshes each frame rather than callbacks reaching into
+/// `App`. The Lua closures are installed before `App` exists — they capture the
+/// workspace `Rc`, and there is no `&mut self` for them to hold — so anything
+/// living on `App` (diagnostics, git state) has to be pushed here instead of
+/// pulled from there.
+#[derive(Default, Clone)]
+struct QuerySnapshot {
+    path: String,
+    filetype: String,
+    diagnostics: Vec<ruster_lua::runtime::LuaDiagnostic>,
+    branch: String,
+    staged: usize,
+    unstaged: usize,
+}
+
+/// The editor state the Lua event layer watches, so a change becomes an event.
+///
+/// Diffed once per frame rather than firing from each mutation site. There are
+/// far too many places that can change the active buffer — every open, close,
+/// split, pick, jump and `:bd` — and an event that fires from most of them is
+/// worse than one that fires from all of them, because a plugin cannot tell
+/// which case it missed.
+///
+/// It also debounces `CursorMoved` for free: a held `j` moves the cursor many
+/// times between frames and fires one event, which is the behaviour the plan
+/// asked for and would otherwise need its own timer.
+#[derive(Default, Clone, PartialEq, Eq)]
+struct WatchedState {
+    buffer: Option<BufferId>,
+    /// Path of `buffer`, resolved when it changed so `BufLeave` can name the
+    /// buffer being left after the switch has already happened.
+    path: String,
+    window: Option<ruster_core::windows::WindowId>,
+    cursor: (usize, usize),
+    filetype: String,
+}
+
 /// A diagnostic severity's sign glyph + color (1=error … 4=hint).
 fn severity_sign(severity: u8) -> (char, ruster_render::Color) {
-    use ruster_render::Color::Rgb;
-    match severity {
-        1 => ('E', Rgb(243, 139, 168)), // error  — red
-        2 => ('W', Rgb(249, 226, 175)), // warn   — yellow
-        3 => ('I', Rgb(137, 180, 250)), // info   — blue
-        _ => ('H', Rgb(148, 226, 213)), // hint   — teal
-    }
+    let group = match severity {
+        1 => "error",
+        2 => "warning",
+        3 => "info",
+        _ => "hint",
+    };
+    let glyph = match severity {
+        1 => 'E',
+        2 => 'W',
+        3 => 'I',
+        _ => 'H',
+    };
+    (glyph, ruster_syntax::sign_style(group).fg)
 }
 
 fn vim_mode_to_ui_mode(mode: ruster_core::vim::VimMode) -> ruster_render::UIMode {
@@ -385,12 +430,7 @@ struct CmdlineCompletion {
 /// The colour for a `TODO`-class keyword — the same amber the warning severity
 /// uses, so the gutter and the comment agree on what "needs attention" looks like.
 fn todo_style() -> ruster_render::SyntaxStyle {
-    ruster_render::SyntaxStyle {
-        fg: ruster_render::Color::Rgb(249, 226, 175),
-        bg: ruster_render::Color::Default,
-        bold: true,
-        italic: false,
-    }
+    ruster_syntax::sign_style("todo")
 }
 
 fn diagnostics_to_signs(diags: &[ruster_lsp::Diagnostic]) -> ruster_render::SignsView {
@@ -636,6 +676,9 @@ enum CmdAction {
     /// Save an image of the screen (`:screenshot [path]`). `None` picks the
     /// next free `ruster-NNN.png` in the working directory.
     Screenshot(Option<String>),
+    /// `:16` — jump to a line. `None` is `:$`, the last line.
+    GotoLine(Option<usize>),
+    Hover,
     /// Toggle the Noice notification-stack panel (`:Noice`).
     NoicePanel,
     /// Open the Noice split history buffer (`:Noice split` / `:Noice history`).
@@ -992,14 +1035,6 @@ enum LspAction {
     CallHierarchy(bool),
 }
 
-/// Per-buffer LSP document state (registered with `didOpen`).
-struct LspDoc {
-    uri: String,
-    lang: String,
-    version: i64,
-    /// Last text synced to the server, to detect changes for `didChange`.
-    synced: String,
-}
 
 /// Resolve a full leader sequence: is it a group prefix, a complete action, or
 /// an unknown/invalid path?
@@ -1133,6 +1168,22 @@ pub struct App {
     /// removed without any test noticing — as a mutation of the condition
     /// demonstrated.
     syntax_reparses: u64,
+    /// Previous frame's watched state; see [`WatchedState`].
+    watched: WatchedState,
+    /// What Lua's read-only queries see; see [`QuerySnapshot`].
+    query_snapshot: Rc<RefCell<QuerySnapshot>>,
+    /// Background `git status` results, for the branch and counts a statusline
+    /// wants without the user having opened `:Git`.
+    /// `None` means the worker ran and found nothing — outside a repository,
+    /// or git missing. It still has to report back, or the in-flight guard
+    /// below would latch on and stop polling for the rest of the session.
+    git_status_rx: std::sync::mpsc::Receiver<Option<ruster_git::Status>>,
+    git_status_tx: std::sync::mpsc::Sender<Option<ruster_git::Status>>,
+    /// When the last background `git status` was started, and whether one is
+    /// still running. Without the in-flight guard a slow repository would have
+    /// a new process spawned every tick while the previous ones piled up.
+    git_status_polled: Option<std::time::Instant>,
+    git_status_in_flight: bool,
     lua: LuaRuntime,
     config: Config,
     timer: FrameTimer,
@@ -1171,13 +1222,8 @@ pub struct App {
     /// dired and the sidebar.
     file_prompt: Option<FilePrompt>,
     /// Language server manager (one server per language).
-    lsp: LspManager,
-    /// Per-buffer LSP document registration state.
-    lsp_docs: std::collections::HashMap<BufferId, LspDoc>,
-    /// Diagnostics per buffer, from `publishDiagnostics`.
-    diagnostics: std::collections::HashMap<BufferId, Vec<ruster_lsp::Diagnostic>>,
-    /// Outstanding LSP requests: (lang, request id) -> what to do with the reply.
-    lsp_pending: std::collections::HashMap<(String, i64), LspAction>,
+    /// Language servers, document sync, diagnostics and in-flight requests.
+    lsp: crate::lsp_state::LspState<LspAction>,
     /// Hover popup contents (syntax-highlighted lines), shown until the next key.
     hover: Option<Vec<StyledLine>>,
     /// Loaded snippet definitions (built-in + `~/.config/ruster/snippets/`).
@@ -1246,9 +1292,6 @@ pub struct App {
     result_signs: std::collections::HashMap<PathBuf, ruster_render::SignsView>,
     /// Per-buffer git hunks for the gutter, and their background workers.
     git: crate::git_gutter::GitGutter,
-    /// Floating boxes drawn above the windows this frame. Rebuilt per frame by
-    /// whatever owns them; empty most of the time.
-    floats: Vec<ruster_render::FloatView>,
     /// An open modal form, if any.
     dialog: Option<DialogState>,
     /// The theme in force before a theme picker opened, restored on cancel.
@@ -1329,6 +1372,9 @@ impl App {
         }
         let mut syntax_tried = std::collections::HashSet::new();
         syntax_tried.insert(initial_buffer);
+        let (git_status_tx_init, git_status_rx_init) = std::sync::mpsc::channel();
+        let query_snapshot: Rc<RefCell<QuerySnapshot>> =
+            Rc::new(RefCell::new(QuerySnapshot::default()));
         let mut lua = LuaRuntime::new().unwrap_or_else(|e| {
             eprintln!("Lua init failed: {}", e);
             panic!("Lua init required");
@@ -1428,6 +1474,22 @@ impl App {
             let ws_wsb = ws.clone();
             let ws_ow = ws.clone();
             let ws_cl = ws.clone();
+            // Read-only queries, served from a snapshot the frame loop keeps
+            // current. See `QuerySnapshot` for why this is a push rather than
+            // the pull the other callbacks use.
+            let snap = query_snapshot.clone();
+            let s1 = snap.clone();
+            let s2 = snap.clone();
+            let s3 = snap.clone();
+            lua.set_query_callbacks(ruster_lua::runtime::QueryCallbacks {
+                buf_path: Box::new(move || s1.borrow().path.clone()),
+                filetype: Box::new(move || s2.borrow().filetype.clone()),
+                diagnostics: Box::new(move || s3.borrow().diagnostics.clone()),
+                git_status: Box::new(move || {
+                    let s = snap.borrow();
+                    (s.branch.clone(), s.staged, s.unstaged)
+                }),
+            });
             lua.set_window_callbacks(ruster_lua::WindowCallbacks {
                 list_bufs: Box::new(move || {
                     ws_lb.borrow().buffers.ids().iter().map(|id| id.0 as i32).collect()
@@ -1473,7 +1535,7 @@ impl App {
 
         lua.fire_event("VimEnter", &[]);
         // Apply Lua LSP server overrides (ruster.lsp.servers).
-        let mut lsp = LspManager::new();
+        let mut lsp: crate::lsp_state::LspState<LspAction> = crate::lsp_state::LspState::new();
         for (lang, cmd, args) in lua.lsp_servers() {
             lsp.set_server(&lang, ruster_lsp::ServerConfig { cmd, args });
         }
@@ -1588,7 +1650,13 @@ impl App {
             ws, vim, renderer,
             should_quit: false, syntax, syntax_tried,
             syntax_revision: std::collections::HashMap::new(),
-            syntax_reparses: 0, lua, config, timer, notify,
+            syntax_reparses: 0,
+            watched: WatchedState::default(),
+            query_snapshot,
+            git_status_rx: git_status_rx_init,
+            git_status_tx: git_status_tx_init,
+            git_status_polled: None,
+            git_status_in_flight: false, lua, config, timer, notify,
             has_smooth_cursor: false, cursor_anim, pending_ctrl_w: false, picker: None,
             leader_pending: None,
             pending_results: None,
@@ -1602,9 +1670,6 @@ impl App {
             dired: DiredState::new(dired_show_hidden),
             file_prompt: None,
             lsp,
-            lsp_docs: std::collections::HashMap::new(),
-            diagnostics: std::collections::HashMap::new(),
-            lsp_pending: std::collections::HashMap::new(),
             hover: None,
             snippets: {
                 let mut s = ruster_core::snippets::SnippetSet::builtin();
@@ -1641,7 +1706,6 @@ impl App {
             pending_confirm: None,
             result_signs: std::collections::HashMap::new(),
             git: crate::git_gutter::GitGutter::new(git_signs_init),
-            floats: Vec::new(),
             dialog: None,
             theme_before_preview: None,
             trouble: TroubleState::new(),
@@ -2320,6 +2384,15 @@ impl App {
             let mode_str = format!("{:?}", self.vim.mode);
             self.lua.set_mode(&mode_str);
             self.lua.fire_event_str("ModeChanged", &[&mode_str]);
+            // Insert is the one mode plugins overwhelmingly care about, and
+            // deriving it here rather than making every plugin parse
+            // `ModeChanged` keeps that logic in one place.
+            if prev_mode == VimMode::Insert {
+                self.lua.fire_event_str("InsertLeave", &[&mode_str]);
+            }
+            if self.vim.mode == VimMode::Insert {
+                self.lua.fire_event_str("InsertEnter", &[&mode_str]);
+            }
         }
     }
 
@@ -2703,6 +2776,7 @@ impl App {
                 _ = interval.tick() => {}
             }
 
+            self.fire_watched_events();
             self.drain_lua_actions();
 
             let dt = self.timer.tick();
@@ -2718,6 +2792,134 @@ impl App {
         }
 
         Ok(())
+    }
+
+    /// Turn changes since the last frame into Lua events.
+    ///
+    /// Called once per frame, before the Lua drain, so a handler's `ruster.cmd`
+    /// runs on the same frame the event fired.
+    /// How often a background `git status` may run.
+    ///
+    /// It spawns a process, so this is a compromise rather than a right
+    /// answer: fast enough that a statusline is not visibly stale after a
+    /// commit, slow enough not to run `git` at frame rate on a large repo.
+    const GIT_STATUS_POLL: std::time::Duration = std::time::Duration::from_secs(2);
+
+    /// Keep `git_status` fresh in the background.
+    ///
+    /// Without this it was only ever populated by `:Git`, so
+    /// `ruster.api.git_status()` returned an empty branch until the user
+    /// happened to open the status view — which a statusline plugin, the main
+    /// reason the query exists, never does.
+    fn poll_git_status(&mut self) {
+        while let Ok(result) = self.git_status_rx.try_recv() {
+            self.git_status_in_flight = false;
+            if let Some(status) = result {
+                self.git_status.set_status(status);
+            }
+        }
+        if self.git_status_in_flight {
+            return;
+        }
+        let due = self
+            .git_status_polled
+            .is_none_or(|t| t.elapsed() >= Self::GIT_STATUS_POLL);
+        if !due {
+            return;
+        }
+        let Some(root) = self.git_root() else { return };
+        self.git_status_polled = Some(std::time::Instant::now());
+        self.git_status_in_flight = true;
+        let tx = self.git_status_tx.clone();
+        std::thread::spawn(move || {
+            // Always sends, including on failure — see the field comment.
+            let _ = tx.send(ruster_git::status(&root));
+        });
+    }
+
+    fn fire_watched_events(&mut self) {
+        // Before the snapshot below reads it.
+        self.poll_git_status();
+        let now = {
+            let w = self.ws.borrow();
+            let buffer = w.active_buffer();
+            let doc = w.buffers.get(buffer);
+            let path = doc
+                .and_then(|d| d.file_path.as_ref())
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let filetype = doc
+                .and_then(|d| d.file_path.as_ref())
+                .map(|p| ruster_syntax::lang_ext_for_path(p))
+                .unwrap_or_default();
+            let head = w.primary_head();
+            let buf = w.buffer();
+            let line = buf.char_to_line(head);
+            let col = head - buf.line_start_char(line);
+            WatchedState {
+                buffer: Some(buffer),
+                path,
+                window: Some(w.windows.active()),
+                cursor: (line, col),
+                filetype,
+            }
+        };
+        // Refresh what Lua's read-only queries see, while the path and
+        // filetype are already to hand.
+        {
+            let active = now.buffer;
+            let mut snap = self.query_snapshot.borrow_mut();
+            snap.path = now.path.clone();
+            snap.filetype = now.filetype.clone();
+            snap.diagnostics = active
+                .map(|b| self.lsp.diagnostics(b))
+                .filter(|ds| !ds.is_empty())
+                .map(|ds| {
+                    ds.iter()
+                        .map(|d| ruster_lua::runtime::LuaDiagnostic {
+                            // 1-based line to match `CursorMoved` and
+                            // `nvim_win_get_cursor`; column stays 0-based.
+                            line: d.start.line as i64 + 1,
+                            col: d.start.character as i64,
+                            severity: d.severity,
+                            message: d.message.clone(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let status = self.git_status.status();
+            snap.branch = status.branch.clone().unwrap_or_default();
+            snap.staged = status.entries.iter().filter(|e| e.staged.is_some()).count();
+            snap.unstaged = status.entries.iter().filter(|e| e.unstaged.is_some()).count();
+        }
+
+        let prev = std::mem::replace(&mut self.watched, now.clone());
+
+        // First frame: record the state without firing. `VimEnter` already
+        // covers startup, and a plugin does not want a BufEnter storm for a
+        // buffer that was open before it loaded.
+        if prev == WatchedState::default() {
+            return;
+        }
+        if prev.buffer != now.buffer {
+            // Leave before enter, and name the buffer being left rather than
+            // the one arriving — a handler saving state needs the old path.
+            self.lua.fire_event_str("BufLeave", &[&prev.path]);
+            self.lua.fire_event_str("BufEnter", &[&now.path]);
+        }
+        if prev.window != now.window {
+            self.lua.fire_event_str("WinEnter", &[&now.path]);
+        }
+        if prev.filetype != now.filetype && !now.filetype.is_empty() {
+            self.lua.fire_event_str("FileType", &[&now.filetype]);
+        }
+        if prev.cursor != now.cursor {
+            let (line, col) = now.cursor;
+            // 1-based line, 0-based column: the same convention
+            // `nvim_win_get_cursor` already uses, so a handler can pass one
+            // straight to the other.
+            self.lua.fire_event_nums("CursorMoved", &[line as i64 + 1, col as i64]);
+        }
     }
 
     /// Run whatever Lua queued since the last frame: `vim.cmd()`, `print()` and
@@ -2787,6 +2989,7 @@ impl App {
             while let Some(key) = self.renderer.poll_input() {
                 self.handle_key(key);
             }
+            self.fire_watched_events();
             self.drain_lua_actions();
             let secs = dt.as_secs_f64();
             self.lua.set_frame_dt(secs);
@@ -2998,14 +3201,18 @@ impl App {
     ///
     /// Only buffers that already have a syntax engine are scanned — markers come
     /// from the tree's comment captures, so a file with no grammar has none.
-    fn todo_markers(&self) -> Vec<(PathBuf, ruster_syntax::TodoMarker)> {
+    fn todo_markers(&mut self) -> Vec<(PathBuf, ruster_syntax::TodoMarker)> {
         let mut out = Vec::new();
         let w = self.ws.borrow();
-        for (&buf, engine) in &self.syntax {
+        // `all_todo_markers`, not `todo_markers`: the latter reads the comment
+        // ranges left by the last highlight pass, which now only covers the
+        // visible rows. Right for drawing the overlay, wrong for a panel that
+        // claims to list every marker in the file.
+        for (&buf, engine) in &mut self.syntax {
             let Some(path) = w.buffers.get(buf).and_then(|d| d.file_path.clone()) else {
                 continue;
             };
-            for m in engine.todo_markers(&self.config.todo_keywords) {
+            for m in engine.all_todo_markers(&self.config.todo_keywords) {
                 out.push((path.clone(), m));
             }
         }
@@ -3020,7 +3227,7 @@ impl App {
         if !self.config.lsp_autostart {
             return;
         }
-        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let root = crate::lsp_state::LspState::<LspAction>::root();
         // Register / update the active buffer if it's a supported file.
         let active = self.ws.borrow().active_buffer();
         let info = {
@@ -3036,29 +3243,7 @@ impl App {
             })
         };
         if let Some((path, lang, text)) = info {
-            if self.lsp.ensure(&lang, &root) {
-                // The server needs an absolute file URI to match its index.
-                let abs = std::fs::canonicalize(&path).unwrap_or_else(|_| {
-                    if path.is_absolute() { path.clone() } else { root.join(&path) }
-                });
-                let uri = ruster_lsp::protocol::uri_from_path(&abs);
-                match self.lsp_docs.get_mut(&active) {
-                    None => {
-                        let language_id = ruster_lsp::registry::language_id(&lang).to_string();
-                        self.lsp.did_open(&lang, &uri, &language_id, 0, &text);
-                        self.lsp_docs.insert(active, LspDoc { uri, lang, version: 0, synced: text });
-                    }
-                    Some(doc) if doc.synced != text => {
-                        doc.version += 1;
-                        let version = doc.version;
-                        let uri = doc.uri.clone();
-                        let lang = doc.lang.clone();
-                        doc.synced = text.clone();
-                        self.lsp.did_change(&lang, &uri, version, &text);
-                    }
-                    Some(_) => {}
-                }
-            }
+            self.lsp.sync(active, &path, &lang, &text, &root);
         }
         // Drain and dispatch server messages.
         for routed in self.lsp.poll() {
@@ -3070,7 +3255,7 @@ impl App {
                     let n_err = diags.iter().filter(|d| d.severity == 1).count();
                     let n_warn = diags.iter().filter(|d| d.severity == 2).count();
                     if let Some(buf) = self.buffer_for_path(&path) {
-                        self.diagnostics.insert(buf, diags);
+                        self.lsp.set_diagnostics(buf, diags);
                     }
                     if n_err > 0 || n_warn > 0 {
                         let file = std::path::Path::new(&path)
@@ -3085,7 +3270,7 @@ impl App {
                     }
                 }
                 ServerMessage::Response { id, result, .. } => {
-                    if let Some(action) = self.lsp_pending.remove(&(routed.lang.clone(), id)) {
+                    if let Some(action) = self.lsp.take_pending(&routed.lang, id) {
                         self.handle_lsp_response(action, result);
                     }
                 }
@@ -3146,7 +3331,7 @@ impl App {
             return None;
         }
         let active = self.ws.borrow().active_buffer();
-        let diags = self.diagnostics.get(&active)?;
+        let diags = Some(self.lsp.diagnostics(active)).filter(|d| !d.is_empty())?;
         let line = {
             let w = self.ws.borrow();
             w.buffer().char_to_line(w.primary_head()) as u32
@@ -3178,7 +3363,7 @@ impl App {
     /// The active buffer's (lang, uri, cursor position) for an LSP request.
     fn active_lsp_target(&self) -> Option<(String, String, LspPosition)> {
         let active = self.ws.borrow().active_buffer();
-        let doc = self.lsp_docs.get(&active)?;
+        let doc = self.lsp.doc(active)?;
         let (content, head) = {
             let w = self.ws.borrow();
             let d = w.buffers.get(active)?;
@@ -3198,8 +3383,7 @@ impl App {
                 return false;
             }
         };
-        if let Some(id) = self.lsp.request(&lang, method, params) {
-            self.lsp_pending.insert((lang, id), action);
+        if self.lsp.request(&lang, method, params, action) {
             true
         } else {
             self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Lsp, "Language server still starting…".to_string()));
@@ -3689,8 +3873,25 @@ impl App {
                     Some(styled) => styled.to_vec(),
                     // A staged diff is coloured as a diff, not as source.
                     None if is_diff => crate::git_status::diff_styled_lines(&content),
-                    None => match self.syntax.get(&buf_id) {
-                        Some(engine) => engine.styled_lines().to_vec(),
+                    None => match self.syntax.get_mut(&buf_id) {
+                        Some(engine) => {
+                            // Highlighting is bounded to what this window shows.
+                            // Doing it here rather than in `update_syntax` is
+                            // deliberate: this is the only place the scroll
+                            // offset is settled, and reading a stale one would
+                            // leave the top or bottom row unstyled for a frame.
+                            //
+                            // Almost always a range comparison; it re-highlights
+                            // only when the scroll leaves the margin.
+                            if engine.set_viewport(scroll, scroll + buf_h) {
+                                // The rebuild dropped the TODO overlay with it.
+                                engine.overlay_todo_highlights(
+                                    &self.config.todo_keywords,
+                                    todo_style(),
+                                );
+                            }
+                            engine.styled_lines().to_vec()
+                        }
                         None => plain_lines(&content),
                     },
                 };
@@ -3768,7 +3969,7 @@ impl App {
                     // win, so these go in first.
                     let mut s = self.git_signs_for(buf_id);
                     if let Some(diag) =
-                        self.diagnostics.get(&buf_id).map(|d| diagnostics_to_signs(d))
+                        Some(self.lsp.diagnostics(buf_id)).filter(|d| !d.is_empty()).map(diagnostics_to_signs)
                     {
                         s.width = s.width.max(diag.width);
                         s.signs.extend(diag.signs);
@@ -3800,7 +4001,7 @@ impl App {
                                 s.width = s.width.max(1);
                                 let bp_signs: Vec<(u16, char, ruster_render::Color)> = bps
                                     .iter()
-                                    .map(|&l| (l, '●', ruster_render::Color::Rgb(255, 50, 50)))
+                                    .map(|&l| (l, '●', ruster_syntax::sign_style("breakpoint").fg))
                                     .collect();
                                 s.signs.extend(bp_signs);
                             }
@@ -3826,9 +4027,9 @@ impl App {
                                     } else {
                                         fl.label.clone()
                                     };
-                                    (sub, Color::Rgb(255, 255, 0))
+                                    (sub, ruster_syntax::flash_style("pending").fg)
                                 } else {
-                                    (fl.label.clone(), Color::Rgb(0, 200, 255))
+                                    (fl.label.clone(), ruster_syntax::flash_style("label").fg)
                                 };
                                 result.push(FlashLabelRender {
                                     row: screen_row as u16,
@@ -4003,9 +4204,15 @@ impl App {
         } else {
             None
         };
-        // The hover popup is an ordinary float now, so it shares one clamping
-        // and drawing path with every other floating surface.
-        let mut floats = self.floats.clone();
+        // The hover popup is an ordinary float, so it shares one clamping and
+        // drawing path with every other floating surface.
+        //
+        // Built fresh each frame rather than kept on `App`. There was a
+        // `floats` field for this, cloned into every `FrameState` and never
+        // written to by anything — the hover popup was always pushed here, to
+        // the local. Nothing can raise a float except hover, so the field was
+        // an empty vector with a clone.
+        let mut floats: Vec<ruster_render::FloatView> = Vec::new();
         if let Some(lines) = &self.hover {
             if !lines.is_empty() {
                 floats.push(ruster_render::FloatView::anchored(
@@ -4199,6 +4406,17 @@ impl App {
                 let text = trimmed.strip_prefix("echoe ").unwrap_or("").to_string();
                 Ok(CmdAction::Echo(text, ruster_core::message::MessageLevel::Error))
             }
+            // `:16` and `:$`. Vim users type these constantly, and until now the
+            // cmdline answered "Unknown command: 16" — which reads as a bug in
+            // whatever you were doing, not a missing feature. I misread it as
+            // one myself while verifying something else.
+            "hover" | "Hover" => Ok(CmdAction::Hover),
+            "$" => Ok(CmdAction::GotoLine(None)),
+            _ if !trimmed.is_empty() && trimmed.bytes().all(|b| b.is_ascii_digit()) => {
+                // Saturating: `:99999999999999999999` is a typo, not an error
+                // worth a message. Clamped to the buffer when it is applied.
+                Ok(CmdAction::GotoLine(Some(trimmed.parse().unwrap_or(usize::MAX))))
+            }
             _ => Err(format!("Unknown command: {}", cmdline)),
         }
     }
@@ -4328,6 +4546,25 @@ impl App {
             CmdAction::Diffview => self.open_diffview(),
             CmdAction::SidebarResize(n) => {
                 self.sidebar.set_width(n);
+            }
+            CmdAction::Hover => self.lsp_hover(),
+            CmdAction::GotoLine(target) => {
+                // Clamped, not rejected: `:9999` in a short file goes to the
+                // end, which is what vim does and what the typist meant.
+                let pos = {
+                    let w = self.ws.borrow();
+                    let buf = w.buffer();
+                    let last = buf.line_count().saturating_sub(1);
+                    // 1-based on the way in; `:0` means the first line.
+                    let line = match target {
+                        Some(n) => n.saturating_sub(1).min(last),
+                        None => last,
+                    };
+                    buf.line_start_char(line)
+                };
+                self.ws.borrow_mut().execute(Action::Move(Motion::To(pos)));
+                // No explicit scroll: `render` already pulls the window to the
+                // cursor, which is the same path `G` and a quickfix jump take.
             }
             CmdAction::Screenshot(arg) => {
                 let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -5446,9 +5683,9 @@ impl App {
         let mut signs: Vec<(u16, char, ruster_render::Color)> = Vec::new();
         for h in hunks {
             let (glyph, color) = match h.kind {
-                ruster_git::HunkKind::Added => ('+', ruster_render::Color::Rgb(166, 227, 161)),
-                ruster_git::HunkKind::Modified => ('~', ruster_render::Color::Rgb(249, 226, 175)),
-                ruster_git::HunkKind::Removed => ('_', ruster_render::Color::Rgb(243, 139, 168)),
+                ruster_git::HunkKind::Added => ('+', ruster_syntax::sign_style("added").fg),
+                ruster_git::HunkKind::Modified => ('~', ruster_syntax::sign_style("modified").fg),
+                ruster_git::HunkKind::Removed => ('_', ruster_syntax::sign_style("removed").fg),
             };
             match h.kind {
                 // A deletion has no lines of its own — mark the boundary.
@@ -5519,8 +5756,7 @@ impl App {
     fn forget_buffer(&mut self, id: BufferId) {
         self.dired.forget(id);
         self.syntax.remove(&id);
-        self.lsp_docs.remove(&id);
-        self.diagnostics.remove(&id);
+        self.lsp.forget(id);
         self.terminals.remove(&id);
         // Added with the extraction: this sweep cleared four caches and missed
         // the git hunks, so a long session of opening and closing files grew
@@ -5987,7 +6223,7 @@ impl App {
     fn open_diagnostics_picker(&mut self) {
         let active = self.ws.borrow().active_buffer();
         let path = self.ws.borrow().active_doc().file_path.clone();
-        let diags = self.diagnostics.get(&active).cloned().unwrap_or_default();
+        let diags = self.lsp.diagnostics(active).to_vec();
         if diags.is_empty() {
             self.echo_warn("No diagnostics".to_string());
             return;
@@ -6023,8 +6259,8 @@ impl App {
         let mut items: Vec<QuickfixItem> = Vec::new();
         {
             let w = self.ws.borrow();
-            for (id, diags) in &self.diagnostics {
-                let path = match w.buffers.get(*id).and_then(|d| d.file_path.clone()) {
+            for (id, diags) in self.lsp.all_diagnostics() {
+                let path = match w.buffers.get(id).and_then(|d| d.file_path.clone()) {
                     Some(p) => p,
                     None => continue,
                 };
@@ -6052,11 +6288,11 @@ impl App {
     ///
     /// Deliberately re-read on each open rather than kept in sync — all three
     /// sources change underneath, and a stale panel is worse than a slow one.
-    fn collect_trouble(&self) -> Vec<TroubleItem> {
+    fn collect_trouble(&mut self) -> Vec<TroubleItem> {
         let mut out = Vec::new();
         {
             let w = self.ws.borrow();
-            for (&buf, diags) in &self.diagnostics {
+            for (buf, diags) in self.lsp.all_diagnostics() {
                 let Some(path) = w.buffers.get(buf).and_then(|d| d.file_path.clone()) else {
                     continue;
                 };
@@ -7387,7 +7623,11 @@ impl App {
             let key = path.canonicalize().unwrap_or(path);
             let entry = self.result_signs.entry(key).or_default();
             entry.width = 1;
-            entry.signs.push((line.saturating_sub(1) as u16, '✗', ruster_render::Color::Rgb(243, 139, 168)));
+            entry.signs.push((
+                line.saturating_sub(1) as u16,
+                '✗',
+                ruster_syntax::sign_style("error").fg,
+            ));
         }
         self.quickfix = QuickfixList::new(items);
         let status = if run.failed == 0 && code == Some(0) { "ok" } else { "FAILED" };
@@ -7429,7 +7669,7 @@ impl App {
         // Format-on-save: format via LSP first, then write when the edits arrive.
         if self.config.format_on_save && !self.pending_format_save {
             let active = self.ws.borrow().active_buffer();
-            if self.lsp_docs.contains_key(&active) {
+            if self.lsp.is_tracked(active) {
                 self.pending_format_save = true;
                 if self.lsp_format() {
                     return; // write deferred until the format response
@@ -8314,15 +8554,26 @@ mod tests {
         assert!(a.dired.styled_lines(dired_id).is_some(), "dired cached its listing");
 
         // Give it a diagnostics entry too, so the sweep is covered beyond dired.
-        a.diagnostics.insert(dired_id, Vec::new());
+        // A *non-empty* one: the accessor reports absent and empty alike, so an
+        // empty vec here would satisfy the assertion below whether or not the
+        // entry was actually dropped.
+        a.lsp.set_diagnostics(
+            dired_id,
+            vec![ruster_lsp::Diagnostic {
+                start: ruster_lsp::results::LspPositionEq { line: 0, character: 0 },
+                end: ruster_lsp::results::LspPositionEq { line: 0, character: 1 },
+                severity: 1,
+                message: "x".into(),
+            }],
+        );
 
         a.apply_cmd(CmdAction::BufferDelete);
         assert!(a.ws.borrow().buffers.get(dired_id).is_none(), "buffer closed");
         assert!(a.dired.styled_lines(dired_id).is_none(), "dired caches dropped");
         assert!(a.dired.dir_of(dired_id).is_none());
-        assert!(!a.diagnostics.contains_key(&dired_id), "diagnostics dropped");
+        assert!(a.lsp.diagnostics(dired_id).is_empty(), "diagnostics dropped");
         assert!(!a.syntax.contains_key(&dired_id));
-        assert!(!a.lsp_docs.contains_key(&dired_id));
+        assert!(!a.lsp.is_tracked(dired_id));
         assert!(!a.terminals.contains_key(&dired_id));
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -8910,7 +9161,7 @@ mod tests {
     fn diagnostics_stored_and_surfaced_on_line() {
         let mut a = App::new("let x = 1;\n".into(), PathBuf::from("f.rs"));
         let buf = a.ws.borrow().active_buffer();
-        a.diagnostics.insert(
+        a.lsp.set_diagnostics(
             buf,
             vec![ruster_lsp::Diagnostic {
                 start: ruster_lsp::results::LspPositionEq { line: 0, character: 4 },
@@ -10354,6 +10605,256 @@ index 1..2 100644
         let sub = dir.join("pics");
         std::fs::create_dir_all(&sub).unwrap();
         assert_eq!(screenshot_path(Some("pics"), &dir), sub.join("ruster-001.png"));
+    }
+
+    /// Load `src` into the app's Lua and run one frame of the event pass.
+    fn lua_app(src: &str) -> App {
+        let mut a = App::new("one\ntwo\nthree\n".into(), PathBuf::from("f.rs"));
+        a.lua.lua.load(src).exec().expect("lua loaded");
+        // First pass records the baseline without firing; see `fire_watched_events`.
+        a.fire_watched_events();
+        a
+    }
+
+    fn lua_int(a: &App, name: &str) -> i64 {
+        a.lua.lua.globals().get::<i64>(name).unwrap_or(-1)
+    }
+
+    fn lua_str(a: &App, name: &str) -> String {
+        a.lua.lua.globals().get::<String>(name).unwrap_or_default()
+    }
+
+    #[test]
+    fn moving_the_cursor_fires_cursor_moved_once_per_frame() {
+        let mut a = lua_app(
+            "n = 0; last = ''
+             ruster.on('CursorMoved', function(l, c) n = n + 1; last = l .. ',' .. c end)",
+        );
+        // Several moves within one frame must still be one event: this is the
+        // debounce the plan asked for, and it falls out of diffing per frame
+        // rather than firing per keystroke.
+        for _ in 0..3 {
+            a.ws.borrow_mut().execute(Action::Move(Motion::Line(1)));
+        }
+        a.fire_watched_events();
+        assert_eq!(lua_int(&a, "n"), 1, "three moves in one frame is one event");
+        assert_eq!(lua_str(&a, "last"), "4,0", "1-based line, 0-based column");
+
+        // A frame with no movement fires nothing.
+        a.fire_watched_events();
+        assert_eq!(lua_int(&a, "n"), 1);
+    }
+
+    #[test]
+    fn the_first_pass_does_not_fire_a_storm() {
+        // A plugin loading into an editor that already has a buffer open should
+        // not receive BufEnter/CursorMoved for state that predates it —
+        // `VimEnter` is what covers startup.
+        let mut a = App::new("one\ntwo\n".into(), PathBuf::from("f.rs"));
+        a.lua
+            .lua
+            .load(
+                "n = 0
+                 ruster.on('CursorMoved', function() n = n + 1 end)
+                 ruster.on('BufEnter', function() n = n + 1 end)",
+            )
+            .exec()
+            .unwrap();
+        a.fire_watched_events();
+        assert_eq!(lua_int(&a, "n"), 0, "the baseline pass fired events");
+    }
+
+    #[test]
+    fn switching_buffers_fires_leave_then_enter_with_the_right_paths() {
+        let dir = std::env::temp_dir().join(format!("ruster_ev_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let other = dir.join("other.rs");
+        std::fs::write(&other, "fn other() {}\n").unwrap();
+
+        let mut a = lua_app(
+            "log = {}
+             ruster.on('BufLeave', function(p) log[#log+1] = 'leave:' .. p end)
+             ruster.on('BufEnter', function(p) log[#log+1] = 'enter:' .. p end)",
+        );
+        a.open_path(&other, None);
+        a.fire_watched_events();
+
+        a.lua
+            .lua
+            .load("first = log[1] or ''; second = log[2] or ''; n = #log")
+            .exec()
+            .unwrap();
+        assert_eq!(lua_int(&a, "n"), 2, "exactly one leave and one enter");
+        // Leave must name the buffer being *left*. It fires after the switch has
+        // already happened, so the obvious implementation reports the new path
+        // for both — and a handler saving per-file state would write it against
+        // the wrong file.
+        assert!(
+            lua_str(&a, "first").starts_with("leave:") && lua_str(&a, "first").ends_with("f.rs"),
+            "first event was {:?}",
+            lua_str(&a, "first")
+        );
+        assert!(
+            lua_str(&a, "second").starts_with("enter:")
+                && lua_str(&a, "second").ends_with("other.rs"),
+            "second event was {:?}",
+            lua_str(&a, "second")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn entering_and_leaving_insert_fires_both_events() {
+        let mut a = lua_app(
+            "enter = 0; leave = 0
+             ruster.on('InsertEnter', function() enter = enter + 1 end)
+             ruster.on('InsertLeave', function() leave = leave + 1 end)",
+        );
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        a.handle_key(CtKey::new(KeyCode::Char('i'), none));
+        assert_eq!(lua_int(&a, "enter"), 1, "InsertEnter");
+        assert_eq!(lua_int(&a, "leave"), 0);
+        a.handle_key(CtKey::new(KeyCode::Esc, none));
+        assert_eq!(lua_int(&a, "enter"), 1);
+        assert_eq!(lua_int(&a, "leave"), 1, "InsertLeave");
+    }
+
+    #[test]
+    fn a_handler_that_errors_does_not_take_the_editor_down() {
+        let mut a = lua_app(
+            "ok = 0
+             ruster.on('CursorMoved', function() error('boom') end)
+             ruster.on('CursorMoved', function() ok = ok + 1 end)",
+        );
+        a.ws.borrow_mut().execute(Action::Move(Motion::Line(1)));
+        a.fire_watched_events();
+        assert_eq!(lua_int(&a, "ok"), 1, "the second handler still ran");
+    }
+
+    #[test]
+    fn lua_can_read_the_path_and_filetype_of_the_active_buffer() {
+        let a = lua_app("");
+        a.lua
+            .lua
+            .load("p = ruster.api.buf_path(); ft = ruster.api.filetype()")
+            .exec()
+            .unwrap();
+        assert!(lua_str(&a, "p").ends_with("f.rs"), "got {:?}", lua_str(&a, "p"));
+        assert_eq!(lua_str(&a, "ft"), "rs");
+    }
+
+    #[test]
+    fn lua_sees_diagnostics_for_the_active_buffer() {
+        let mut a = lua_app("");
+        let buf = a.ws.borrow().active_buffer();
+        a.lsp.set_diagnostics(
+            buf,
+            vec![ruster_lsp::Diagnostic {
+                start: ruster_lsp::results::LspPositionEq { line: 3, character: 7 },
+                end: ruster_lsp::results::LspPositionEq { line: 3, character: 9 },
+                severity: 1,
+                message: "something is wrong".to_string(),
+            }],
+        );
+        a.fire_watched_events();
+        a.lua
+            .lua
+            .load(
+                "d = ruster.api.diagnostics()
+                 count = #d
+                 line = d[1].line
+                 col = d[1].col
+                 sev = d[1].severity
+                 msg = d[1].message",
+            )
+            .exec()
+            .unwrap();
+        assert_eq!(lua_int(&a, "count"), 1);
+        assert_eq!(lua_int(&a, "line"), 4, "1-based, matching CursorMoved");
+        assert_eq!(lua_int(&a, "col"), 7, "0-based column");
+        assert_eq!(lua_int(&a, "sev"), 1);
+        assert_eq!(lua_str(&a, "msg"), "something is wrong");
+    }
+
+    #[test]
+    fn the_introspection_api_degrades_rather_than_erroring() {
+        // A plugin that runs before the app finished wiring itself up should
+        // get an empty answer, not a Lua error it cannot do anything about.
+        let rt = ruster_lua::runtime::LuaRuntime::new().unwrap();
+        rt.lua
+            .load(
+                "p = ruster.api.buf_path()
+                 d = #ruster.api.diagnostics()
+                 g = ruster.api.git_status().branch",
+            )
+            .exec()
+            .expect("no callbacks installed, but the calls still work");
+        assert_eq!(rt.lua.globals().get::<String>("p").unwrap(), "");
+        assert_eq!(rt.lua.globals().get::<i64>("d").unwrap(), 0);
+        assert_eq!(rt.lua.globals().get::<String>("g").unwrap(), "");
+    }
+
+    #[test]
+    fn a_bare_line_number_parses_as_a_jump() {
+        let a = App::new("content".into(), PathBuf::from("f.txt"));
+        assert_eq!(a.parse_cmdline(":16"), Ok(CmdAction::GotoLine(Some(16))));
+        assert_eq!(a.parse_cmdline(":1"), Ok(CmdAction::GotoLine(Some(1))));
+        assert_eq!(a.parse_cmdline(":0"), Ok(CmdAction::GotoLine(Some(0))));
+        assert_eq!(a.parse_cmdline(":$"), Ok(CmdAction::GotoLine(None)));
+        // Whitespace around it is still a line number.
+        assert_eq!(a.parse_cmdline(": 16 "), Ok(CmdAction::GotoLine(Some(16))));
+    }
+
+    #[test]
+    fn a_number_does_not_swallow_commands_that_merely_contain_one() {
+        // The arm is `all digits`, not `starts with a digit`, or `:2vsplit`
+        // and `:w2` would become jumps.
+        let a = App::new("content".into(), PathBuf::from("f.txt"));
+        assert!(a.parse_cmdline(":16x").is_err(), ":16x is not a line number");
+        assert!(a.parse_cmdline(":x16").is_err(), ":x16 is not a line number");
+        assert!(a.parse_cmdline(":-4").is_err(), "negatives are not supported");
+        assert_eq!(a.parse_cmdline(":w"), Ok(CmdAction::Save(false)), "still a save");
+    }
+
+    #[test]
+    fn a_line_jump_moves_the_cursor_and_clamps_to_the_buffer() {
+        let text = (1..=20).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let mut a = App::new(text, PathBuf::from("f.txt"));
+
+        let line_of = |a: &App| {
+            let w = a.ws.borrow();
+            let head = w.cursors().primary().head;
+            w.buffer().char_to_line(head)
+        };
+
+        a.apply_cmd(CmdAction::GotoLine(Some(16)));
+        assert_eq!(line_of(&a), 15, ":16 is the 16th line, which is index 15");
+
+        // `:0` and `:1` both mean the first line, as in vim.
+        a.apply_cmd(CmdAction::GotoLine(Some(0)));
+        assert_eq!(line_of(&a), 0);
+        a.apply_cmd(CmdAction::GotoLine(Some(1)));
+        assert_eq!(line_of(&a), 0);
+
+        // Past the end clamps rather than erroring — the typist meant the end.
+        a.apply_cmd(CmdAction::GotoLine(Some(9999)));
+        assert_eq!(line_of(&a), 19, "clamped to the last line");
+
+        a.apply_cmd(CmdAction::GotoLine(Some(5)));
+        a.apply_cmd(CmdAction::GotoLine(None));
+        assert_eq!(line_of(&a), 19, ":$ is the last line");
+    }
+
+    #[test]
+    fn a_line_jump_lands_at_the_start_of_the_line() {
+        // Not merely on the right line: `:16` in vim puts you at its first
+        // character, and anything else makes the next `d`/`y` do the wrong thing.
+        let mut a = App::new("aaa\nbbbbbbbb\nccc\n".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::GotoLine(Some(2)));
+        let w = a.ws.borrow();
+        let head = w.cursors().primary().head;
+        assert_eq!(head, w.buffer().line_start_char(1), "cursor is at the line start");
     }
 
     #[test]

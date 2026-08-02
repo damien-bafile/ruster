@@ -31,6 +31,7 @@ const TYPED_ONLY: &[(&str, &str)] = &[
     ("OpenFile", "takes a path"),
     ("Substitute", "`:s/a/b/`, takes a pattern"),
     ("Echo", "takes the text to show"),
+    ("GotoLine", "`:16` — the line number *is* the command; `gg`/`G` cover the ends"),
     // Argument-taking: a keypress cannot supply the value.
     ("SetNamed", "`:set <opt>=<val>`"),
     ("ShowSetting", "`:set <opt>?`"),
@@ -41,6 +42,7 @@ const TYPED_ONLY: &[(&str, &str)] = &[
     ("Rg", "takes a pattern"),
     ("Screenshot", "takes an optional path"),
     ("Help", "bound as `SPC o h`; the argument form is typed"),
+    ("Hover", "`K` and `SPC c k`; the `:` form exists so a float can be raised on demand"),
     // Reached by a dedicated key rather than the leader tree.
     ("QuickfixNext", "`]q`"),
     ("QuickfixPrev", "`[q`"),

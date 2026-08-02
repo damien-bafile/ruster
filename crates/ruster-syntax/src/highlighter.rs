@@ -5,15 +5,73 @@ use crate::theme::{set_current_lang, style_for_capture, RAINBOW_PALETTE};
 pub struct Highlighter {
     query: tree_sitter::Query,
     cursor: tree_sitter::QueryCursor,
+    /// Byte ranges of `@comment` captures from the last highlight pass.
+    ///
+    /// The TODO scan wants exactly these, and the highlight pass has already
+    /// walked the tree to find them. Running the same query a second time to
+    /// rediscover them was the bulk of that scan's cost.
+    comments: Vec<(usize, usize)>,
     /// Canonical language key, so per-language overrides resolve.
     lang: String,
 }
 
 impl Highlighter {
+    /// Comment ranges seen by the last [`highlight_lines`](Self::highlight_lines).
+    pub fn comments(&self) -> &[(usize, usize)] {
+        &self.comments
+    }
+
+    /// The compiled highlight query.
+    ///
+    /// Exposed so `todo_markers` can reuse it: it needs the same `@comment`
+    /// captures, and compiling the query source again — which it used to do on
+    /// every call — costs more than the scan it performs.
+    pub fn query(&self) -> &tree_sitter::Query {
+        &self.query
+    }
+
     pub fn new(language: tree_sitter::Language, query_source: &str, lang: &str) -> Result<Self, String> {
         let query = tree_sitter::Query::new(&language, query_source)
             .map_err(|e| format!("query error: {}", e))?;
-        Ok(Highlighter { query, cursor: tree_sitter::QueryCursor::new(), lang: lang.to_string() })
+        Ok(Highlighter {
+            query,
+            cursor: tree_sitter::QueryCursor::new(),
+            comments: Vec::new(),
+            lang: lang.to_string(),
+        })
+    }
+
+    /// Every `@comment` range in the tree, ignoring any viewport.
+    ///
+    /// [`comments`](Self::comments) holds only what the last highlight pass
+    /// looked at, which is the visible rows. A whole-file list — the TODO
+    /// panel — has to pay for the full query.
+    pub fn comments_in(&mut self, tree: &tree_sitter::Tree, source: &str) -> Vec<(usize, usize)> {
+        let ids: Vec<u32> = self
+            .query
+            .capture_names()
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| **n == "comment")
+            .map(|(i, _)| i as u32)
+            .collect();
+        if ids.is_empty() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        self.cursor.set_byte_range(0..usize::MAX);
+        let mut caps = self.cursor.captures(&self.query, tree.root_node(), source.as_bytes());
+        while let Some((m, _)) = caps.next() {
+            for c in m.captures {
+                if ids.contains(&c.index) {
+                    let r = c.node.byte_range();
+                    out.push((r.start, r.end));
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
     }
 
     pub fn highlight_lines(
@@ -21,6 +79,7 @@ impl Highlighter {
         tree: &tree_sitter::Tree,
         source: &str,
         rainbow: &[Option<usize>],
+        lines: Option<std::ops::Range<usize>>,
     ) -> Vec<StyledLine> {
         // Resolve this pass's per-language color overrides.
         set_current_lang(&self.lang);
@@ -44,6 +103,33 @@ impl Highlighter {
         let styles: Vec<SyntaxStyle> =
             self.query.capture_names().iter().map(|n| style_for_capture(n)).collect();
 
+        let comment_ids: Vec<u32> = self
+            .query
+            .capture_names()
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| **n == "comment")
+            .map(|(i, _)| i as u32)
+            .collect();
+        self.comments.clear();
+
+        // Running the query is ~90% of a highlight pass, and it is the only
+        // part whose cost scales with the *file* rather than the screen. Bound
+        // it to the lines someone can actually see.
+        //
+        // A node that merely overlaps the range still matches — a block comment
+        // or a raw string opening above the viewport keeps its capture, and the
+        // per-line clipping below trims it to the visible rows. Verified against
+        // tree-sitter rather than assumed; without it, scrolling into the middle
+        // of a long comment would render it as plain text.
+        self.cursor.set_byte_range(match &lines {
+            Some(r) => {
+                let s = line_starts.get(r.start).copied().unwrap_or(bytes.len());
+                let e = line_starts.get(r.end).copied().unwrap_or(bytes.len());
+                s..e
+            }
+            None => 0..usize::MAX,
+        });
         let mut raw_captures: Vec<(u32, usize, usize)> = Vec::new();
         {
             let mut captures = self.cursor.captures(&self.query, tree.root_node(), source.as_bytes());
@@ -51,10 +137,17 @@ impl Highlighter {
                 for cap in m.captures {
                     let start = cap.node.byte_range().start;
                     let end = cap.node.byte_range().end;
+                    if comment_ids.contains(&cap.index) {
+                        self.comments.push((start, end));
+                    }
                     raw_captures.push((cap.index, start, end));
                 }
             }
         }
+        // Leave the cursor unbounded: `comments_in` and any future caller that
+        // forgets to set a range should see the whole tree, not the last
+        // viewport this happened to be called with.
+        self.cursor.set_byte_range(0..usize::MAX);
         raw_captures.sort_by_key(|c| c.1);
 
         for (idx, bs, be) in &raw_captures {
@@ -88,6 +181,14 @@ impl Highlighter {
             let lend = line_starts[li + 1];
             let raw = &source[lstart..lend.min(bytes.len())];
             let text = raw.strip_suffix('\n').unwrap_or(raw).to_string();
+            // Off screen: keep the text, skip the styling. The rainbow-bracket
+            // pass below walks every character of the line, so leaving it
+            // unbounded would have kept a chunk of the per-file cost — and left
+            // rows that are half-styled, brackets coloured and nothing else.
+            if lines.as_ref().is_some_and(|r| !r.contains(&li)) {
+                styled.push(StyledLine { text, highlights: Vec::new() });
+                continue;
+            }
             let text_len = text.chars().count();
             let mut merged: Vec<(usize, usize, SyntaxStyle)> = hl.iter()
                 .map(|&(s, l, style)| {

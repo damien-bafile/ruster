@@ -364,6 +364,29 @@ impl RaylibRenderer {
         rl.get_font_default()
     }
 
+    /// The window icon, embedded so it travels with the binary.
+    ///
+    /// A path would work from a bundle and fail from `cargo run`, and the icon
+    /// is 40 KB — not worth a runtime file lookup that can be wrong.
+    const ICON_PNG: &'static [u8] = include_bytes!("../../../assets/icon.png");
+
+    /// Set the window and taskbar icon.
+    ///
+    /// Downscaled from the 1024x1024 master: this ends up as a taskbar entry,
+    /// and handing the compositor a megapixel image for a 32px slot wastes both
+    /// memory and the scaler's quality.
+    ///
+    /// A no-op on macOS by design — GLFW cannot set a window icon there, and
+    /// the Dock reads the `.icns` from the `.app` bundle instead, which
+    /// `scripts/bundle-macos.sh` already installs. Failure is silent for the
+    /// same reason: a missing icon must never stop the editor opening.
+    fn apply_window_icon(rl: &mut RaylibHandle) {
+        if let Ok(mut img) = raylib::texture::Image::load_image_from_mem(".png", Self::ICON_PNG) {
+            img.resize(64, 64);
+            rl.set_window_icon(&img);
+        }
+    }
+
     pub fn new(title: &str, gui: GuiConfig, font_override: Option<&str>) -> Self {
         let (mut rl, thread) = raylib::init()
             .size(gui.window_width, gui.window_height)
@@ -372,6 +395,7 @@ impl RaylibRenderer {
             .log_level(raylib::ffi::TraceLogLevel::LOG_ERROR)
             .resizable()
             .build();
+        Self::apply_window_icon(&mut rl);
         rl.set_target_fps(gui.target_fps as u32);
         rl.set_exit_key(None);
         let font = Self::try_load_mono_font(&mut rl, &thread, font_override, gui.font_size);
@@ -1092,47 +1116,17 @@ impl Renderer for RaylibRenderer {
             s.draw_text_ex(font, &settings.footer, Vector2::new((bx + 4) as f32, fy as f32), font_size as f32, 1.0, statusline_fg);
         }
 
-        // A modal dialog sits above the floats: same titled box and the same
-        // setting-row vocabulary the settings page uses.
-        if let Some(dlg) = &state.dialog {
-            let dw = (screen_w * 6 / 10).clamp(300.min(screen_w), screen_w - 40);
-            let dh = ((dlg.rows.len() as i32 + 4) * line_h).min(screen_h - 40);
-            let dx = (screen_w - dw) / 2;
-            let dy = (screen_h - dh) / 2;
-            d.draw_rectangle(dx, dy, dw, dh, bg);
-            draw_titled_box(&mut d, metrics, (dx, dy, dw, dh), line_h, Some(&dlg.title), accent, divider);
-            let value_x = dx + (26.0 * char_w) as i32;
-            for (i, r) in dlg.rows.iter().enumerate() {
-                let ry = dy + (1 + i as i32) * line_h;
-                if ry > dy + dh - 2 * line_h {
-                    break;
-                }
-                let (rfg, rbg) = if r.selected {
-                    (selection_fg, Some(selection_bg))
-                } else {
-                    (default_color, None)
-                };
-                if let Some(b) = rbg {
-                    d.draw_rectangle(dx + 1, ry, dw - 2, line_h, b);
-                }
-                let shown = ruster_render::control_display(r);
-                if r.kind == ruster_render::ControlKind::Button {
-                    // A button is one thing, not a label with a value beside it.
-                    d.draw_text_ex(font, &shown, Vector2::new((dx + 8) as f32, ry as f32), font_size as f32, 1.0, rfg);
-                } else {
-                    d.draw_text_ex(font, &r.label, Vector2::new((dx + 8) as f32, ry as f32), font_size as f32, 1.0, rfg);
-                    let vfg = if r.editing { accent } else { rfg };
-                    d.draw_text_ex(font, &shown, Vector2::new(value_x as f32, ry as f32), font_size as f32, 1.0, vfg);
-                }
-            }
-            let fy = dy + dh - 2 * line_h;
-            d.draw_text_ex(font, &dlg.footer, Vector2::new((dx + 8) as f32, fy as f32), font_size as f32, 1.0, gutter_color);
-        }
-
-        // Floats sit above every other surface, lowest z first. The rects are
-        // already resolved and clamped in cell coordinates by FloatView, so this
-        // only converts to pixels and paints — the geometry is shared with the
-        // TUI backend rather than reimplemented here.
+        // Floats, then the dialog: a modal is the thing with focus, so it
+        // draws last and obscures anything under it. The order used to be the
+        // other way round while the comment below claimed this one — inert,
+        // because the only float is the hover popup and it never coexists
+        // with a dialog, but the code and the comment disagreed and one of
+        // them had to be wrong.
+        //
+        // Lowest z first. The rects are already resolved and clamped in cell
+        // coordinates by FloatView, so this only converts to pixels and
+        // paints — the geometry is shared with the TUI backend rather than
+        // reimplemented here.
         for f in ruster_render::floats_in_draw_order(&state.floats) {
             let fx = pad_x + (f.rect.x as f32 * char_w) as i32;
             let fy = pad_y + f.rect.y as i32 * line_h;
@@ -1179,6 +1173,44 @@ impl Renderer for RaylibRenderer {
                 draw_text_cells(&mut s, metrics, (ix as f32, ly as f32), &chars, &char_colors);
             }
         }
+
+        // The dialog, above the floats: same titled box and the same setting-row
+        // vocabulary the settings page uses.
+        if let Some(dlg) = &state.dialog {
+            let dw = (screen_w * 6 / 10).clamp(300.min(screen_w), screen_w - 40);
+            let dh = ((dlg.rows.len() as i32 + 4) * line_h).min(screen_h - 40);
+            let dx = (screen_w - dw) / 2;
+            let dy = (screen_h - dh) / 2;
+            d.draw_rectangle(dx, dy, dw, dh, bg);
+            draw_titled_box(&mut d, metrics, (dx, dy, dw, dh), line_h, Some(&dlg.title), accent, divider);
+            let value_x = dx + (26.0 * char_w) as i32;
+            for (i, r) in dlg.rows.iter().enumerate() {
+                let ry = dy + (1 + i as i32) * line_h;
+                if ry > dy + dh - 2 * line_h {
+                    break;
+                }
+                let (rfg, rbg) = if r.selected {
+                    (selection_fg, Some(selection_bg))
+                } else {
+                    (default_color, None)
+                };
+                if let Some(b) = rbg {
+                    d.draw_rectangle(dx + 1, ry, dw - 2, line_h, b);
+                }
+                let shown = ruster_render::control_display(r);
+                if r.kind == ruster_render::ControlKind::Button {
+                    // A button is one thing, not a label with a value beside it.
+                    d.draw_text_ex(font, &shown, Vector2::new((dx + 8) as f32, ry as f32), font_size as f32, 1.0, rfg);
+                } else {
+                    d.draw_text_ex(font, &r.label, Vector2::new((dx + 8) as f32, ry as f32), font_size as f32, 1.0, rfg);
+                    let vfg = if r.editing { accent } else { rfg };
+                    d.draw_text_ex(font, &shown, Vector2::new(value_x as f32, ry as f32), font_size as f32, 1.0, vfg);
+                }
+            }
+            let fy = dy + dh - 2 * line_h;
+            d.draw_text_ex(font, &dlg.footer, Vector2::new((dx + 8) as f32, fy as f32), font_size as f32, 1.0, gutter_color);
+        }
+
 
         // Capture *before* the draw handle drops.
         //

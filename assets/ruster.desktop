@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=ruster
+GenericName=Text Editor
+Comment=A hybrid modal editor with Neovim and Emacs paradigms
+# %F rather than %f: ruster accepts several paths on the command line, and a
+# file manager passing two files should open both rather than launching twice.
+Exec=ruster %F
+TryExec=ruster
+Icon=ruster
+Terminal=false
+Categories=Utility;TextEditor;Development;
+Keywords=editor;text;vim;emacs;code;
+MimeType=text/plain;text/x-rust;text/x-python;text/x-lua;text/markdown;application/json;text/x-toml;
+StartupNotify=true
