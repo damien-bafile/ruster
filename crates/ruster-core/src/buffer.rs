@@ -7,8 +7,30 @@ pub struct Change {
     pub inserted: String,
 }
 
+/// One edit, in the coordinates tree-sitter needs to reuse a parse tree.
+///
+/// Byte offsets and `(row, column)` points, both sides of the change. Mirrors
+/// `tree_sitter::InputEdit` without `ruster-core` depending on tree-sitter —
+/// the editor core should not know what parses its text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Edit {
+    pub start_byte: usize,
+    pub old_end_byte: usize,
+    pub new_end_byte: usize,
+    pub start_point: (usize, usize),
+    pub old_end_point: (usize, usize),
+    pub new_end_point: (usize, usize),
+}
+
 pub struct Buffer {
     rope: Rope,
+    /// Edits since the last [`take_edits`](Buffer::take_edits), in the form
+    /// tree-sitter needs to reparse incrementally instead of from scratch.
+    ///
+    /// Recorded here rather than derived later because the byte offsets and
+    /// row/column points describe the buffer *as it was*, and after the edit
+    /// that information is gone.
+    pending_edits: Vec<Edit>,
     /// Bumped on every mutation, so a consumer can tell "unchanged since I last
     /// looked" without comparing contents.
     ///
@@ -26,14 +48,29 @@ impl std::fmt::Display for Buffer {
 }
 
 impl Buffer {
-    pub fn new() -> Self { Self { rope: Rope::new(), revision: 0 } }
+    pub fn new() -> Self { Self { rope: Rope::new(), revision: 0, pending_edits: Vec::new() } }
     // An infallible constructor, not the fallible `FromStr` trait.
     #[allow(clippy::should_implement_trait)]
-    pub fn from_str(s: &str) -> Self { Self { rope: Rope::from_str(s), revision: 0 } }
+    pub fn from_str(s: &str) -> Self { Self { rope: Rope::from_str(s), revision: 0, pending_edits: Vec::new() } }
 
     /// A counter that changes whenever the text does. Equal revisions mean
     /// equal contents; unequal ones mean it *may* have changed.
     pub fn revision(&self) -> u64 { self.revision }
+
+    /// Take the edits recorded since the last call, for an incremental
+    /// reparse. Draining is deliberate: applying the same edit twice would
+    /// shift the tree's idea of where everything is.
+    pub fn take_edits(&mut self) -> Vec<Edit> {
+        std::mem::take(&mut self.pending_edits)
+    }
+
+    /// Row and byte-column of a byte offset, which is what tree-sitter's
+    /// `Point` means.
+    fn point_at(&self, byte: usize) -> (usize, usize) {
+        let byte = byte.min(self.rope.len_bytes());
+        let row = self.rope.byte_to_line(byte);
+        (row, byte - self.rope.line_to_byte(row))
+    }
 
     pub fn len_chars(&self) -> usize { self.rope.len_chars() }
     pub fn line_count(&self) -> usize { self.rope.len_lines() }
@@ -71,16 +108,40 @@ impl Buffer {
     }
 
     pub fn insert(&mut self, at: usize, text: &str) -> Change {
+        // Points describe the buffer before the edit, so measure first.
+        let start_byte = self.rope.char_to_byte(at);
+        let start_point = self.point_at(start_byte);
         self.rope.insert(at, text);
         self.revision += 1;
+        let new_end_byte = start_byte + text.len();
+        self.pending_edits.push(Edit {
+            start_byte,
+            old_end_byte: start_byte,
+            new_end_byte,
+            start_point,
+            old_end_point: start_point,
+            new_end_point: self.point_at(new_end_byte),
+        });
         Change { at, deleted: String::new(), inserted: text.to_string() }
     }
 
     pub fn delete(&mut self, range: std::ops::Range<usize>) -> Change {
         let deleted = self.rope.slice(range.clone()).to_string();
         let at = range.start;
+        let start_byte = self.rope.char_to_byte(at);
+        let start_point = self.point_at(start_byte);
+        let old_end_byte = start_byte + deleted.len();
+        let old_end_point = self.point_at(old_end_byte);
         self.rope.remove(range);
         self.revision += 1;
+        self.pending_edits.push(Edit {
+            start_byte,
+            old_end_byte,
+            new_end_byte: start_byte,
+            start_point,
+            old_end_point,
+            new_end_point: start_point,
+        });
         Change { at, deleted, inserted: String::new() }
     }
 
