@@ -43,11 +43,6 @@ struct TreeBackend {
     source: String,
     bracket_depths: Vec<Option<usize>>,
     textobject_scm: String,
-    /// The highlight query **actually in use** — the user's when it loaded, the
-    /// built-in when theirs was rejected. Kept so `todo_markers` can re-query
-    /// the tree for `@comment` captures; re-querying with the rejected text
-    /// would fail every time.
-    highlight_scm: String,
 }
 
 /// The highlighting strategy for a buffer: a tree-sitter grammar, or the
@@ -85,18 +80,14 @@ impl SyntaxEngine {
             // Bound first: holding the borrow of `loaded.highlights` across the
             // match would stop the `Ok` arm moving it out.
             let attempt = Highlighter::new(language.clone(), &loaded.highlights, key);
-            let (mut highlighter, highlight_scm) = match attempt {
-                Ok(h) => (h, loaded.highlights.into_owned()),
+            let mut highlighter = match attempt {
+                Ok(h) => h,
                 Err(e) if loaded.highlights_from_user => {
                     warnings.push(format!(
                         "{key}/highlights.scm: {e} — using the built-in query"
                     ));
-                    let builtin = builtin_queries(key).0;
-                    let h = Highlighter::new(language.clone(), builtin, key)
-                        .map_err(SyntaxError::QueryError)?;
-                    // The built-in, not the rejected text: `todo_markers`
-                    // re-runs this query and would otherwise fail every call.
-                    (h, builtin.to_string())
+                    Highlighter::new(language.clone(), builtin_queries(key).0, key)
+                        .map_err(SyntaxError::QueryError)?
                 }
                 Err(e) => return Err(SyntaxError::QueryError(e)),
             };
@@ -114,7 +105,6 @@ impl SyntaxEngine {
                     source: text.to_string(),
                     bracket_depths,
                     textobject_scm: loaded.textobjects.into_owned(),
-                    highlight_scm,
                 })),
                 cached,
                 warnings,
@@ -284,17 +274,11 @@ impl SyntaxEngine {
     /// no grammar return nothing rather than guessing.
     pub fn todo_markers(&self, keywords: &[String]) -> Vec<TodoMarker> {
         let Backend::Tree(tb) = &self.backend else { return Vec::new() };
-        let Ok(query) = tree_sitter::Query::new(&tb.language, &tb.highlight_scm) else {
-            return Vec::new();
-        };
-        let comment_idx: Vec<u32> = query
-            .capture_names()
-            .iter()
-            .enumerate()
-            .filter(|(_, n)| **n == "comment")
-            .map(|(i, _)| i as u32)
-            .collect();
-        if comment_idx.is_empty() {
+        // Comment ranges come from the last highlight pass, which already ran
+        // this query over the tree. Running it again here — and recompiling it
+        // from source each time — was almost all of what this scan cost.
+        let comments = tb.highlighter.comments();
+        if comments.is_empty() {
             return Vec::new();
         }
 
@@ -307,14 +291,8 @@ impl SyntaxEngine {
         }
 
         let mut out = Vec::new();
-        let mut cursor = tree_sitter::QueryCursor::new();
-        let mut matches = cursor.matches(&query, tb.tree.root_node(), tb.source.as_bytes());
-        while let Some(m) = matches.next() {
-            for cap in m.captures {
-                if !comment_idx.contains(&cap.index) {
-                    continue;
-                }
-                let range = cap.node.byte_range();
+        {
+            for range in comments.iter().map(|(s, e)| *s..*e) {
                 let Some(text) = tb.source.get(range.clone()) else { continue };
                 for kw in keywords {
                     let mut from = 0;

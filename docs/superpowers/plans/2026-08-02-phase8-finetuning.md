@@ -180,11 +180,13 @@ capture and an `RwLock` read per capture cost about 1 ms between them.
 | --- | --- |
 | originally | 127 ms |
 | after the highlight-pass fix | 74 ms |
-| after incremental parsing | **43 ms** |
+| after incremental parsing | 43 ms |
+| after fixing the TODO overlay | **21 ms** |
 
-Still over the 16.7 ms budget, and what remains is now clear: the highlight
-pass (20 ms) and the TODO overlay (21 ms), both of which process the **whole
-file** when about fifty lines are on screen.
+Down from 127 ms to 21 ms, six times faster. What remains is a single item: the
+highlight pass still builds a `StyledLine` for every line in the file when the
+renderer draws about fifty. Cloning those into the frame state costs a further
+0.7 ms per frame, measured — real but not the problem.
 
 ### Task 9b: Only highlight what is visible
 
@@ -192,8 +194,10 @@ file** when about fifty lines are on screen.
       renderer reads roughly fifty. `QueryCursor::set_byte_range` limits the
       query, but the cache is then partial and callers must handle a miss —
       an API change, not a tweak, which is why it is its own task.
-- [ ] The TODO overlay re-queries the whole tree on every pass and needs the
-      same treatment.
+- [x] The TODO overlay — fixed differently and more cheaply than range-limiting.
+      It was *recompiling the highlight query from source* and then re-running it
+      over the whole tree, to find comments the highlight pass had just walked
+      past. It now reads the ranges that pass recorded: **21.7 ms -> 0.26 ms**.
 - [ ] Tests: a range-limited pass must agree with the full one over the lines
       it covers.
 

@@ -5,15 +5,40 @@ use crate::theme::{set_current_lang, style_for_capture, RAINBOW_PALETTE};
 pub struct Highlighter {
     query: tree_sitter::Query,
     cursor: tree_sitter::QueryCursor,
+    /// Byte ranges of `@comment` captures from the last highlight pass.
+    ///
+    /// The TODO scan wants exactly these, and the highlight pass has already
+    /// walked the tree to find them. Running the same query a second time to
+    /// rediscover them was the bulk of that scan's cost.
+    comments: Vec<(usize, usize)>,
     /// Canonical language key, so per-language overrides resolve.
     lang: String,
 }
 
 impl Highlighter {
+    /// Comment ranges seen by the last [`highlight_lines`](Self::highlight_lines).
+    pub fn comments(&self) -> &[(usize, usize)] {
+        &self.comments
+    }
+
+    /// The compiled highlight query.
+    ///
+    /// Exposed so `todo_markers` can reuse it: it needs the same `@comment`
+    /// captures, and compiling the query source again — which it used to do on
+    /// every call — costs more than the scan it performs.
+    pub fn query(&self) -> &tree_sitter::Query {
+        &self.query
+    }
+
     pub fn new(language: tree_sitter::Language, query_source: &str, lang: &str) -> Result<Self, String> {
         let query = tree_sitter::Query::new(&language, query_source)
             .map_err(|e| format!("query error: {}", e))?;
-        Ok(Highlighter { query, cursor: tree_sitter::QueryCursor::new(), lang: lang.to_string() })
+        Ok(Highlighter {
+            query,
+            cursor: tree_sitter::QueryCursor::new(),
+            comments: Vec::new(),
+            lang: lang.to_string(),
+        })
     }
 
     pub fn highlight_lines(
@@ -44,6 +69,16 @@ impl Highlighter {
         let styles: Vec<SyntaxStyle> =
             self.query.capture_names().iter().map(|n| style_for_capture(n)).collect();
 
+        let comment_ids: Vec<u32> = self
+            .query
+            .capture_names()
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| **n == "comment")
+            .map(|(i, _)| i as u32)
+            .collect();
+        self.comments.clear();
+
         let mut raw_captures: Vec<(u32, usize, usize)> = Vec::new();
         {
             let mut captures = self.cursor.captures(&self.query, tree.root_node(), source.as_bytes());
@@ -51,6 +86,9 @@ impl Highlighter {
                 for cap in m.captures {
                     let start = cap.node.byte_range().start;
                     let end = cap.node.byte_range().end;
+                    if comment_ids.contains(&cap.index) {
+                        self.comments.push((start, end));
+                    }
                     raw_captures.push((cap.index, start, end));
                 }
             }

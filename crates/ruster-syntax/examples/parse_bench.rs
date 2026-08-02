@@ -27,6 +27,18 @@ fn main() {
     }
     println!("  reparse (edit)   {:>7.2} ms", t.elapsed().as_secs_f64() * 1000.0 / 20.0);
 
+    // What `render` pays every frame: cloning every styled line into the
+    // frame state, even though the widget draws only what fits on screen.
+    let all = e.styled_lines().to_vec();
+    let t = std::time::Instant::now();
+    for _ in 0..20 { std::hint::black_box(e.styled_lines().to_vec()); }
+    println!("  clone all lines  {:>7.2} ms  ({} lines)",
+             t.elapsed().as_secs_f64() * 1000.0 / 20.0, all.len());
+
+    let t = std::time::Instant::now();
+    for _ in 0..20 { std::hint::black_box(e.styled_lines()[..50.min(all.len())].to_vec()); }
+    println!("  clone 50 lines   {:>7.2} ms", t.elapsed().as_secs_f64() * 1000.0 / 20.0);
+
     let kws = vec!["TODO".to_string(), "FIXME".to_string()];
     let style = ruster_render::SyntaxStyle::default();
     let t = std::time::Instant::now();
