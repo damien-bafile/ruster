@@ -21,6 +21,25 @@ pub fn create_table(lua: &mlua::Lua, shared: &Rc<Shared>) -> mlua::Result<Table>
     })?;
     t.set("print", print_fn)?;
 
+    // ruster.defer(ms, fn) -> id     — run once, after ms
+    // ruster.timer(ms, fn) -> id     — run every ms until cancelled
+    // ruster.timer_stop(id) -> bool  — cancel either
+    //
+    // Callbacks run on the frame drain, not a thread: the runtime is `!Send`
+    // and deliberately so, which means a timer can touch the editor with no
+    // locking at all. Resolution is therefore one frame.
+    for (name, repeats) in [("defer", false), ("timer", true)] {
+        let sh = shared.clone();
+        let f = lua.create_function(move |lua, (ms, func): (f64, mlua::Function)| {
+            sh.timers.borrow_mut().add(lua, ms, func, repeats)
+        })?;
+        t.set(name, f)?;
+    }
+    let sh = shared.clone();
+    let stop_fn =
+        lua.create_function(move |_, id: u64| Ok(sh.timers.borrow_mut().cancel(id)))?;
+    t.set("timer_stop", stop_fn)?;
+
     // ruster.cmd(str)
     let sh = shared.clone();
     let cmd_fn = lua.create_function(move |_, cmd: String| {
@@ -346,6 +365,60 @@ pub fn create_table(lua: &mlua::Lua, shared: &Rc<Shared>) -> mlua::Result<Table>
         Ok(())
     })?;
     api.set("notify_with", notify_with)?;
+
+    // Read-only introspection. Small on purpose: a statusline needs the path,
+    // the filetype, the diagnostics and the git state, and every getter beyond
+    // that is surface which has to keep working forever.
+    //
+    // Each returns an empty/zero value rather than erroring when the app has
+    // not installed the callbacks — a plugin loaded before the editor finished
+    // starting should degrade, not blow up.
+    let sh = shared.clone();
+    let buf_path = lua.create_function(move |_, ()| {
+        let mut cb = sh.query_cb.borrow_mut();
+        Ok(cb.as_mut().map(|c| (c.buf_path)()).unwrap_or_default())
+    })?;
+    api.set("buf_path", buf_path)?;
+
+    let sh = shared.clone();
+    let filetype = lua.create_function(move |_, ()| {
+        let mut cb = sh.query_cb.borrow_mut();
+        Ok(cb.as_mut().map(|c| (c.filetype)()).unwrap_or_default())
+    })?;
+    api.set("filetype", filetype)?;
+
+    let sh = shared.clone();
+    let diagnostics = lua.create_function(move |lua, ()| {
+        let items = {
+            let mut cb = sh.query_cb.borrow_mut();
+            cb.as_mut().map(|c| (c.diagnostics)()).unwrap_or_default()
+        };
+        let out = lua.create_table()?;
+        for (i, d) in items.iter().enumerate() {
+            let row = lua.create_table()?;
+            row.set("line", d.line)?;
+            row.set("col", d.col)?;
+            row.set("severity", d.severity)?;
+            row.set("message", d.message.clone())?;
+            out.set(i + 1, row)?;
+        }
+        Ok(out)
+    })?;
+    api.set("diagnostics", diagnostics)?;
+
+    let sh = shared.clone();
+    let git_status = lua.create_function(move |lua, ()| {
+        let (branch, staged, unstaged) = {
+            let mut cb = sh.query_cb.borrow_mut();
+            cb.as_mut().map(|c| (c.git_status)()).unwrap_or_default()
+        };
+        let out = lua.create_table()?;
+        out.set("branch", branch)?;
+        out.set("staged", staged)?;
+        out.set("unstaged", unstaged)?;
+        Ok(out)
+    })?;
+    api.set("git_status", git_status)?;
 
     t.set("api", api)?;
 

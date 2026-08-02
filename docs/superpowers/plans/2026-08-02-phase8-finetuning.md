@@ -319,32 +319,58 @@ The decision rule this implies, worth writing down:
 - needs to **return** a value → `ruster.cmd` is fire-and-forget, so `ruster.api.*`
 - needs to **react** to something → an event, which is the gap below
 
-### Task 11: More events
+### Tasks 11-13 ✅
 
-Lua can hook exactly four: `VimEnter`, `ModeChanged`, `BufWritePre`,
-`BufWritePost`. Neovim has around sixty.
+- [x] **Events**: `BufEnter`/`BufLeave`, `WinEnter`, `FileType`, `CursorMoved`,
+      `InsertEnter`/`InsertLeave`, joining the four that existed.
 
-- [ ] `BufEnter` / `BufLeave` — the most-used autocmd in any editor.
-- [ ] `CursorMoved` — debounced, or it fires per keypress and every plugin
-      using it becomes a performance problem.
-- [ ] `InsertEnter` / `InsertLeave`, `WinEnter`, `FileType`, `VimLeave`.
-- [ ] Tests: each fires once, with the right arguments, and firing into a
-      handler that errors does not take the editor down.
+      Fired by diffing watched state once per frame, not from each mutation
+      site. Far too many places change the active buffer — every open, close,
+      split, pick, jump and `:bd` — and an event firing from *most* of them is
+      worse than one firing from all, because a plugin cannot tell what it
+      missed.
 
-### Task 12: A timer
+      `CursorMoved` is debounced for free by that design: a held `j` moves the
+      cursor many times between frames and fires once. The plan asked for a
+      debounce and this needed no timer to get one.
 
-- [ ] `ruster.defer(ms, fn)` and a cancellable `ruster.timer`.
-- [ ] Without it there is no debounce, no polling, no deferred work — the
-      absence is why driving the GUI for screenshots needed a whole
-      `init.lua`-and-`:screenshot` dance rather than "wait, then capture".
-- [ ] Must run on the frame drain like every other Lua action, not a thread:
-      the runtime is not `Send`, and that is deliberate.
+      `BufLeave` names the buffer being *left*. It fires after the switch has
+      happened, so the obvious version reports the new path for both and a
+      handler saving per-file state writes it against the wrong file. Mutation
+      testing showed nothing caught that; the test came second.
 
-### Task 13: Read-only introspection
+      The first pass records a baseline without firing, so a plugin loading into
+      an editor with a buffer already open gets no BufEnter storm.
 
-- [ ] Lua cannot ask for diagnostics, git status, or the current file's path.
-- [ ] Add the queries a statusline or a lightweight plugin actually needs, and
-      no more. Every getter is API surface that has to keep working.
+- [x] **Timers**: `ruster.defer`, `ruster.timer`, `ruster.timer_stop`. On the
+      frame drain, not a thread. At most one firing per drain however far
+      behind — a slow frame must not become a catch-up burst. Callbacks are
+      resolved and the borrow dropped before any is invoked, so a callback can
+      reschedule or cancel itself; holding the borrow across the call kills two
+      tests.
+
+- [x] **Queries**: `buf_path`, `filetype`, `diagnostics`, `git_status`. Served
+      from a snapshot the frame loop refreshes, because the Lua closures are
+      installed before `App` exists and cannot hold `&mut self`.
+
+- [x] Verified in the running editor, with a caution about how. Reading the
+      result through `:messages` gave empty paths and cost a long detour: the
+      *messages buffer itself* is pathless and becomes active when opened, so
+      every line I read had been recorded after the thing I was measuring
+      changed. Writing to a file from the callback instead showed the API had
+      been correct the whole time. The measurement was wrong, not the code.
+
+- [x] `git_status()` is now kept current by a background refresh every two
+      seconds, rather than staying empty until `:Git` was opened. Two seconds is
+      a compromise, not a right answer: fast enough that the branch is not
+      visibly stale after a commit, slow enough not to run `git` at frame rate
+      on a large repository.
+
+      An in-flight guard stops a slow repository accumulating processes — and
+      the worker reports back **even when it finds nothing**, because a guard
+      that only clears on success latches on the first failure and silently
+      stops polling for the rest of the session. That was in the first version
+      of this and would have looked exactly like the bug it replaced.
 
 ---
 
