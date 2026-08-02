@@ -98,6 +98,22 @@ visually distinct from each other. Both patterns exist in
 
 ---
 
+### Task 8b: Which-key coverage ✅
+
+Audited 2026-08-02: 41 of 65 `CmdAction` variants had no leader route. The tree
+was built for Phase 5 and never grew, so the entire Phase 7 git porcelain —
+status, commit, push, pull, staged diff, hunk staging, diffview — was reachable
+only by typing, along with Mason, help, themes, sessions and the notification
+panel.
+
+- [x] A `SPC g` git group, `SPC S` for sessions, and the missing entries under
+      `SPC o` and `SPC x`.
+- [x] `tests/commands_discoverable.rs` — every command must be bound **or**
+      declared typed-only *with a reason*, so adding one forces a deliberate
+      choice instead of silent omission. The same shape as the docs guard.
+
+---
+
 ## Stage 3 — Performance, where it is actually spent
 
 ### Task 9: Incremental parsing

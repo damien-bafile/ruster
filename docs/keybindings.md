@@ -173,6 +173,18 @@ Press `SPC` in Normal mode; the which-key panel lists continuations.
 | `SPC d n` / `SPC d i` / `SPC d o` | Step over / into / out |
 | `SPC d q` | Stop debugging |
 | `SPC u n` / `SPC u r` | Toggle line / relative numbers |
+| `SPC g g` | Git status (`:Git`) |
+| `SPC g c` | Commit |
+| `SPC g d` | Diff against HEAD (`:Diffview`) |
+| `SPC g S` / `SPC g s` | Staged diff / stage the hunk under the cursor |
+| `SPC g p` / `SPC g F` | Push / pull (both ask first) |
+| `SPC g t` | Toggle git signs |
+| `SPC S s` / `SPC S r` | Save / restore the session |
+| `SPC o h` | Help (`:help`) |
+| `SPC o M` | External tools (`:Mason`) |
+| `SPC o T` | Themes |
+| `SPC o n` | Notification panel (`:Noice`) |
+| `SPC x t` | TODO markers (`:TodoList`) |
 | `SPC q q` | Quit |
 | `SPC q w` | Save and quit |
 

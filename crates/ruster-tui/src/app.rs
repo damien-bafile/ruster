@@ -782,6 +782,23 @@ const PALETTE_COMMANDS: &[(&str, &str)] = &[
 #[derive(Clone, Copy)]
 enum LeaderAction {
     Trouble,
+    // Git — the whole Phase 7 porcelain had no discoverable route.
+    GitStatus,
+    GitCommit,
+    Diffview,
+    GitStaged,
+    GitStageHunk,
+    GitPush,
+    GitPull,
+    GitsignsToggle,
+    // Surfaces added in Phases 6-7 that were only reachable by typing.
+    Mason,
+    Help,
+    Themes,
+    TodoList,
+    NoicePanel,
+    SessionSave,
+    SessionRestore,
     DebugStart,
     DebugToggleBreakpoint,
     DebugContinue,
@@ -885,6 +902,29 @@ static OPEN_GROUP: &[(char, LeaderNode)] = &[
     ('e', LeaderNode::Action("explorer (dired)", LeaderAction::Explorer)),
     ('m', LeaderNode::Action("messages", LeaderAction::Messages)),
     ('r', LeaderNode::Action("run task", LeaderAction::Tasks)),
+    ('h', LeaderNode::Action("help", LeaderAction::Help)),
+    ('M', LeaderNode::Action("mason (tools)", LeaderAction::Mason)),
+    ('T', LeaderNode::Action("themes", LeaderAction::Themes)),
+    ('n', LeaderNode::Action("notifications", LeaderAction::NoicePanel)),
+];
+
+/// Git. Phase 7 built a porcelain reachable only by typing its commands; this
+/// is the route a user can find by pressing `SPC` and looking.
+static GIT_GROUP: &[(char, LeaderNode)] = &[
+    ('g', LeaderNode::Action("status", LeaderAction::GitStatus)),
+    ('c', LeaderNode::Action("commit", LeaderAction::GitCommit)),
+    ('d', LeaderNode::Action("diff vs HEAD", LeaderAction::Diffview)),
+    ('S', LeaderNode::Action("staged diff", LeaderAction::GitStaged)),
+    ('s', LeaderNode::Action("stage hunk", LeaderAction::GitStageHunk)),
+    ('p', LeaderNode::Action("push", LeaderAction::GitPush)),
+    ('F', LeaderNode::Action("pull", LeaderAction::GitPull)),
+    ('t', LeaderNode::Action("toggle signs", LeaderAction::GitsignsToggle)),
+];
+
+/// Sessions: save and restore what was open.
+static SESSION_GROUP: &[(char, LeaderNode)] = &[
+    ('s', LeaderNode::Action("save session", LeaderAction::SessionSave)),
+    ('r', LeaderNode::Action("restore session", LeaderAction::SessionRestore)),
 ];
 
 static PROJECT_GROUP: &[(char, LeaderNode)] = &[
@@ -893,6 +933,7 @@ static PROJECT_GROUP: &[(char, LeaderNode)] = &[
 
 static TROUBLE_GROUP: &[(char, LeaderNode)] = &[
     ('x', LeaderNode::Action("problem list", LeaderAction::Trouble)),
+    ('t', LeaderNode::Action("todo markers", LeaderAction::TodoList)),
 ];
 
 static DEBUG_GROUP: &[(char, LeaderNode)] = &[
@@ -922,6 +963,8 @@ static LEADER_ROOT: &[(char, LeaderNode)] = &[
     ('p', LeaderNode::Group("project", PROJECT_GROUP)),
     ('d', LeaderNode::Group("debug", DEBUG_GROUP)),
     ('x', LeaderNode::Group("diagnostics", TROUBLE_GROUP)),
+    ('g', LeaderNode::Group("git", GIT_GROUP)),
+    ('S', LeaderNode::Group("session", SESSION_GROUP)),
     ('u', LeaderNode::Group("ui / toggle", UI_GROUP)),
     ('q', LeaderNode::Group("quit", QUIT_GROUP)),
 ];
@@ -5835,6 +5878,21 @@ impl App {
             LeaderAction::Messages => self.open_messages(),
             LeaderAction::Projects => self.open_projects(),
             LeaderAction::Trouble => self.open_trouble(),
+            LeaderAction::GitStatus => self.open_git_status(),
+            LeaderAction::GitCommit => self.open_git_commit(),
+            LeaderAction::Diffview => self.open_diffview(),
+            LeaderAction::GitStaged => self.open_git_staged(),
+            LeaderAction::GitStageHunk => self.git_stage_hunk(),
+            LeaderAction::GitPush => self.confirm_git_remote("Push"),
+            LeaderAction::GitPull => self.confirm_git_remote("Pull"),
+            LeaderAction::GitsignsToggle => self.apply_cmd(CmdAction::GitsignsToggle),
+            LeaderAction::Mason => self.open_mason(),
+            LeaderAction::Help => self.open_help(None),
+            LeaderAction::Themes => self.apply_cmd(CmdAction::Themes),
+            LeaderAction::TodoList => self.apply_cmd(CmdAction::TodoList),
+            LeaderAction::NoicePanel => self.apply_cmd(CmdAction::NoicePanel),
+            LeaderAction::SessionSave => self.save_session(false),
+            LeaderAction::SessionRestore => self.restore_session(false),
             LeaderAction::DebugStart => self.debug_start(),
             LeaderAction::DebugToggleBreakpoint => self.debug_toggle_breakpoint(),
             LeaderAction::DebugContinue => self.debug_continue(),
