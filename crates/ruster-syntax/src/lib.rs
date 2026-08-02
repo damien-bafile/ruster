@@ -38,6 +38,8 @@ struct TreeBackend {
     language: tree_sitter::Language,
     tree: tree_sitter::Tree,
     highlighter: Highlighter,
+    /// Kept for the engine's lifetime; constructing one per reparse was waste.
+    parser: tree_sitter::Parser,
     source: String,
     bracket_depths: Vec<Option<usize>>,
     textobject_scm: String,
@@ -103,6 +105,9 @@ impl SyntaxEngine {
             let cached = highlighter.highlight_lines(&tree, text, &bracket_depths);
             Ok(SyntaxEngine {
                 backend: Backend::Tree(Box::new(TreeBackend {
+                    // The parse above already used a parser; keep one for the
+                    // reparses that follow.
+                    parser,
                     language,
                     tree,
                     highlighter,
@@ -129,12 +134,49 @@ impl SyntaxEngine {
         &self.warnings
     }
 
+    /// Reparse from scratch. Prefer [`reparse_with_edits`](Self::reparse_with_edits)
+    /// when the edits are known — a full parse is ~65x the cost of an
+    /// incremental one on a large file.
     pub fn reparse(&mut self, text: &str) {
+        self.reparse_inner(text, &[]);
+    }
+
+    /// Reparse, reusing the existing tree where `edits` say it is still valid.
+    ///
+    /// Each edit must describe the buffer *as it was* when that edit happened,
+    /// applied in order — which is why `ruster-core` records them at the point
+    /// of mutation rather than reconstructing them afterwards. Passing an empty
+    /// slice is a full parse, so a caller that has lost track of the edits is
+    /// merely slow, never wrong.
+    pub fn reparse_with_edits(&mut self, text: &str, edits: &[ruster_core::buffer::Edit]) {
+        self.reparse_inner(text, edits);
+    }
+
+    fn reparse_inner(&mut self, text: &str, edits: &[ruster_core::buffer::Edit]) {
         match &mut self.backend {
             Backend::Tree(tb) => {
-                let mut parser = tree_sitter::Parser::new();
-                let _ = parser.set_language(&tb.language);
-                if let Some(tree) = parser.parse(text, None) {
+                let point = |(row, column): (usize, usize)| tree_sitter::Point { row, column };
+                // Tell the old tree what moved, then hand it back as a starting
+                // point. With no edits there is nothing to reuse.
+                let old = if edits.is_empty() {
+                    None
+                } else {
+                    for e in edits {
+                        tb.tree.edit(&tree_sitter::InputEdit {
+                            start_byte: e.start_byte,
+                            old_end_byte: e.old_end_byte,
+                            new_end_byte: e.new_end_byte,
+                            start_position: point(e.start_point),
+                            old_end_position: point(e.old_end_point),
+                            new_end_position: point(e.new_end_point),
+                        });
+                    }
+                    Some(&tb.tree)
+                };
+                // One parser for the engine's lifetime: allocating one per
+                // reparse was pure overhead.
+                let _ = tb.parser.set_language(&tb.language);
+                if let Some(tree) = tb.parser.parse(text, old) {
                     tb.tree = tree;
                     tb.source = text.to_string();
                     tb.bracket_depths = compute_bracket_depths(text);

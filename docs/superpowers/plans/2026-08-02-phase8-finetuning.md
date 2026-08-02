@@ -165,22 +165,37 @@ edge-case inputs including unicode and empty text.
 Two cheaper suspects were measured and rejected: a `String` allocation per
 capture and an `RwLock` read per capture cost about 1 ms between them.
 
-- [ ] Reuse one `Parser` rather than allocating per frame.
-- [ ] Track edits as `InputEdit` and pass `Some(&old_tree)`, which is the whole
-      point of tree-sitter and is what `None` here discards.
-- [ ] `buffer.to_string()` also materialises the entire rope each frame to feed
-      it; consider a chunk-based callback.
+- [x] Reuse one `Parser` rather than allocating per frame.
+- [x] Track edits as `InputEdit` and pass `Some(&old_tree)`. `Buffer` records
+      each edit at the point of mutation — the byte offsets and points describe
+      the buffer *as it was*, and afterwards that information is gone.
+- [x] `buffer.to_string()` — measured at 0.03 ms. The original bullet's worry
+      was wrong; left alone.
 - [x] Measure first. **Do not** reach for threads before this: the work being
       parallelised should not exist.
 
-**Still worth doing, and now the top item.** With the highlight pass fixed the
-parse *is* the dominant cost, and incremental parsing measures at **0.5 ms
-against 32 ms** — a 69x saving on a one-character insert. It needs `InputEdit`
-plumbed from the edit path into `reparse`; the undo stack's `push(Change)` is
-the choke point every edit already passes through.
+**Done.** Where a keystroke in a 10k-line file stood at each step:
 
-After that the TODO overlay (21 ms) becomes co-dominant and needs the same
-treatment: it re-queries the whole tree on every pass.
+| | per keystroke |
+| --- | --- |
+| originally | 127 ms |
+| after the highlight-pass fix | 74 ms |
+| after incremental parsing | **43 ms** |
+
+Still over the 16.7 ms budget, and what remains is now clear: the highlight
+pass (20 ms) and the TODO overlay (21 ms), both of which process the **whole
+file** when about fifty lines are on screen.
+
+### Task 9b: Only highlight what is visible
+
+- [ ] `highlight_lines` builds a `StyledLine` for every line in the file; the
+      renderer reads roughly fifty. `QueryCursor::set_byte_range` limits the
+      query, but the cache is then partial and callers must handle a miss —
+      an API change, not a tweak, which is why it is its own task.
+- [ ] The TODO overlay re-queries the whole tree on every pass and needs the
+      same treatment.
+- [ ] Tests: a range-limited pass must agree with the full one over the lines
+      it covers.
 
 ---
 

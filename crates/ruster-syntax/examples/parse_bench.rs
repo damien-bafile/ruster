@@ -14,6 +14,19 @@ fn main() {
     for _ in 0..20 { e.reparse(&text); }
     println!("  reparse          {:>7.2} ms", t.elapsed().as_secs_f64() * 1000.0 / 20.0);
 
+    // The path the editor actually takes while typing: one character in, with
+    // the edit recorded, versus the full reparse it used to do.
+    let mut b = ruster_core::buffer::Buffer::from_str(&text);
+    let at = text.chars().count() / 2;
+    let mut inc = ruster_syntax::SyntaxEngine::new(&text, "rs").unwrap();
+    let t = std::time::Instant::now();
+    for i in 0..20 {
+        b.insert(at + i, "x");
+        let s = b.to_string();
+        inc.reparse_with_edits(&s, &b.take_edits());
+    }
+    println!("  reparse (edit)   {:>7.2} ms", t.elapsed().as_secs_f64() * 1000.0 / 20.0);
+
     let kws = vec!["TODO".to_string(), "FIXME".to_string()];
     let style = ruster_render::SyntaxStyle::default();
     let t = std::time::Instant::now();

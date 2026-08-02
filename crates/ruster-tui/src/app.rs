@@ -2963,9 +2963,18 @@ impl App {
         let revision = self.ws.borrow().buffers.get(active).map(|d| d.buffer.revision());
         let stale = revision.is_some_and(|r| self.syntax_revision.get(&active) != Some(&r));
         if stale {
-            let content = self.ws.borrow().buffers.get(active).map(|d| d.buffer.to_string());
+            // Take the edits *with* the text, so the two describe the same
+            // moment. Draining them here means a buffer whose engine does not
+            // exist yet does not accumulate edits forever.
+            let (content, edits) = {
+                let mut w = self.ws.borrow_mut();
+                match w.buffers.get_mut(active) {
+                    Some(d) => (Some(d.buffer.to_string()), d.buffer.take_edits()),
+                    None => (None, Vec::new()),
+                }
+            };
             if let (Some(c), Some(engine)) = (content.as_ref(), self.syntax.get_mut(&active)) {
-                engine.reparse(c);
+                engine.reparse_with_edits(c, &edits);
                 self.syntax_reparses += 1;
                 // reparse rebuilds the cached lines, so the overlay has to be
                 // reapplied — and it is not cheap either (22 ms on that file).
