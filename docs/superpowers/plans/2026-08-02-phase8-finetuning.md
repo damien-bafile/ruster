@@ -219,11 +219,57 @@ by −4.3%, while moving `App`'s cross-crate *field references* changed it by
 −91%. That number measures being the composition root, which every application
 has. Method count and line count are the metrics that track the real problem.
 
-- [ ] Extract the LSP glue (14 methods) and the DAP glue (9) — both are already
-      separate crates, so these are the least entangled.
-- [ ] Extract the git surface, which Phase 7 added wholesale.
-- [ ] Follow the `sidebar`/`dired`/`trouble` shape: state in its own module, one
-      field on `App`, a thin adapter.
+- [x] **DAP extracted** to `debug_state.rs`. The session and the breakpoint
+      table move together because they share an invariant that was previously
+      spread across call sites: a breakpoint change has to reach a running
+      session.
+
+      **That invariant was already broken.** `set_breakpoints_all` had exactly
+      one caller, inside `toggle_breakpoint`, gated on a session existing — and
+      `debug_start` never pushed. Breakpoints placed before `:DebugStart`, which
+      is the normal order, were never sent, and the debugger ran past every one.
+      `DebugState::start` now pushes, making the gap unrepresentable.
+
+- [x] **Git gutter extracted** to `git_gutter.rs`: the hunk cache, both ends of
+      the worker channel and the `git.signs` toggle. The channel ends had no
+      business being separate fields on `App` — they are one pipe, and a reader
+      separable from its writer invites cloning the wrong one.
+
+      `git_signs_for` deliberately stayed: it picks colours, which is drawing,
+      and it is the method Stage 1 rewrites. Leaving it put keeps the branches
+      from conflicting.
+
+      A second leak found on the way: `forget_buffer` swept the dired, syntax,
+      LSP and terminal caches and missed the git hunks, so opening and closing
+      files grew that map without bound.
+
+- [x] **A crash, found by driving the editor rather than by testing it.**
+      Setting a single breakpoint panicked the whole editor on the next frame —
+      `RefCell already mutably borrowed` — because the sign-column code
+      re-borrowed the workspace inside a scope already holding a mutable borrow.
+
+      Pre-existing on `main`, reproduced there to be sure it was not mine. It
+      survived because the branch sits behind `any_breakpoints()`, false until
+      someone sets one — the first thing anyone using the debugger does, and
+      something no test did. The identical bug sat in the branch beside it,
+      behind `!result_signs.is_empty()`, needing only a test run to fire.
+
+      Both fixed, both pinned by a test that renders with the branch live, both
+      tests confirmed by putting the bug back.
+
+- [x] Followed the `sidebar`/`dired` shape throughout: state and its invariants
+      move, interpreting that state stays on `App`.
+
+| | main | after all three extractions |
+| --- | --- | --- |
+| `App` fields | 70 | **63** |
+| `app.rs` non-test lines | 7,673 | ~7,600 |
+
+The method count is essentially unchanged, and that is the honest result —
+these moved *state*, not the methods that act on it. What they bought is three
+named boundaries where there were nine bare fields, two fixed bugs and a fixed
+leak. Moving the methods is a later, separate job now that the state they touch
+has a name.
 
 ---
 
