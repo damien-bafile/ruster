@@ -144,6 +144,27 @@ negligible, and the plan said so before anyone measured.
       revision counter, and `update_syntax` reparses only when it moves. This
       was not in the original plan and is worth more than everything else in
       this task: idle frames go from 127 ms to nothing.
+**Where the time actually went** (same file, `examples/inc_bench` breaks
+`reparse` into its stages):
+
+| stage | before | after |
+| --- | --- | --- |
+| tree-sitter parse | 32 ms | 32 ms |
+| bracket depths | 1 ms | 1 ms |
+| **`highlight_lines`** | **75 ms** | **20 ms** |
+| `reparse` total | 106 ms | **53 ms** |
+
+The highlight pass, not the parse, was the dominant cost — and `byte_to_line`
+was scanning `line_starts` linearly *per capture*, making the pass
+O(captures x lines): hundreds of millions of comparisons on a 10k-line file.
+Binary search plus an ASCII fast path in `byte_to_char_offset` took it from
+75 ms to 20 ms. Proven equivalent to the linear version over every byte
+position of a real 10k-line file, and pinned by a test that does the same over
+edge-case inputs including unicode and empty text.
+
+Two cheaper suspects were measured and rejected: a `String` allocation per
+capture and an `RwLock` read per capture cost about 1 ms between them.
+
 - [ ] Reuse one `Parser` rather than allocating per frame.
 - [ ] Track edits as `InputEdit` and pass `Some(&old_tree)`, which is the whole
       point of tree-sitter and is what `None` here discards.
@@ -152,10 +173,14 @@ negligible, and the plan said so before anyone measured.
 - [x] Measure first. **Do not** reach for threads before this: the work being
       parallelised should not exist.
 
-**Still worth doing.** The guard fixes idle, not typing: every keystroke in a
-10k-line file still costs ~127 ms, which is a visible stall. Incremental
-parsing is what fixes that, and it needs `InputEdit` plumbed from the edit path
-into `reparse` — a bigger change, kept separate deliberately.
+**Still worth doing, and now the top item.** With the highlight pass fixed the
+parse *is* the dominant cost, and incremental parsing measures at **0.5 ms
+against 32 ms** — a 69x saving on a one-character insert. It needs `InputEdit`
+plumbed from the edit path into `reparse`; the undo stack's `push(Change)` is
+the choke point every edit already passes through.
+
+After that the TODO overlay (21 ms) becomes co-dominant and needs the same
+treatment: it re-queries the whole tree on every pass.
 
 ---
 

@@ -34,22 +34,31 @@ impl Highlighter {
         let mut per_line: Vec<Vec<(usize, usize, SyntaxStyle)>> =
             (0..line_starts.len() - 1).map(|_| Vec::new()).collect();
 
-        let mut raw_captures: Vec<(String, usize, usize)> = Vec::new();
+        // Resolve each capture *name* to a style once, then index by capture id.
+        //
+        // This used to allocate a `String` per capture and call
+        // `style_for_capture` per capture — which takes an `RwLock` read to
+        // consult the override map. On a 10k-line file that is tens of
+        // thousands of allocations and lock acquisitions to produce at most a
+        // couple of dozen distinct styles.
+        let styles: Vec<SyntaxStyle> =
+            self.query.capture_names().iter().map(|n| style_for_capture(n)).collect();
+
+        let mut raw_captures: Vec<(u32, usize, usize)> = Vec::new();
         {
             let mut captures = self.cursor.captures(&self.query, tree.root_node(), source.as_bytes());
             while let Some(&(ref m, _capture_idx)) = captures.next() {
                 for cap in m.captures {
                     let start = cap.node.byte_range().start;
                     let end = cap.node.byte_range().end;
-                    let name = self.query.capture_names()[cap.index as usize].to_string();
-                    raw_captures.push((name, start, end));
+                    raw_captures.push((cap.index, start, end));
                 }
             }
         }
         raw_captures.sort_by_key(|c| c.1);
 
-        for (name, bs, be) in &raw_captures {
-            let style = style_for_capture(name);
+        for (idx, bs, be) in &raw_captures {
+            let style = styles[*idx as usize];
             let line_s = byte_to_line(*bs, &line_starts);
             let line_e = byte_to_line(*be, &line_starts);
             for li in line_s..=line_e.min(per_line.len() - 1) {
@@ -110,13 +119,86 @@ impl Highlighter {
     }
 }
 
+/// Character offset of `byte` within `text`.
+///
+/// ASCII fast path first: for source code the two are almost always equal, and
+/// walking `char_indices` to discover that is the common case made expensive.
 fn byte_to_char_offset(text: &str, byte: usize) -> usize {
+    if text.is_ascii() {
+        return byte.min(text.len());
+    }
     text.char_indices().position(|(i, _)| i >= byte).unwrap_or(text.chars().count())
 }
 
+/// The 0-based line containing `byte`.
+///
+/// Binary search, because `line_starts` is sorted and this runs once per
+/// capture *per highlight pass*. Scanning it linearly made the pass
+/// O(captures x lines) — on a 10k-line file with tens of thousands of
+/// captures that was hundreds of millions of comparisons, and about 70 of the
+/// 75 ms the pass cost.
 fn byte_to_line(byte: usize, line_starts: &[usize]) -> usize {
-    for (i, &start) in line_starts.iter().enumerate() {
-        if byte < start { return i.saturating_sub(1); }
+    match line_starts.binary_search(&byte) {
+        // Exactly at a line start: that line.
+        Ok(i) => i.min(line_starts.len().saturating_sub(2)),
+        // Otherwise the line whose start precedes it.
+        Err(i) => i.saturating_sub(1).min(line_starts.len().saturating_sub(2)),
     }
-    line_starts.len().saturating_sub(2)
+}
+
+#[cfg(test)]
+mod lookup_tests {
+    use super::*;
+
+    /// The binary search replaced a linear scan. It must agree with it on
+    /// *every* position, not just the ones a hand-written case picks — an
+    /// off-by-one here shifts highlights by a line, silently.
+    #[test]
+    fn byte_to_line_matches_a_linear_scan_everywhere() {
+        fn linear(byte: usize, starts: &[usize]) -> usize {
+            for (i, &s) in starts.iter().enumerate() {
+                if byte < s {
+                    return i.saturating_sub(1);
+                }
+            }
+            starts.len().saturating_sub(2)
+        }
+
+        for text in [
+            "",
+            "one line",
+            "a\nb\nc\n",
+            "\n\n\n",
+            "trailing newline\n",
+            "no trailing newline",
+            "unicode \u{e9}\u{e8}\n second line\n",
+        ] {
+            let mut starts = vec![0usize];
+            for (i, c) in text.char_indices() {
+                if c == '\n' {
+                    starts.push(i + 1);
+                }
+            }
+            starts.push(text.len());
+            for b in 0..=text.len() {
+                assert_eq!(
+                    byte_to_line(b, &starts),
+                    linear(b, &starts),
+                    "byte {b} of {text:?}"
+                );
+            }
+        }
+    }
+
+    /// The ASCII fast path must give the same answer as the general walk.
+    #[test]
+    fn byte_to_char_offset_agrees_on_ascii_and_unicode() {
+        for text in ["plain ascii", "caf\u{e9} au lait", "\u{1f600} emoji", ""] {
+            for b in 0..=text.len() {
+                let general =
+                    text.char_indices().position(|(i, _)| i >= b).unwrap_or(text.chars().count());
+                assert_eq!(byte_to_char_offset(text, b), general, "byte {b} of {text:?}");
+            }
+        }
+    }
 }

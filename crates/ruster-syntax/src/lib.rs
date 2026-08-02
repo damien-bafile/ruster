@@ -499,6 +499,19 @@ fn builtin_queries(key: &str) -> (&'static str, &'static str) {
     }
 }
 
+/// Exposed for `examples/inc_bench` so the cost of each stage of `reparse` can
+/// be measured separately rather than guessed at.
+#[doc(hidden)]
+pub fn bench_bracket_depths(source: &str) -> Vec<Option<usize>> {
+    compute_bracket_depths(source)
+}
+
+/// Likewise: the compiled-in highlight query for a language.
+#[doc(hidden)]
+pub fn bench_builtin_query(key: &str) -> &'static str {
+    builtin_queries(key).0
+}
+
 fn compute_bracket_depths(source: &str) -> Vec<Option<usize>> {
     let len = source.len();
     let mut depths: Vec<Option<usize>> = vec![None; len];
