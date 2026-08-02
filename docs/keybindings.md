@@ -211,6 +211,9 @@ Press `g` in Normal mode; the which-key panel lists the goto commands (LazyVim-s
 | `:q` / `:quit` | Close window (quit when it's the last) |
 | `:q!` | Force quit |
 | `:wq` / `:x` | Write and quit |
+| `:16` | Jump to line 16, scrolling it into view; clamped to the last line |
+| `:$` | Jump to the last line |
+| `:hover` | LSP hover for the symbol under the cursor — the `:` form of `K` |
 
 ### Windows & buffers
 | Command | Action |

@@ -251,7 +251,21 @@ impl Renderer for TuiRenderer {
                 );
             }
 
-            // A modal dialog sits above the floats.
+            // Floats, then the dialog: a modal is the thing with focus, so it
+            // draws last and obscures anything under it. Both backends had this
+            // the other way round while their comments claimed otherwise —
+            // inert, since the only float is the hover popup and it never
+            // coexists with a dialog, but they disagreed and one had to be wrong.
+            //
+            // Lowest z first.
+            for f in ruster_render::floats_in_draw_order(&state.floats) {
+                let r = Rect::new(f.rect.x, f.rect.y, f.rect.width, f.rect.height);
+                frame.render_widget(
+                    crate::widgets::FloatWidget::new(f.clone()).with_theme(&state.theme),
+                    r,
+                );
+            }
+
             if let Some(dlg) = &state.dialog {
                 let dw = (area.width * 6 / 10).clamp(30, area.width.saturating_sub(4));
                 let dh = (dlg.rows.len() as u16 + 4).min(area.height.saturating_sub(2));
@@ -260,15 +274,6 @@ impl Renderer for TuiRenderer {
                 frame.render_widget(
                     crate::widgets::DialogWidget::new(dlg.clone()).with_theme(&state.theme),
                     Rect::new(dx, dy, dw, dh),
-                );
-            }
-
-            // Floats sit above every other surface, lowest z first.
-            for f in ruster_render::floats_in_draw_order(&state.floats) {
-                let r = Rect::new(f.rect.x, f.rect.y, f.rect.width, f.rect.height);
-                frame.render_widget(
-                    crate::widgets::FloatWidget::new(f.clone()).with_theme(&state.theme),
-                    r,
                 );
             }
         });

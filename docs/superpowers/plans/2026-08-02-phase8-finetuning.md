@@ -92,30 +92,41 @@ the gutter renders `+` magenta and `~` cyan.
 
 ## Stage 2 — Small things that are simply missing
 
-### Task 6: `:16` — goto line
+### Task 6: `:16` — goto line ✅
 
-- [ ] The cmdline does not accept a bare line number. Vim users type it
-      constantly; I typed it myself mid-session, watched nothing happen, and
-      misread the resulting no-op as a different bug.
-- [ ] `:16` moves the cursor to line 16 and scrolls it into view.
+- [x] `:16` jumps and scrolls into view; `:$` goes to the last line. Clamped
+      rather than rejected — `:9999` in a short file goes to the end, which is
+      what vim does and what the typist meant.
+- [x] The parse arm is *all digits*, not *starts with a digit*, or `:16x` and
+      `:2vsplit` would become jumps. Tested both ways.
+- [x] No explicit scroll: `render` already pulls the window to the cursor, the
+      same path `G` and a quickfix jump take.
 
-### Task 7: `:hover`
+### Task 7: `:hover` ✅
 
-- [ ] LSP hover has no `:` command — only `K` and `SPC c k`.
-- [ ] Worth having on its own, and it is the only way to put a **float** on
-      screen deliberately. Floats are currently unreachable except through
-      `K` on a live LSP server, which is why the float border has never been
-      verified in a screenshot.
+- [x] Added, dispatching to the same `lsp_hover` as `K` and `SPC c k`.
+- [x] **Verified against a live rust-analyzer**, which is the first time a float
+      has been seen on screen with its border: hovering `add` renders the
+      signature and its doc comment inside the box.
+- [ ] Still unverified in the **GUI**. The screenshot fires a couple of frames
+      in, long before the LSP replies, and `init.lua` has no way to delay it —
+      every queued command is applied before the first render. Stage 5's
+      `ruster.defer` is what unblocks this; capture it then.
 
-### Task 8: Two stale things in the render path
+### Task 8: Two stale things in the render path ✅
 
-- [ ] `App::floats` is written nowhere. It is cloned into `FrameState` every
-      frame and only ever gains the hover popup, pushed separately. Either give
-      it a writer or delete the field.
-- [ ] `ruster-render-raylib` comments that "a modal dialog sits above the
-      floats", but the float loop runs *after* the dialog. Inert today because
-      the only float is the hover popup, which never coexists with a dialog —
-      but the comment and the code disagree, and one of them is wrong.
+- [x] `App::floats` deleted. Nothing ever wrote to it; the hover popup was
+      always pushed to a *local* vector in `render`, so the field was an empty
+      `Vec` cloned into every `FrameState`. There is no Lua float API to give it
+      a writer for, so deleting was the honest option.
+- [x] The draw order now matches the comment rather than the other way round.
+      **Both** backends drew floats after the dialog while both of their
+      comments claimed the opposite — consistent with each other, so parity was
+      never at risk, but code and comment disagreed and one had to be wrong. A
+      modal is the surface with focus, so it draws last.
+- [x] `tests/draw_order_parity.rs` pins it in both backends and, separately,
+      pins that they *agree* — even a reversed intent would be a bug if only one
+      followed it. Mutation-tested by putting the raylib order back.
 
 ---
 
