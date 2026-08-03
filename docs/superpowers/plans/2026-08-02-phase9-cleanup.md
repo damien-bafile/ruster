@@ -114,7 +114,7 @@ Both backends must agree the accent is distinct from `whichkey_fg`.
 `just run` a file, press `SPC`, confirm the key letters take the accent colour
 and the descriptions stay `whichkey_fg`. Then `just gui`, same check.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add crates/ruster-render crates/ruster-tui crates/ruster-render-raylib crates/ruster-syntax crates/ruster-lua
@@ -193,7 +193,7 @@ in PR #59 and unblocks this.
 - Modify: `~/.config/ruster/init.lua` (test config), scripts in `scripts/`
 - Artifact: a committed hover screenshot under `docs/verification/`
 
-- [ ] **Step 1: Drive a deferred GUI hover capture**
+- [x] **Step 1: Drive a deferred GUI hover capture**
 
 Use the gui-check recipe, but queue the screenshot inside a `ruster.defer` so it
 fires after the LSP round-trip:
@@ -206,10 +206,28 @@ ruster.defer(1500, function() ruster.cmd(":screenshot /tmp/hover-gui.png") end)
 Run with the screen unlocked; read the PNG and confirm the hover float renders
 with its border and the doc text.
 
-- [ ] **Step 2: Commit the artifact**
+- [x] **Step 2: Commit the artifact**
 
 Move the PNG to `docs/verification/hover-gui.png` and reference it from the
 Phase 10 matrix (below). Commit.
+
+**Verified 2026-08-03.** `docs/verification/hover-gui.png` — the hover float
+draws in raylib with its border, the syntax-highlighted signature
+(`let greeting: String`) and the doc body. The `ruster.defer` recipe works: the
+capture fires after the LSP round-trip instead of racing it.
+
+Two defects surfaced while getting there, neither of them a rendering bug:
+
+- **The LSP root is the process cwd, not the file's project.**
+  `LspState::root()` (`crates/ruster-tui/src/lsp_state.rs:193`) returns
+  `current_dir()`. Opening a file outside that directory initialises
+  rust-analyzer against the wrong workspace, so every request answers `null`
+  and the user sees "No hover info" with no indication why. Wire log confirms
+  it: `rootUri` was the ruster repo while the `didOpen` was a file under
+  `/private/tmp`. Hover only works because the usual case is editing files
+  under the cwd. Position encoding and `didOpen` are correct.
+- **A long hover is unbounded.** Hovering `String` fills the entire window and
+  long doc lines run off the right edge unwrapped. Needs a height/width clamp.
 
 ---
 
@@ -224,21 +242,49 @@ now makes this repeatable rather than manual.
 - If the skill proves insufficient, a repeatable script (see the Phase 10
   capture-harness section)
 
-- [ ] **Step 1: Sidebar**
+- [x] **Step 1: Sidebar**
 
 Drive `:sidebar` in the GUI, screenshot, confirm the panel draws and the tree
 is navigable (▸/▾ glyphs render).
 
-- [ ] **Step 2: Debugger overlay**
+**Verified 2026-08-03.** `docs/verification/sidebar-gui.png` — the panel draws
+at the left, the `▸` glyphs resolve in the font atlas (no `?`), and the tree
+lists the crate. Phase 6 Task 4's claim now rests on observation. One cosmetic
+defect: the sidebar's own status segment and the window statusline overlap at
+the bottom of the frame, so `[ruster-tui]` and `app.rs` overprint.
+
+- [~] **Step 2: Debugger overlay**
 
 Drive the debugger overlay (breakpoint set + `:DebugStart`), screenshot,
 confirm the docked panel draws over the stopped line.
 
-- [ ] **Step 3: Noice toast**
+**Partly verified 2026-08-03.** `docs/verification/debugger-gui.png` — the
+docked panel draws (`[Debug: RUNNING]`, the keybind hint row) and the red
+breakpoint dot renders in the gutter. **The stopped line could not be shown:**
+the panel reads `(no frames)` because the session never stops. Two reasons,
+both real bugs:
+
+- **The launch config is never sent.** `debug_start` builds `cfg.launch_config`
+  (which carries `program`) and then calls
+  `session.send_launch(serde_json::json!({}))` — an empty object
+  (`crates/ruster-tui/src/app.rs:7876`). The adapter receives a launch request
+  with no program, so nothing is ever executed.
+- **The detected program is a placeholder.** `detect_config` defaults to the
+  literal string `target/debug/<binary>`
+  (`crates/ruster-dap/src/config.rs:14`), which is not a path.
+
+Also, the Rust adapter is looked up as `lldb-vscode`; current LLVM ships it as
+`lldb-dap`. This capture used `dap.adapter` to point at `lldb-dap` directly.
+Finish this step once the launch path is fixed.
+
+- [x] **Step 3: Noice toast**
 
 Queue `:echo text`, screenshot, confirm the mini toast renders.
 
-- [ ] **Step 4: Commit the three artifacts**
+**Verified 2026-08-03.** `docs/verification/noice-toast-gui.png` — the mini
+toast renders top-right.
+
+- [x] **Step 4: Commit the three artifacts**
 
 ---
 
