@@ -59,9 +59,15 @@ impl DebugState {
     /// Pushing on attach is the point: breakpoints are usually placed *before*
     /// the debugger starts, and a session that came up knowing nothing about
     /// them would run straight past every one.
+    /// Then `configurationDone`, which is what actually lets the program run —
+    /// the adapter holds the `launch` reply until it arrives. Breakpoints go
+    /// first so they are in place before the target starts.
     pub fn start(&mut self, session: DebugSession) {
         self.session = Some(session);
         self.push_breakpoints();
+        if let Some(session) = &mut self.session {
+            session.send_configuration_done().ok();
+        }
     }
 
     /// End the session and forget its breakpoints.

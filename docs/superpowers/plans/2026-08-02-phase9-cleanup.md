@@ -218,16 +218,17 @@ capture fires after the LSP round-trip instead of racing it.
 
 Two defects surfaced while getting there, neither of them a rendering bug:
 
-- **The LSP root is the process cwd, not the file's project.**
-  `LspState::root()` (`crates/ruster-tui/src/lsp_state.rs:193`) returns
-  `current_dir()`. Opening a file outside that directory initialises
-  rust-analyzer against the wrong workspace, so every request answers `null`
-  and the user sees "No hover info" with no indication why. Wire log confirms
-  it: `rootUri` was the ruster repo while the `didOpen` was a file under
-  `/private/tmp`. Hover only works because the usual case is editing files
-  under the cwd. Position encoding and `didOpen` are correct.
-- **A long hover is unbounded.** Hovering `String` fills the entire window and
-  long doc lines run off the right edge unwrapped. Needs a height/width clamp.
+- **The LSP root was the process cwd, not the file's project — fixed.**
+  `LspState::root()` returned `current_dir()`, so opening a file outside that
+  directory initialised rust-analyzer against the wrong workspace and every
+  request answered `null`, surfacing only as "No hover info". The wire log was
+  unambiguous: `rootUri` was the ruster repo while the `didOpen` named a file
+  under `/private/tmp`. Now `root_for(path)` derives the root from the file via
+  `ruster_project::project_root`. Servers are still keyed by language alone, so
+  the first project opened in a session owns its language's server.
+- **A long hover is unbounded — still open.** Hovering `String` fills the
+  entire window and long doc lines run off the right edge unwrapped. Needs a
+  height/width clamp and wrapping.
 
 ---
 
@@ -253,29 +254,50 @@ lists the crate. Phase 6 Task 4's claim now rests on observation. One cosmetic
 defect: the sidebar's own status segment and the window statusline overlap at
 the bottom of the frame, so `[ruster-tui]` and `app.rs` overprint.
 
-- [~] **Step 2: Debugger overlay**
+- [x] **Step 2: Debugger overlay**
 
 Drive the debugger overlay (breakpoint set + `:DebugStart`), screenshot,
 confirm the docked panel draws over the stopped line.
 
-**Partly verified 2026-08-03.** `docs/verification/debugger-gui.png` — the
-docked panel draws (`[Debug: RUNNING]`, the keybind hint row) and the red
-breakpoint dot renders in the gutter. **The stopped line could not be shown:**
-the panel reads `(no frames)` because the session never stops. Two reasons,
-both real bugs:
+**Verified 2026-08-03.** `docs/verification/debugger-gui.png` — `:debug` stops
+at the breakpoint and the docked panel draws `[Debug: PAUSED]`, a 16-frame call
+stack with `hoverdemo::main` at frame 0, and a Locals section showing
+`greeting`. The red breakpoint dot renders in the gutter on the right line.
+The TUI shows the same session — PAUSED, the same stack, the same locals, plus
+Registers — so the parity constraint holds.
 
-- **The launch config is never sent.** `debug_start` builds `cfg.launch_config`
-  (which carries `program`) and then calls
-  `session.send_launch(serde_json::json!({}))` — an empty object
-  (`crates/ruster-tui/src/app.rs:7876`). The adapter receives a launch request
-  with no program, so nothing is ever executed.
-- **The detected program is a placeholder.** `detect_config` defaults to the
-  literal string `target/debug/<binary>`
-  (`crates/ruster-dap/src/config.rs:14`), which is not a path.
+Getting there took six fixes. `:debug` could not previously launch anything at
+all — the RUNNING/"(no frames)" panel in the first capture was every one of
+these failing in sequence:
 
-Also, the Rust adapter is looked up as `lldb-vscode`; current LLVM ships it as
-`lldb-dap`. This capture used `dap.adapter` to point at `lldb-dap` directly.
-Finish this step once the launch path is fixed.
+1. **No `type` discriminator on outgoing messages.** The `dap` crate omits it;
+   `read_message` requires it on the way in but `write_message` never wrote it.
+   lldb-dap silently dropped every frame — no response, no error on any
+   stream. Identical bytes with and without the field: 1506 vs 0.
+2. **Absent optionals serialized as explicit `null`.** lldb-dap rejected
+   `initialize` outright with "expected bool at
+   `arguments.supportsMemoryReferences`". Nulls are now stripped recursively.
+3. **The launch config was never sent.** `debug_start` built
+   `cfg.launch_config` — the object carrying `program`/`cwd` — and then sent
+   `send_launch(json!({}))`.
+4. **The program was a placeholder.** `detect_config` defaulted to the literal
+   `target/debug/<binary>`. `ruster_project::debug_binary` now reads the
+   package name from `Cargo.toml`; a missing build says so instead.
+5. **`configurationDone` was never sent.** The adapter holds the `launch` reply
+   until it arrives, so the target never ran. Sent eagerly after the
+   breakpoints go in — lldb-dap does not emit the `initialized` event until
+   *after* `configurationDone`, so waiting on that event deadlocks.
+6. **Every response was discarded.** `handle_response` was an empty function,
+   so the stack trace the editor asked for and received was thrown away. It now
+   files stack frames, scopes, variables and threads; `variable_cache` became
+   `HashMap<u64, Vec<Variable>>`, since a `variablesReference` names a whole
+   list rather than one variable.
+
+Two smaller ones alongside: breakpoints were sent 0-based while `initialize`
+advertises `linesStartAt1`, so every breakpoint bound one line above the one
+the user set (`to_dap_line` now converts at the protocol boundary); and the
+Rust adapter was looked up only as `lldb-vscode`, renamed `lldb-dap` in
+LLVM 18, so `detect_config` now prefers whichever is installed.
 
 - [x] **Step 3: Noice toast**
 

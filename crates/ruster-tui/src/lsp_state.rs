@@ -189,9 +189,24 @@ impl<A> LspState<A> {
         self.diagnostics.remove(&buffer);
     }
 
-    /// The workspace root a server should be started in.
-    pub fn root() -> PathBuf {
-        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    /// The workspace root a server should be started in: the root of the
+    /// project `path` belongs to, falling back to the process cwd.
+    ///
+    /// This has to follow the *file*, not the process. A server initialised
+    /// against a directory the file does not live under loads a workspace the
+    /// file is not part of, and then answers every request with `null` — so
+    /// the editor reports "No hover info" and looks like it lacks the feature
+    /// rather than like it is pointed at the wrong tree. Editing anything
+    /// outside the directory ruster was launched from used to hit exactly
+    /// that.
+    ///
+    /// Servers are still keyed by language alone, so the first project opened
+    /// in a session owns the server for its language; a file from a second
+    /// project reuses it.
+    pub fn root_for(path: &Path) -> PathBuf {
+        ruster_project::project_root(path)
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."))
     }
 }
 
@@ -208,6 +223,34 @@ mod tests {
 
     fn state() -> LspState<TestAction> {
         LspState::new()
+    }
+
+    /// The root used to be `current_dir()`, so opening a file from anywhere
+    /// other than the launch directory initialised the server against a tree
+    /// the file was not in. rust-analyzer then answered every request with
+    /// `null` and the only symptom was "No hover info".
+    #[test]
+    fn the_server_root_follows_the_file_not_the_cwd() {
+        let tmp = std::env::temp_dir().join(format!("ruster_lsproot_{}", std::process::id()));
+        let src = tmp.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(tmp.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        let file = src.join("main.rs");
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+
+        let root = LspState::<TestAction>::root_for(&file);
+        assert_eq!(root.canonicalize().unwrap(), tmp.canonicalize().unwrap());
+        // The cwd during tests is the crate root, which is *not* this project.
+        assert_ne!(root.canonicalize().unwrap(), std::env::current_dir().unwrap());
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// A file belonging to no project still has to produce a usable root.
+    #[test]
+    fn a_file_outside_any_project_falls_back_to_the_cwd() {
+        let root = LspState::<TestAction>::root_for(Path::new("/nonexistent-xyz/stray.rs"));
+        assert_eq!(root, std::env::current_dir().unwrap());
     }
 
     #[test]

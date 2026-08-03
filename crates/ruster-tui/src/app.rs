@@ -3233,7 +3233,6 @@ impl App {
         if !self.config.lsp_autostart {
             return;
         }
-        let root = crate::lsp_state::LspState::<LspAction>::root();
         // Register / update the active buffer if it's a supported file.
         let active = self.ws.borrow().active_buffer();
         let info = {
@@ -3249,6 +3248,8 @@ impl App {
             })
         };
         if let Some((path, lang, text)) = info {
+            // Derived from the file, not the cwd: see `root_for`.
+            let root = crate::lsp_state::LspState::<LspAction>::root_for(&path);
             self.lsp.sync(active, &path, &lang, &text, &root);
         }
         // Drain and dispatch server messages.
@@ -7573,11 +7574,14 @@ impl App {
             let scopes = &session.scopes;
             let cache = &session.variable_cache;
             scopes.iter().filter(|s| s.variables_reference > 0).map(|scope| {
+                // One lookup: the reference keys the whole list of variables
+                // in that scope, in the order the adapter sent them.
                 let pairs = cache
-                    .iter()
-                    .filter(|(&k, _)| k == scope.variables_reference as u64)
-                    .map(|(_, v)| (v.name.clone(), v.value.clone()))
-                    .collect();
+                    .get(&(scope.variables_reference as u64))
+                    .map(|vars| {
+                        vars.iter().map(|v| (v.name.clone(), v.value.clone())).collect()
+                    })
+                    .unwrap_or_default();
                 (scope.name.clone(), pairs)
             }).collect()
         };
@@ -7871,7 +7875,22 @@ impl App {
                 None => String::new(),
             }
         };
-        let cfg = ruster_dap::config::detect_config(&lang, root, None);
+        // The program to launch. Cargo projects can name theirs; when the
+        // binary has not been built yet, say so rather than handing the
+        // adapter a path to nothing.
+        let program = ruster_project::debug_binary(root);
+        if let Some(p) = program.as_deref() {
+            if !p.exists() {
+                self.notify.push(Notification::new(
+                    ruster_core::message::MessageLevel::Warning,
+                    ruster_core::message::MessageSource::System,
+                    format!("Nothing to debug at {} — build it first", p.display()),
+                ));
+                return;
+            }
+        }
+        let program = program.map(|p| p.to_string_lossy().into_owned());
+        let cfg = ruster_dap::config::detect_config(&lang, root, program.as_deref());
         let cfg = match cfg {
             Some(c) => c,
             None => {
@@ -7893,7 +7912,12 @@ impl App {
         match ruster_dap::session::DebugSession::start(&cfg, root) {
             Ok(mut session) => {
                 session.send_initialize().ok();
-                session.send_launch(serde_json::json!({})).ok();
+                // The detected config, not an empty object. `launch_config`
+                // is what carries `program`/`cwd`; sending `{}` handed the
+                // adapter a launch request naming nothing to launch, so the
+                // session reported RUNNING and never ran, never stopped, and
+                // never produced a frame.
+                session.send_launch(cfg.launch_config.clone()).ok();
                 // `start` pushes the breakpoint table. Before this, the
                 // session was merely stored and `toggle_breakpoint` only
                 // pushed when one was already running — so breakpoints placed
