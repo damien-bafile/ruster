@@ -74,3 +74,11 @@ icon:
         magick assets/icon.png -resize ${s}x${s} assets/hicolor/ruster-${s}.png
     done
     echo "wrote assets/hicolor/ruster-{16,32,48,64,128,256,512}.png"
+
+# Run the compositor nested in a winit window (dev).
+compositor:
+    cargo run -p ruster-compositor
+
+# Run the compositor on DRM (needs a free VT + seatd/logind access).
+compositor-drm:
+    cargo run -p ruster-compositor --features ruster-compositor/udev -- --drm

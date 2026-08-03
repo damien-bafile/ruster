@@ -1,0 +1,26 @@
+[package]
+name = "ruster-compositor"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "ruster-compositor"
+path = "src/main.rs"
+
+[features]
+default = ["winit"]
+winit = ["smithay/backend_winit"]
+udev = ["smithay/backend_udev", "smithay/backend_drm", "smithay/backend_gbm", "smithay/backend_session_libseat", "smithay/backend_libinput"]
+
+[dependencies]
+ruster-shell = { path = "../ruster-shell" }
+ruster-render = { path = "../ruster-render" }
+ruster-render-gles = { path = "../ruster-render-gles" }
+ruster-core = { path = "../ruster-core" }
+ruster-lua = { path = "../ruster-lua" }
+smithay = { path = "/home/daimyo/Dev/smithay", default-features = false, features = ["renderer_gl", "wayland_frontend", "desktop"] }
+calloop = "0.13"
+mlua = { version = "0.10", features = ["lua54", "vendored"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
