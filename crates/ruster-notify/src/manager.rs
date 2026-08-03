@@ -73,6 +73,9 @@ impl NotificationManager {
             BackendKind::Mini => self.settings.mini_enabled,
             BackendKind::Notify => self.settings.notify_enabled,
             BackendKind::Split => self.settings.split_enabled,
+            // The popup and confirm backends are opt-in: a caller queues them
+            // explicitly via `push_to`, so there is no toggle to consult.
+            BackendKind::CmdlinePopup | BackendKind::Popup | BackendKind::Confirm => true,
         }
     }
 
@@ -113,22 +116,43 @@ impl NotificationManager {
 
         let now = Instant::now();
         for kind in targets {
-            if !self.backend_enabled(kind) {
-                continue;
-            }
-            if let Some(list) = self.active.get_mut(&kind) {
-                list.push(ActiveEntry { notif: notif.clone(), pushed_at: now, timeout });
-            }
+            self.enqueue(kind, notif.clone(), timeout, now);
         }
 
         // History is kept regardless of which backends are enabled — `:messages`
         // and `:Noice split` read it, not the active queues.
+        self.record_history(notif);
+        id
+    }
+
+    /// Queue a notification to one specific backend, bypassing the level-based
+    /// routing in [`push`](Self::push). This is how the popup and confirm
+    /// backends get their entries: the caller knows the surface it wants.
+    pub fn push_to(&mut self, mut notif: Notification, kind: BackendKind) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        notif.id = id;
+        let timeout = self.resolve_timeout(&notif);
+        self.enqueue(kind, notif.clone(), timeout, Instant::now());
+        self.record_history(notif);
+        id
+    }
+
+    fn enqueue(&mut self, kind: BackendKind, notif: Notification, timeout: Option<Duration>, now: Instant) {
+        if !self.backend_enabled(kind) {
+            return;
+        }
+        if let Some(list) = self.active.get_mut(&kind) {
+            list.push(ActiveEntry { notif, pushed_at: now, timeout });
+        }
+    }
+
+    fn record_history(&mut self, notif: Notification) {
         self.history.push(notif);
 
         while self.history.len() > self.settings.max_history {
             self.history.remove(0);
         }
-        id
     }
 
     pub fn dismiss(&mut self, id: u64) {
@@ -326,5 +350,35 @@ mod tests {
         m.push(info_notif("3"));
         m.push(info_notif("4"));
         assert_eq!(m.history().len(), 3);
+    }
+
+    /// `push_to` bypasses level routing: an info notification lands in the
+    /// requested backend rather than the mini toast, so a caller can raise a
+    /// popup or confirm regardless of severity.
+    #[test]
+    fn push_to_lands_in_the_requested_backend() {
+        let mut m = mgr();
+        m.push_to(info_notif("pop").with_persistent(), BackendKind::Popup);
+        assert_eq!(m.active(BackendKind::Popup).len(), 1);
+        assert_eq!(m.active(BackendKind::Mini).len(), 0, "no level-based routing");
+        assert_eq!(m.history().len(), 1, "still recorded in history");
+    }
+
+    #[test]
+    fn push_to_confirm_lands_in_confirm() {
+        let mut m = mgr();
+        m.push_to(info_notif("sure?").with_persistent(), BackendKind::Confirm);
+        assert_eq!(m.active(BackendKind::Confirm).len(), 1);
+        assert_eq!(m.active(BackendKind::Mini).len(), 0);
+    }
+
+    /// A popup with a default timeout expires like any other backend; only a
+    /// persistent one survives `tick`.
+    #[test]
+    fn popup_expires_with_its_timeout() {
+        let mut m = instant_mgr();
+        m.push_to(info_notif("gone"), BackendKind::Popup);
+        m.tick();
+        assert_eq!(m.active(BackendKind::Popup).len(), 0);
     }
 }

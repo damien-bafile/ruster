@@ -233,6 +233,7 @@ Press `g` in Normal mode; the which-key panel lists the goto commands (LazyVim-s
 | `:sidebar resize <N>` | Set the sidebar width to N columns |
 | `:Noice` `:noice` | Toggle the notification-stack panel |
 | `:Noice split` / `:Noice history` | Open the full notification history in a split |
+| `:Noice popup` | Raise a popup notification, floating above the editor |
 | `:echo <text>` | Show a message as a mini toast |
 | `:echom <text>` | Show a warning — mini toast *and* the notification panel |
 | `:echoe <text>` | Show an error in the notification panel |

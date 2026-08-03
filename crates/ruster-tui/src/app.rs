@@ -684,6 +684,8 @@ enum CmdAction {
     NoicePanel,
     /// Open the Noice split history buffer (`:Noice split` / `:Noice history`).
     NoiceSplit,
+    /// Queue a popup notification (`:Noice popup`).
+    NoicePopup,
     /// Open a file by path (`:e path` / `:edit path`).
     OpenFile(String),
     /// Debug actions.
@@ -4226,6 +4228,10 @@ impl App {
                 ));
             }
         }
+        // Notification popups float above the window views, one box per active
+        // notification. `CmdlinePopup` and `Popup` differ only in duration; a
+        // `Confirm` raises the modal dialog instead of drawing a float.
+        floats.extend(self.notification_floats(cols, rows));
         let state = FrameState {
             dialog: self.dialog.as_ref().map(|d| d.view()),
             floats,
@@ -4241,6 +4247,56 @@ impl App {
             debug_overlay: self.build_debug_overlay(),
         };
         self.renderer.render_frame(&state);
+    }
+
+    /// Build the floats raised by active popup notifications. `CmdlinePopup`
+    /// and `Popup` differ only in duration, so both render the same way: a
+    /// titled box centred on the window. A queued `Confirm` is handled here
+    /// too — it becomes the modal dialog, the same surface a plugin's `:dialog`
+    /// raises, so it draws last above every float.
+    fn notification_floats(&mut self, cols: u16, rows: u16) -> Vec<ruster_render::FloatView> {
+        let mut floats = Vec::new();
+        for (i, n) in self
+            .notify
+            .active(BackendKind::CmdlinePopup)
+            .into_iter()
+            .chain(self.notify.active(BackendKind::Popup))
+            .enumerate()
+        {
+            let style = match n.level {
+                ruster_core::message::MessageLevel::Error => SyntaxStyle::error(),
+                ruster_core::message::MessageLevel::Warning => SyntaxStyle::warning(),
+                _ => SyntaxStyle::info(),
+            };
+            let text = n.text.clone();
+            let len = text.len();
+            floats.push(
+                ruster_render::FloatView::anchored_titled(
+                    RRect::new(0, 0, cols, rows),
+                    ruster_render::FloatAnchor::Center,
+                    vec![StyledLine { text, highlights: vec![(0, len, style)] }],
+                    n.title.clone().or_else(|| Some("ruster".into())),
+                )
+                .with_z(5 + i as i32),
+            );
+        }
+        // A queued Confirm notification becomes a modal dialog. Only raise it
+        // when nothing else is already showing one — the dialog is exclusive.
+        if self.dialog.is_none() {
+            if let Some(n) = self.notify.active(BackendKind::Confirm).into_iter().next() {
+                let title = n.title.clone().unwrap_or_else(|| "Confirm".into());
+                let text = n.text.clone();
+                self.dialog = Some(crate::dialog::DialogState::new(
+                    title,
+                    vec![
+                        crate::dialog::Field::text("Message", &text),
+                        crate::dialog::Field::button("OK"),
+                        crate::dialog::Field::button("Cancel"),
+                    ],
+                ));
+            }
+        }
+        floats
     }
 
     fn cursor_line_col(&self) -> (u16, u16) {
@@ -4382,7 +4438,8 @@ impl App {
                 let sub = trimmed.split_once(' ').map(|x| x.1).unwrap_or("").trim().to_string();
                 match sub.as_str() {
                     "split" | "history" => Ok(CmdAction::NoiceSplit),
-                    _ => Err(format!(":Noice subcommand '{}' unknown. Use :Noice (toggle panel) or :Noice split|history", sub)),
+                    "popup" => Ok(CmdAction::NoicePopup),
+                    _ => Err(format!(":Noice subcommand '{}' unknown. Use :Noice (toggle panel), :Noice split|history, or :Noice popup", sub)),
                 }
             }
             _ if trimmed.starts_with("set editmode ") => {
@@ -4643,6 +4700,17 @@ impl App {
             }
             CmdAction::NoicePanel => self.show_noice_panel = !self.show_noice_panel,
             CmdAction::NoiceSplit => self.open_noice_split(),
+            CmdAction::NoicePopup => {
+                self.notify.push_to(
+                    Notification::new(
+                        ruster_core::message::MessageLevel::Info,
+                        ruster_core::message::MessageSource::Echo,
+                        ":Noice popup — a popup notification.".to_string(),
+                    )
+                    .with_persistent(),
+                    BackendKind::Popup,
+                );
+            }
             CmdAction::OpenFile(path) => {
                 let base = self.ws.borrow()
                     .active_doc()
@@ -10883,5 +10951,72 @@ index 1..2 100644
         assert_eq!(last.level, ruster_core::message::MessageLevel::Warning);
         assert!(last.text.contains("GUI backend"), "{:?}", last.text);
         assert!(!target.exists(), "nothing was written");
+    }
+
+    /// A popup notification becomes a titled float in the next frame, so both
+    /// backends — which draw whatever `FrameState` carries — render it.
+    #[test]
+    fn popup_notification_becomes_a_float() {
+        let mut a = App::new("content".into(), PathBuf::from("f.txt"));
+        a.notify.push_to(
+            Notification::new(
+                ruster_core::message::MessageLevel::Info,
+                ruster_core::message::MessageSource::Echo,
+                "pop",
+            )
+            .with_persistent(),
+            BackendKind::Popup,
+        );
+        let floats = a.notification_floats(80, 24);
+        assert_eq!(floats.len(), 1, "one popup → one float");
+        assert_eq!(floats[0].title.as_deref(), Some("ruster"), "untitled popup takes the app name");
+    }
+
+    /// CmdlinePopup and Popup render identically (the difference is duration),
+    /// so a CmdlinePopup notification also lands as a float.
+    #[test]
+    fn cmdline_popup_notification_becomes_a_float() {
+        let mut a = App::new("d".into(), PathBuf::from("f.txt"));
+        a.notify.push_to(
+            Notification::new(
+                ruster_core::message::MessageLevel::Warning,
+                ruster_core::message::MessageSource::Echo,
+                "bad",
+            )
+            .with_persistent(),
+            BackendKind::CmdlinePopup,
+        );
+        let floats = a.notification_floats(80, 24);
+        assert_eq!(floats.len(), 1);
+    }
+
+    /// A Confirm notification raises the modal dialog — the dedicated confirm
+    /// surface — instead of a float.
+    #[test]
+    fn confirm_notification_raises_a_modal_not_a_float() {
+        let mut a = App::new("d".into(), PathBuf::from("f.txt"));
+        a.notify.push_to(
+            Notification::new(
+                ruster_core::message::MessageLevel::Info,
+                ruster_core::message::MessageSource::Echo,
+                "sure?",
+            )
+            .with_persistent(),
+            BackendKind::Confirm,
+        );
+        assert!(a.dialog.is_none(), "dialog not raised until the floats are built");
+        let floats = a.notification_floats(80, 24);
+        assert!(floats.is_empty(), "no float for a Confirm");
+        assert!(a.dialog.is_some(), "Confirm raises a modal dialog");
+    }
+
+    /// `:Noice popup` queues a Popup-kind notification rather than routing by
+    /// level, so it shows as a float instead of the mini toast.
+    #[test]
+    fn noice_popup_queues_a_popup_notification() {
+        let mut a = App::new("d".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::NoicePopup);
+        assert_eq!(a.notify.active(BackendKind::Popup).len(), 1);
+        assert_eq!(a.notify.active(BackendKind::Mini).len(), 0, "no level-based toast");
     }
 }

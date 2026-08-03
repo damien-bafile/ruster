@@ -141,7 +141,7 @@ as real surfaces instead of dead enum variants.
 - Produces: `BackendKind::{CmdlinePopup, Popup, Confirm}` in `all()`; a float
   is pushed for each when a notification of that kind is queued.
 
-- [ ] **Step 1: Re-add the three variants to `BackendKind`**
+- [x] **Step 1: Re-add the three variants to `BackendKind`**
 
 ```rust
 pub enum BackendKind {
@@ -156,7 +156,7 @@ pub enum BackendKind {
 
 Extend `all()` to include them.
 
-- [ ] **Step 2: Decide and implement the float mapping**
+- [x] **Step 2: Decide and implement the float mapping**
 
 `CmdlinePopup` and `Popup` both become floats (the difference is duration —
 confirm-dialog semantics and a persistent popup). `Confirm` becomes a
@@ -164,19 +164,19 @@ confirm-dialog semantics and a persistent popup). `Confirm` becomes a
 notification → float bridge in `app.rs`, following how `HoverWidget` builds a
 float.
 
-- [ ] **Step 3: Tests**
+- [x] **Step 3: Tests**
 
 Unit-test that a `CmdlinePopup`/`Popup` notification produces a float in the
 next `FrameState`; a `Confirm` produces a modal. Reuse the render harness
 pattern from `tests/draw_order_parity.rs` so both backends are covered.
 
-- [ ] **Step 4: Wire a command to exercise one backend**
+- [x] **Step 4: Wire a command to exercise one backend**
 
 Add `:Noice popup` (or reuse an existing notify command) that queues a
 `Popup`-kind notification, and document it in `docs/keybindings.md` (the
 docs-sync test will fail otherwise).
 
-- [ ] **Step 5: Verify + commit**
+- [x] **Step 5: Verify + commit**
 
 See a popup float in both backends. Commit.
 
