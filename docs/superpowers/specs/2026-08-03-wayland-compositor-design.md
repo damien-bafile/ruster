@@ -43,7 +43,7 @@ This spec covers the product definition and the overall architecture/roadmap. Th
 
 ### Dependencies
 
-- `smithay` (path to `~/Dev/smithay` clone or crates.io `0.7`) with features: `backend_udev`, `backend_drm`, `backend_winit`, `renderer_glow`, `wayland_frontend`, `xdg_shell`, `layer_shell`, `input`, `session`.
+- `smithay` (path to `~/Dev/smithay` clone or crates.io `0.7`) with features: `backend_udev`, `backend_drm`, `backend_gbm`, `backend_session_libseat`, `backend_libinput`, `backend_winit`, `renderer_gl` (provides the `GlesRenderer`), `desktop`, `wayland_frontend`.
 - Text rendering: `cosmic-text` (or `fontdue` + `fontdb`).
 - Logging: `tracing`/`env_logger`.
 
@@ -62,7 +62,7 @@ udev/DRM or winit output ← vsync frame
 
 ### Key decisions
 
-1. **Not winit+raylib for rendering.** A compositor must composite arbitrary client GL textures; that is Smithay's `egl`/`glow` domain. raylib stays only in standalone editor builds.
+1. **Not winit+raylib for rendering.** A compositor must composite arbitrary client GL textures; that is Smithay's `egl`/`gles` domain. raylib stays only in standalone editor builds.
 2. **Editor buffers are synthetic in-tree surfaces** owned by the compositor, not real Wayland clients — they render via `ruster-render-gles` into the same GL scene as client textures.
 3. **Smithay dependency:** path-depend on the local `~/Dev/smithay` clone, or crates.io `0.7`. (Decision: path dep for development; revisit at release.)
 4. **Entry point:** a dedicated `ruster-compositor` binary crate keeps `ruster-bin`'s editor path clean.
@@ -83,7 +83,7 @@ udev/DRM or winit output ← vsync frame
 
 1. **Scaffold** — add `ruster-shell`, `ruster-render-gles`, `ruster-compositor` crates; smithay dependency and features; `just compositor` / `just compositor-nested` recipes. `ruster-shell` is scaffolded with a minimal surface/container shape only — the full i3 container-tree is Phase 1.
 2. **Boot a minimal Smithay compositor** — `CompositorState` (compositor handle, backends, seat); udev/DRM backend via session auto-login + winit fallback; output add/resize/vsync/frame handling; SIGINT shutdown.
-3. **GL compositing loop** — Smithay `GlowRenderer`; draw client surface textures into the output; frame clock + damage tracking.
+3. **GL compositing loop** — Smithay `GlesRenderer`; draw client surface textures into the output; frame clock + damage tracking.
 4. **Seat & input** — keyboard + pointer handles, focus registration, key/motion events, quit key (`Mod4+Shift+q`).
 5. **xdg-shell toplevels** — `XdgShellHandler`: map/configure/commit/unmap/close; title captured from `set_title`.
 6. **Ruster chrome on GL (`ruster-render-gles`)** — glyph-atlas text (`cosmic-text`), rounded-rect/line primitives, ported theme tokens; draw statusline (mode, workspace, focused title), a real editor frame rendering a `ruster-core` buffer, and the which-key overlay.
