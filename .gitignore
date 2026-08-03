@@ -6,3 +6,6 @@
 
 # superpowers brainstorming session artifacts
 /.superpowers/
+
+# isolated worktrees
+/.worktrees/
