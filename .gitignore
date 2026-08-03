@@ -3,3 +3,6 @@
 
 # graphify knowledge-graph output — generated, and large (~8MB)
 /graphify-out
+
+# superpowers brainstorming session artifacts
+/.superpowers/
