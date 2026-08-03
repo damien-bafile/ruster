@@ -15,6 +15,15 @@ pub enum Color {
     Rgb(u8, u8, u8),
 }
 
+impl From<Color> for (f32, f32, f32, f32) {
+    fn from(color: Color) -> Self {
+        match color {
+            Color::Default => (1.0, 1.0, 1.0, 1.0),
+            Color::Rgb(r, g, b) => (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0),
+        }
+    }
+}
+
 /// The GUI color palette. Defaults mirror the previously hardcoded raylib values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Theme {

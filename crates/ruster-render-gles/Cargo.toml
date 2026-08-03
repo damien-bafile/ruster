@@ -7,4 +7,3 @@ edition = "2021"
 ruster-render = { path = "../ruster-render" }
 smithay = { path = "/home/daimyo/Dev/smithay", default-features = false, features = ["renderer_gl", "wayland_frontend", "backend_winit"] }
 cosmic-text = "0.19"
-fontdb = "0.24"
