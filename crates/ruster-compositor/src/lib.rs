@@ -5,3 +5,4 @@
 pub mod backend;
 pub mod compositor;
 pub mod input;
+pub mod shell;

@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::sync::{atomic::AtomicBool, Arc};
 
 use smithay::delegate_dispatch2;
@@ -9,22 +10,25 @@ use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{Interest, LoopHandle, Mode as SourceMode, PostAction};
 use smithay::reexports::wayland_server::{
     backend::{ClientData, ClientId, DisconnectReason},
-    protocol::{wl_buffer, wl_output, wl_seat, wl_surface},
+    protocol::{wl_buffer, wl_output, wl_surface},
     Client, Display, DisplayHandle,
 };
-use smithay::utils::Serial;
 use smithay::wayland::socket::ListeningSocketSource;
 use smithay::wayland::{
     buffer::BufferHandler,
-    compositor::{CompositorClientState, CompositorHandler, CompositorState as WlCompositorState},
+    compositor::{
+        with_states, CompositorClientState, CompositorHandler,
+        CompositorState as WlCompositorState, SurfaceAttributes,
+    },
     output::OutputHandler,
-    shell::xdg::{PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState},
+    shell::xdg::{ToplevelSurface, XdgShellState},
     shm::{ShmHandler, ShmState},
 };
 use tracing::info;
 
 use crate::backend::Backend;
-use ruster_shell::ShellState;
+use crate::shell::CommitBuffer;
+use ruster_shell::{ShellState, WindowId};
 
 /// The compositor's composition root: everything the backend and the input
 /// handlers need to reach. Mirrors anvil's `AnvilState` but trimmed to Phase 0.
@@ -42,6 +46,12 @@ pub struct CompositorState<B: Backend + 'static> {
     pub seat: Seat<CompositorState<B>>,
     pub keyboard: KeyboardHandle<CompositorState<B>>,
     pub pointer: PointerHandle<CompositorState<B>>,
+    /// xdg toplevel surfaces keyed by their `ShellState` window id.
+    pub toplevels: HashMap<WindowId, ToplevelSurface>,
+    /// Window that should take focus once the seat is set up (Task 10).
+    pub pending_focus: Option<WindowId>,
+    /// Toplevels that have committed a buffer and are thus rendered (Task 7).
+    pub mapped: HashSet<WindowId>,
 }
 
 impl<B: Backend + 'static> CompositorState<B> {
@@ -102,6 +112,9 @@ pub fn create_state<B: Backend + 'static>(
         seat: globals.seat,
         keyboard: globals.keyboard,
         pointer: globals.pointer,
+        toplevels: HashMap::new(),
+        pending_focus: None,
+        mapped: HashSet::new(),
     }
 }
 
@@ -154,8 +167,41 @@ impl<B: Backend + 'static> CompositorHandler for CompositorState<B> {
             .compositor_state
     }
 
-    fn commit(&mut self, _surface: &wl_surface::WlSurface) {
-        // TODO(Task 6): apply pending surface state and schedule redraw.
+    fn commit(&mut self, surface: &wl_surface::WlSurface) {
+        // A toplevel becomes "mapped" once its client commits a buffer, and
+        // unmapped again on a null-buffer commit. Map/unmap is tracked here
+        // (see `CommitBuffer`); the render loop draws mapped surfaces in
+        // Task 7.
+        let Some(id) = self
+            .toplevels
+            .iter()
+            .find(|(_, t)| t.wl_surface() == surface)
+            .map(|(id, _)| *id)
+        else {
+            return;
+        };
+        let was_mapped = self.mapped.contains(&id);
+        let commit_buffer = with_states(surface, |states| {
+            CommitBuffer::from(
+                &states
+                    .cached_state
+                    .get::<SurfaceAttributes>()
+                    .current()
+                    .buffer,
+            )
+        });
+        let is_mapped = commit_buffer.is_mapped(was_mapped);
+        match (was_mapped, is_mapped) {
+            (false, true) => {
+                self.mapped.insert(id);
+                info!(?id, "toplevel mapped");
+            }
+            (true, false) => {
+                self.mapped.remove(&id);
+                info!(?id, "toplevel unmapped");
+            }
+            _ => {}
+        }
     }
 }
 
@@ -169,32 +215,7 @@ impl<B: Backend + 'static> BufferHandler for CompositorState<B> {
     fn buffer_destroyed(&mut self, _buffer: &wl_buffer::WlBuffer) {}
 }
 
-impl<B: Backend + 'static> XdgShellHandler for CompositorState<B> {
-    fn xdg_shell_state(&mut self) -> &mut XdgShellState {
-        &mut self.xdg_shell_state
-    }
-
-    fn new_toplevel(&mut self, _surface: ToplevelSurface) {
-        // TODO(Task 6): map the toplevel into the window space.
-    }
-
-    fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {
-        // TODO(Task 6): track popups relative to their parent.
-    }
-
-    fn grab(&mut self, _surface: PopupSurface, _seat: wl_seat::WlSeat, _serial: Serial) {
-        // TODO(Task 6): grab input for popups.
-    }
-
-    fn reposition_request(
-        &mut self,
-        _surface: PopupSurface,
-        _positioner: PositionerState,
-        _token: u32,
-    ) {
-        // TODO(Task 6): re-apply the positioner and send the configure.
-    }
-}
+// The `XdgShellHandler` impl lives in `crate::shell`.
 
 impl<B: Backend + 'static> OutputHandler for CompositorState<B> {
     fn output_bound(&mut self, _output: Output, _wl_output: wl_output::WlOutput) {}
