@@ -36,8 +36,10 @@ pub type RenderError = OutputDamageTrackerError<<GlesRenderer as RendererSuper>:
 ///
 /// Returns the damage produced by the render (in physical coordinates) so the
 /// caller can submit it to the backend; `None` means nothing changed and no
-/// buffer swap is needed. Frame callbacks are sent to the focused surface so
-/// its client schedules the next redraw.
+/// buffer swap is needed. Frame callbacks are delivered to the focused surface
+/// every frame (it is on the primary scan-out output), so its client schedules
+/// the next redraw; the 1s throttle only backstops surfaces not on a scan-out
+/// output.
 pub fn render_frame(
     focus: Option<WindowId>,
     toplevels: &HashMap<WindowId, ToplevelSurface>,
@@ -76,7 +78,7 @@ pub fn render_frame(
             output,
             frame_time,
             Some(Duration::from_secs(1)),
-            |_, _| None,
+            |_, _| Some(output.clone()),
         );
     }
 
