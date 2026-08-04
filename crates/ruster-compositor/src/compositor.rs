@@ -71,12 +71,15 @@ impl<B: Backend + 'static> CompositorState<B> {
     /// Apply the shell's focus to the seat keyboard: the surface of the focused
     /// toplevel becomes the keyboard focus, or focus is cleared when there is
     /// none. Consumes `pending_focus` — the window that should take focus once
-    /// the seat is up — falling back to the shell's tracked focus.
+    /// the seat is up — falling back to the shell's tracked focus. Only mapped
+    /// toplevels are focused, so a click or a destroyed-but-not-yet-committed
+    /// window can never grab the keyboard for an invisible surface.
     pub fn update_keyboard_focus(&mut self, serial: Serial) {
         let focus = self
             .pending_focus
             .take()
-            .or(self.shell.focus)
+            .filter(|id| self.mapped.contains(id))
+            .or_else(|| self.shell.focus.filter(|id| self.mapped.contains(id)))
             .and_then(|id| self.toplevels.get(&id))
             .map(|toplevel| toplevel.wl_surface().clone());
         let keyboard = self.keyboard.clone();

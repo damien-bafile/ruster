@@ -61,21 +61,15 @@ pub fn resolve_wm_action(
 /// toplevel covers the whole output from the origin, so no frame offset.
 pub const TOPLEVEL_OFFSET: Point<f64, Logical> = Point::new(0.0, 0.0);
 
-/// Convert a global pointer position into surface-local coordinates for a
-/// toplevel whose frame starts at `offset`. Phase 0 draws toplevels at the
-/// origin, so this is the identity; the offset parameter keeps the helper
-/// honest for the day frames gain a statusline gutter.
-pub fn surface_local(
-    pointer: Point<f64, Logical>,
-    offset: Point<f64, Logical>,
-) -> Point<f64, Logical> {
-    pointer - offset
-}
-
-/// The pointer focus for the focused fullscreen toplevel: `Some(local)`, where
-/// `local` is the surface-local pointer position, when the pointer lies within
-/// the toplevel's logical bounds, and `None` otherwise. Pure geometry — the
-/// caller pairs the position with the toplevel's [`WlSurface`].
+/// The pointer focus for the focused fullscreen toplevel: `Some(origin)`,
+/// where `origin` is the toplevel's origin in *global* coordinates, when the
+/// pointer lies within the toplevel's logical bounds, and `None` otherwise.
+///
+/// smithay's `PointerInnerHandle::motion` derives the client-visible position
+/// as `event.location - origin`, so the focus tuple's second element must be
+/// the surface origin — handing it the local pointer position would report
+/// every enter/motion at `(0,0)`. Phase 0 draws the toplevel at the origin,
+/// so the origin is [`TOPLEVEL_OFFSET`] regardless of where the pointer is.
 pub fn pointer_focus(
     toplevel_size: Size<i32, Logical>,
     pointer: Point<f64, Logical>,
@@ -87,7 +81,7 @@ pub fn pointer_focus(
     {
         None
     } else {
-        Some(surface_local(pointer, TOPLEVEL_OFFSET))
+        Some(TOPLEVEL_OFFSET)
     }
 }
 
@@ -123,27 +117,19 @@ mod tests {
     }
 
     #[test]
-    fn surface_local_for_fullscreen_toplevel_at_origin() {
-        // Phase 0 draws every toplevel at the origin: surface-local == global.
-        let pos = Point::from((127.5, 63.0));
-        assert_eq!(surface_local(pos, TOPLEVEL_OFFSET), pos);
-    }
-
-    #[test]
-    fn surface_local_subtracts_the_frame_offset() {
-        let pos = Point::from((127.5, 63.0));
-        assert_eq!(
-            surface_local(pos, Point::from((10.0, 24.0))),
-            Point::from((117.5, 39.0))
-        );
-    }
-
-    #[test]
-    fn pointer_focus_over_toplevel_is_some() {
+    fn pointer_focus_reports_the_surface_origin_not_the_local_position() {
+        // smithay's PointerInnerHandle::motion sends `event.location - origin`
+        // to the client, so the focus tuple's second element is the surface's
+        // origin in *global* coordinates. A fullscreen toplevel at the origin
+        // reports (0,0) no matter where the pointer is inside it.
         let size = Size::from((800, 600));
         assert_eq!(
             pointer_focus(size, Point::from((10.0, 20.0))),
-            Some(Point::from((10.0, 20.0)))
+            Some(TOPLEVEL_OFFSET)
+        );
+        assert_eq!(
+            pointer_focus(size, Point::from((799.0, 599.0))),
+            Some(TOPLEVEL_OFFSET)
         );
     }
 

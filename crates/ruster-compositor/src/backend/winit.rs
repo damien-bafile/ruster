@@ -107,11 +107,16 @@ impl CompositorState<RusterWinitData> {
         })
     }
 
-    /// The surface under the pointer with its surface-local position, or `None`
-    /// when the pointer is not over the focused mapped toplevel. Phase 0 is
-    /// fullscreen: the focused toplevel covers the whole output from the origin,
-    /// so the surface under the pointer is the focused one and surface-local
-    /// coordinates equal the global position.
+    /// The surface under the pointer with its origin in global coordinates, or
+    /// `None` when the pointer is not over the focused mapped toplevel. Phase 0
+    /// is fullscreen: the focused toplevel covers the whole output from the
+    /// origin, so the surface under the pointer is the focused one and its
+    /// global origin is [`TOPLEVEL_OFFSET`](crate::input::TOPLEVEL_OFFSET).
+    ///
+    /// The focus tuple's second element is the surface's global origin: smithay
+    /// subtracts it from the pointer location to derive the client-visible
+    /// surface-local position, so the *local* position must not be returned
+    /// here or every enter/motion would land at `(0,0)`.
     fn surface_under(
         &self,
         location: Point<f64, Logical>,
@@ -121,8 +126,8 @@ impl CompositorState<RusterWinitData> {
         if !self.mapped.contains(&focus.id) {
             return None;
         }
-        let local = pointer_focus(self.logical_output_size()?, location)?;
-        Some((toplevel.wl_surface().clone(), local))
+        let origin = pointer_focus(self.logical_output_size()?, location)?;
+        Some((toplevel.wl_surface().clone(), origin))
     }
 
     /// Route a `WinitEvent` into the compositor: resize updates the output mode,
