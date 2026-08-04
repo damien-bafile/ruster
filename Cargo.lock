@@ -2216,6 +2216,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ctrlc",
+ "dirs",
  "mlua",
  "ruster-core",
  "ruster-lua",

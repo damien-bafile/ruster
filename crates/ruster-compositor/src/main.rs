@@ -11,6 +11,7 @@ use tracing::info;
 
 use ruster_compositor::backend::winit::RusterWinitData;
 use ruster_compositor::compositor::{create_state, init_listener, CompositorState};
+use ruster_compositor::lua::{apply_config_to_shell, load_compositor_config};
 use ruster_compositor::render::render_frame;
 
 use tracing_subscriber::EnvFilter;
@@ -49,7 +50,7 @@ fn run_winit() -> anyhow::Result<()> {
     let mut state = create_state(display, event_loop.handle(), data);
     let socket_name = init_listener(&mut state);
     info!(?socket_name, "wayland socket ready");
-    spawn_test_client(&socket_name);
+    apply_config_to_shell(&mut state, load_compositor_config(), &socket_name);
 
     let running = state.running.clone();
     ctrlc::set_handler(move || running.store(false, Ordering::SeqCst))?;
@@ -118,26 +119,4 @@ fn run_winit() -> anyhow::Result<()> {
     }
     tracing::info!("shutting down");
     Ok(())
-}
-
-/// Experimental: launch a Wayland client on our socket so a toplevel is mapped
-/// without manual setup. No-op if no known client is installed, and it can
-/// never crash the compositor (a spawned child failing is ignored).
-fn spawn_test_client(socket_name: &str) {
-    use std::process::Command;
-
-    let client = if Command::new("foot").arg("--version").output().is_ok() {
-        "foot"
-    } else if Command::new("weston-terminal")
-        .arg("--help")
-        .output()
-        .is_ok()
-    {
-        "weston-terminal"
-    } else {
-        return;
-    };
-    let _ = Command::new(client)
-        .env("WAYLAND_DISPLAY", socket_name)
-        .spawn();
 }

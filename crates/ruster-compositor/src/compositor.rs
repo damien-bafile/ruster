@@ -57,6 +57,9 @@ pub struct CompositorState<B: Backend + 'static> {
     /// The compositor's UI chrome (statusline, editor frame, which-key), drawn
     /// above the client surfaces (Task 8).
     pub chrome: Option<Chrome>,
+    /// Configured WM keybinds as `(binding, action)` pairs, loaded from
+    /// `compositor.lua` (Task 9). Empty until the config is applied.
+    pub keybinds: Vec<(String, String)>,
 }
 
 impl<B: Backend + 'static> CompositorState<B> {
@@ -121,6 +124,7 @@ pub fn create_state<B: Backend + 'static>(
         pending_focus: None,
         mapped: HashSet::new(),
         chrome: Some(Chrome::new(Theme::default())),
+        keybinds: Vec::new(),
     }
 }
 

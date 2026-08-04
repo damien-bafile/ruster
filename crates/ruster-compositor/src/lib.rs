@@ -6,5 +6,6 @@ pub mod backend;
 pub mod chrome;
 pub mod compositor;
 pub mod input;
+pub mod lua;
 pub mod render;
 pub mod shell;

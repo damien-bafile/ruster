@@ -6,7 +6,7 @@ use smithay::backend::input::{
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::winit::{WinitEvent, WinitGraphicsBackend};
-use smithay::input::keyboard::FilterResult;
+use smithay::input::keyboard::{FilterResult, Keysym};
 use smithay::input::pointer::{ButtonEvent, MotionEvent};
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::wayland_server::protocol::wl_pointer;
@@ -15,7 +15,8 @@ use smithay::utils::{Size, SERIAL_COUNTER as SCOUNTER};
 use tracing::{debug, info};
 
 use crate::compositor::CompositorState;
-use crate::input::{is_cycle_workspace, is_quit_keysym};
+use crate::input::resolve_wm_action;
+use crate::lua::Action;
 
 use super::Backend;
 
@@ -110,33 +111,47 @@ impl CompositorState<RusterWinitData> {
             }
             WinitEvent::Input(InputEvent::Keyboard { event }) => {
                 let keycode = event.key_code();
-                let state = event.state();
+                let key_state = event.state();
                 let serial = SCOUNTER.next_serial();
                 let time = Event::time_msec(&event);
                 let keyboard = self.seat.get_keyboard().unwrap();
-                let intercepted = keyboard.input::<(), _>(
+                // Intercept keys the WM has bound; everything else is Forwarded
+                // to the focused client. Only `Action::Quit` on a press stops
+                // the compositor — cycling a workspace must not shut it down.
+                let _ = keyboard.input::<(), _>(
                     self,
                     keycode,
-                    state,
+                    key_state,
                     serial,
                     time,
-                    |_, modifiers, handle| {
-                        let keysym = handle.modified_sym();
-                        if is_quit_keysym(keysym, modifiers) {
-                            FilterResult::Intercept(())
-                        } else if is_cycle_workspace(keysym, modifiers) {
-                            // TODO(Task 8): cycle the focused workspace.
-                            debug!("workspace cycle keybinding");
-                            FilterResult::Intercept(())
-                        } else {
-                            FilterResult::Forward
+                    |compositor, modifiers, handle| {
+                        // Use the raw (unshifted) keysym and the separate
+                        // modifier state so Super+Shift+q resolves to the `q`
+                        // binding rather than an uppercased `Q`.
+                        let keysym = handle
+                            .raw_latin_sym_or_raw_current_sym()
+                            .unwrap_or(Keysym::NoSymbol);
+                        match resolve_wm_action(&compositor.keybinds, modifiers, keysym) {
+                            Some(Action::Quit) => {
+                                if key_state == KeyState::Pressed {
+                                    info!("quit keybinding pressed, shutting down");
+                                    compositor.running.store(false, Ordering::SeqCst);
+                                }
+                                FilterResult::Intercept(())
+                            }
+                            Some(Action::CycleWorkspace) => {
+                                if key_state == KeyState::Pressed {
+                                    info!("workspace cycle keybinding");
+                                    compositor.shell.cycle_workspace();
+                                    let output = compositor.backend_data.output.clone();
+                                    compositor.backend_data.reset_buffers(&output);
+                                }
+                                FilterResult::Intercept(())
+                            }
+                            None => FilterResult::Forward,
                         }
                     },
                 );
-                if intercepted.is_some() && state == KeyState::Pressed {
-                    info!("quit keybinding pressed, shutting down");
-                    self.running.store(false, Ordering::SeqCst);
-                }
             }
             WinitEvent::Input(InputEvent::PointerMotionAbsolute { event }) => {
                 let output = &self.backend_data.output;
