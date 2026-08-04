@@ -3,6 +3,7 @@
 //! ruster's chrome around them.
 
 pub mod backend;
+pub mod chrome;
 pub mod compositor;
 pub mod input;
 pub mod render;

@@ -2,7 +2,10 @@
 //! toplevel and composites them onto the output with the GLES renderer.
 //!
 //! Phase 0 draws the focused xdg toplevel fullscreen over a plain clear
-//! color; chrome/statusline drawing lands in Task 8.
+//! color, then ruster's chrome (statusline, editor frame, which-key) on top of
+//! it (Task 8). Chrome geometry is produced by [`Chrome`] as a vertex batch and
+//! converted into smithay solid-color render elements — the chrome text glyphs
+//! are solid blocks sized by the atlas until Task 13 rasterizes them.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -10,9 +13,11 @@ use std::time::Duration;
 use ruster_shell::WindowId;
 use smithay::backend::renderer::{
     damage::{Error as OutputDamageTrackerError, OutputDamageTracker},
-    element::{surface::WaylandSurfaceRenderElement, AsRenderElements},
+    element::{
+        solid::SolidColorRenderElement, surface::WaylandSurfaceRenderElement, AsRenderElements,
+    },
     gles::GlesRenderer,
-    Color32F, RendererSuper,
+    Color32F, ImportAll, RendererSuper,
 };
 use smithay::desktop::space::SurfaceTree;
 use smithay::desktop::utils::send_frames_surface_tree;
@@ -20,11 +25,13 @@ use smithay::output::Output;
 use smithay::utils::{Clock, Monotonic, Physical, Rectangle, Scale};
 use smithay::wayland::shell::xdg::ToplevelSurface;
 
+use crate::chrome::{solid_elements_from_verts, translate_verts, Chrome};
+
 /// Background the compositor clears the output to each frame.
 const CLEAR_COLOR: Color32F = Color32F::BLACK;
 
-/// Height of the chrome (statusline) bar that Task 8 will draw, derived from
-/// the output height: ~2.5% (`height / 40`), clamped to a 24-64px band.
+/// Height of the chrome (statusline) bar, derived from the output height:
+/// ~2.5% (`height / 40`), clamped to a 24-64px band.
 pub fn chrome_height(output_height: i32) -> i32 {
     (output_height / 40).clamp(24, 64)
 }
@@ -32,7 +39,28 @@ pub fn chrome_height(output_height: i32) -> i32 {
 /// Error raised while rendering an output with the GLES renderer.
 pub type RenderError = OutputDamageTrackerError<<GlesRenderer as RendererSuper>::Error>;
 
-/// Composite the focused toplevel fullscreen onto the output and render it.
+smithay::backend::renderer::element::render_elements! {
+    #[doc = "The render elements for one output frame. Chrome is composited above the client surface, so it is listed first (elements are in front-to-back order)."]
+    pub ChromeRenderElements<R> where R: ImportAll;
+    Solid=SolidColorRenderElement,
+    Surface=WaylandSurfaceRenderElement<R>,
+}
+
+/// The welcome buffer shown in the editor frame until an embedded editor
+/// provides real content (Phase 3).
+const WELCOME_BUFFER: &[&str] = &[
+    "RUSTER  v0.1.0",
+    "────────────",
+    "EXWM-style Wayland compositor",
+    "M-t  cycle workspace",
+    "M-S-q quit",
+];
+
+/// The which-key bindings advertised on the overlay (Task 10 makes them real).
+const WHICHKEY_BINDS: &[(&str, &str)] = &[("M-t", "cycle workspace"), ("M-S-q", "quit")];
+
+/// Composite the focused toplevel fullscreen onto the output, draw ruster's
+/// chrome on top, and render it.
 ///
 /// Returns the damage produced by the render (in physical coordinates) so the
 /// caller can submit it to the backend; `None` means nothing changed and no
@@ -40,28 +68,79 @@ pub type RenderError = OutputDamageTrackerError<<GlesRenderer as RendererSuper>:
 /// every frame (it is on the primary scan-out output), so its client schedules
 /// the next redraw; the 1s throttle only backstops surfaces not on a scan-out
 /// output.
+///
+/// `chrome`/`workspace`/`focused_title` carry the compositor's chrome state and
+/// shell focus in so the function stays a free, testable function (it does not
+/// need the whole [`CompositorState`](crate::compositor::CompositorState)).
+#[allow(clippy::too_many_arguments)]
 pub fn render_frame(
     focus: Option<WindowId>,
     toplevels: &HashMap<WindowId, ToplevelSurface>,
     damage_tracker: &mut OutputDamageTracker,
     output: &Output,
+    chrome: &mut Option<Chrome>,
+    workspace: u32,
+    focused_title: &str,
     renderer: &mut GlesRenderer,
     framebuffer: &mut <GlesRenderer as RendererSuper>::Framebuffer<'_>,
     age: usize,
 ) -> Result<Option<Vec<Rectangle<i32, Physical>>>, RenderError> {
-    let mut elements: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = Vec::new();
+    let mut elements: Vec<ChromeRenderElements<GlesRenderer>> = Vec::new();
     let mut frame_surface = None;
+
+    // Chrome is drawn unconditionally and sits above the client surface; the
+    // statusline bar spans the bottom of the output, the which-key overlay
+    // floats top-left, and the welcome editor frame is centred.
+    if let Some(chrome) = chrome {
+        let size = output
+            .current_mode()
+            .map(|mode| mode.size)
+            .unwrap_or_default();
+        let mut verts = Vec::new();
+        chrome.draw_statusline(size.w, size.h, workspace, focused_title, &mut verts);
+
+        let editor_start = verts.len();
+        let frame_w = (size.w / 2).clamp(120, 360);
+        let frame_h = (size.h / 2).clamp(80, 240);
+        let welcome: Vec<String> = WELCOME_BUFFER.iter().map(|line| line.to_string()).collect();
+        chrome.draw_editor_frame(frame_w, frame_h, &welcome, "welcome", &mut verts);
+        let editor_end = verts.len();
+        translate_verts(
+            &mut verts[editor_start..editor_end],
+            ((size.w - frame_w) / 2) as f32,
+            ((size.h - frame_h) / 2) as f32,
+        );
+
+        chrome.draw_whichkey(
+            &WHICHKEY_BINDS
+                .iter()
+                .map(|(k, d)| (k.to_string(), d.to_string()))
+                .collect::<Vec<_>>(),
+            &mut verts,
+        );
+
+        elements.extend(
+            solid_elements_from_verts(&verts)
+                .into_iter()
+                .map(ChromeRenderElements::Solid),
+        );
+    }
+
     if let Some(surface) = focus.and_then(|id| toplevels.get(&id)) {
         let wl_surface = surface.wl_surface().clone();
         let tree = SurfaceTree::from_surface(&wl_surface);
         let scale = Scale::from(output.current_scale().fractional_scale());
-        elements.extend(AsRenderElements::<GlesRenderer>::render_elements(
-            &tree,
-            renderer,
-            (0, 0).into(),
-            scale,
-            1.0,
-        ));
+        elements.extend(
+            AsRenderElements::<GlesRenderer>::render_elements(
+                &tree,
+                renderer,
+                (0, 0).into(),
+                scale,
+                1.0,
+            )
+            .into_iter()
+            .map(ChromeRenderElements::Surface),
+        );
         frame_surface = Some(wl_surface);
     }
 

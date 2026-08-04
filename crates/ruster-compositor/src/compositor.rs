@@ -27,7 +27,9 @@ use smithay::wayland::{
 use tracing::info;
 
 use crate::backend::Backend;
+use crate::chrome::Chrome;
 use crate::shell::CommitBuffer;
+use ruster_render::Theme;
 use ruster_shell::{ShellState, WindowId};
 
 /// The compositor's composition root: everything the backend and the input
@@ -52,6 +54,9 @@ pub struct CompositorState<B: Backend + 'static> {
     pub pending_focus: Option<WindowId>,
     /// Toplevels that have committed a buffer and are thus rendered (Task 7).
     pub mapped: HashSet<WindowId>,
+    /// The compositor's UI chrome (statusline, editor frame, which-key), drawn
+    /// above the client surfaces (Task 8).
+    pub chrome: Option<Chrome>,
 }
 
 impl<B: Backend + 'static> CompositorState<B> {
@@ -115,6 +120,7 @@ pub fn create_state<B: Backend + 'static>(
         toplevels: HashMap::new(),
         pending_focus: None,
         mapped: HashSet::new(),
+        chrome: Some(Chrome::new(Theme::default())),
     }
 }
 

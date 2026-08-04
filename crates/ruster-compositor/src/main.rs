@@ -73,11 +73,19 @@ fn run_winit() -> anyhow::Result<()> {
             .backend
             .bind()
             .and_then(|(renderer, mut fb)| {
+                let focused_title = state
+                    .shell
+                    .focused()
+                    .map(|w| w.title.clone())
+                    .unwrap_or_default();
                 render_frame(
                     state.shell.focus,
                     &state.toplevels,
                     &mut state.backend_data.damage_tracker,
                     &state.backend_data.output,
+                    &mut state.chrome,
+                    state.shell.workspace,
+                    &focused_title,
                     renderer,
                     &mut fb,
                     age,
