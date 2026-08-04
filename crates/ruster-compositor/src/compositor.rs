@@ -13,6 +13,7 @@ use smithay::reexports::wayland_server::{
     protocol::{wl_buffer, wl_output, wl_surface},
     Client, Display, DisplayHandle,
 };
+use smithay::utils::{Serial, SERIAL_COUNTER as SCOUNTER};
 use smithay::wayland::socket::ListeningSocketSource;
 use smithay::wayland::{
     buffer::BufferHandler,
@@ -65,6 +66,21 @@ pub struct CompositorState<B: Backend + 'static> {
 impl<B: Backend + 'static> CompositorState<B> {
     pub fn seat_name(&self) -> String {
         self.backend_data.seat_name()
+    }
+
+    /// Apply the shell's focus to the seat keyboard: the surface of the focused
+    /// toplevel becomes the keyboard focus, or focus is cleared when there is
+    /// none. Consumes `pending_focus` — the window that should take focus once
+    /// the seat is up — falling back to the shell's tracked focus.
+    pub fn update_keyboard_focus(&mut self, serial: Serial) {
+        let focus = self
+            .pending_focus
+            .take()
+            .or(self.shell.focus)
+            .and_then(|id| self.toplevels.get(&id))
+            .map(|toplevel| toplevel.wl_surface().clone());
+        let keyboard = self.keyboard.clone();
+        keyboard.set_focus(self, focus, serial);
     }
 }
 
@@ -205,9 +221,18 @@ impl<B: Backend + 'static> CompositorHandler for CompositorState<B> {
             (false, true) => {
                 self.mapped.insert(id);
                 info!(?id, "toplevel mapped");
+                // The surface just became visible; hand the seat keyboard to it
+                // (consuming `pending_focus` if this is a fresh toplevel).
+                self.update_keyboard_focus(SCOUNTER.next_serial());
             }
             (true, false) => {
                 self.mapped.remove(&id);
+                if self.shell.focus == Some(id) {
+                    // The focused toplevel hid itself; drop keyboard focus
+                    // rather than point it at an invisible surface.
+                    let keyboard = self.keyboard.clone();
+                    keyboard.set_focus(self, None, SCOUNTER.next_serial());
+                }
                 info!(?id, "toplevel unmapped");
             }
             _ => {}

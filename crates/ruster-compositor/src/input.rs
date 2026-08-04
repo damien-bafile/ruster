@@ -5,8 +5,12 @@
 //! whose defaults are `M-S-q` (quit) and `M-t` (cycle workspace); the full
 //! ruster keymap lands in Phase 1.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
 use smithay::input::keyboard::xkb::keysym_get_name;
 use smithay::input::keyboard::{Keysym, ModifiersState};
+use smithay::utils::{Logical, Point, Size};
 
 use crate::lua::Action;
 
@@ -53,9 +57,105 @@ pub fn resolve_wm_action(
         })
 }
 
+/// Global position of a toplevel's frame. Phase 0 is fullscreen: every
+/// toplevel covers the whole output from the origin, so no frame offset.
+pub const TOPLEVEL_OFFSET: Point<f64, Logical> = Point::new(0.0, 0.0);
+
+/// Convert a global pointer position into surface-local coordinates for a
+/// toplevel whose frame starts at `offset`. Phase 0 draws toplevels at the
+/// origin, so this is the identity; the offset parameter keeps the helper
+/// honest for the day frames gain a statusline gutter.
+pub fn surface_local(
+    pointer: Point<f64, Logical>,
+    offset: Point<f64, Logical>,
+) -> Point<f64, Logical> {
+    pointer - offset
+}
+
+/// The pointer focus for the focused fullscreen toplevel: `Some(local)`, where
+/// `local` is the surface-local pointer position, when the pointer lies within
+/// the toplevel's logical bounds, and `None` otherwise. Pure geometry — the
+/// caller pairs the position with the toplevel's [`WlSurface`].
+pub fn pointer_focus(
+    toplevel_size: Size<i32, Logical>,
+    pointer: Point<f64, Logical>,
+) -> Option<Point<f64, Logical>> {
+    if pointer.x < 0.0
+        || pointer.y < 0.0
+        || pointer.x >= toplevel_size.w as f64
+        || pointer.y >= toplevel_size.h as f64
+    {
+        None
+    } else {
+        Some(surface_local(pointer, TOPLEVEL_OFFSET))
+    }
+}
+
+/// Apply a resolved WM [`Action`] to the compositor lifecycle it owns. Only
+/// the `running` flag lives here: `Quit` stops the compositor, while
+/// `CycleWorkspace` needs the shell and renderer, so the caller dispatches it.
+pub fn apply_action(action: &Action, running: &Arc<AtomicBool>) {
+    match action {
+        Action::Quit => running.store(false, Ordering::SeqCst),
+        Action::CycleWorkspace => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wm_key_quit_sets_running_false() {
+        // cannot construct CompositorState without a display; test the pure
+        // decision instead: Action::Quit flips the running flag off.
+        let running = Arc::new(AtomicBool::new(true));
+        apply_action(&Action::Quit, &running);
+        assert!(!running.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn wm_key_cycle_workspace_keeps_running() {
+        // Cycling a workspace must not shut the compositor down.
+        let running = Arc::new(AtomicBool::new(true));
+        apply_action(&Action::CycleWorkspace, &running);
+        assert!(running.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn surface_local_for_fullscreen_toplevel_at_origin() {
+        // Phase 0 draws every toplevel at the origin: surface-local == global.
+        let pos = Point::from((127.5, 63.0));
+        assert_eq!(surface_local(pos, TOPLEVEL_OFFSET), pos);
+    }
+
+    #[test]
+    fn surface_local_subtracts_the_frame_offset() {
+        let pos = Point::from((127.5, 63.0));
+        assert_eq!(
+            surface_local(pos, Point::from((10.0, 24.0))),
+            Point::from((117.5, 39.0))
+        );
+    }
+
+    #[test]
+    fn pointer_focus_over_toplevel_is_some() {
+        let size = Size::from((800, 600));
+        assert_eq!(
+            pointer_focus(size, Point::from((10.0, 20.0))),
+            Some(Point::from((10.0, 20.0)))
+        );
+    }
+
+    #[test]
+    fn pointer_focus_outside_toplevel_is_none() {
+        let size = Size::from((800, 600));
+        // Outside on every edge.
+        assert_eq!(pointer_focus(size, Point::from((-1.0, 0.0))), None);
+        assert_eq!(pointer_focus(size, Point::from((800.0, 0.0))), None);
+        assert_eq!(pointer_focus(size, Point::from((0.0, 600.0))), None);
+        assert_eq!(pointer_focus(size, Point::from((0.0, 700.0))), None);
+    }
 
     #[test]
     fn keysym_quit_binding_recognized() {

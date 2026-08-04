@@ -1,21 +1,22 @@
 use std::sync::atomic::Ordering;
 
 use smithay::backend::input::{
-    AbsolutePositionEvent, Event, InputEvent, KeyState, KeyboardKeyEvent, PointerButtonEvent,
+    AbsolutePositionEvent, Axis, AxisSource, Event, InputEvent, KeyState, KeyboardKeyEvent,
+    PointerAxisEvent, PointerButtonEvent,
 };
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::winit::{WinitEvent, WinitGraphicsBackend};
 use smithay::input::keyboard::{FilterResult, Keysym};
-use smithay::input::pointer::{ButtonEvent, MotionEvent};
+use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
-use smithay::reexports::wayland_server::protocol::wl_pointer;
+use smithay::reexports::wayland_server::protocol::{wl_pointer, wl_surface::WlSurface};
 use smithay::reexports::wayland_server::DisplayHandle;
-use smithay::utils::{Size, SERIAL_COUNTER as SCOUNTER};
+use smithay::utils::{Logical, Point, Size, SERIAL_COUNTER as SCOUNTER};
 use tracing::{debug, info};
 
 use crate::compositor::CompositorState;
-use crate::input::resolve_wm_action;
+use crate::input::{apply_action, pointer_focus, resolve_wm_action};
 use crate::lua::Action;
 
 use super::Backend;
@@ -93,6 +94,37 @@ impl RusterWinitData {
 }
 
 impl CompositorState<RusterWinitData> {
+    /// The output's logical size: its physical mode size divided by the
+    /// current output scale. The fullscreen toplevel spans exactly this.
+    fn logical_output_size(&self) -> Option<Size<i32, Logical>> {
+        let output = &self.backend_data.output;
+        let scale = output.current_scale().fractional_scale();
+        output.current_mode().map(|mode| {
+            Size::from((
+                (mode.size.w as f64 / scale) as i32,
+                (mode.size.h as f64 / scale) as i32,
+            ))
+        })
+    }
+
+    /// The surface under the pointer with its surface-local position, or `None`
+    /// when the pointer is not over the focused mapped toplevel. Phase 0 is
+    /// fullscreen: the focused toplevel covers the whole output from the origin,
+    /// so the surface under the pointer is the focused one and surface-local
+    /// coordinates equal the global position.
+    fn surface_under(
+        &self,
+        location: Point<f64, Logical>,
+    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+        let focus = self.shell.focused()?;
+        let toplevel = self.toplevels.get(&focus.id)?;
+        if !self.mapped.contains(&focus.id) {
+            return None;
+        }
+        let local = pointer_focus(self.logical_output_size()?, location)?;
+        Some((toplevel.wl_surface().clone(), local))
+    }
+
     /// Route a `WinitEvent` into the compositor: resize updates the output mode,
     /// keyboard events run the WM keybindings, pointer events feed the seat, and
     /// closing the window flips `running` off.
@@ -135,7 +167,7 @@ impl CompositorState<RusterWinitData> {
                             Some(Action::Quit) => {
                                 if key_state == KeyState::Pressed {
                                     info!("quit keybinding pressed, shutting down");
-                                    compositor.running.store(false, Ordering::SeqCst);
+                                    apply_action(&Action::Quit, &compositor.running);
                                 }
                                 FilterResult::Intercept(())
                             }
@@ -154,24 +186,15 @@ impl CompositorState<RusterWinitData> {
                 );
             }
             WinitEvent::Input(InputEvent::PointerMotionAbsolute { event }) => {
-                let output = &self.backend_data.output;
-                let scale = output.current_scale().fractional_scale();
-                let size: smithay::utils::Size<i32, smithay::utils::Logical> = output
-                    .current_mode()
-                    .map(|mode| {
-                        Size::from((
-                            (mode.size.w as f64 / scale) as i32,
-                            (mode.size.h as f64 / scale) as i32,
-                        ))
-                    })
-                    .unwrap_or_default();
+                let size = self.logical_output_size().unwrap_or_default();
                 let pos = event.position_transformed(size);
                 let serial = SCOUNTER.next_serial();
                 let time = Event::time_msec(&event);
                 let pointer = self.pointer.clone();
+                let under = self.surface_under(pos);
                 pointer.motion(
                     self,
-                    None,
+                    under,
                     &MotionEvent {
                         location: pos,
                         serial,
@@ -182,10 +205,14 @@ impl CompositorState<RusterWinitData> {
             }
             WinitEvent::Input(InputEvent::PointerButton { event }) => {
                 debug!(button = event.button_code(), "pointer button");
-                // TODO(Task 6): dispatch clicks once surfaces exist.
                 let serial = SCOUNTER.next_serial();
                 let time = Event::time_msec(&event);
                 let state = wl_pointer::ButtonState::from(event.state());
+                if state == wl_pointer::ButtonState::Pressed {
+                    // Click-to-focus: a press over the focused toplevel hands it
+                    // the keyboard focus (anvil's `update_keyboard_focus`).
+                    self.update_keyboard_focus(serial);
+                }
                 let pointer = self.pointer.clone();
                 pointer.button(
                     self,
@@ -199,8 +226,48 @@ impl CompositorState<RusterWinitData> {
                 pointer.frame(self);
             }
             WinitEvent::Input(InputEvent::PointerAxis { event }) => {
-                debug!(?event, "pointer axis");
-                // TODO(Task 6): build an `AxisFrame` and scroll focused surfaces.
+                // Build an `AxisFrame` and scroll the focused surface (anvil's
+                // `on_pointer_axis`).
+                let horizontal_amount = event.amount(Axis::Horizontal).unwrap_or_else(|| {
+                    event.amount_v120(Axis::Horizontal).unwrap_or(0.0) * 15.0 / 120.
+                });
+                let vertical_amount = event.amount(Axis::Vertical).unwrap_or_else(|| {
+                    event.amount_v120(Axis::Vertical).unwrap_or(0.0) * 15.0 / 120.
+                });
+
+                let mut frame = AxisFrame::new(Event::time_msec(&event)).source(event.source());
+                if horizontal_amount != 0.0 {
+                    frame = frame.relative_direction(
+                        Axis::Horizontal,
+                        event.relative_direction(Axis::Horizontal),
+                    );
+                    frame = frame.value(Axis::Horizontal, horizontal_amount);
+                    if let Some(discrete) = event.amount_v120(Axis::Horizontal) {
+                        frame = frame.v120(Axis::Horizontal, discrete as i32);
+                    }
+                }
+                if vertical_amount != 0.0 {
+                    frame = frame.relative_direction(
+                        Axis::Vertical,
+                        event.relative_direction(Axis::Vertical),
+                    );
+                    frame = frame.value(Axis::Vertical, vertical_amount);
+                    if let Some(discrete) = event.amount_v120(Axis::Vertical) {
+                        frame = frame.v120(Axis::Vertical, discrete as i32);
+                    }
+                }
+                if event.source() == AxisSource::Finger {
+                    if event.amount(Axis::Horizontal) == Some(0.0) {
+                        frame = frame.stop(Axis::Horizontal);
+                    }
+                    if event.amount(Axis::Vertical) == Some(0.0) {
+                        frame = frame.stop(Axis::Vertical);
+                    }
+                }
+
+                let pointer = self.pointer.clone();
+                pointer.axis(self, frame);
+                pointer.frame(self);
             }
             WinitEvent::CloseRequested => {
                 info!("close requested, shutting down");

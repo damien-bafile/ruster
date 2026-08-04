@@ -7,7 +7,7 @@
 //! keyboard forwarding are Tasks 7 and 10.
 
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
-use smithay::utils::Serial;
+use smithay::utils::{Serial, SERIAL_COUNTER as SCOUNTER};
 use smithay::wayland::compositor::{self, BufferAssignment};
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
@@ -28,11 +28,14 @@ impl<B: Backend + 'static> XdgShellHandler for CompositorState<B> {
         // `title_changed`. Start the window record with whatever we have.
         let title = toplevel_title(&surface).unwrap_or_default();
         let id = self.shell.add_window(title, 800, 600);
+        self.shell.set_focus(id);
         self.toplevels.insert(id, surface);
         self.pending_focus = Some(id);
         tracing::info!(?id, "new toplevel");
         // No configure is sent here: per the xdg protocol the initial
         // configure is sent on the first commit (anvil does the same).
+        // Keyboard focus is applied on the first commit's map transition
+        // (`CompositorHandler::commit`), which consumes `pending_focus`.
     }
 
     fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {
@@ -78,11 +81,10 @@ impl<B: Backend + 'static> XdgShellHandler for CompositorState<B> {
         };
         self.toplevels.remove(&id);
         self.mapped.remove(&id);
-        if self.pending_focus == Some(id) {
-            self.pending_focus = None;
-        }
-        // `remove_window` refocuses the shell onto the most recent window.
+        // `remove_window` refocuses the shell onto the most recent window (or
+        // clears focus); re-apply that to the seat keyboard.
         self.shell.remove_window(id);
+        self.update_keyboard_focus(SCOUNTER.next_serial());
         tracing::info!(?id, "toplevel destroyed");
     }
 }
