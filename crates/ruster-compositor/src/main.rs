@@ -1,9 +1,9 @@
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use smithay::backend::renderer::damage::OutputDamageTracker;
+use smithay::backend::renderer::damage::{Error as OutputDamageTrackerError, OutputDamageTracker};
 use smithay::backend::renderer::gles::GlesRenderer;
-use smithay::backend::winit;
+use smithay::backend::{winit, SwapBuffersError};
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
 use smithay::reexports::winit::event_loop::pump_events::PumpStatus;
@@ -11,6 +11,7 @@ use tracing::info;
 
 use ruster_compositor::backend::winit::RusterWinitData;
 use ruster_compositor::compositor::{create_state, init_listener, CompositorState};
+use ruster_compositor::render::render_frame;
 
 use tracing_subscriber::EnvFilter;
 
@@ -61,7 +62,44 @@ fn run_winit() -> anyhow::Result<()> {
             break;
         }
 
-        // TODO(Task 7): render a frame here (bind renderer, composite, submit).
+        // Composite the focused toplevel and present it to the winit window.
+        let age = if state.backend_data.full_redraw() > 0 {
+            0
+        } else {
+            state.backend_data.backend.buffer_age().unwrap_or(0)
+        };
+        let render_res = state
+            .backend_data
+            .backend
+            .bind()
+            .and_then(|(renderer, mut fb)| {
+                render_frame(
+                    state.shell.focus,
+                    &state.toplevels,
+                    &mut state.backend_data.damage_tracker,
+                    &state.backend_data.output,
+                    renderer,
+                    &mut fb,
+                    age,
+                )
+                .map_err(|err| match err {
+                    OutputDamageTrackerError::Rendering(err) => err.into(),
+                    _ => unreachable!(),
+                })
+            });
+        match render_res {
+            Ok(Some(damage)) => {
+                if let Err(err) = state.backend_data.backend.submit(Some(&damage)) {
+                    tracing::warn!("Failed to submit buffer: {err}");
+                }
+            }
+            Ok(None) => {}
+            Err(SwapBuffersError::ContextLost(err)) => {
+                tracing::error!("GL context lost, shutting down: {err}");
+                state.running.store(false, Ordering::SeqCst);
+            }
+            Err(err) => tracing::error!("Rendering failed: {err}"),
+        }
 
         let result = event_loop.dispatch(Some(Duration::from_millis(1)), &mut state);
         if result.is_err() {

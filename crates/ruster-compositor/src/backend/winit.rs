@@ -54,6 +54,15 @@ impl RusterWinitData {
         }
     }
 
+    /// Read and decrement the full-redraw counter. The first frames after
+    /// startup or a resize are forced to age 0 (full damage); once it hits 0
+    /// the renderer falls back to buffer-age based damage tracking.
+    pub fn full_redraw(&mut self) -> u8 {
+        let remaining = self.full_redraw;
+        self.full_redraw = self.full_redraw.saturating_sub(1);
+        remaining
+    }
+
     /// Build the `wl_output` for the winit window, advertise it as a global and
     /// push the current window size as its only mode.
     pub fn build_output(
