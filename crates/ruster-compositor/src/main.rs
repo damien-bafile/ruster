@@ -7,10 +7,13 @@ use smithay::backend::{winit, SwapBuffersError};
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
 use smithay::reexports::winit::event_loop::pump_events::PumpStatus;
-use tracing::info;
 
 use ruster_compositor::backend::winit::RusterWinitData;
-use ruster_compositor::compositor::{create_state, init_listener, CompositorState};
+#[cfg(feature = "udev")]
+use ruster_compositor::compositor::drm_error_hint;
+use ruster_compositor::compositor::{
+    create_state, init_listener, install_signal_handlers, log_startup_header, CompositorState,
+};
 use ruster_compositor::lua::{apply_config_to_shell, load_compositor_config};
 use ruster_compositor::render::render_frame;
 
@@ -31,7 +34,14 @@ fn main() -> anyhow::Result<()> {
     }
     if args.iter().any(|a| a == "--drm") {
         #[cfg(feature = "udev")]
-        return ruster_compositor::backend::drm::run_drm();
+        {
+            if let Err(err) = ruster_compositor::backend::drm::run_drm() {
+                eprintln!("DRM backend failed: {err}");
+                eprintln!("{}", drm_error_hint());
+                std::process::exit(1);
+            }
+            return Ok(());
+        }
         #[cfg(not(feature = "udev"))]
         anyhow::bail!("--drm requires building ruster-compositor with the `udev` feature");
     }
@@ -51,11 +61,11 @@ fn run_winit() -> anyhow::Result<()> {
 
     let mut state = create_state(display, event_loop.handle(), data);
     let socket_name = init_listener(&mut state);
-    info!(?socket_name, "wayland socket ready");
+    log_startup_header(env!("CARGO_PKG_VERSION"), "winit", &socket_name);
     apply_config_to_shell(&mut state, load_compositor_config(), &socket_name);
 
     let running = state.running.clone();
-    ctrlc::set_handler(move || running.store(false, Ordering::SeqCst))?;
+    install_signal_handlers(&running, event_loop.get_signal())?;
 
     let mut winit = winit;
     while state.running.load(Ordering::SeqCst) {

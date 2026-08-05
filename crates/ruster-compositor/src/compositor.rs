@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::{atomic::AtomicBool, Arc};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use smithay::delegate_dispatch2;
 use smithay::input::keyboard::{KeyboardHandle, XkbConfig};
@@ -7,7 +8,9 @@ use smithay::input::pointer::PointerHandle;
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::Output;
 use smithay::reexports::calloop::generic::Generic;
-use smithay::reexports::calloop::{Interest, LoopHandle, Mode as SourceMode, PostAction};
+use smithay::reexports::calloop::{
+    Interest, LoopHandle, LoopSignal, Mode as SourceMode, PostAction,
+};
 use smithay::reexports::wayland_server::{
     backend::{ClientData, ClientId, DisconnectReason},
     protocol::{wl_buffer, wl_output, wl_surface},
@@ -294,6 +297,40 @@ pub fn init_listener<B: Backend + 'static>(state: &mut CompositorState<B>) -> St
     socket_name
 }
 
+/// Message printed when DRM hardware access fails, pointing the user at a
+/// seat manager. Lives outside the udev-gated DRM backend so default builds
+/// can print it too.
+pub fn drm_error_hint() -> &'static str {
+    "DRM access failed. Run the session under logind (normal) or start seatd, or use the winit backend for development."
+}
+
+/// Install SIGINT/SIGTERM handlers that flip `running` off and stop the
+/// calloop loop (the loop's next dispatch returns immediately). The ctrlc
+/// `termination` feature extends the default SIGINT-only handler to also
+/// cover SIGTERM (and SIGHUP).
+pub fn install_signal_handlers(
+    running: &Arc<AtomicBool>,
+    signal: LoopSignal,
+) -> anyhow::Result<()> {
+    let flag = running.clone();
+    let stop = signal.clone();
+    ctrlc::set_handler(move || {
+        flag.store(false, Ordering::SeqCst);
+        stop.stop();
+    })?;
+    Ok(())
+}
+
+/// Log a startup header naming the version, backend and Wayland socket.
+pub fn log_startup_header(version: &str, backend: &str, socket_name: &str) {
+    info!(
+        ?version,
+        ?backend,
+        ?socket_name,
+        "ruster-compositor starting"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,5 +353,11 @@ mod tests {
         assert_eq!(shell.focused(), None);
         shell.set_focus(id);
         assert!(shell.focused().is_some());
+    }
+
+    #[test]
+    fn error_hint_for_drm_failure_mentions_seatd() {
+        let hint = drm_error_hint();
+        assert!(hint.to_lowercase().contains("seatd") || hint.to_lowercase().contains("logind"));
     }
 }

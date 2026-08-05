@@ -39,7 +39,9 @@ use smithay::utils::DeviceFd;
 use tracing::{error, info, warn};
 
 use crate::backend::Backend;
-use crate::compositor::{create_state, init_listener, CompositorState};
+use crate::compositor::{
+    create_state, init_listener, install_signal_handlers, log_startup_header, CompositorState,
+};
 use crate::render::{
     collect_render_elements, send_frame_callbacks, ChromeRenderElements, CLEAR_COLOR,
 };
@@ -258,7 +260,7 @@ pub fn run_drm() -> anyhow::Result<()> {
     };
     let mut state = create_state(display, event_loop.handle(), data);
     let socket_name = init_listener(&mut state);
-    info!(?socket_name, "wayland socket ready");
+    log_startup_header(env!("CARGO_PKG_VERSION"), "drm", &socket_name);
     // TODO(Task 12+): spawn startup_clients here (the winit path calls
     // apply_config_to_shell from main.rs); the DRM path omits it until
     // config-driven startup is wired in, matching the Task 11 brief.
@@ -320,9 +322,9 @@ pub fn run_drm() -> anyhow::Result<()> {
         )
         .expect("failed to insert udev source");
 
-    // Ctrl-C flips `running` off; the event loop exits.
+    // SIGINT/SIGTERM flip `running` off and stop the event loop.
     let running = state.running.clone();
-    ctrlc::set_handler(move || running.store(false, Ordering::SeqCst))?;
+    install_signal_handlers(&running, event_loop.get_signal())?;
 
     // Kick off the first frame.
     state.handle.insert_idle(|data| data.render_surface());
