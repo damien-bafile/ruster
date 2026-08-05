@@ -1,3 +1,5 @@
+#[cfg(feature = "udev")]
+pub mod drm;
 pub mod winit;
 
 use smithay::output::Output;

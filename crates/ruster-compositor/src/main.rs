@@ -30,8 +30,10 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
     if args.iter().any(|a| a == "--drm") {
-        // TODO(Task 11): boot the udev/DRM backend on the primary GPU.
-        anyhow::bail!("--drm backend is not implemented until Task 11");
+        #[cfg(feature = "udev")]
+        return ruster_compositor::backend::drm::run_drm();
+        #[cfg(not(feature = "udev"))]
+        anyhow::bail!("--drm requires building ruster-compositor with the `udev` feature");
     }
     run_winit()
 }

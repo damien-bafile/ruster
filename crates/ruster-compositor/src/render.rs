@@ -17,7 +17,7 @@ use smithay::backend::renderer::{
         solid::SolidColorRenderElement, surface::WaylandSurfaceRenderElement, AsRenderElements,
     },
     gles::GlesRenderer,
-    Color32F, ImportAll, RendererSuper,
+    Color32F, ImportAll, Renderer, RendererSuper,
 };
 use smithay::desktop::space::SurfaceTree;
 use smithay::desktop::utils::send_frames_surface_tree;
@@ -28,7 +28,7 @@ use smithay::wayland::shell::xdg::ToplevelSurface;
 use crate::chrome::{solid_elements_from_verts, translate_verts, Chrome};
 
 /// Background the compositor clears the output to each frame.
-const CLEAR_COLOR: Color32F = Color32F::BLACK;
+pub const CLEAR_COLOR: Color32F = Color32F::BLACK;
 
 /// Height of the chrome (statusline) bar, derived from the output height:
 /// ~2.5% (`height / 40`), clamped to a 24-64px band.
@@ -85,8 +85,40 @@ pub fn render_frame(
     framebuffer: &mut <GlesRenderer as RendererSuper>::Framebuffer<'_>,
     age: usize,
 ) -> Result<Option<Vec<Rectangle<i32, Physical>>>, RenderError> {
-    let mut elements: Vec<ChromeRenderElements<GlesRenderer>> = Vec::new();
-    let mut frame_surface = None;
+    let elements = collect_render_elements(
+        focus,
+        toplevels,
+        output,
+        chrome,
+        workspace,
+        focused_title,
+        renderer,
+    );
+    let result =
+        damage_tracker.render_output(renderer, framebuffer, age, &elements, CLEAR_COLOR)?;
+    let damage = result.damage.cloned();
+    send_frame_callbacks(focus, toplevels, output);
+    Ok(damage)
+}
+
+/// Build the render elements for one output frame: ruster's chrome (statusline,
+/// editor frame, which-key) followed by the focused toplevel, both composited
+/// by the renderer in front-to-back order. Generic over the renderer so both
+/// the winit (`GlesRenderer`) and DRM (`MultiRenderer`) backends share it.
+#[allow(clippy::too_many_arguments)]
+pub fn collect_render_elements<R: Renderer + ImportAll>(
+    focus: Option<WindowId>,
+    toplevels: &HashMap<WindowId, ToplevelSurface>,
+    output: &Output,
+    chrome: &mut Option<Chrome>,
+    workspace: u32,
+    focused_title: &str,
+    renderer: &mut R,
+) -> Vec<ChromeRenderElements<R>>
+where
+    <R as RendererSuper>::TextureId: Clone + 'static,
+{
+    let mut elements: Vec<ChromeRenderElements<R>> = Vec::new();
 
     // Chrome is drawn unconditionally and sits above the client surface; the
     // statusline bar spans the bottom of the output, the which-key overlay
@@ -131,26 +163,27 @@ pub fn render_frame(
         let tree = SurfaceTree::from_surface(&wl_surface);
         let scale = Scale::from(output.current_scale().fractional_scale());
         elements.extend(
-            AsRenderElements::<GlesRenderer>::render_elements(
-                &tree,
-                renderer,
-                (0, 0).into(),
-                scale,
-                1.0,
-            )
-            .into_iter()
-            .map(ChromeRenderElements::Surface),
+            AsRenderElements::<R>::render_elements(&tree, renderer, (0, 0).into(), scale, 1.0)
+                .into_iter()
+                .map(ChromeRenderElements::Surface),
         );
-        frame_surface = Some(wl_surface);
     }
 
-    let result =
-        damage_tracker.render_output(renderer, framebuffer, age, &elements, CLEAR_COLOR)?;
-    let damage = result.damage.cloned();
+    elements
+}
 
-    if let Some(surface) = frame_surface {
-        // Frame callbacks are delivered against the time of the next frame
-        // (one refresh interval in the future).
+/// Deliver frame callbacks to the focused toplevel against the time of the next
+/// frame (one refresh interval in the future), so its client schedules the next
+/// redraw. The 1s throttle only backstops surfaces not on a scan-out output.
+pub fn send_frame_callbacks(
+    focus: Option<WindowId>,
+    toplevels: &HashMap<WindowId, ToplevelSurface>,
+    output: &Output,
+) {
+    if let Some(surface) = focus
+        .and_then(|id| toplevels.get(&id))
+        .map(|toplevel| toplevel.wl_surface().clone())
+    {
         let frame_time = Clock::<Monotonic>::new().now() + Duration::from_millis(16);
         send_frames_surface_tree(
             &surface,
@@ -160,8 +193,6 @@ pub fn render_frame(
             |_, _| Some(output.clone()),
         );
     }
-
-    Ok(damage)
 }
 
 #[cfg(test)]
