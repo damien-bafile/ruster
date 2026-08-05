@@ -77,7 +77,11 @@ type UdevDrmOutput = DrmOutput<UdevAllocator, GbmFramebufferExporter<DrmDeviceFd
 /// output manager and the single output currently driven by it.
 pub struct RusterUdevData {
     session: LibSeatSession,
-    primary_gpu: DrmNode,
+    /// The EGL render node (`renderD*`) the compositor renders on. This is the
+    /// node registered with [`GpuManager::add_node`], so it — not the seat's
+    /// card node — must be handed to [`GpuManager::single_renderer`] every
+    /// frame. The card node is only used during init for device discovery.
+    render_node: DrmNode,
     gpus: GpuManager<GbmGlesBackend<GlesRenderer, DrmDeviceFd>>,
     drm_output_manager: UdevOutputManager,
     output: Output,
@@ -109,17 +113,13 @@ pub fn run_drm() -> anyhow::Result<()> {
     let seat_name = session.seat();
     info!(?seat_name, "libseat session active");
 
-    // Find the primary GPU for the seat, falling back to any GPU.
-    let primary_gpu = primary_gpu(&seat_name)
-        .map_err(|err| anyhow::anyhow!("failed to enumerate gpus for seat {seat_name}: {err}"))?
-        .and_then(|path| DrmNode::from_path(path).ok())
-        .or_else(|| {
-            all_gpus(&seat_name)
-                .unwrap_or_default()
-                .into_iter()
-                .find_map(|path| DrmNode::from_path(path).ok())
-        })
-        .ok_or_else(|| anyhow::anyhow!("no drm device found on seat {seat_name}"))?;
+    // Find the primary GPU for the seat: honor the RUSTER_DRM_DEVICE override,
+    // else the seat's primary GPU, else any GPU. This is the *card* node used
+    // for device discovery; the render node is derived from EGL below.
+    let primary_gpu = resolve_gpu_node(
+        &seat_name,
+        std::env::var("RUSTER_DRM_DEVICE").ok().as_deref(),
+    )?;
     info!(?primary_gpu, "using primary gpu");
 
     // One GbmGlesBackend per render node; GpuManager turns it into renderers.
@@ -249,7 +249,7 @@ pub fn run_drm() -> anyhow::Result<()> {
 
     let data = RusterUdevData {
         session,
-        primary_gpu,
+        render_node,
         gpus,
         drm_output_manager,
         output,
@@ -259,6 +259,9 @@ pub fn run_drm() -> anyhow::Result<()> {
     let mut state = create_state(display, event_loop.handle(), data);
     let socket_name = init_listener(&mut state);
     info!(?socket_name, "wayland socket ready");
+    // TODO(Task 12+): spawn startup_clients here (the winit path calls
+    // apply_config_to_shell from main.rs); the DRM path omits it until
+    // config-driven startup is wired in, matching the Task 11 brief.
 
     // DRM device events: VBlanks mark the queued frame as presented and
     // schedule the next repaint; errors are logged.
@@ -353,7 +356,7 @@ impl CompositorState<RusterUdevData> {
         let mut renderer = match self
             .backend_data
             .gpus
-            .single_renderer(&self.backend_data.primary_gpu)
+            .single_renderer(&self.backend_data.render_node)
         {
             Ok(renderer) => renderer,
             Err(err) => {
@@ -444,6 +447,28 @@ fn frame_duration(output: &Output) -> Duration {
         .unwrap_or_else(|| Duration::from_millis(16))
 }
 
+/// Resolve the GPU to drive for the seat. Honors the `RUSTER_DRM_DEVICE`
+/// environment override (mirroring anvil's `ANVIL_DRM_DEVICE`), else the
+/// seat's primary GPU, else the first GPU enumerated for the seat. The
+/// returned node is the *card* node used for device discovery; the render node
+/// is derived from EGL during init and is what all rendering uses.
+fn resolve_gpu_node(seat_name: &str, env_device: Option<&str>) -> anyhow::Result<DrmNode> {
+    if let Some(dev) = env_device.filter(|dev| !dev.is_empty()) {
+        return DrmNode::from_path(dev)
+            .map_err(|err| anyhow::anyhow!("invalid RUSTER_DRM_DEVICE {dev}: {err}"));
+    }
+    primary_gpu(seat_name)
+        .map_err(|err| anyhow::anyhow!("failed to enumerate gpus for seat {seat_name}: {err}"))?
+        .and_then(|path| DrmNode::from_path(path).ok())
+        .or_else(|| {
+            all_gpus(seat_name)
+                .unwrap_or_default()
+                .into_iter()
+                .find_map(|path| DrmNode::from_path(path).ok())
+        })
+        .ok_or_else(|| anyhow::anyhow!("no drm device found on seat {seat_name}"))
+}
+
 /// Find the device path in the udev device list backing `primary_gpu`, falling
 /// back to the first entry for the seat.
 fn udev_device_path(udev_backend: &UdevBackend, primary_gpu: &DrmNode) -> Option<PathBuf> {
@@ -517,7 +542,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn output_model_names_connector() {
+    fn output_model_name_has_ruster_prefix() {
         assert_eq!(output_model("sda"), "ruster-drm-sda");
     }
 
@@ -529,5 +554,14 @@ mod tests {
     #[test]
     fn supported_formats_include_8bit_fallback() {
         assert!(SUPPORTED_FORMATS.contains(&Fourcc::Argb8888));
+    }
+
+    #[test]
+    fn env_device_override_rejects_bad_path() {
+        let err = resolve_gpu_node("seat0", Some("/nonexistent/drm/ruster-card99")).unwrap_err();
+        assert!(
+            err.to_string().contains("RUSTER_DRM_DEVICE"),
+            "unexpected error: {err}"
+        );
     }
 }
