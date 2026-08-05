@@ -30,7 +30,7 @@ use smithay::wayland::{
 };
 use tracing::info;
 
-use crate::backend::Backend;
+use crate::backend::{logical_output_size, Backend};
 use crate::chrome::Chrome;
 use crate::shell::CommitBuffer;
 use ruster_render::Theme;
@@ -88,6 +88,15 @@ impl<B: Backend + 'static> CompositorState<B> {
         let keyboard = self.keyboard.clone();
         keyboard.set_focus(self, focus, serial);
     }
+}
+
+/// The window that should take keyboard focus after `unmapped` hid itself:
+/// the most recently mapped window still visible, or `None` when nothing else
+/// is mapped. Mirrors `ShellState::remove_window`'s fall back to the last
+/// remaining window, and is pure so the compositor's unmap path stays
+/// unit-testable without a live display.
+fn next_focus_after_unmap(mapped: &HashSet<WindowId>, unmapped: WindowId) -> Option<WindowId> {
+    mapped.iter().filter(|id| **id != unmapped).max().copied()
 }
 
 /// Globals created for a display; bundled so `create_state` can build them
@@ -212,6 +221,21 @@ impl<B: Backend + 'static> CompositorHandler for CompositorState<B> {
         else {
             return;
         };
+        // Send the initial configure once, in response to the client's first
+        // commit — which is usually buffer-less, so this runs before the
+        // map/unmap match below. Spec-compliant clients wait for
+        // `xdg_surface.configure` before mapping; `send_configure` flags
+        // `initial_configure_sent` internally, so later commits don't
+        // re-send. Phase 0 renders the toplevel fullscreen from the origin,
+        // so the configure sizes it to the output's logical size.
+        if let Some(toplevel) = self.toplevels.get(&id) {
+            if !toplevel.is_initial_configure_sent() {
+                if let Some(size) = logical_output_size(self.backend_data.output()) {
+                    toplevel.with_pending_state(|state| state.size = Some(size));
+                }
+                toplevel.send_configure();
+            }
+        }
         let was_mapped = self.mapped.contains(&id);
         let commit_buffer = with_states(surface, |states| {
             CommitBuffer::from(
@@ -232,13 +256,17 @@ impl<B: Backend + 'static> CompositorHandler for CompositorState<B> {
                 self.update_keyboard_focus(SCOUNTER.next_serial());
             }
             (true, false) => {
-                self.mapped.remove(&id);
                 if self.shell.focus == Some(id) {
-                    // The focused toplevel hid itself; drop keyboard focus
-                    // rather than point it at an invisible surface.
-                    let keyboard = self.keyboard.clone();
-                    keyboard.set_focus(self, None, SCOUNTER.next_serial());
+                    // The focused toplevel hid itself; hand the keyboard to the
+                    // most recently mapped window still visible (mirroring
+                    // `remove_window`'s fall back to the last remaining
+                    // window), or clear it when nothing is left.
+                    if let Some(next) = next_focus_after_unmap(&self.mapped, id) {
+                        self.shell.set_focus(next);
+                    }
+                    self.update_keyboard_focus(SCOUNTER.next_serial());
                 }
+                self.mapped.remove(&id);
                 info!(?id, "toplevel unmapped");
             }
             _ => {}
@@ -334,7 +362,9 @@ pub fn log_startup_header(version: &str, backend: &str, socket_name: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::logical_size_from;
     use ruster_shell::WindowId;
+    use smithay::utils::Size;
     use std::sync::atomic::Ordering;
 
     // Constructing a CompositorState requires a DisplayHandle; exercise the
@@ -359,5 +389,47 @@ mod tests {
     fn error_hint_for_drm_failure_mentions_seatd() {
         let hint = drm_error_hint();
         assert!(hint.to_lowercase().contains("seatd") || hint.to_lowercase().contains("logind"));
+    }
+
+    #[test]
+    fn logical_size_divides_physical_by_fractional_scale() {
+        // The fullscreen toplevel is sized to the output's logical size, so
+        // the initial configure must scale physical pixels down by the
+        // current output scale (the winit helper's math, backend-agnostic).
+        assert_eq!(
+            logical_size_from(Size::from((1920, 1080)), 1.0),
+            Size::from((1920, 1080))
+        );
+        assert_eq!(
+            logical_size_from(Size::from((1920, 1080)), 2.0),
+            Size::from((960, 540))
+        );
+        // Fractional scales round down to integer logical pixels.
+        assert_eq!(
+            logical_size_from(Size::from((1920, 1080)), 1.25),
+            Size::from((1536, 864))
+        );
+    }
+
+    #[test]
+    fn unmapping_focused_toplevel_refocuses_last_mapped() {
+        // The most recently mapped window takes over (mirroring
+        // `ShellState::remove_window`'s fall back to the last remaining
+        // window), so keyboard focus is never dropped onto an invisible
+        // surface while another window is still visible.
+        let mapped = HashSet::from([WindowId(0), WindowId(1), WindowId(3)]);
+        assert_eq!(
+            next_focus_after_unmap(&mapped, WindowId(0)),
+            Some(WindowId(3))
+        );
+        assert_eq!(
+            next_focus_after_unmap(&mapped, WindowId(3)),
+            Some(WindowId(1))
+        );
+        // Unmapping the only mapped window leaves nothing to focus.
+        assert_eq!(
+            next_focus_after_unmap(&HashSet::from([WindowId(2)]), WindowId(2)),
+            None
+        );
     }
 }

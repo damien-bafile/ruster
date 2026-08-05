@@ -99,6 +99,10 @@ impl Backend for RusterUdevData {
     fn reset_buffers(&mut self, _output: &Output) {
         self.drm_output.reset_buffers();
     }
+
+    fn output(&self) -> &Output {
+        &self.output
+    }
 }
 
 /// Boot the DRM/udev backend on the primary GPU: open a libseat session, find

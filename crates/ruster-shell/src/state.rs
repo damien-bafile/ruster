@@ -118,6 +118,20 @@ mod tests {
     }
 
     #[test]
+    fn remove_focused_window_falls_back_to_last_remaining() {
+        // Removing the focused window refocuses the shell onto the most
+        // recently added remaining window (the semantics the compositor's
+        // unmap path mirrors when the focused toplevel hides itself).
+        let mut s = ShellState::new();
+        let a = s.add_window("a".into(), 100, 100);
+        let b = s.add_window("b".into(), 100, 100);
+        let c = s.add_window("c".into(), 100, 100);
+        s.set_focus(a);
+        s.remove_window(a);
+        assert_eq!(s.focused().unwrap().id, c);
+    }
+
+    #[test]
     fn workspace_cycles_and_wraps() {
         assert_eq!(next_workspace(1), 2);
         assert_eq!(next_workspace(9), 1);

@@ -18,6 +18,7 @@ use tracing::{debug, info};
 use crate::compositor::CompositorState;
 use crate::input::{apply_action, pointer_focus, resolve_wm_action};
 use crate::lua::Action;
+use ruster_shell::WindowId;
 
 use super::Backend;
 
@@ -39,6 +40,10 @@ impl Backend for RusterWinitData {
 
     fn reset_buffers(&mut self, _output: &Output) {
         self.full_redraw = 4;
+    }
+
+    fn output(&self) -> &Output {
+        &self.output
     }
 }
 
@@ -97,14 +102,24 @@ impl CompositorState<RusterWinitData> {
     /// The output's logical size: its physical mode size divided by the
     /// current output scale. The fullscreen toplevel spans exactly this.
     fn logical_output_size(&self) -> Option<Size<i32, Logical>> {
-        let output = &self.backend_data.output;
-        let scale = output.current_scale().fractional_scale();
-        output.current_mode().map(|mode| {
-            Size::from((
-                (mode.size.w as f64 / scale) as i32,
-                (mode.size.h as f64 / scale) as i32,
-            ))
-        })
+        super::logical_output_size(self.backend_data.output())
+    }
+
+    /// The toplevel window the pointer is over, or `None`. Phase 0 draws one
+    /// toplevel fullscreen from the origin, so the toplevel under the pointer
+    /// is the focused one when it is mapped; when focus is stale or cleared
+    /// (its toplevel unmapped) the most recently mapped window is the
+    /// fallback, which lets a click always recover a visible window.
+    /// [`pointer_focus`] supplies the fullscreen-rect containment test, so a
+    /// location outside the output bounds matches nothing.
+    fn toplevel_under(&self, location: Point<f64, Logical>) -> Option<WindowId> {
+        let size = self.logical_output_size()?;
+        pointer_focus(size, location)?;
+        let fallback = self.mapped.iter().max().copied();
+        self.shell
+            .focus
+            .filter(|id| self.mapped.contains(id))
+            .or(fallback)
     }
 
     /// The surface under the pointer with its origin in global coordinates, or
@@ -214,9 +229,20 @@ impl CompositorState<RusterWinitData> {
                 let time = Event::time_msec(&event);
                 let state = wl_pointer::ButtonState::from(event.state());
                 if state == wl_pointer::ButtonState::Pressed {
-                    // Click-to-focus: a press over the focused toplevel hands it
-                    // the keyboard focus (anvil's `update_keyboard_focus`).
-                    self.update_keyboard_focus(serial);
+                    // Click-to-focus: focus the toplevel under the pointer.
+                    // Button events carry no position, so the seat pointer's
+                    // tracked location is used (anvil does the same via
+                    // `pointer.current_location()`). Focusing the window under
+                    // the cursor — rather than re-asserting a possibly stale
+                    // `shell.focus` — lets a click always recover a visible
+                    // window when the previous focus unmapped.
+                    if let Some(id) = self
+                        .toplevel_under(self.pointer.current_location())
+                        .filter(|id| self.shell.focus != Some(*id))
+                    {
+                        self.shell.set_focus(id);
+                        self.update_keyboard_focus(serial);
+                    }
                 }
                 let pointer = self.pointer.clone();
                 pointer.button(

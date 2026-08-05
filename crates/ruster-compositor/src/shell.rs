@@ -34,8 +34,10 @@ impl<B: Backend + 'static> XdgShellHandler for CompositorState<B> {
         tracing::info!(?id, "new toplevel");
         // No configure is sent here: per the xdg protocol the initial
         // configure is sent on the first commit (anvil does the same).
-        // Keyboard focus is applied on the first commit's map transition
-        // (`CompositorHandler::commit`), which consumes `pending_focus`.
+        // `CompositorHandler::commit` sends it there, sized fullscreen to the
+        // output's logical size. Keyboard focus is applied on the first
+        // commit's map transition (`CompositorHandler::commit`), which
+        // consumes `pending_focus`.
     }
 
     fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {
