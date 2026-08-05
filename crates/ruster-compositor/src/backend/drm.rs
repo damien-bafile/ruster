@@ -261,9 +261,9 @@ pub fn run_drm() -> anyhow::Result<()> {
     let mut state = create_state(display, event_loop.handle(), data);
     let socket_name = init_listener(&mut state);
     log_startup_header(env!("CARGO_PKG_VERSION"), "drm", &socket_name);
-    // TODO(Task 12+): spawn startup_clients here (the winit path calls
-    // apply_config_to_shell from main.rs); the DRM path omits it until
-    // config-driven startup is wired in, matching the Task 11 brief.
+    // TODO(next phase): spawn startup_clients under DRM (the winit path calls
+    // apply_config_to_shell from main.rs; DRM omits it until config-driven
+    // startup is wired in).
 
     // DRM device events: VBlanks mark the queued frame as presented and
     // schedule the next repaint; errors are logged.

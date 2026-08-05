@@ -8,7 +8,8 @@
 //!
 //! Text is currently drawn as solid-color blocks sized to each glyph's pixel
 //! box (the atlas provides metrics, not pixels yet); real glyph texture
-//! rendering lands in Task 13 (see the `TODO(Task 13)` marker on `Chrome::text`).
+//! rendering is deferred to the next phase (see the `TODO(next phase)` marker
+//! on `Chrome::text`).
 
 use ruster_render::Theme;
 use ruster_render_gles::atlas::{layout_text, Atlas};
@@ -136,7 +137,7 @@ impl Chrome {
     /// pixel box, at `(x, y)` plus the layout's glyph offsets. Returns the run's
     /// advance width so callers can chain text to the right.
     ///
-    /// // TODO(Task 13): rasterize the atlas glyphs and draw real glyph textures
+    /// // TODO(next phase): rasterize the atlas glyphs and draw real glyph textures
     /// // via `TextureRenderElement` instead of solid-color blocks.
     fn text(
         &mut self,

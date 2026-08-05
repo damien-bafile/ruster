@@ -39,7 +39,7 @@ impl<B: Backend + 'static> XdgShellHandler for CompositorState<B> {
     }
 
     fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {
-        // TODO(Task 10+): track popups relative to their parent toplevel.
+        // TODO(next phase): track popups relative to their parent toplevel.
         tracing::debug!("new popup (untracked in Phase 0)");
     }
 

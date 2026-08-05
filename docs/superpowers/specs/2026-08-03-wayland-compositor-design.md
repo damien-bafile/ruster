@@ -69,7 +69,7 @@ udev/DRM or winit output ← vsync frame
 
 ## Roadmap (phased plans)
 
-- **Phase 0 (this plan): Compositor foundation.** Boot on DRM + winit-nested dev; map `xdg-shell` toplevels; composite client textures with glow; keyboard/pointer seat + basic focus; bare Ruster chrome (statusline + one editor frame + which-key skeleton); Lua config binds keys and launches clients.
+- **Phase 0 (this plan): Compositor foundation.** Boot on DRM + winit-nested dev; map `xdg-shell` toplevels; composite client textures; keyboard/pointer seat + basic focus; bare Ruster chrome (statusline + one editor frame + which-key skeleton); Lua config binds keys and launches clients. **— DONE (Phase 0 branch).** Phase 0 core is implemented on `phase0-compositor`; the glow renderer, software cursor, and glyph-texture rasterization named in the task list below were deferred — rendering uses Smithay's `GlesRenderer` (`glow` is not in the tree), glyphs are solid-color blocks, and the cursor is a no-op in winit mode. Those items land in Phase 2/4.
 - **Phase 1: Shell layout.** The i3 container-tree with editor-frames; workspaces; split/focus/resize/swap/floating; editor buffers as leaves; statusline reflects tree state.
 - **Phase 2: Control plane.** Full `ruster.wm.*` Lua API, WM commands, workspace persistence, which-key/mini-buffer parity, frame theming.
 - **Phase 3: Editor-in-desktop.** Multi-buffer editing, terminal leaf, LSP inside a tile, xdg-desktop-portal integration.

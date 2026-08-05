@@ -158,7 +158,7 @@ fn init_globals<B: Backend + 'static>(dh: &DisplayHandle, seat_name: String) -> 
     let mut seat_state = SeatState::new();
     let mut seat = seat_state.new_wl_seat(dh, seat_name);
     let pointer = seat.add_pointer();
-    // TODO(Task 12): load an XKB config from ~/.config/ruster/ when present.
+    // TODO(next phase): load an XKB config from ~/.config/ruster/ when present.
     let keyboard = seat
         .add_keyboard(XkbConfig::default(), 200, 25)
         .expect("failed to initialize the keyboard");
