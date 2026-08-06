@@ -151,9 +151,15 @@ where
             &mut verts,
         );
 
+        // The chrome batch is in painter's order — each panel's background is
+        // pushed before the accent segments and glyph boxes that sit on it —
+        // but a smithay element list is front-to-back. Reverse it, or every
+        // background occludes its own contents and the chrome renders as blank
+        // slabs.
         elements.extend(
             solid_elements_from_verts(&verts)
                 .into_iter()
+                .rev()
                 .map(ChromeRenderElements::Solid),
         );
     }

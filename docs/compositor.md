@@ -24,26 +24,35 @@ the platform and key documentation.
 
 ## Results on this machine
 
-Run on a headless box (no usable display server, no seatd/logind, no DRM
-session), `rustc 1.97.1`, at commit `a5f8d85`. The non-hardware rows were
-executed; the display/DRM rows could not be.
+Run nested under a Wayland session (`mango`, NVIDIA RTX 4090, GLES 3.2), on a
+`1873x1334` winit window. The DRM rows still need a free VT and are not covered
+here.
+
+An earlier pass of this table was recorded on a headless box and marked every
+display row ⛔ "not run". Those rows were the ones hiding the bugs: the first
+time the compositor was actually put on a screen it rendered upside down, drew
+no client at all, and killed its own client on startup. Treat a ⛔ here as an
+untested claim, not a passing one.
 
 | Criterion | Check | Result |
 | :--- | :--- | :--- |
 | Workspace builds | `cargo build` | ✅ passes |
 | All crates test clean | `cargo test` | ✅ passes |
 | Clippy clean | `cargo clippy --all-targets -- -D warnings` | ✅ passes |
-| Shell state unit tests | `cargo test -p ruster-shell` | ✅ 5 passed |
-| Render-gles unit tests | `cargo test -p ruster-render-gles` | ✅ 6 passed |
+| Shell state unit tests | `cargo test -p ruster-shell` | ✅ passes |
+| Render-gles unit tests | `cargo test -p ruster-render-gles` | ✅ passes |
 | Compositor unit tests | `cargo test -p ruster-compositor` | ✅ 30 passed |
-| Compositor unit tests (udev) | `cargo test -p ruster-compositor --features ruster-compositor/udev` | ✅ 34 passed |
-| Winit compositor boots | `WAYLAND_DISPLAY=invalid cargo run -p ruster-compositor` | ⚠️ graceful non-zero exit (`failed to initialize winit backend: Failed to initialize an event loop`, exit 1) — no display in this environment |
-| Client maps & composites | `just compositor` + auto-launched `foot` | ⛔ not run — requires a display |
-| Titlebar chrome updates on focus | focus `foot`, title shows in statusline | ⛔ not run — requires a display |
-| Lua keybinds work | `M-t` cycles WS label; `M-S-q` quits | ⛔ not run — requires a display (keybind config parsing is covered by `cargo test -p ruster-compositor`) |
-| Editor frame + which-key visible | visual check at 1080p | ⛔ not run — requires a display |
-| DRM boots (hardware) | `just compositor-drm` on a free VT | ⛔ not run — requires hardware + seatd/logind |
-| SIGINT quits cleanly | `Ctrl-C`, process exits 0 | ⛔ not run — requires a booted compositor |
+| Compositor unit tests (udev) | `cargo test -p ruster-compositor --features ruster-compositor/udev` | ✅ 36 passed |
+| Winit compositor boots | `just compositor` | ✅ boots, GLES renderer up, socket `wayland-1` |
+| Client maps & composites | `just compositor` + auto-launched `foot` | ✅ foot maps and composites fullscreen (needed `wl_data_device_manager`, `on_commit_buffer_handler`) |
+| Frame is the right way up | prompt reads top-left, not mirrored | ✅ fixed by `Transform::Flipped180` on the winit output |
+| Chrome contents visible | accent segment + glyph boxes over their backgrounds | ✅ fixed by reversing the chrome element order |
+| Editor frame + which-key visible | visual check | ✅ which-key top-left, editor frame centred with accent titlebar |
+| Chrome text legible | statusline reads `N  WS 1  <title>` | ⛔ by design — glyphs are solid blocks until the atlas rasterizes (`TODO(next phase)` on `Chrome::text`) |
+| Titlebar chrome updates on focus | focus `foot`, title shows in statusline | ⛔ not verifiable while text is solid blocks |
+| Lua keybinds work | `M-t` cycles WS label; `M-S-q` quits | ⛔ not run (keybind config parsing is covered by `cargo test -p ruster-compositor`) |
+| DRM boots (hardware) | `just compositor-drm` on a free VT | ⛔ not run — requires a free VT + seatd/logind |
+| SIGINT quits cleanly | `Ctrl-C`, process exits 0 | ⛔ not run |
 
 ## Running the real thing
 

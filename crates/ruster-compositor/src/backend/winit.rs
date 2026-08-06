@@ -12,7 +12,7 @@ use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
 use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
 use smithay::reexports::wayland_server::protocol::{wl_pointer, wl_surface::WlSurface};
 use smithay::reexports::wayland_server::DisplayHandle;
-use smithay::utils::{Logical, Point, Size, SERIAL_COUNTER as SCOUNTER};
+use smithay::utils::{Logical, Point, Size, Transform, SERIAL_COUNTER as SCOUNTER};
 use tracing::{debug, info};
 
 use crate::compositor::CompositorState;
@@ -92,9 +92,13 @@ impl RusterWinitData {
             },
         );
         output.create_global::<CompositorState<RusterWinitData>>(dh);
+        // `Flipped180` is not cosmetic: GL's origin is bottom-left while the
+        // compositor's coordinates are top-left, so without it every frame —
+        // client surfaces and chrome alike — renders upside down. anvil sets the
+        // same transform on its winit output.
         output.change_current_state(
             Some(mode),
-            None,
+            Some(Transform::Flipped180),
             Some(Scale::Fractional(scale)),
             Some((0, 0).into()),
         );

@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use smithay::backend::renderer::utils::on_commit_buffer_handler;
 use smithay::input::keyboard::{KeyboardHandle, XkbConfig};
 use smithay::input::pointer::PointerHandle;
 use smithay::input::{Seat, SeatHandler, SeatState};
@@ -25,6 +26,10 @@ use smithay::wayland::{
         CompositorState as WlCompositorState, SurfaceAttributes,
     },
     output::OutputHandler,
+    selection::data_device::{
+        ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
+    },
+    selection::SelectionHandler,
     shell::xdg::{ToplevelSurface, XdgShellState},
     shm::{ShmHandler, ShmState},
 };
@@ -48,6 +53,7 @@ pub struct CompositorState<B: Backend + 'static> {
     pub compositor_state: WlCompositorState,
     pub shm_state: ShmState,
     pub xdg_shell_state: XdgShellState,
+    pub data_device_state: DataDeviceState,
     pub seat_state: SeatState<CompositorState<B>>,
     pub seat: Seat<CompositorState<B>>,
     pub keyboard: KeyboardHandle<CompositorState<B>>,
@@ -105,6 +111,7 @@ struct InitGlobals<B: Backend + 'static> {
     compositor_state: WlCompositorState,
     shm_state: ShmState,
     xdg_shell_state: XdgShellState,
+    data_device_state: DataDeviceState,
     seat_state: SeatState<CompositorState<B>>,
     seat: Seat<CompositorState<B>>,
     keyboard: KeyboardHandle<CompositorState<B>>,
@@ -147,6 +154,7 @@ pub fn create_state<B: Backend + 'static>(
         compositor_state: globals.compositor_state,
         shm_state: globals.shm_state,
         xdg_shell_state: globals.xdg_shell_state,
+        data_device_state: globals.data_device_state,
         seat_state: globals.seat_state,
         seat: globals.seat,
         keyboard: globals.keyboard,
@@ -164,6 +172,11 @@ fn init_globals<B: Backend + 'static>(dh: &DisplayHandle, seat_name: String) -> 
     let compositor_state = WlCompositorState::new::<CompositorState<B>>(dh);
     let shm_state = ShmState::new::<CompositorState<B>>(dh, vec![]);
     let xdg_shell_state = XdgShellState::new::<CompositorState<B>>(dh);
+    // `wl_data_device_manager` carries the clipboard. It is not optional in
+    // practice: foot (and other toolkits) treat a missing manager as fatal and
+    // exit before they ever map a surface, so without this global no client
+    // reaches the compositor at all.
+    let data_device_state = DataDeviceState::new::<CompositorState<B>>(dh);
     let mut seat_state = SeatState::new();
     let mut seat = seat_state.new_wl_seat(dh, seat_name);
     let pointer = seat.add_pointer();
@@ -176,6 +189,7 @@ fn init_globals<B: Backend + 'static>(dh: &DisplayHandle, seat_name: String) -> 
         compositor_state,
         shm_state,
         xdg_shell_state,
+        data_device_state,
         seat_state,
         seat,
         keyboard,
@@ -209,6 +223,13 @@ impl<B: Backend + 'static> CompositorHandler for CompositorState<B> {
     }
 
     fn commit(&mut self, surface: &wl_surface::WlSurface) {
+        // Import the newly attached buffer into the surface's renderer state.
+        // Nothing else does this, and without it `SurfaceTree` has no texture to
+        // hand the renderer: the client maps, gets configures and frame
+        // callbacks, and still draws as an empty region. Runs for every surface,
+        // before the toplevel lookup below, because subsurfaces need it too.
+        on_commit_buffer_handler::<Self>(surface);
+
         // A toplevel becomes "mapped" once its client commits a buffer, and
         // unmapped again on a null-buffer commit. Map/unmap is tracked here
         // (see `CommitBuffer`); the render loop draws mapped surfaces in
@@ -303,6 +324,24 @@ impl<B: Backend + 'static> SeatHandler for CompositorState<B> {
     }
 }
 
+// Clipboard/DnD. Phase 0 takes smithay's default behaviour wholesale: the
+// default `SelectionHandler` methods already route client-to-client copy/paste
+// through the seat, and ruster has no server-side selection of its own yet, so
+// the DnD grab handlers stay empty.
+impl<B: Backend + 'static> SelectionHandler for CompositorState<B> {
+    type SelectionUserData = ();
+}
+
+impl<B: Backend + 'static> ClientDndGrabHandler for CompositorState<B> {}
+
+impl<B: Backend + 'static> ServerDndGrabHandler for CompositorState<B> {}
+
+impl<B: Backend + 'static> DataDeviceHandler for CompositorState<B> {
+    fn data_device_state(&self) -> &DataDeviceState {
+        &self.data_device_state
+    }
+}
+
 // One delegate per protocol we speak. Each wires the `Dispatch`/`GlobalDispatch`
 // impls for that protocol's objects through to the smithay state we hold above,
 // so the handler traits implemented in this file (and `XdgShellHandler` in
@@ -312,6 +351,7 @@ smithay::delegate_shm!(@<B: Backend + 'static> CompositorState<B>);
 smithay::delegate_output!(@<B: Backend + 'static> CompositorState<B>);
 smithay::delegate_seat!(@<B: Backend + 'static> CompositorState<B>);
 smithay::delegate_xdg_shell!(@<B: Backend + 'static> CompositorState<B>);
+smithay::delegate_data_device!(@<B: Backend + 'static> CompositorState<B>);
 
 /// Register the auto-named Wayland client listening socket with the compositor's
 /// event loop. Returns the socket name for clients to connect to (print it and
