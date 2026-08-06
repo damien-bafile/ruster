@@ -22,6 +22,7 @@ use smithay::backend::drm::output::{DrmOutput, DrmOutputManager, DrmOutputRender
 use smithay::backend::drm::{DrmDevice, DrmDeviceFd, DrmEvent, DrmNode};
 use smithay::backend::egl::context::ContextPriority;
 use smithay::backend::egl::{EGLContext, EGLDevice, EGLDisplay};
+use smithay::backend::libinput::{LibinputInputBackend, LibinputSessionInterface};
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::multigpu::gbm::GbmGlesBackend;
 use smithay::backend::renderer::multigpu::{GpuManager, MultiRenderer};
@@ -33,6 +34,7 @@ use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::drm::control::Device as _;
 use smithay::reexports::drm::control::{self, connector, crtc, ModeTypeFlags};
+use smithay::reexports::input::Libinput;
 use smithay::reexports::rustix::fs::OFlags;
 use smithay::reexports::wayland_server::Display;
 use smithay::utils::DeviceFd;
@@ -42,6 +44,7 @@ use crate::backend::Backend;
 use crate::compositor::{
     create_state, init_listener, install_signal_handlers, log_startup_header, CompositorState,
 };
+use crate::lua::{apply_config_to_shell, load_compositor_config};
 use crate::render::{
     collect_render_elements, send_frame_callbacks, ChromeRenderElements, CLEAR_COLOR,
 };
@@ -263,9 +266,31 @@ pub fn run_drm() -> anyhow::Result<()> {
     let mut state = create_state(display, event_loop.handle(), data);
     let socket_name = init_listener(&mut state);
     log_startup_header(env!("CARGO_PKG_VERSION"), "drm", &socket_name);
-    // TODO(next phase): spawn startup_clients under DRM (the winit path calls
-    // apply_config_to_shell from main.rs; DRM omits it until config-driven
-    // startup is wired in).
+    // Same config as the winit path: install the WM keybinds and launch the
+    // configured startup clients. On DRM this is the only way a client ever
+    // appears — there is no outer compositor to launch one into our socket by
+    // hand — so a boot without it renders an empty screen no keybinding can
+    // escape.
+    apply_config_to_shell(&mut state, load_compositor_config(), &socket_name);
+
+    // Input: libinput seatted to the same libseat session, so device fds are
+    // opened through the session and revoked on VT switch. Events go through
+    // the same backend-agnostic handlers the winit path uses.
+    let mut libinput_context = Libinput::new_with_udev::<LibinputSessionInterface<LibSeatSession>>(
+        state.backend_data.session.clone().into(),
+    );
+    libinput_context
+        .udev_assign_seat(&seat_name)
+        .map_err(|()| anyhow::anyhow!("failed to assign libinput to seat {seat_name}"))?;
+    state
+        .handle
+        .insert_source(
+            LibinputInputBackend::new(libinput_context.clone()),
+            |event, _, data: &mut CompositorState<RusterUdevData>| {
+                data.process_input_event(event);
+            },
+        )
+        .map_err(|err| anyhow::anyhow!("failed to insert libinput source: {err}"))?;
 
     // DRM device events: VBlanks mark the queued frame as presented and
     // schedule the next repaint; errors are logged.
@@ -283,7 +308,10 @@ pub fn run_drm() -> anyhow::Result<()> {
         .expect("failed to insert drm device source");
 
     // Session events: pause on VT switch away, resume the drm backend and
-    // repaint when the session becomes active again.
+    // repaint when the session becomes active again. libinput must be
+    // suspended alongside the drm device — its device fds are revoked by the
+    // session on VT switch, and dispatching against revoked fds is what turns
+    // a VT switch into a dead keyboard on the way back.
     state
         .handle
         .insert_source(
@@ -291,10 +319,14 @@ pub fn run_drm() -> anyhow::Result<()> {
             move |event, &mut (), data: &mut CompositorState<RusterUdevData>| match event {
                 SessionEvent::PauseSession => {
                     info!("pausing session");
+                    libinput_context.suspend();
                     data.backend_data.drm_output_manager.pause();
                 }
                 SessionEvent::ActivateSession => {
                     info!("resuming session");
+                    if let Err(err) = libinput_context.resume() {
+                        error!("failed to resume libinput context: {err:?}");
+                    }
                     if let Err(err) = data.backend_data.drm_output_manager.activate(false) {
                         error!("failed to activate drm backend: {err:?}");
                     }

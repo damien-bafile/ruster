@@ -10,7 +10,7 @@ path = "src/main.rs"
 [features]
 default = ["winit"]
 winit = ["smithay/backend_winit"]
-udev = ["smithay/backend_udev", "smithay/backend_drm", "smithay/backend_gbm", "smithay/backend_egl", "smithay/backend_session_libseat", "smithay/renderer_multi"]
+udev = ["smithay/backend_udev", "smithay/backend_drm", "smithay/backend_gbm", "smithay/backend_egl", "smithay/backend_libinput", "smithay/backend_session_libseat", "smithay/renderer_multi"]
 
 [dependencies]
 ruster-shell = { path = "../ruster-shell" }

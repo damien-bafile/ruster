@@ -31,8 +31,17 @@ here.
 An earlier pass of this table was recorded on a headless box and marked every
 display row ⛔ "not run". Those rows were the ones hiding the bugs: the first
 time the compositor was actually put on a screen it rendered upside down, drew
-no client at all, and killed its own client on startup. Treat a ⛔ here as an
-untested claim, not a passing one.
+no client at all, and killed its own client on startup. Later, the first time a
+key was actually pressed, it turned out the Lua config could not bind anything —
+the matcher recognised two hardcoded strings and discarded the configured action
+name. Treat a ⛔ here as an untested claim, not a passing one.
+
+Note on driving the nested compositor: `wtype` cannot do it. It uploads its own
+xkb keymap to the *host*, and a nested compositor receives raw keycodes which it
+resolves with its own keymap, so keysyms arrive scrambled — typing `echo hello`
+into the nested client produces `12342555553678396`. Injecting on a virtual
+evdev device instead makes the host see an ordinary keyboard and forward
+ordinary keycodes.
 
 | Criterion | Check | Result |
 | :--- | :--- | :--- |
@@ -41,8 +50,8 @@ untested claim, not a passing one.
 | Clippy clean | `cargo clippy --all-targets -- -D warnings` | ✅ passes |
 | Shell state unit tests | `cargo test -p ruster-shell` | ✅ passes |
 | Render-gles unit tests | `cargo test -p ruster-render-gles` | ✅ passes |
-| Compositor unit tests | `cargo test -p ruster-compositor` | ✅ 34 passed |
-| Compositor unit tests (udev) | `cargo test -p ruster-compositor --features ruster-compositor/udev` | ✅ 40 passed |
+| Compositor unit tests | `cargo test -p ruster-compositor` | ✅ 41 passed |
+| Compositor unit tests (udev) | `cargo test -p ruster-compositor --features ruster-compositor/udev` | ✅ 46 passed |
 | Winit compositor boots | `just compositor` | ✅ boots, GLES renderer up, socket `wayland-1` |
 | Client maps & composites | `just compositor` + auto-launched `foot` | ✅ foot maps and composites fullscreen (needed `wl_data_device_manager`, `on_commit_buffer_handler`) |
 | Frame is the right way up | prompt reads top-left, not mirrored | ✅ fixed by `Transform::Flipped180` on the winit output |
@@ -50,9 +59,12 @@ untested claim, not a passing one.
 | Editor frame + which-key visible | visual check | ✅ which-key top-left, editor frame centred with accent titlebar |
 | Chrome text legible | statusline reads `N  WS 1  <title>` | ✅ real glyphs, rasterized through `cosmic-text` into the atlas |
 | Titlebar chrome updates on focus | launch a second client, its title takes the statusline | ✅ statusline went from the shell's title to `RUSTER-FOCUS-TEST` when that client mapped and took focus |
-| Lua keybinds work | `M-t` cycles WS label; `M-S-q` quits | ⛔ not run — no key-injection tool on this box. Bind parsing and action dispatch are covered by `cargo test -p ruster-compositor`; the keypress path itself is unverified |
-| DRM boots (hardware) | `just compositor-drm` on a free VT | ⛔ not run — requires a free VT + seatd/logind |
+| Keyboard reaches the client | type into the nested client | ✅ keys are forwarded to the focused toplevel |
+| Lua user config is loaded | `~/.config/ruster/compositor.lua` binds a key | ✅ a config binding `M-F9`/`M-F10` was loaded and both binds took effect |
+| Lua keybinds work | cycle binding changes the WS label; quit binding exits 0 | ✅ injected `Super+F9` at the evdev level → statusline went `WS 1` → `WS 2`; `Super+F10` → process exits 0 |
 | SIGINT quits cleanly | `Ctrl-C`, process exits 0 | ✅ exits 0, logs `shutting down` |
+| DRM fails gracefully without a seat | `--drm` inside a Wayland session | ✅ exits 1 with `failed to initialize libseat session` plus the seatd/logind hint; display untouched |
+| DRM boots (hardware) | `just compositor-drm` on a free VT | ⛔ **not run** — libseat cannot open a session from inside another compositor, so this needs a real VT. Everything past that point is compile-verified only: GPU/output setup, libinput devices, the VT suspend/resume cycle, and startup clients under DRM have never executed |
 
 ## Running the real thing
 

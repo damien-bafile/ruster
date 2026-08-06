@@ -86,17 +86,83 @@ pub fn parse_config(source: &str) -> mlua::Result<LuaShell> {
     Ok(shell)
 }
 
+/// The modifier set a keybind string asks for. Matching is *exact* — a bind
+/// that does not name Shift does not fire while Shift is held, so `M-t` and
+/// `M-S-t` stay distinct bindings rather than the first shadowing the second.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BindMods {
+    pub logo: bool,
+    pub shift: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+}
+
+impl BindMods {
+    fn matches(&self, mods: &ModifiersState) -> bool {
+        self.logo == mods.logo
+            && self.shift == mods.shift
+            && self.ctrl == mods.ctrl
+            && self.alt == mods.alt
+    }
+}
+
+/// Split an Emacs-style bind string into its modifiers and its key name.
+///
+/// `M-` is Mod4 (Super/Logo), `S-` Shift, `C-` Control, `A-` Alt; the remainder
+/// is the key, matched case-insensitively against the keysym name (`q`, `t`,
+/// `F9`, `space`). Returns `None` for an empty key or an unknown modifier
+/// prefix, so a typo in a user's config is ignored rather than binding
+/// something surprising.
+pub fn parse_bind(bind: &str) -> Option<(BindMods, &str)> {
+    let mut mods = BindMods::default();
+    let mut rest = bind.trim();
+    // A single trailing token is the key, even when it is itself a modifier
+    // letter — `M-S` binds Super+S, not a modifier-only chord.
+    while let Some((prefix, tail)) = rest.split_once('-') {
+        if tail.is_empty() {
+            break;
+        }
+        match prefix {
+            "M" => mods.logo = true,
+            "S" => mods.shift = true,
+            "C" => mods.ctrl = true,
+            "A" => mods.alt = true,
+            _ => return None,
+        }
+        rest = tail;
+    }
+    (!rest.is_empty()).then_some((mods, rest))
+}
+
 impl Action {
-    /// Map a single keybind string plus the pressed key/modifier state to an
-    /// action. `M` is Mod4 (Super/Logo), `S` is Shift. `"M-S-q"` requires
-    /// logo+shift+`q`; `"M-t"` requires logo+`t` (deliberately *not* shift, so
-    /// `M-S-t` stays distinct). Unrecognized binds return `None`.
-    pub fn from_keybind(bind: &str, mods: &ModifiersState, key: &str) -> Option<Action> {
-        match bind {
-            "M-S-q" if mods.logo && mods.shift && key == "q" => Some(Action::Quit),
-            "M-t" if mods.logo && !mods.shift && key == "t" => Some(Action::CycleWorkspace),
+    /// Map an action name from a config to an [`Action`]. Underscores, dashes
+    /// and case are all accepted so `cycle_workspace`, `cycle-workspace` and
+    /// `Cycle Workspace` name the same thing.
+    pub fn from_name(name: &str) -> Option<Action> {
+        match name
+            .trim()
+            .to_ascii_lowercase()
+            .replace(['_', '-'], " ")
+            .as_str()
+        {
+            "quit" => Some(Action::Quit),
+            "cycle workspace" => Some(Action::CycleWorkspace),
             _ => None,
         }
+    }
+
+    /// Whether `bind` describes the given key and modifier state.
+    ///
+    /// The bind string alone no longer picks the action — the config's action
+    /// name does (see [`Action::from_name`]). Previously this matched the two
+    /// literal strings `"M-S-q"` and `"M-t"` and derived the action from the
+    /// bind itself, which meant a config could neither bind a different key nor
+    /// point a bind at a different action: both halves of every configured pair
+    /// were ignored.
+    pub fn keybind_matches(bind: &str, mods: &ModifiersState, key: &str) -> bool {
+        parse_bind(bind).is_some_and(|(want, want_key)| {
+            want.matches(mods) && want_key.eq_ignore_ascii_case(key)
+        })
     }
 }
 
@@ -148,24 +214,18 @@ mod tests {
     }
 
     #[test]
-    fn keybind_matches_produce_actions() {
+    fn keybind_matches_the_chord_it_names() {
         let mods = ModifiersState {
             logo: true,
             shift: true,
             ..Default::default()
         };
-        assert_eq!(
-            Action::from_keybind("M-S-q", &mods, "q"),
-            Some(Action::Quit)
-        );
+        assert!(Action::keybind_matches("M-S-q", &mods, "q"));
         let no_shift = ModifiersState {
             logo: true,
             ..Default::default()
         };
-        assert_eq!(
-            Action::from_keybind("M-t", &no_shift, "t"),
-            Some(Action::CycleWorkspace)
-        );
+        assert!(Action::keybind_matches("M-t", &no_shift, "t"));
     }
 
     #[test]
@@ -174,23 +234,88 @@ mod tests {
             logo: true,
             ..Default::default()
         };
-        assert_eq!(
-            Action::from_keybind("M-t", &logo, "t"),
-            Some(Action::CycleWorkspace)
-        );
+        assert!(Action::keybind_matches("M-t", &logo, "t"));
         let logo_shift = ModifiersState {
             logo: true,
             shift: true,
             ..Default::default()
         };
-        assert_eq!(Action::from_keybind("M-t", &logo_shift, "t"), None);
+        assert!(!Action::keybind_matches("M-t", &logo_shift, "t"));
         let no_logo = ModifiersState {
             shift: true,
             ..Default::default()
         };
-        assert_eq!(Action::from_keybind("M-t", &no_logo, "t"), None);
+        assert!(!Action::keybind_matches("M-t", &no_logo, "t"));
         // A different key does not trigger the cycle.
-        assert_eq!(Action::from_keybind("M-t", &logo, "q"), None);
+        assert!(!Action::keybind_matches("M-t", &logo, "q"));
+    }
+
+    #[test]
+    fn binds_are_not_limited_to_the_two_built_in_chords() {
+        // The whole point of the config: a user can name a key the compositor
+        // has no hardcoded knowledge of. Before the bind parser landed, every
+        // string other than "M-S-q"/"M-t" silently matched nothing.
+        let logo = ModifiersState {
+            logo: true,
+            ..Default::default()
+        };
+        assert!(Action::keybind_matches("M-F9", &logo, "F9"));
+        assert!(
+            Action::keybind_matches("M-f9", &logo, "F9"),
+            "case-insensitive"
+        );
+        let ctrl_alt = ModifiersState {
+            ctrl: true,
+            alt: true,
+            ..Default::default()
+        };
+        assert!(Action::keybind_matches("C-A-space", &ctrl_alt, "space"));
+        assert!(!Action::keybind_matches("C-A-space", &logo, "space"));
+    }
+
+    #[test]
+    fn bind_parsing_rejects_junk() {
+        assert_eq!(
+            parse_bind("M-t"),
+            Some((
+                BindMods {
+                    logo: true,
+                    ..Default::default()
+                },
+                "t"
+            ))
+        );
+        assert_eq!(parse_bind("X-t"), None, "unknown modifier");
+        assert_eq!(parse_bind(""), None);
+        // A trailing modifier letter is a key, not a modifier.
+        assert_eq!(
+            parse_bind("M-S"),
+            Some((
+                BindMods {
+                    logo: true,
+                    ..Default::default()
+                },
+                "S"
+            ))
+        );
+    }
+
+    #[test]
+    fn action_names_map_from_config_spelling() {
+        assert_eq!(Action::from_name("quit"), Some(Action::Quit));
+        assert_eq!(
+            Action::from_name("cycle workspace"),
+            Some(Action::CycleWorkspace)
+        );
+        assert_eq!(
+            Action::from_name("cycle_workspace"),
+            Some(Action::CycleWorkspace)
+        );
+        assert_eq!(
+            Action::from_name("Cycle-Workspace"),
+            Some(Action::CycleWorkspace)
+        );
+        assert_eq!(Action::from_name("explode"), None);
     }
 
     #[test]

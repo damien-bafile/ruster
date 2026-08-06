@@ -223,6 +223,24 @@ impl<B: Backend + 'static> CompositorHandler for CompositorState<B> {
     }
 
     fn commit(&mut self, surface: &wl_surface::WlSurface) {
+        // Read the buffer assignment BEFORE importing it. This ordering is load
+        // bearing: `on_commit_buffer_handler` calls `attrs.buffer.take()`, so
+        // once it has run the surface reports no buffer this commit and the
+        // map/unmap detection below sees `Unchanged` forever. A toplevel then
+        // never enters `self.mapped` — it still renders, because that path keys
+        // off `focus`, but `update_keyboard_focus` and `surface_under` both
+        // filter on `mapped`, so the client silently receives no keyboard or
+        // pointer input at all.
+        let commit_buffer = with_states(surface, |states| {
+            CommitBuffer::from(
+                &states
+                    .cached_state
+                    .get::<SurfaceAttributes>()
+                    .current()
+                    .buffer,
+            )
+        });
+
         // Import the newly attached buffer into the surface's renderer state.
         // Nothing else does this, and without it `SurfaceTree` has no texture to
         // hand the renderer: the client maps, gets configures and frame
@@ -261,15 +279,6 @@ impl<B: Backend + 'static> CompositorHandler for CompositorState<B> {
             }
         }
         let was_mapped = self.mapped.contains(&id);
-        let commit_buffer = with_states(surface, |states| {
-            CommitBuffer::from(
-                &states
-                    .cached_state
-                    .get::<SurfaceAttributes>()
-                    .current()
-                    .buffer,
-            )
-        });
         let is_mapped = commit_buffer.is_mapped(was_mapped);
         match (was_mapped, is_mapped) {
             (false, true) => {
