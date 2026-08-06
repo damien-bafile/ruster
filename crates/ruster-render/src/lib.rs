@@ -1,3 +1,7 @@
+pub mod script;
+
+pub use script::{FrameDigest, ScriptedRenderer, WindowDigest};
+
 /// Editing mode for statusline coloring.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum UIMode {
