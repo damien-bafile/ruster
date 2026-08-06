@@ -1,0 +1,40 @@
+─ main.rs ──────────────────────────────────────────────────────────────────[Debug: PAUSED] F5:Continue F10:Next F11:Ste
+   7 //! feature failing rather than the fixture drifting. The two that mattCall stack
+   8 //!                                                                     0  demo_project::main  /private/var/folders
+   9 //!   line 20 — `pub fn origin`, three `w` motions from column 1 to the 1  <fn() as core::ops::function::FnOnce<()>
+  10 //!             which is the hover target                               2  std::sys::backtrace::__rust_begin_short_
+  11 //!   line 31 — the first statement of `main`, the breakpoint target    3  std::rt::lang_start::<()>::{closure#0}
+  12                                                                         4  <&dyn core::ops::function::Fn<(), Output
+  13 /// A point in the plane. `:hover` over this name is the hover capture. 5  std::panicking::catch_unwind::do_call::<
+  14 #[derive(Debug, Clone, Copy)]                                           6  std::panicking::catch_unwind::<i32, &dyn
+  15 pub struct Point {                                                      7  std::panic::catch_unwind::<&dyn core::op
+  16     pub x: i32,                                                         8  std::rt::lang_start_internal::{closure#0
+  17     pub y: i32,                                                         9  std::panicking::catch_unwind::do_call::<
+  18 }                                                                      10  std::panicking::catch_unwind::<isize, st
+  19                                                                        11  std::panic::catch_unwind::<std::rt::lang
+  20 impl Point {                                                           12  std::rt::lang_start_internal [opt]  /rus
+  21     pub fn origin() -> Point {                                         13  std::rt::lang_start::<()>  /Users/daimyo
+  22         Point { x: 0, y: 0 }                                           14  main  /var/folders/br/7b_4tlhn30j4dp_ttk
+  23     }                                                                  15  start  /usr/lib/dyld`start:1673
+  24
+  25     // TODO: translate by a vector rather than a scalar                Locals
+  26     pub fn shifted(self, by: i32) -> Point {
+  27         Point { x: self.x + by, y: self.y + by }                       Globals
+  28     }
+  29 }                                                                      Registers
+  30                                                                          General Purpose Registers =
+  31 /// The hover target.                                                    Floating Point Registers =
+  32 ///                                                                      Exception State Registers =
+  33 /// `p` sits deliberately in **column 1**: `:N` lands the cursor there and
+  34 /// nowhere else, so a hover capture driven by a line number alone needs a
+  35 /// symbol in that column. Every alternative — counting `w` motions, or setting
+  36 /// the cursor from Lua — depends on something that drifts when this file is
+  37 /// edited, and drifts into a capture that says "No hover info" and looks like
+  38 /// the feature is broken.
+  39 pub fn identity(p: Point) -> Point {
+  40 p
+  41 }
+  42
+  43 fn main() {
+● 44     let start = Point::origin();
+ -- NORMAL --  [proj] │main.rs                                                                                91%  44,1

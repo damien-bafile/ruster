@@ -38,6 +38,15 @@ GUI_H=800
 TUI_COLS=120
 TUI_ROWS=40
 
+# Keystroke pacing for the GUI half. The lead is how long the raylib window
+# takes to exist and become focusable; the step is one osascript round-trip plus
+# the app's own frame pacing.
+KEY_LEAD_MS=1800
+KEY_STEP_MS=500
+
+# Floor for the TUI settle. Below this the capture races the app's first frame.
+TUI_MIN_WAIT_MS=2500
+
 # ---------------------------------------------------------------------------
 # Surface definitions
 # ---------------------------------------------------------------------------
@@ -47,6 +56,11 @@ TUI_ROWS=40
 #   CONF  — extra config.lua groups. Prefer this over `:set` for anything the
 #           capture merely needs *on*: `:set` echoes a confirmation toast, which
 #           then sits in the artifact pretending to be part of the surface.
+#   DEFER — ex commands run partway through the wait instead of before the first
+#           frame. Anything depending on a live service belongs here: the LUA
+#           queue is applied before frame one, so a `:hover` in it asks a
+#           language server that has not finished indexing and gets an honest
+#           null back, which renders as "No hover info" and reads as a bug.
 #   KEYS  — keys to send after the app settles (tmux notation); needs real input
 #   OPEN  — what to open: "fixture" (default), "repo" (a dirty scratch repo),
 #           "none" (bare launch, for the dashboard), or "self" (this checkout)
@@ -65,7 +79,7 @@ SURFACES=(
 NUMBERS="gutter = { number = true }"
 
 spec() {
-  LUA=""; CONF=""; KEYS=""; OPEN="fixture"; NEEDS=""; WAIT=1200
+  LUA=""; CONF=""; DEFER=""; KEYS=""; OPEN="fixture"; NEEDS=""; WAIT=1200
   case "$1" in
     dashboard)      OPEN="none" ;;
     editor)         CONF="$NUMBERS" ;;
@@ -74,16 +88,16 @@ spec() {
                     LUA=":Gitsigns|:TodoList" ;;
     sidebar)        OPEN="self"; LUA=":sidebar" ;;
     dired)          OPEN="self"; LUA=":Dired" ;;
-    ibuffer)        LUA=":ls" ;;
+    ibuffer)        LUA=":e $FIXTURE|:ls" ;;
     whichkey)       KEYS="Space" ;;
     whichkey-accent) KEYS="Space" ;;
     cmdline)        KEYS=": e Space / t m p / Tab" ;;
     flash)          KEYS="f" ;;
-    multicursor)    LUA=":16"; KEYS="C-n" ;;
+    multicursor)    CONF="$NUMBERS"; LUA=":52"; KEYS="w C-n C-n" ;;
     git-status)     OPEN="repo"; LUA=":Git" ;;
     git-staged)     OPEN="repo"; LUA=":GitStaged" ;;
     diffview)       OPEN="repo"; LUA=":Diffview" ;;
-    trouble)        NEEDS="rust-analyzer"; OPEN="self"; LUA=":Trouble"; WAIT=6000 ;;
+    trouble)        NEEDS="rust-analyzer"; OPEN="project"; DEFER=":Trouble"; WAIT=14000 ;;
     todos)          LUA=":TodoList" ;;
     settings)       LUA=":settings" ;;
     themes)         LUA=":Themes" ;;
@@ -95,8 +109,10 @@ spec() {
     noice-panel)    LUA=":echo one|:echo two|:Noice" ;;
     noice-popup)    LUA=":echo popped|:Noice popup" ;;
     dialog)         LUA="@dialog" ;;
-    hover)          NEEDS="rust-analyzer"; OPEN="self"; LUA=":16|:hover"; WAIT=8000 ;;
-    debugger)       NEEDS="lldb-dap"; OPEN="self"; LUA=":db_toggle|:debug"; WAIT=8000 ;;
+    hover)          NEEDS="rust-analyzer"; OPEN="project"; CONF="$NUMBERS"
+                    LUA=":40"; DEFER=":hover"; WAIT=16000 ;;
+    debugger)       NEEDS="lldb-dap"; OPEN="project"; CONF="$NUMBERS"
+                    LUA=":44|:db_toggle"; DEFER=":debug"; WAIT=12000 ;;
     terminal)       LUA=":term"; WAIT=2500 ;;
     sessions)       LUA=":SessionSave|:messages" ;;
     gotoline)       CONF="$NUMBERS"; LUA=":16" ;;
@@ -129,13 +145,25 @@ require_binary() {
 # macOS refuses to create a window for a locked session: GLFW enumerates zero
 # monitors and raylib panics with "Attempting to create window failed!", which
 # says nothing about the real cause. Catch it here and say the real thing.
+#
+# The `ioreg` output is read into a variable rather than piped into `grep -q`:
+# under `set -o pipefail`, `grep -q` exits as soon as it matches, `ioreg` dies of
+# SIGPIPE, and the pipeline reports failure — so the guard silently concluded the
+# screen was unlocked and let raylib panic anyway, which is the exact outcome it
+# exists to prevent.
 require_unlocked_screen() {
   if [ "$(uname)" != "Darwin" ]; then return 0; fi
-  if ioreg -n Root -d1 -a 2>/dev/null | grep -q -A1 CGSSessionScreenIsLocked; then
-    if ioreg -n Root -d1 -a 2>/dev/null | grep -A1 CGSSessionScreenIsLocked | grep -q "<true/>"; then
-      die "the screen is locked — unlock it and re-run; the GUI cannot open a window otherwise"
-    fi
-  fi
+  local state
+  state="$(ioreg -n Root -d1 -a 2>/dev/null | grep -A1 CGSSessionScreenIsLocked || true)"
+  case "$state" in
+    *"<true/>"*)
+      die "the screen is locked — unlock it and re-run.
+
+macOS will not create a window for a locked session: GLFW enumerates zero
+monitors and raylib panics with \"Attempting to create window failed!\", which
+says nothing about the cause. The screen re-locks on an idle timer, so a long
+capture run can hit this partway through." ;;
+  esac
 }
 
 # ---------------------------------------------------------------------------
@@ -164,6 +192,17 @@ make_scratch_repo() {
   printf '\npub fn unstaged_addition() -> i32 {\n    42\n}\n' >> "$dir/demo.rs"
 }
 
+# A buildable copy of the demo cargo project, for the surfaces that need a live
+# service. Built, because `:debug` launches `target/debug/<binary>` and there is
+# nothing to launch otherwise; copied out of the repo, because a debug build
+# inside `docs/` would leave a `target/` directory behind.
+make_scratch_project() {
+  local dir="$1"
+  mkdir -p "$(dirname "$dir")"
+  cp -R "$OUT/fixtures/demo-project" "$dir"
+  ( cd "$dir" && cargo build -q 2>/dev/null ) || echo "  note: fixture project did not build; the debugger surface will be empty" >&2
+}
+
 # Resolve OPEN into (workdir, target) for the run.
 resolve_target() {
   local surface="$1" scratch="$2"
@@ -171,6 +210,8 @@ resolve_target() {
     none)    WORKDIR="$ROOT"; TARGET="" ;;
     self)    WORKDIR="$ROOT"; TARGET="$ROOT/crates/ruster-render/src/script.rs" ;;
     repo)    make_scratch_repo "$scratch/repo"; WORKDIR="$scratch/repo"; TARGET="$scratch/repo/demo.rs" ;;
+    project) make_scratch_project "$scratch/proj"
+             WORKDIR="$scratch/proj"; TARGET="$scratch/proj/src/main.rs" ;;
     fixture) mkdir -p "$scratch/work"; cp "$FIXTURE" "$scratch/work/demo.rs"
              WORKDIR="$scratch/work"; TARGET="$scratch/work/demo.rs" ;;
     *) die "unknown OPEN kind: $OPEN" ;;
@@ -203,6 +244,17 @@ EOF
       printf 'ruster.cmd(%s)\n' "\"$cmd\"" >> "$cfg/ruster/init.lua"
     done
   fi
+  # Deferred commands fire two thirds of the way into the wait: late enough for
+  # a language server to have indexed, early enough for the answer to be on
+  # screen when the capture lands.
+  if [ -n "$DEFER" ]; then
+    local at=$(( WAIT * 2 / 3 ))
+    local IFS='|'
+    for cmd in $DEFER; do
+      printf 'ruster.defer(%s, function() ruster.cmd(%s) end)\n' "$at" "\"$cmd\"" \
+        >> "$cfg/ruster/init.lua"
+    done
+  fi
   [ -n "$extra" ] && printf '%s\n' "$extra" >> "$cfg/ruster/init.lua"
   return 0
 }
@@ -222,7 +274,13 @@ capture_tui() {
   # like. Fixed -x/-y for the same reason.
   "$TMUX_BIN" -f /dev/null new-session -d -s "$sess" -x "$TUI_COLS" -y "$TUI_ROWS" \
     "cd '$WORKDIR' && XDG_CONFIG_HOME='$cfg' '$BIN' --tui $TARGET"
-  sleep "$(awk "BEGIN{print $WAIT/1000}")"
+  # Floor the settle: process start, config load and the first crossterm frame
+  # cost more than the surface itself, and a capture taken a beat early comes
+  # back showing the buffer with no overlay — which reads as a missing feature
+  # rather than as a race. The dialog surface was caught doing exactly that.
+  local wait_ms="$WAIT"
+  [ "$wait_ms" -lt "$TUI_MIN_WAIT_MS" ] && wait_ms="$TUI_MIN_WAIT_MS"
+  sleep "$(awk "BEGIN{print $wait_ms/1000}")"
 
   if [ -n "$KEYS" ]; then
     # shellcheck disable=SC2086 — KEYS is deliberately word-split into tmux args.
@@ -256,10 +314,23 @@ capture_gui() {
   # plain `:q` would only close a window when a surface opened a second one —
   # which is why the old recipe relied on `timeout` and could not tell a clean
   # finish from a hang.
-  local quit_at=$((WAIT + 900))
+  #
+  # Keystroke surfaces have to push the shot out past the keys. The window has
+  # to exist before System Events can aim at it, and every keystroke is a
+  # separate osascript round-trip, so a WAIT tuned for a command-driven surface
+  # would photograph the frame *before* the keys landed — which looks exactly
+  # like the surface failing to appear.
+  local shot_at="$WAIT"
+  if [ -n "$KEYS" ]; then
+    local nkeys
+    nkeys=$(printf '%s\n' $KEYS | wc -l | tr -d ' ')
+    local keys_done=$((KEY_LEAD_MS + nkeys * KEY_STEP_MS + 700))
+    [ "$keys_done" -gt "$shot_at" ] && shot_at="$keys_done"
+  fi
+  local quit_at=$((shot_at + 900))
   local extra
   extra="$(cat <<EOF
-ruster.defer($WAIT, function() ruster.cmd(":screenshot $dest") end)
+ruster.defer($shot_at, function() ruster.cmd(":screenshot $dest") end)
 ruster.defer($quit_at, function() ruster.cmd(":q!") end)
 EOF
 )"
@@ -267,14 +338,24 @@ EOF
 
   rm -f "$dest"
   local budget=$(( (quit_at / 1000) + 10 ))
-  local rc=0
+  local rc=0 keys_rc=0
   if [ -n "$KEYS" ]; then
     ( cd "$WORKDIR" && XDG_CONFIG_HOME="$cfg" timeout "$budget" "$BIN" $TARGET >/dev/null 2>&1 ) &
     local pid=$!
-    "$ROOT/scripts/gui-keys.sh" $KEYS || rc=$?
+    sleep "$(awk "BEGIN{print $KEY_LEAD_MS/1000}")"
+    # shellcheck disable=SC2086 — KEYS is deliberately word-split into arguments.
+    "$ROOT/scripts/gui-keys.sh" $KEYS || keys_rc=$?
     wait $pid || rc=$?
   else
     ( cd "$WORKDIR" && XDG_CONFIG_HOME="$cfg" timeout "$budget" "$BIN" $TARGET >/dev/null 2>&1 ) || rc=$?
+  fi
+
+  # An undriven capture is worse than none: it looks like a successful shot of
+  # the surface, and the surface is not in it. Throw it away.
+  if [ "$keys_rc" -ne 0 ]; then
+    rm -f "$dest"
+    echo "  gui: FAILED (keystrokes were not delivered; see scripts/gui-keys.sh)" >&2
+    return 1
   fi
 
   if [ ! -s "$dest" ]; then

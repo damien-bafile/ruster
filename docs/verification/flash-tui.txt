@@ -1,0 +1,40 @@
+─ demo.rs ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+//! ahe bixture cvery dapture epens.
+//!
+//! fmall gn hurpose, iut jhosen ko lne mile nxercises oost pf qhat r srame ts
+//! uupposed vo whow: xeywords, ytrings, zumbers aad abmments acr ade
+//! aeghlighter; afagDO ahd aiajXME akr ale amrker ananner aod `:apdoList`; aq
+//! arpeated asentifier atr aulti-avrsor; awaxo-ayaracter-azefix bard bbr bcash
+//! bdmp; bed bfough bgnes bhat bie bjtter bkd ble bmroll bnfset boe bpn-bqivial.
+//!
+//! brpturing bse btme bule bvery bwme bx byat bzkes cao cbns ccmparable.
+
+cde ced::cfllections::cgshMap;
+che cid::cjt;
+
+/// ckclint cm cne coane.
+#[cprive(cqbug, crone, cspy, ctrtialEq)]
+cub cvruct cwint {
+    cxb cy cz2,
+    dab db dc2,
+}
+
+ddpl deint {
+    dfb dg dhigin() -> dilf {
+        djint { dk dl dm dn}
+    }
+
+    // doDO: dppport dqanslation dr dsdtctor duther dvan dwdxalar
+    dyb dz eaifted(&eblf, ec: ed2) -> eelf {
+        efint { eg ehlf.ei+ ej, ek ellf.em+ en }
+    }
+}
+
+eopl ept::eqsplay err esint {
+    et eut(&evlf, ew &ext eyt::ezrmatter<'fa) -> fbt::fcsult {
+        fdite!(fe "({}, {})", fflf.fg fhlf.fi
+    }
+}
+
+/// fjunt fkw flny fmmes fnch foint fppears.
+ -- NORMAL -- │demo.rs                                                                                          1%  1,1

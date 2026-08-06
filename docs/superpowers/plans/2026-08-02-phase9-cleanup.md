@@ -310,6 +310,95 @@ toast renders top-right.
 
 ---
 
+## Task 4b: Defects the Phase 10 sweep found
+
+Phase 10 built `scripts/verify-capture.sh` and captured all 32 surfaces in both
+backends. Phase 10's rule is that it records defects and Phase 9 fixes them, so
+they land here. Each has a committed artifact under `docs/verification/` and a
+one-line repro.
+
+**Blocking — a surface that does not render at all**
+
+- [ ] **The settings page draws nothing in the GUI.** `:settings` renders in the
+      TUI (`settings-tui.txt`) and the app builds the view — `drive.rs`'s
+      `the_settings_page_opens_with_populated_groups` asserts `FrameState.settings`
+      is `Some` with populated groups — but `settings-gui.png` shows an
+      unobscured buffer. The raylib backend has a draw block for it at
+      `crates/ruster-render-raylib/src/lib.rs:1054`, so this is that block not
+      producing output rather than a missing feature. Reproduced in isolation
+      with nothing else in the `init.lua`. This is a straight violation of the
+      parity constraint.
+      *Repro:* `just verify settings`
+
+- [ ] **`:Noice popup` produces nothing, in either backend.** Shipped in
+      `b731b40`. `notify.push_to(.., BackendKind::Popup)` with `.with_persistent()`,
+      `backend_enabled(Popup)` is unconditionally true, `new()` seeds the map for
+      every kind, and `notification_floats` chains `active(Popup)` into the float
+      list — every piece unit-tested — yet no float appears. Reproduced with a
+      one-line `init.lua`. `:Noice` (the stacking panel) is also silent, though
+      that one may be correct: it only shows notifications routed to the `Notify`
+      backend, and `:echo` routes to `Mini`.
+      *Repro:* `just verify noice-popup`
+
+- [ ] **`:hover` shows no float against a live rust-analyzer.** `hover-tui.txt`
+      is captured against the buildable `fixtures/demo-project/` with the cursor
+      on `p` in column 1 of line 40 and `:hover` deferred ~11s to let indexing
+      finish. No float, and no "No hover info" either. Worth checking against
+      `675f2cf` (the root fix) and `2f87364` (the `ServerKey` re-keying) —
+      hover is the surface both were about.
+      *Repro:* `just verify hover`
+
+**Off-by-one and inconsistency**
+
+- [ ] **`QuickfixItem.line` has no convention and its two producers disagree.**
+      Diagnostics convert to 1-based (`line: d.start.line as usize + 1`,
+      `app.rs:6383`); TODO markers do not (`line: m.line`, `app.rs:7341`), and
+      `TodoMarker.line` is documented 0-based. `open_path` does
+      `line.saturating_sub(1)`, i.e. expects 1-based — so every `:TodoList` entry
+      displays one low *and* jumps one line short. `col` has the same fault.
+      Visible in `todos-tui.txt`: markers on fixture lines 5, 26 and 40 are shown
+      as `4:19`, `25:7` and `39:4`. `:Trouble` shows the same marker correctly,
+      so the two panels disagree about the same data. Fix by documenting the
+      field and converting at the producer.
+      *Repro:* `just verify todos` and compare against `docs/verification/fixtures/demo.rs`
+
+- [ ] **`:echo` never reaches the message log.** `CmdAction::Echo` calls
+      `notify.push` only (`app.rs:4739`); `push_message` — which feeds the
+      `*messages*` buffer — is never called. So `:echo`, `:echom` and `:echoe`
+      show a toast that expires and leave nothing behind, and `:messages` opens
+      an empty buffer. `messages-tui.txt` is that empty buffer.
+      *Repro:* `just verify messages`
+
+**Layout**
+
+- [ ] **GUI statusline groups overwrite each other when a window is narrow.**
+      With the sidebar open at 800px the row reads `[rustersscrenipt.rn]s` —
+      `[ruster-render]` and `script.rs` drawn into the same cells. Visible at
+      1200px too whenever two windows share the row (`diffview-gui.png`:
+      `[re*diff working: demo.rs*`). The TUI truncates instead, cleanly, down to
+      80 columns. The GUI places each group at an absolute offset with no
+      clipping against its neighbour.
+      *Repro:* set `GUI_W=800` in `scripts/verify-capture.sh`, then
+      `just verify sidebar`
+
+**Cosmetic**
+
+- [ ] **The dashboard advertises `:FuzzySearch`, which does not exist.** No
+      branch of `parse_cmdline` accepts it; the real command is `:Files`. Named
+      in both backends' welcome panels
+      (`ruster-render-raylib/src/lib.rs:597`, `ruster-tui/src/widgets/mod.rs:693`).
+      `commands_discoverable.rs` did not catch it because it checks commands the
+      parser accepts, not strings the UI offers.
+      *Repro:* `docs/verification/dashboard-tui.txt`
+
+- [ ] **The debugger call stack is 30+ `std` frames deep.** `debugger-tui.txt`
+      shows `demo_project::main` at frame 0 followed by `lang_start`,
+      `catch_unwind` and friends filling the dock. Correct, but the user's own
+      frames are one line out of thirty.
+      *Repro:* `just verify debugger`
+
+---
+
 ## Task 5: `:Music` (mpd) — **decide at execution**
 
 Phase 7 Task 4. Control an already-running `mpd` on `localhost:6600` over its
