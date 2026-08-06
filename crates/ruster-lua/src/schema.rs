@@ -260,7 +260,7 @@ pub fn schema() -> Vec<SettingSpec> {
     add("general", "editmode", "Editing paradigm", Enum(&["neovim", "emacs"]), e("neovim"), "Modal (neovim) or modeless (emacs)");
     add("general", "editorconfig", "Honor .editorconfig", Bool, b(true), "Apply project .editorconfig files");
     add("general", "line_ending", "Default line ending", Enum(&["lf", "crlf"]), e("lf"), "Line ending for new files");
-    add("general", "theme", "Theme name", Text, t("default"), "Named color theme");
+    add("general", "theme", "Theme name", Text, t("catppuccin-mocha"), "Named color theme");
 
     // --- gui ---
     add("gui", "font", "Font", Text, t(""), "Font file/path; empty = auto-detect a Nerd font");

@@ -202,6 +202,30 @@ const MOCHA: &[(&str, &str)] = &[
     ("mantle", "#181825"), ("crust", "#11111b"),
 ];
 
+/// The Catppuccin Mocha UI roles — what ruster looks like out of the box.
+///
+/// Shared between the `catppuccin-mocha` built-in and [`Config::default`], so
+/// the shipped default and the theme it names cannot drift apart.
+pub fn mocha_roles() -> ThemeColors {
+    ThemeColors {
+        bg: Rgb::new(30, 30, 46), fg: Rgb::new(205, 214, 244),
+        gutter: Rgb::new(108, 112, 134), gutter_bg: Rgb::new(30, 30, 46),
+        cursor_bg: Rgb::new(245, 224, 220), cursor_fg: Rgb::new(30, 30, 46),
+        selection_bg: Rgb::new(88, 91, 112), selection_fg: Rgb::new(205, 214, 244),
+        divider: Rgb::new(49, 50, 68), statusline_fg: Rgb::new(205, 214, 244),
+        statusline_bg: Rgb::new(49, 50, 68),
+        accent: Rgb::new(203, 166, 247), accent_fg: Rgb::new(30, 30, 46),
+        whichkey_bg: Rgb::new(30, 30, 46), whichkey_fg: Rgb::new(205, 214, 244),
+        whichkey_key: Rgb::new(203, 166, 247),
+        cmdline_bg: Rgb::new(30, 30, 46), cmdline_fg: Rgb::new(205, 214, 244),
+        mode_normal_bg: Rgb::new(49, 50, 68), mode_normal_fg: Rgb::new(205, 214, 244),
+        mode_insert_bg: Rgb::new(30, 60, 45), mode_insert_fg: Rgb::new(205, 214, 244),
+        mode_visual_bg: Rgb::new(55, 35, 70), mode_visual_fg: Rgb::new(205, 214, 244),
+        mode_cmdline_bg: Rgb::new(49, 50, 68), mode_cmdline_fg: Rgb::new(205, 214, 244),
+        mode_emacs_bg: Rgb::new(40, 45, 60), mode_emacs_fg: Rgb::new(205, 214, 244),
+    }
+}
+
 const LATTE: &[(&str, &str)] = &[
     ("rosewater", "#dc8a78"), ("flamingo", "#dd7878"), ("pink", "#ea76cb"), ("mauve", "#8839ef"),
     ("red", "#d20f39"), ("maroon", "#e64553"), ("peach", "#fe640b"), ("yellow", "#df8e1d"),
@@ -356,26 +380,7 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
         ),
         (
             "catppuccin-mocha",
-            Theme {
-                palette: palette(MOCHA),
-                roles: ThemeColors {
-                    bg: Rgb::new(30, 30, 46), fg: Rgb::new(205, 214, 244),
-                    gutter: Rgb::new(108, 112, 134), gutter_bg: Rgb::new(30, 30, 46),
-                    cursor_bg: Rgb::new(245, 224, 220), cursor_fg: Rgb::new(30, 30, 46),
-                    selection_bg: Rgb::new(88, 91, 112), selection_fg: Rgb::new(205, 214, 244),
-                    divider: Rgb::new(49, 50, 68), statusline_fg: Rgb::new(205, 214, 244),
-                    statusline_bg: Rgb::new(49, 50, 68),
-                    accent: Rgb::new(203, 166, 247), accent_fg: Rgb::new(30, 30, 46),
-                    whichkey_bg: Rgb::new(30, 30, 46), whichkey_fg: Rgb::new(205, 214, 244),
-                    whichkey_key: Rgb::new(203, 166, 247),
-                    cmdline_bg: Rgb::new(30, 30, 46), cmdline_fg: Rgb::new(205, 214, 244),
-                    mode_normal_bg: Rgb::new(49, 50, 68), mode_normal_fg: Rgb::new(205, 214, 244),
-                    mode_insert_bg: Rgb::new(30, 60, 45), mode_insert_fg: Rgb::new(205, 214, 244),
-                    mode_visual_bg: Rgb::new(55, 35, 70), mode_visual_fg: Rgb::new(205, 214, 244),
-                    mode_cmdline_bg: Rgb::new(49, 50, 68), mode_cmdline_fg: Rgb::new(205, 214, 244),
-                    mode_emacs_bg: Rgb::new(40, 45, 60), mode_emacs_fg: Rgb::new(205, 214, 244),
-                },
-            },
+            Theme { palette: palette(MOCHA), roles: mocha_roles() },
         ),
         (
             "catppuccin-latte",
@@ -799,7 +804,7 @@ impl Default for Config {
             line_ending: "lf".into(),
             number: false,
             relativenumber: false,
-            theme: "default".into(),
+            theme: "catppuccin-mocha".into(),
             gui_font: None,
             font_size: 20,
             line_height: 24,
@@ -811,7 +816,8 @@ impl Default for Config {
             cursor_kind: "block".into(),
             cursor_anim_enabled: true,
             cursor_anim_speed: 12.0,
-            colors: ThemeColors::default(),
+            // Matches `theme` above: the fallback and the named default agree.
+            colors: mocha_roles(),
             color_overrides: ColorOverrides::default(),
             timeoutlen: 300,
             whichkey_enabled: true,
@@ -864,4 +870,41 @@ pub fn syntax_to_lua(
     }
     s.push_str("}\n");
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The shipped default, in three places that have to agree: the setting
+    /// schema (what `:settings` and a generated `config.lua` show), `Config`
+    /// itself, and a built-in theme actually named that.
+    #[test]
+    fn the_default_theme_is_catppuccin_mocha() {
+        assert_eq!(Config::default().theme, "catppuccin-mocha");
+
+        let schema_default = crate::schema::schema()
+            .into_iter()
+            .find(|s| s.group == "general" && s.key == "theme")
+            .map(|s| s.default)
+            .expect("general.theme is in the schema");
+        assert_eq!(schema_default, crate::schema::SettingValue::Text("catppuccin-mocha".into()));
+
+        assert!(
+            builtin_themes().iter().any(|(n, _)| *n == "catppuccin-mocha"),
+            "the default has to name a theme that exists"
+        );
+    }
+
+    /// `resolve_theme_colors` only reaches `Config::default().colors` when no
+    /// theme file and no built-in match. Those colours should still be the
+    /// ones the default theme would have given, not a different palette.
+    #[test]
+    fn the_fallback_colours_match_the_default_theme() {
+        let (_, mocha) = builtin_themes()
+            .into_iter()
+            .find(|(n, _)| *n == "catppuccin-mocha")
+            .expect("built-in exists");
+        assert_eq!(Config::default().colors, mocha.roles);
+    }
 }

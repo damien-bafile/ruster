@@ -11,7 +11,7 @@ macOS** (or `$XDG_CONFIG_HOME/ruster/` if set), `%APPDATA%\ruster\` on Windows:
 
 ```lua
 -- config.lua (generated; grouped by area)
-ruster.config.general  = { tabstop = 4, editmode = "neovim", theme = "default" }
+ruster.config.general  = { tabstop = 4, editmode = "neovim", theme = "catppuccin-mocha" }
 ruster.config.gui      = { font_size = 20, cursor_kind = "block" }
 ruster.config.gutter   = { number = false, relativenumber = false }
 ruster.config.whichkey = { enabled = true, timeoutlen = 300 }
@@ -40,7 +40,8 @@ Launching `ruster <directory>` opens the file explorer (dired) at that location.
 
 Colors come from a **theme**, not individual settings. Built-in themes (`default`,
 `gruvbox`, `tokyonight`, `nord`, `catppuccin-mocha`, `starship`) are written to
-`~/.config/ruster/themes/<name>.lua` on first run; pick one with `general.theme = "gruvbox"`. Each theme file is a Lua chunk
+`~/.config/ruster/themes/<name>.lua` on first run. **`catppuccin-mocha` is the
+default**; pick another with `general.theme = "gruvbox"`. Each theme file is a Lua chunk
 returning a palette you can edit or copy:
 
 ```lua
@@ -141,7 +142,7 @@ Keys are addressed as `group.key`.
 | `general.editmode` | enum | "neovim" | Editing paradigm: `neovim` (modal) or `emacs` (modeless) |
 | `general.editorconfig` | boolean | true | Honor project `.editorconfig` files |
 | `general.line_ending` | enum | "lf" | Default line ending for new files: `lf` or `crlf` |
-| `general.theme` | string | "default" | Theme name (see [Themes](#themes)) |
+| `general.theme` | string | "catppuccin-mocha" | Theme name (see [Themes](#themes)) |
 | `gui.font` | string | _(auto)_ | GUI font: absolute path or a font-dir filename. Unset tries common Nerd/mono fonts. **A Nerd Font is required for icon glyphs** — see [GUI font & icons](#gui-font--icons) |
 | `gui.font_size` | integer | 20 | Glyph size in px |
 | `gui.line_height` | integer | 24 | Row height in px |
