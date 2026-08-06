@@ -3314,7 +3314,7 @@ impl App {
                     }
                 }
                 ServerMessage::Response { id, result, .. } => {
-                    if let Some(action) = self.lsp.take_pending(&routed.lang, id) {
+                    if let Some(action) = self.lsp.take_pending(&routed.key, id) {
                         self.handle_lsp_response(action, result);
                     }
                 }
@@ -3404,8 +3404,11 @@ impl App {
         })
     }
 
-    /// The active buffer's (lang, uri, cursor position) for an LSP request.
-    fn active_lsp_target(&self) -> Option<(String, String, LspPosition)> {
+    /// The active buffer's (server, uri, cursor position) for an LSP request.
+    ///
+    /// The server comes from the document rather than being re-derived, so a
+    /// request always goes to the process that was told about this file.
+    fn active_lsp_target(&self) -> Option<(ruster_lsp::ServerKey, String, LspPosition)> {
         let active = self.ws.borrow().active_buffer();
         let doc = self.lsp.doc(active)?;
         let (content, head) = {
@@ -3414,20 +3417,20 @@ impl App {
             (d.buffer.to_string(), w.primary_head())
         };
         let pos = ruster_lsp::offset_to_position(&content, head);
-        Some((doc.lang.clone(), doc.uri.clone(), pos))
+        Some((doc.key.clone(), doc.uri.clone(), pos))
     }
 
     /// Send an LSP request built from the active position and record its action.
     /// Returns whether the request was actually sent.
     fn lsp_request(&mut self, method: &str, params: serde_json::Value, action: LspAction) -> bool {
-        let lang = match self.active_lsp_target() {
-            Some((lang, _, _)) => lang,
+        let key = match self.active_lsp_target() {
+            Some((key, _, _)) => key,
             None => {
                 self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Lsp, "No language server for this buffer".to_string()));
                 return false;
             }
         };
-        if self.lsp.request(&lang, method, params, action) {
+        if self.lsp.request(&key, method, params, action) {
             true
         } else {
             self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Lsp, "Language server still starting…".to_string()));

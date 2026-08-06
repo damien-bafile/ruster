@@ -13,7 +13,7 @@ pub mod results;
 pub mod transport;
 
 pub use client::LspClient;
-pub use manager::{LspManager, RoutedMessage};
+pub use manager::{LspManager, RoutedMessage, ServerKey};
 pub use results::{
     apply_edits, parse_call_hierarchy_calls, parse_call_hierarchy_prepare, parse_diagnostics,
     parse_document_symbols, parse_hover, parse_locations, parse_text_edits, parse_workspace_edit,
