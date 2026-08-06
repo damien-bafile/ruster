@@ -520,7 +520,7 @@ It has two modes, like Neovim's terminal:
 | Key | Action |
 |-----|--------|
 | _any key_ | Forwarded to the shell (`Ctrl-C`, arrows, Tab-completion, …) |
-| `Ctrl-\` | Switch to Terminal-Normal |
+| `Ctrl-\` | Switch to Terminal-Normal (`Ctrl-4` too — the same byte) |
 
 **Terminal-Normal** — the visible output is mirrored into a read-only buffer, so the
 normal editor keys work over it:
@@ -530,7 +530,17 @@ normal editor keys work over it:
 | `h j k l` `w` `b` `gg` `G` … | Move over the terminal output |
 | `v` / `V` then `y` | Visually select and yank terminal output |
 | `:` commands, `Ctrl-w` nav | Run commands / switch windows |
-| `i` `a` `Enter` | Resume Terminal-Insert (back to the shell) |
+| `i` `a` `I` `A` `Enter` | Resume Terminal-Insert (back to the shell) |
+
+For evil / emacs-libvterm style controls, make `Esc` the switch:
+
+```lua
+ruster.config.terminal = { escape = "<Esc>" }
+```
+
+The default is `Ctrl-\` so that `Esc` still reaches programs running inside the
+shell (vim, less, fzf); `terminal.escape` takes any key in the
+`ruster.keymap.set` notation. See [config-reference.md](config-reference.md).
 
 The terminal resizes to its window automatically and is closed when ruster quits.
 On Windows it needs ConPTY (Windows 10 1809+); see [windows.md](windows.md).

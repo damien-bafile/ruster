@@ -162,6 +162,7 @@ Keys are addressed as `group.key`.
 | `terminal.shell` | string | _(platform)_ | `:term` program. Unset → `$SHELL` / `%COMSPEC%` (→ `/bin/sh` / `cmd.exe`) |
 | `terminal.scrollback` | integer | 10000 | Terminal scrollback lines |
 | `terminal.default_mode` | enum | "insert" | New terminal starts in `insert` or `normal` |
+| `terminal.escape` | string | `<C-\>` | Key that leaves Terminal-Insert. `<Esc>` gives evil-style controls; see below |
 | `dired.show_hidden` | boolean | false | Show dotfiles in the file explorer |
 | `sidebar.auto_open` | boolean | false | Open the sidebar automatically on startup |
 | `noice.mini` | boolean | true | Show transient toasts in the cmdline row |
@@ -242,10 +243,29 @@ terminal emulator's font instead, not this setting.
 `:term` (or `:terminal`) opens a shell in the current window. It has two modes like
 Neovim's terminal: **Terminal-Insert** (keys go to the shell) and **Terminal-Normal**
 (`Ctrl-\`), where the output is mirrored into a read-only buffer so vim motions, visual
-selection and yank work over it; `i` / `a` / `Enter` resume the shell. The terminal
-resizes to its window automatically and is torn down on quit. See
+selection and yank work over it; `i` / `a` / `I` / `A` / `Enter` resume the shell. The
+terminal resizes to its window automatically and is torn down on quit. See
 [keybindings.md](keybindings.md) for the full key list and [windows.md](windows.md) for
 the Windows/ConPTY requirements.
+
+### Choosing the escape key
+
+`terminal.escape` names the key that leaves Terminal-Insert, in the same
+notation as `ruster.keymap.set`:
+
+```lua
+ruster.config.terminal = { escape = "<Esc>" }   -- evil / vterm-style
+```
+
+The default `<C-\>` keeps `Esc` available to programs running *inside* the
+shell — vim, less, fzf — which is why Neovim and emacs-libvterm both default
+away from `Esc`. Binding `<Esc>` gives you modal switching that matches the rest
+of the editor, at the cost of never being able to send an `Esc` to the shell.
+`<C-o>` and `<C-]>` are middle grounds.
+
+One quirk worth knowing: in a terminal, `Ctrl-\` and `Ctrl-4` are the *same
+byte* (`0x1C`), so both leave insert when `escape` is `<C-\>`. Nothing can tell
+them apart without the kitty keyboard protocol, which ruster does not request.
 
 > **Keys & commands:** all keybindings and `:` commands live in the
 > [Commands & Keybindings reference](keybindings.md). This page covers only the

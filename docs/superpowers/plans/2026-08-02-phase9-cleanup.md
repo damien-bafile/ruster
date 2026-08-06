@@ -319,8 +319,8 @@ one-line repro.
 
 **Blocking — the embedded terminal is a one-way door**
 
-- [ ] **`Ctrl-\` cannot be produced by either backend, so nothing exits
-      Terminal-Insert.** `handle_terminal_key` (`app.rs:5182`) forwards every key
+- [x] **`Ctrl-\` cannot be produced by either backend, so nothing exits
+      Terminal-Insert.** *(fixed)* `handle_terminal_key` (`app.rs:5182`) forwards every key
       to the PTY and returns, with one escape: `KeyCode::Char('\\')` +
       `CONTROL`. Neither backend can generate that event.
       - **TUI:** `Ctrl-\` sends byte `0x1C`, and crossterm 0.28 decodes
@@ -342,12 +342,19 @@ one-line repro.
       `ctrl_backslash_defocuses_the_terminal` — by synthesising a `KeyEvent`
       neither backend can produce. They are the reason this survived.
 
-      Fix: accept the event each backend actually delivers (`Char('4')` +
-      `CONTROL` on the crossterm path; map `KEY_BACKSLASH` in raylib), and give
-      the escape a second, plainly typeable binding. Then drive it through
-      `drive.rs` rather than a synthesised key.
-      *Repro:* `:term`, then press `Ctrl-\` — the statusline stays `-- TERMINAL --`.
-      Verified empirically for `Ctrl-\`, `Ctrl-4` and `Escape`.
+      **Fixed.** `is_terminal_escape` accepts what each backend actually sends,
+      `modified_char_for_key` maps the bracket family, and `terminal.escape`
+      makes the key configurable (`<Esc>` for evil/vterm-style controls).
+      `I`/`A` join `i`/`a`/`Enter` on the way back in. Verified live: in the
+      TUI, `Ctrl-\` round-trips TERMINAL → NORMAL → `gg` moves → `i` →
+      TERMINAL; in both backends `terminal.escape = "<Esc>"` does the same.
+
+      **Still unverified:** `Ctrl-\` in the GUI *by hand*. System Events
+      cannot deliver Ctrl chords to the raylib window — `C-w v` leaves the
+      editor in VISUAL mode, so the `v` lands and the `C-w` does not — which
+      means the capture harness can neither confirm nor refute it. The
+      `KEY_BACKSLASH` mapping it needed was unambiguously absent and is now
+      present with tests, but a human keypress is the only proof.
 
 - [ ] **Terminal scrollback is retained and unreachable.** `terminal.scrollback`
       defaults to 10000 lines and alacritty_terminal keeps them, but

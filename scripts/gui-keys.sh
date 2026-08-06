@@ -17,6 +17,15 @@
 # The headless equivalent — ScriptedRenderer in crates/ruster-render/src/script.rs
 # — is what the test suite uses and is far more reliable. Prefer it for
 # behaviour. This script is for the cases where the pixels are the point.
+#
+# KNOWN LIMIT: Ctrl chords do not arrive. Measured, not assumed — sending
+# `C-w v` to the GUI leaves it in VISUAL mode, so the `v` landed and the `C-w`
+# did not. The raylib backend reads modifiers with `is_key_down(KEY_*_CONTROL)`
+# and pairs them with whatever `get_key_pressed` returns in the same frame, and
+# a synthesised keystroke does not hold the modifier across that window. So a
+# `C-` capture here proves nothing either way: it cannot confirm a chord works
+# and it cannot show one is broken. Test Ctrl chords in the TUI, where tmux
+# `send-keys` puts real bytes through a PTY, or by hand.
 
 set -euo pipefail
 
@@ -61,6 +70,19 @@ focus_ruster() {
   sleep 0.4
 }
 
+# Escape a literal for an AppleScript string: backslash first, then quote.
+#
+# Without this, sending `\` produced `keystroke "\"` — an unterminated string —
+# and osascript failed with a syntax error. `\` is the embedded terminal's
+# escape key, so the one character this script most needed to send was the one
+# it could not.
+as_quote() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  printf '%s' "$s"
+}
+
 # tmux notation -> an AppleScript statement.
 send_one() {
   local k="$1"
@@ -74,9 +96,9 @@ send_one() {
     Down)              osascript -e 'tell application "System Events" to key code 125' ;;
     Left)              osascript -e 'tell application "System Events" to key code 123' ;;
     Right)             osascript -e 'tell application "System Events" to key code 124' ;;
-    C-*)               osascript -e "tell application \"System Events\" to keystroke \"${k#C-}\" using control down" ;;
-    M-*)               osascript -e "tell application \"System Events\" to keystroke \"${k#M-}\" using option down" ;;
-    *)                 osascript -e "tell application \"System Events\" to keystroke \"$k\"" ;;
+    C-*)               osascript -e "tell application \"System Events\" to keystroke \"$(as_quote "${k#C-}")\" using control down" ;;
+    M-*)               osascript -e "tell application \"System Events\" to keystroke \"$(as_quote "${k#M-}")\" using option down" ;;
+    *)                 osascript -e "tell application \"System Events\" to keystroke \"$(as_quote "$k")\"" ;;
   esac
 }
 

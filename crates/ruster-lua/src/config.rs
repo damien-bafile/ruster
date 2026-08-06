@@ -564,6 +564,8 @@ pub struct Config {
     pub terminal_scrollback: u32,
     /// Initial mode for a new terminal: "insert" or "normal".
     pub terminal_default_mode: String,
+    /// Key notation (`<C-\\>`, `<Esc>`, …) that leaves Terminal-Insert.
+    pub terminal_escape: String,
     /// Show dotfiles in dired by default.
     pub dired_show_hidden: bool,
     /// `git.signs` — show added/changed/removed markers in the gutter.
@@ -630,6 +632,7 @@ impl Config {
             (("terminal", "shell"), Text(self.terminal_shell.clone().unwrap_or_default())),
             (("terminal", "scrollback"), Int(self.terminal_scrollback as i64)),
             (("terminal", "default_mode"), Enum(self.terminal_default_mode.clone())),
+            (("terminal", "escape"), Text(self.terminal_escape.clone())),
             (("dired", "show_hidden"), Bool(self.dired_show_hidden)),
             (("sidebar", "auto_open"), Bool(self.sidebar_auto_open)),
             (("session", "autoload"), Bool(self.session_autoload)),
@@ -721,6 +724,9 @@ impl Config {
             terminal_shell: ostr("terminal", "shell"),
             terminal_scrollback: u("terminal", "scrollback", d.terminal_scrollback),
             terminal_default_mode: st("terminal", "default_mode").unwrap_or(d.terminal_default_mode),
+            terminal_escape: st("terminal", "escape")
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(d.terminal_escape),
             dired_show_hidden: bl("dired", "show_hidden", d.dired_show_hidden),
             git_signs: bl("git", "signs", d.git_signs),
             todo_keywords: st("todo", "keywords")
@@ -829,6 +835,7 @@ impl Default for Config {
             terminal_shell: None,
             terminal_scrollback: 10000,
             terminal_default_mode: "insert".into(),
+            terminal_escape: "<C-\\>".into(),
             dired_show_hidden: false,
             git_signs: true,
             todo_keywords: ruster_syntax_default_todo_keywords(),

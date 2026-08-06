@@ -48,6 +48,12 @@ or a split on screen.)
 drives the TUI; `scripts/gui-keys.sh` drives the GUI through macOS System
 Events, which needs Accessibility permission for whatever runs it.
 
+**Ctrl chords do not reach the GUI through System Events.** Sending `C-w v`
+leaves the editor in VISUAL mode — the `v` lands, the `C-w` does not. A `C-`
+capture from `gui-keys.sh` is therefore evidence of nothing in either
+direction. Verify Ctrl chords in the TUI, where tmux puts real bytes through a
+PTY, or by hand.
+
 For *behaviour* rather than pixels, prefer the headless layer:
 `ScriptedRenderer` (`crates/ruster-render/src/script.rs`) plays a key script
 through the real `run_gui` loop and records every frame, and

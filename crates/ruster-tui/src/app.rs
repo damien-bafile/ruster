@@ -511,6 +511,40 @@ fn plain_lines(content: &str) -> Vec<StyledLine> {
 
 /// Map a crossterm key event onto a terminal `Key`/`Mods` for PTY encoding.
 /// Returns `None` for keys with no terminal representation.
+/// Whether `ck` is the key that leaves Terminal-Insert, per `terminal.escape`.
+///
+/// The `Ctrl-\` case is why this is a function rather than a `matches!`. A
+/// terminal in the legacy encoding sends `Ctrl-\` as the single byte `0x1C`,
+/// and crossterm decodes `0x1C..=0x1F` as `Ctrl-4`..`Ctrl-7`
+/// (`crossterm/src/event/sys/unix/parse.rs`) — so the event that arrives is
+/// `Char('4') + CONTROL` and a test for `Char('\\')` can never match. The two
+/// are the same byte on the wire and cannot be told apart, so both are
+/// accepted. Nothing here requests the kitty keyboard protocol, which is the
+/// only thing that would distinguish them.
+///
+/// This was not a theoretical gap: it made the embedded terminal a one-way
+/// door in both backends, while two unit tests asserted the escape worked by
+/// synthesising a `KeyEvent` neither backend can produce.
+fn is_terminal_escape(ck: crossterm::event::KeyEvent, escape: &str) -> bool {
+    let Some(want) = ruster_lua::parse_lua_key(escape) else { return false };
+    let ctrl = ck.modifiers.contains(KeyModifiers::CONTROL);
+    match want {
+        ruster_lua::LuaKey::Ctrl('\\') => {
+            ctrl && matches!(ck.code, KeyCode::Char('\\') | KeyCode::Char('4'))
+        }
+        ruster_lua::LuaKey::Ctrl(c) => {
+            ctrl && matches!(ck.code, KeyCode::Char(got) if got.eq_ignore_ascii_case(&c))
+        }
+        ruster_lua::LuaKey::Esc => ck.code == KeyCode::Esc,
+        ruster_lua::LuaKey::Char(c) => {
+            !ctrl && matches!(ck.code, KeyCode::Char(got) if got == c)
+        }
+        other => {
+            ruster_lua::keymap::lua_key_to_crossterm(&other).code == ck.code
+        }
+    }
+}
+
 fn term_key_from_crossterm(ck: crossterm::event::KeyEvent) -> Option<(TKey, TMods)> {
     let m = ck.modifiers;
     let mods = TMods {
@@ -1961,7 +1995,14 @@ impl App {
             if self.terminal_focused {
                 self.handle_terminal_key(ck, bid);
                 return;
-            } else if matches!(ck.code, KeyCode::Char('i') | KeyCode::Char('a') | KeyCode::Enter) {
+            } else if matches!(
+                ck.code,
+                KeyCode::Char('i' | 'a' | 'I' | 'A') | KeyCode::Enter
+            ) && !ck.modifiers.contains(KeyModifiers::CONTROL)
+            {
+                // `I`/`A` alongside `i`/`a`: over a terminal mirror they all
+                // mean the same thing — hand the keyboard back to the shell —
+                // and a vim user reaches for whichever is in muscle memory.
                 self.terminal_focused = true;
                 return;
             }
@@ -5179,11 +5220,9 @@ impl App {
     /// Forward one key press to a focused terminal's PTY. `Ctrl-\` switches to
     /// Terminal-Normal mode (vim motions / visual / yank over the output).
     fn handle_terminal_key(&mut self, ck: crossterm::event::KeyEvent, bid: BufferId) {
-        if ck.modifiers.contains(KeyModifiers::CONTROL) {
-            if let KeyCode::Char('\\') = ck.code {
-                self.enter_terminal_normal(bid);
-                return;
-            }
+        if is_terminal_escape(ck, &self.config.terminal_escape) {
+            self.enter_terminal_normal(bid);
+            return;
         }
         if let Some((key, mods)) = term_key_from_crossterm(ck) {
             let bytes = encode_key(key, mods);
@@ -9681,7 +9720,10 @@ mod tests {
         }
 
         // Ctrl-\ enters Terminal-Normal: the grid is mirrored into the buffer.
-        a.handle_key(CtKey::new(KeyCode::Char('\\'), KeyModifiers::CONTROL));
+        // Sent as `Char('4')`, which is what crossterm actually delivers for
+        // the 0x1C byte — see `is_terminal_escape`. Asserting on `Char('\\')`
+        // here is what let the escape stay broken in both backends.
+        a.handle_key(CtKey::new(KeyCode::Char('4'), KeyModifiers::CONTROL));
         assert!(!a.terminal_focused, "Ctrl-\\ leaves insert");
         let buf = a.ws.borrow().buffers.get(id).unwrap().buffer.to_string();
         assert!(buf.contains("hello"), "buffer mirrors terminal output: {buf:?}");
@@ -9702,11 +9744,47 @@ mod tests {
         a.terminals.insert(id, TerminalSession::spawn("cat", &[], 40, 6, 1000).expect("spawn"));
         a.terminal_focused = true;
 
-        a.handle_key(CtKey::new(KeyCode::Char('\\'), KeyModifiers::CONTROL));
+        a.handle_key(CtKey::new(KeyCode::Char('4'), KeyModifiers::CONTROL));
         assert!(!a.terminal_focused, "Ctrl-\\ leaves terminal focus");
-        // `i` re-enters.
-        a.handle_key(CtKey::new(KeyCode::Char('i'), KeyModifiers::NONE));
-        assert!(a.terminal_focused, "i re-focuses the terminal");
+        // `i` re-enters, and so do `a`, `I`, `A` and Enter.
+        for c in ['i', 'a', 'I', 'A'] {
+            a.terminal_focused = false;
+            a.handle_key(CtKey::new(KeyCode::Char(c), KeyModifiers::NONE));
+            assert!(a.terminal_focused, "{c} re-focuses the terminal");
+        }
+    }
+
+    /// Both encodings of `Ctrl-\` are accepted, because a terminal in the
+    /// legacy mode sends one byte (0x1C) for both and crossterm reports it as
+    /// `Ctrl-4`. Testing only `Char('\\')` is what let the escape stay dead in
+    /// both backends while two tests claimed it worked.
+    #[test]
+    fn the_terminal_escape_accepts_what_the_backends_actually_send() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let ctrl = KeyModifiers::CONTROL;
+        let none = KeyModifiers::NONE;
+
+        assert!(is_terminal_escape(CtKey::new(KeyCode::Char('4'), ctrl), "<C-\\>"));
+        assert!(is_terminal_escape(CtKey::new(KeyCode::Char('\\'), ctrl), "<C-\\>"));
+        assert!(!is_terminal_escape(CtKey::new(KeyCode::Char('4'), none), "<C-\\>"));
+        assert!(!is_terminal_escape(CtKey::new(KeyCode::Char('a'), ctrl), "<C-\\>"));
+    }
+
+    /// `terminal.escape` is honoured, so an evil-style setup can bind Esc.
+    #[test]
+    fn the_terminal_escape_key_is_configurable() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let ctrl = KeyModifiers::CONTROL;
+        let none = KeyModifiers::NONE;
+
+        assert!(is_terminal_escape(CtKey::new(KeyCode::Esc, none), "<Esc>"));
+        assert!(!is_terminal_escape(CtKey::new(KeyCode::Char('4'), ctrl), "<Esc>"));
+
+        assert!(is_terminal_escape(CtKey::new(KeyCode::Char('o'), ctrl), "<C-o>"));
+        assert!(!is_terminal_escape(CtKey::new(KeyCode::Esc, none), "<C-o>"));
+
+        // Garbage in the setting must not silently swallow every key.
+        assert!(!is_terminal_escape(CtKey::new(KeyCode::Char('4'), ctrl), "nonsense"));
     }
 
     #[test]

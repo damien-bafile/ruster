@@ -295,6 +295,7 @@ pub fn schema() -> Vec<SettingSpec> {
     add("terminal", "shell", "Shell", Text, t(""), "Program for :term; empty = platform default");
     add("terminal", "scrollback", "Scrollback", Int { min: 0, max: 1_000_000 }, i(10000), "Lines of history retained");
     add("terminal", "default_mode", "Start mode", Enum(&["insert", "normal"]), e("insert"), "Initial mode for a new terminal");
+    add("terminal", "escape", "Escape key", Text, t("<C-\\>"), "Key that leaves Terminal-Insert for Terminal-Normal; set to <Esc> for evil-style controls, at the cost of Esc no longer reaching programs in the shell");
 
     // --- dired ---
     add("dired", "show_hidden", "Show hidden files", Bool, b(false), "Show dotfiles in the file explorer");
