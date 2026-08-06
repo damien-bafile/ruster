@@ -317,6 +317,50 @@ backends. Phase 10's rule is that it records defects and Phase 9 fixes them, so
 they land here. Each has a committed artifact under `docs/verification/` and a
 one-line repro.
 
+**Blocking — the embedded terminal is a one-way door**
+
+- [ ] **`Ctrl-\` cannot be produced by either backend, so nothing exits
+      Terminal-Insert.** `handle_terminal_key` (`app.rs:5182`) forwards every key
+      to the PTY and returns, with one escape: `KeyCode::Char('\\')` +
+      `CONTROL`. Neither backend can generate that event.
+      - **TUI:** `Ctrl-\` sends byte `0x1C`, and crossterm 0.28 decodes
+        `0x1C..=0x1F` as `Char('4'..='7')` + `CONTROL`
+        (`crossterm-0.28.1/src/event/sys/unix/parse.rs:110`). The app asks for
+        `Char('\\')`, which that path never yields. Nothing requests the kitty
+        keyboard protocol (no `PushKeyboardEnhancementFlags` anywhere), so the
+        legacy encoding is the only one in play.
+      - **GUI:** `modified_char_for_key` (`ruster-render-raylib/src/key.rs:41`)
+        has no `KEY_BACKSLASH` arm and `map_raylib_key` does not map it either,
+        so with Ctrl held the backslash key produces no event at all.
+
+      Consequence: after `:term` focuses the terminal, every keystroke goes to
+      the shell. No `:` commands, no `Ctrl-w` window nav, no way back to the
+      file. The only exits are `exit` in the shell or quitting ruster.
+
+      Two tests assert this works —
+      `ctrl_backslash_enters_terminal_normal_and_mirrors_output` and
+      `ctrl_backslash_defocuses_the_terminal` — by synthesising a `KeyEvent`
+      neither backend can produce. They are the reason this survived.
+
+      Fix: accept the event each backend actually delivers (`Char('4')` +
+      `CONTROL` on the crossterm path; map `KEY_BACKSLASH` in raylib), and give
+      the escape a second, plainly typeable binding. Then drive it through
+      `drive.rs` rather than a synthesised key.
+      *Repro:* `:term`, then press `Ctrl-\` — the statusline stays `-- TERMINAL --`.
+      Verified empirically for `Ctrl-\`, `Ctrl-4` and `Escape`.
+
+- [ ] **Terminal scrollback is retained and unreachable.** `terminal.scrollback`
+      defaults to 10000 lines and alacritty_terminal keeps them, but
+      `TerminalSession::snapshot` (`ruster-terminal/src/lib.rs:219`) reads only
+      `grid.screen_lines()` — the visible viewport — so Terminal-Normal mirrors
+      one screen. `PageUp`/`PageDown` are forwarded to the shell rather than
+      scrolling the viewport. There is no way to see output that has scrolled
+      off, which makes the setting a promise the editor cannot keep.
+
+- [ ] **Terminal-Normal is a frozen copy, not a live view.**
+      `enter_terminal_normal` snapshots the grid into a buffer once; the shell
+      keeps running behind it and the text goes stale with no indication.
+
 **Blocking — a surface that does not render at all**
 
 - [ ] **The settings page draws nothing in the GUI.** `:settings` renders in the
