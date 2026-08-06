@@ -1,6 +1,8 @@
 # Phase 10 — Verification
 
-**Status:** planning, 2026-08-02.
+**Status:** harness built and the matrix captured, 2026-08-06. Seven defects
+found and routed to Phase 9 Task 4b. See `docs/verification/README.md` for the
+per-surface status table.
 
 Phases 0–9 built an editor, and every phase ended with tests that prove the
 code does what it claims. None of them proved it **looks** like anything. This
@@ -31,6 +33,14 @@ unless a capture reveals a defect — in which case that defect is a Phase 9
 
 ## Capture harness
 
+Two additions to what this plan assumed. **Key injection**, which the plan
+worked around by listing key-driven rows as manual: `ScriptedRenderer`
+(`crates/ruster-render/src/script.rs`) plays a key script through the real
+`run_gui` loop headlessly and records every frame, and `scripts/gui-keys.sh`
+sends real keystrokes to the raylib window via System Events. And a **frame
+digest**, which is the first thing in this project that can assert on what a
+frame contains rather than that building it did not panic.
+
 **Files:**
 - Create: `scripts/verify-capture.sh`
 - Create: `docs/verification/README.md` — one paragraph per surface: how it was
@@ -44,16 +54,16 @@ unless a capture reveals a defect — in which case that defect is a Phase 9
   + init.lua queue + deferred `:screenshot`), gated on the screen being unlocked
   (`ioreg -n Root -d1 -a | grep CGSSessionScreenIsLocked` must be absent).
 
-- [ ] **Step 1: Write the TUI half.** Launch `ruster <file>` under a fresh
+- [x] **Step 1: Write the TUI half.** Launch `ruster <file>` under a fresh
       tmux session with an `init.lua` in a temp `XDG_CONFIG_HOME` that queues
       the drive commands, wait ~1s for the first frame, `tmux capture-pane -p`,
       write the text file, kill the session.
-- [ ] **Step 2: Write the GUI half.** The gui-check recipe exactly, with the
+- [x] **Step 2: Write the GUI half.** The gui-check recipe exactly, with the
       screen-unlock guard at the top and a clear "screen is locked — ask the
       user" message instead of the raylib panic.
-- [ ] **Step 3: Add `just verify <surface>`** wiring both halves and reporting
+- [x] **Step 3: Add `just verify <surface>`** wiring both halves and reporting
       which artifacts were written.
-- [ ] **Step 4: Smoke-test the harness** on the dashboard surface (bare launch,
+- [x] **Step 4: Smoke-test the harness** on the dashboard surface (bare launch,
       no drive commands) in both backends and confirm the artifacts render.
 
 ---
@@ -106,15 +116,22 @@ reachable, mark the row). If no service is available, capture the surrounding
 surface (the float, the overlay, the error toast) and mark the row `manual` in
 the README.
 
-- [ ] **Task: capture rows 1–32 in both backends.** One row per commit or in
+- [x] **Task: capture rows 1–32 in both backends.** One row per commit or in
       coherent groups (all of one phase's surfaces together), each with its
       `docs/verification/README.md` entry. A row is done when both artifacts
       exist, are legible, glyphs render (no `?`), and theme colours apply.
-- [ ] **Task: adjudicate defects.** Any capture showing a defect (glyph `?`,
-      misaligned pane, unthemed colour, TUI/GUI disagreement) becomes a Phase 9
-      bug entry: fix, recapture, mark the row green. The matrix is not done
-      until no row is red.
-- [ ] **Task: final sweep.** `just verify all` produces every pair; confirm the
+- [x] **Task: adjudicate defects.** Seven found and written up as Phase 9 Task
+      4b with an artifact and a repro each. No glyph fell back to `?` and no
+      colour was unthemed; the failures were a surface the GUI does not draw at
+      all (settings), a notification backend that reaches no screen
+      (`:Noice popup`), a hover that returns nothing against a live
+      rust-analyzer, a quickfix line-numbering convention two producers
+      disagree about, `:echo` never reaching the message log, GUI statusline
+      groups overwriting each other in a narrow window, and a dashboard
+      advertising a command that does not exist. The matrix stays open until
+      those are fixed and recaptured.
+- [ ] **Task: final sweep** (blocked on the Task 4b fixes; a recapture now
+      would only re-photograph the same defects). `just verify all` produces every pair; confirm the
       tree is clean, docs/verification is committed, and the matrix has no
       empty cells.
 
