@@ -227,7 +227,6 @@ pub fn run_drm() -> anyhow::Result<()> {
             subpixel: connector.subpixel().into(),
             make: "Smithay".into(),
             model: output_model(&output_name),
-            serial_number: "Unknown".into(),
         },
     );
     output.create_global::<CompositorState<RusterUdevData>>(&display.handle());
@@ -240,7 +239,6 @@ pub fn run_drm() -> anyhow::Result<()> {
         .single_renderer(&render_node)
         .map_err(|err| anyhow::anyhow!("failed to get renderer for {render_node}: {err}"))?;
     let drm_output = drm_output_manager
-        .lock()
         .initialize_output::<_, ChromeRenderElements<RusterUdevRenderer<'_>>>(
             crtc,
             drm_mode,
@@ -297,7 +295,7 @@ pub fn run_drm() -> anyhow::Result<()> {
                 }
                 SessionEvent::ActivateSession => {
                     info!("resuming session");
-                    if let Err(err) = data.backend_data.drm_output_manager.lock().activate(false) {
+                    if let Err(err) = data.backend_data.drm_output_manager.activate(false) {
                         error!("failed to activate drm backend: {err:?}");
                     }
                     data.handle.insert_idle(|data| data.render_surface());

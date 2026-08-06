@@ -2,7 +2,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use smithay::delegate_dispatch2;
 use smithay::input::keyboard::{KeyboardHandle, XkbConfig};
 use smithay::input::pointer::PointerHandle;
 use smithay::input::{Seat, SeatHandler, SeatState};
@@ -11,6 +10,7 @@ use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{
     Interest, LoopHandle, LoopSignal, Mode as SourceMode, PostAction,
 };
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_server::{
     backend::{ClientData, ClientId, DisconnectReason},
     protocol::{wl_buffer, wl_output, wl_surface},
@@ -231,7 +231,10 @@ impl<B: Backend + 'static> CompositorHandler for CompositorState<B> {
         if let Some(toplevel) = self.toplevels.get(&id) {
             if !toplevel.is_initial_configure_sent() {
                 if let Some(size) = logical_output_size(self.backend_data.output()) {
-                    toplevel.with_pending_state(|state| state.size = Some(size));
+                    toplevel.with_pending_state(|state| {
+                        state.states.set(xdg_toplevel::State::Fullscreen);
+                        state.size = Some(size);
+                    });
                 }
                 toplevel.send_configure();
             }
@@ -300,7 +303,15 @@ impl<B: Backend + 'static> SeatHandler for CompositorState<B> {
     }
 }
 
-delegate_dispatch2!(@<B: Backend + 'static> CompositorState<B>);
+// One delegate per protocol we speak. Each wires the `Dispatch`/`GlobalDispatch`
+// impls for that protocol's objects through to the smithay state we hold above,
+// so the handler traits implemented in this file (and `XdgShellHandler` in
+// `shell.rs`) are all the glue we write by hand.
+smithay::delegate_compositor!(@<B: Backend + 'static> CompositorState<B>);
+smithay::delegate_shm!(@<B: Backend + 'static> CompositorState<B>);
+smithay::delegate_output!(@<B: Backend + 'static> CompositorState<B>);
+smithay::delegate_seat!(@<B: Backend + 'static> CompositorState<B>);
+smithay::delegate_xdg_shell!(@<B: Backend + 'static> CompositorState<B>);
 
 /// Register the auto-named Wayland client listening socket with the compositor's
 /// event loop. Returns the socket name for clients to connect to (print it and

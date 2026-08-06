@@ -9,7 +9,7 @@ use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::winit::{WinitEvent, WinitGraphicsBackend};
 use smithay::input::keyboard::{FilterResult, Keysym};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
-use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
+use smithay::output::{Mode, Output, PhysicalProperties, Scale, Subpixel};
 use smithay::reexports::wayland_server::protocol::{wl_pointer, wl_surface::WlSurface};
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::utils::{Logical, Point, Size, SERIAL_COUNTER as SCOUNTER};
@@ -77,6 +77,7 @@ impl RusterWinitData {
         dh: &DisplayHandle,
     ) -> Output {
         let size = backend.window_size();
+        let scale = backend.scale_factor();
         let mode = Mode {
             size,
             refresh: 60_000,
@@ -88,11 +89,15 @@ impl RusterWinitData {
                 subpixel: Subpixel::Unknown,
                 make: "Smithay".into(),
                 model: "Winit".into(),
-                serial_number: "Unknown".into(),
             },
         );
         output.create_global::<CompositorState<RusterWinitData>>(dh);
-        output.change_current_state(Some(mode), None, None, Some((0, 0).into()));
+        output.change_current_state(
+            Some(mode),
+            None,
+            Some(Scale::Fractional(scale)),
+            Some((0, 0).into()),
+        );
         output.set_preferred(mode);
         output
     }
@@ -152,12 +157,18 @@ impl CompositorState<RusterWinitData> {
         match event {
             WinitEvent::Resized { size, .. } => {
                 info!(?size, "winit window resized");
+                let scale = self.backend_data.backend.scale_factor();
                 let mode = Mode {
                     size,
                     refresh: 60_000,
                 };
                 let output = self.backend_data.output.clone();
-                output.change_current_state(Some(mode), None, None, None);
+                output.change_current_state(
+                    Some(mode),
+                    None,
+                    Some(Scale::Fractional(scale)),
+                    None,
+                );
                 output.set_preferred(mode);
                 self.backend_data.reset_buffers(&output);
             }

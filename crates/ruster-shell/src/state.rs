@@ -124,7 +124,7 @@ mod tests {
         // unmap path mirrors when the focused toplevel hides itself).
         let mut s = ShellState::new();
         let a = s.add_window("a".into(), 100, 100);
-        let b = s.add_window("b".into(), 100, 100);
+        let _b = s.add_window("b".into(), 100, 100);
         let c = s.add_window("c".into(), 100, 100);
         s.set_focus(a);
         s.remove_window(a);

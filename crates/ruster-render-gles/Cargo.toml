@@ -5,5 +5,8 @@ edition = "2021"
 
 [dependencies]
 ruster-render = { path = "../ruster-render" }
-smithay = { path = "/home/daimyo/Dev/smithay", default-features = false, features = ["renderer_gl", "wayland_frontend", "backend_winit"] }
 cosmic-text = "0.19"
+
+# Smithay is Linux-only; off Linux this crate compiles to an empty lib.
+[target.'cfg(target_os = "linux")'.dependencies]
+smithay = { version = "0.7", default-features = false, features = ["renderer_gl", "wayland_frontend", "backend_winit"] }

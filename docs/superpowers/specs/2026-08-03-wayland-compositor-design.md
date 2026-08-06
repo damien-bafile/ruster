@@ -43,7 +43,7 @@ This spec covers the product definition and the overall architecture/roadmap. Th
 
 ### Dependencies
 
-- `smithay` (path to `~/Dev/smithay` clone or crates.io `0.7`) with features: `backend_udev`, `backend_drm`, `backend_gbm`, `backend_session_libseat`, `backend_libinput`, `backend_winit`, `renderer_gl` (provides the `GlesRenderer`), `desktop`, `wayland_frontend`.
+- `smithay` from crates.io (`0.7`) with features: `backend_udev`, `backend_drm`, `backend_gbm`, `backend_session_libseat`, `backend_libinput`, `backend_winit`, `renderer_gl` (provides the `GlesRenderer`), `desktop`, `wayland_frontend`. Declared under `[target.'cfg(target_os = "linux")'.dependencies]` — Wayland is Linux-only, and the workspace still has to build on macOS and Windows for the raylib GUI.
 - Text rendering: `cosmic-text` (or `fontdue` + `fontdb`).
 - Logging: `tracing`/`env_logger`.
 
@@ -64,7 +64,7 @@ udev/DRM or winit output ← vsync frame
 
 1. **Not winit+raylib for rendering.** A compositor must composite arbitrary client GL textures; that is Smithay's `egl`/`gles` domain. raylib stays only in standalone editor builds.
 2. **Editor buffers are synthetic in-tree surfaces** owned by the compositor, not real Wayland clients — they render via `ruster-render-gles` into the same GL scene as client textures.
-3. **Smithay dependency:** path-depend on the local `~/Dev/smithay` clone, or crates.io `0.7`. (Decision: path dep for development; revisit at release.)
+3. **Smithay dependency:** crates.io `0.7`, not a path dep on a local clone. A path dep to `~/Dev/smithay` only resolves on one machine, so it breaks CI and every other checkout; the released `0.7.0` is also a fixed API to code against rather than a moving `master`. Consequence: the blanket `delegate_dispatch2!` macro, `PhysicalProperties::serial_number`, `DrmOutputManager::lock()`, and `winit::event_loop::pump_events` are all post-0.7 additions and are not available — use the per-protocol `delegate_*!` macros, the four-field `PhysicalProperties`, direct `&mut` calls on `DrmOutputManager`, and `winit::platform::pump_events`.
 4. **Entry point:** a dedicated `ruster-compositor` binary crate keeps `ruster-bin`'s editor path clean.
 
 ## Roadmap (phased plans)
