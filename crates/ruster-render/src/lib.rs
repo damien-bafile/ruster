@@ -190,6 +190,65 @@ pub struct StyledLine {
     pub highlights: Vec<(usize, usize, SyntaxStyle)>,
 }
 
+impl StyledLine {
+    /// The `[from, to)` character range as a line of its own, with the
+    /// highlight spans clipped and rebased onto the new start.
+    ///
+    /// Both the text and the spans are indexed in `char`s, not bytes — that is
+    /// what the draw paths in both backends assume.
+    fn slice(&self, from: usize, to: usize, chars: &[char]) -> StyledLine {
+        let text: String = chars[from..to].iter().collect();
+        let highlights = self
+            .highlights
+            .iter()
+            .filter_map(|&(offset, len, style)| {
+                let start = offset.max(from);
+                let end = (offset + len).min(to);
+                (start < end).then(|| (start - from, end - start, style))
+            })
+            .collect();
+        StyledLine { text, highlights }
+    }
+
+    /// Break into lines of at most `width` characters, preserving highlights.
+    ///
+    /// Prose breaks at the last space that fits, so words stay whole; a token
+    /// longer than `width` is cut at the limit rather than overflowing. A
+    /// `width` of 0 is meaningless and returns the line untouched.
+    pub fn wrap(&self, width: usize) -> Vec<StyledLine> {
+        let chars: Vec<char> = self.text.chars().collect();
+        if width == 0 || chars.len() <= width {
+            return vec![self.clone()];
+        }
+        let mut out = Vec::new();
+        let mut start = 0;
+        while start < chars.len() {
+            if chars.len() - start <= width {
+                out.push(self.slice(start, chars.len(), &chars));
+                break;
+            }
+            // `limit` is a valid index: the loop only runs while more than
+            // `width` characters remain, so `start + width < chars.len()`.
+            let limit = start + width;
+            // The last space that still fits. The limit itself counts — a
+            // break exactly there means the whole preceding word fits, which
+            // is the common case for prose and the difference between
+            // "abcd efgh" wrapping to "abcd"/"efgh" and to "abcd"/" efg"/"h".
+            match (start..=limit).rev().find(|&i| chars[i].is_whitespace()) {
+                Some(brk) if brk > start => {
+                    out.push(self.slice(start, brk, &chars));
+                    start = brk + 1; // the break character itself is consumed
+                }
+                _ => {
+                    out.push(self.slice(start, limit, &chars));
+                    start = limit;
+                }
+            }
+        }
+        out
+    }
+}
+
 #[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
 pub enum CursorKind { #[default] Block, Bar }
 
@@ -1261,5 +1320,68 @@ mod tests {
         let t = crate::Theme::default();
         assert_ne!(t.whichkey_key, t.whichkey_fg, "the key letter must stand out");
         assert_eq!(t.whichkey_key, t.accent, "the key accent defaults to the theme accent");
+    }
+
+    fn styled(text: &str, spans: &[(usize, usize)]) -> StyledLine {
+        StyledLine {
+            text: text.to_string(),
+            highlights: spans
+                .iter()
+                .map(|&(o, l)| (o, l, crate::SyntaxStyle::default()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_line_that_fits_is_left_alone() {
+        let line = styled("short", &[(0, 5)]);
+        assert_eq!(line.wrap(10), vec![line.clone()]);
+        // Exactly the width still fits.
+        assert_eq!(line.wrap(5), vec![line.clone()]);
+        // A zero width is meaningless rather than an infinite loop.
+        assert_eq!(line.wrap(0), vec![line]);
+    }
+
+    #[test]
+    fn prose_breaks_at_spaces_and_drops_the_break_character() {
+        let out = styled("the quick brown fox", &[]).wrap(10);
+        assert_eq!(
+            out.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(),
+            vec!["the quick", "brown fox"]
+        );
+    }
+
+    /// A token with no space in it has to be cut, not allowed to overflow —
+    /// overflowing is what the unclamped hover did.
+    #[test]
+    fn one_long_token_is_cut_at_the_limit() {
+        let out = styled("aaaaaaaaaaaa", &[]).wrap(5);
+        assert_eq!(
+            out.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(),
+            vec!["aaaaa", "aaaaa", "aa"]
+        );
+    }
+
+    /// Wrapping must carry the colours with the text; a span that straddles a
+    /// break is clipped to each side and rebased onto the new line start.
+    #[test]
+    fn highlights_follow_the_text_across_a_break() {
+        // "abcd efgh", one span covering "cd ef" (offset 2, len 5).
+        let out = styled("abcd efgh", &[(2, 5)]).wrap(4);
+        assert_eq!(out.iter().map(|l| l.text.as_str()).collect::<Vec<_>>(), vec!["abcd", "efgh"]);
+        // First line keeps chars 2..4 → offset 2, len 2.
+        assert_eq!(out[0].highlights[0].0, 2);
+        assert_eq!(out[0].highlights[0].1, 2);
+        // Second line starts at char 5, so the remainder rebases to offset 0.
+        assert_eq!(out[1].highlights[0].0, 0);
+        assert_eq!(out[1].highlights[0].1, 2);
+    }
+
+    /// A span entirely past the break must not survive onto the wrong line.
+    #[test]
+    fn a_span_outside_a_segment_is_dropped() {
+        let out = styled("abcd efgh", &[(5, 4)]).wrap(4);
+        assert!(out[0].highlights.is_empty(), "the span belongs to the second line");
+        assert_eq!(out[1].highlights[0], (0, 4, crate::SyntaxStyle::default()));
     }
 }

@@ -113,6 +113,43 @@ fn highlight_code_block(code: &str, lang: &str) -> Vec<StyledLine> {
     }
 }
 
+/// The widest a hover box gets, regardless of how much room there is. Past
+/// roughly this measure prose stops being comfortable to read.
+const HOVER_MAX_COLS: u16 = 80;
+/// The tallest, as a fraction of the window — a hover that covers the code it
+/// describes is worse than one that is cut short.
+const HOVER_MAX_ROWS_FRACTION: f32 = 0.6;
+
+/// Fit hover content into a box that leaves the buffer visible.
+///
+/// A float is sized from its content and its lines are drawn as-is, so an
+/// unclamped hover for something like `String` — hundreds of lines of rustdoc,
+/// many of them long — filled the entire window and ran off the right edge,
+/// where the TUI clipped it and the GUI drew past the border. Wrapping first
+/// means long prose stays readable instead of being silently cut.
+fn clamp_hover_lines(lines: &[StyledLine], cols: u16, rows: u16) -> Vec<StyledLine> {
+    const BORDER: u16 = 2;
+    let width = HOVER_MAX_COLS.min(cols).saturating_sub(BORDER).max(1) as usize;
+    let max_rows = (((rows as f32) * HOVER_MAX_ROWS_FRACTION) as u16)
+        .min(rows.saturating_sub(BORDER))
+        .max(1) as usize;
+
+    let mut out: Vec<StyledLine> = Vec::new();
+    for line in lines {
+        for piece in line.wrap(width) {
+            if out.len() == max_rows {
+                // Replace the last line rather than growing past the cap, so
+                // the box never reports more rows than it may occupy.
+                let marker = StyledLine { text: "…".to_string(), highlights: vec![] };
+                *out.last_mut().expect("max_rows >= 1") = marker;
+                return out;
+            }
+            out.push(piece);
+        }
+    }
+    out
+}
+
 /// Render LSP hover markdown into styled lines: fenced code blocks are
 /// tree-sitter highlighted, prose is shown plain (with fences/separators removed).
 fn build_hover_lines(markdown: &str) -> Vec<StyledLine> {
@@ -4225,7 +4262,7 @@ impl App {
                 floats.push(ruster_render::FloatView::anchored(
                     RRect::new(0, 0, cols, rows),
                     ruster_render::FloatAnchor::Edge(ruster_render::FloatEdge::Top),
-                    lines.clone(),
+                    clamp_hover_lines(lines, cols, rows),
                 ));
             }
         }
@@ -9205,6 +9242,48 @@ mod tests {
         assert!(text.contains("fn name("), "snippet expanded: {text:?}");
         // Two more tabstops ($2 args, $0 body) remain after the first jump.
         assert_eq!(a.snippet_stops.len(), 2);
+    }
+
+    /// rust-analyzer's hover for a std type is hundreds of long lines. Drawn
+    /// as-is it covered the whole editor and ran past the right border, so the
+    /// thing being hovered was the one thing you could no longer see.
+    #[test]
+    fn a_huge_hover_is_clamped_to_part_of_the_window() {
+        let long = "word ".repeat(200);
+        let lines: Vec<StyledLine> = (0..300)
+            .map(|_| StyledLine { text: long.clone(), highlights: vec![] })
+            .collect();
+
+        let (cols, rows) = (120u16, 40u16);
+        let out = clamp_hover_lines(&lines, cols, rows);
+
+        let max_rows = ((rows as f32) * HOVER_MAX_ROWS_FRACTION) as usize;
+        assert_eq!(out.len(), max_rows, "height is capped at a fraction of the window");
+        assert!(
+            out.iter().all(|l| l.text.chars().count() <= HOVER_MAX_COLS as usize - 2),
+            "no line may exceed the box's content width"
+        );
+        assert_eq!(out.last().unwrap().text, "…", "truncation is shown, not silent");
+    }
+
+    /// The cap is a ceiling, not a target: a one-line hover stays one line.
+    #[test]
+    fn a_small_hover_is_left_alone() {
+        let lines = vec![StyledLine { text: "let greeting: String".into(), highlights: vec![] }];
+        assert_eq!(clamp_hover_lines(&lines, 120, 40), lines);
+    }
+
+    /// A window too small for the fraction must still produce a drawable box
+    /// rather than a zero-row one.
+    #[test]
+    fn a_tiny_window_still_yields_at_least_one_row() {
+        let lines = vec![
+            StyledLine { text: "aaaaaaaaaaaaaaaaaaaa".into(), highlights: vec![] },
+            StyledLine { text: "bbbbbbbbbbbbbbbbbbbb".into(), highlights: vec![] },
+        ];
+        let out = clamp_hover_lines(&lines, 4, 2);
+        assert!(!out.is_empty());
+        assert!(out.iter().all(|l| l.text.chars().count() <= 2));
     }
 
     #[test]
