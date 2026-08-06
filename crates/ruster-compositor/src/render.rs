@@ -3,9 +3,9 @@
 //!
 //! Phase 0 draws the focused xdg toplevel fullscreen over a plain clear
 //! color, then ruster's chrome (statusline, editor frame, which-key) on top of
-//! it (Task 8). Chrome geometry is produced by [`Chrome`] as a vertex batch and
-//! converted into smithay solid-color render elements — the chrome text glyphs
-//! are solid blocks sized by the atlas until Task 13 rasterizes them.
+//! it. [`Chrome`] produces a [`ChromeBatch`] of panel quads and glyph quads;
+//! panels become solid-color elements and glyphs become textured elements
+//! sampling the glyph atlas, which is uploaded once per change.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -14,18 +14,20 @@ use ruster_shell::WindowId;
 use smithay::backend::renderer::{
     damage::{Error as OutputDamageTrackerError, OutputDamageTracker},
     element::{
-        solid::SolidColorRenderElement, surface::WaylandSurfaceRenderElement, AsRenderElements,
+        solid::SolidColorRenderElement, surface::WaylandSurfaceRenderElement,
+        texture::TextureRenderElement, AsRenderElements, Kind,
     },
     gles::GlesRenderer,
-    Color32F, ImportAll, Renderer, RendererSuper,
+    Color32F, ImportAll, ImportMem, Renderer, RendererSuper,
 };
 use smithay::desktop::space::SurfaceTree;
 use smithay::desktop::utils::send_frames_surface_tree;
 use smithay::output::Output;
-use smithay::utils::{Clock, Monotonic, Physical, Rectangle, Scale};
+use smithay::utils::{Clock, Monotonic, Physical, Point, Rectangle, Scale, Size, Transform};
 use smithay::wayland::shell::xdg::ToplevelSurface;
 
-use crate::chrome::{solid_elements_from_verts, translate_verts, Chrome};
+use crate::chrome::{solid_elements_from_verts, Chrome, ChromeBatch};
+use ruster_render_gles::geometry::GlyphQuad;
 
 /// Background the compositor clears the output to each frame.
 pub const CLEAR_COLOR: Color32F = Color32F::BLACK;
@@ -43,6 +45,7 @@ smithay::backend::renderer::element::render_elements! {
     #[doc = "The render elements for one output frame. Chrome is composited above the client surface, so it is listed first (elements are in front-to-back order)."]
     pub ChromeRenderElements<R> where R: ImportAll;
     Solid=SolidColorRenderElement,
+    Texture=TextureRenderElement<<R as RendererSuper>::TextureId>,
     Surface=WaylandSurfaceRenderElement<R>,
 }
 
@@ -106,7 +109,7 @@ pub fn render_frame(
 /// by the renderer in front-to-back order. Generic over the renderer so both
 /// the winit (`GlesRenderer`) and DRM (`MultiRenderer`) backends share it.
 #[allow(clippy::too_many_arguments)]
-pub fn collect_render_elements<R: Renderer + ImportAll>(
+pub fn collect_render_elements<R: Renderer + ImportAll + ImportMem>(
     focus: Option<WindowId>,
     toplevels: &HashMap<WindowId, ToplevelSurface>,
     output: &Output,
@@ -128,17 +131,16 @@ where
             .current_mode()
             .map(|mode| mode.size)
             .unwrap_or_default();
-        let mut verts = Vec::new();
-        chrome.draw_statusline(size.w, size.h, workspace, focused_title, &mut verts);
+        let mut batch = ChromeBatch::default();
+        chrome.draw_statusline(size.w, size.h, workspace, focused_title, &mut batch);
 
-        let editor_start = verts.len();
+        let editor_mark = batch.mark();
         let frame_w = (size.w / 2).clamp(120, 360);
         let frame_h = (size.h / 2).clamp(80, 240);
         let welcome: Vec<String> = WELCOME_BUFFER.iter().map(|line| line.to_string()).collect();
-        chrome.draw_editor_frame(frame_w, frame_h, &welcome, "welcome", &mut verts);
-        let editor_end = verts.len();
-        translate_verts(
-            &mut verts[editor_start..editor_end],
+        chrome.draw_editor_frame(frame_w, frame_h, &welcome, "welcome", &mut batch);
+        batch.translate_since(
+            editor_mark,
             ((size.w - frame_w) / 2) as f32,
             ((size.h - frame_h) / 2) as f32,
         );
@@ -148,16 +150,24 @@ where
                 .iter()
                 .map(|(k, d)| (k.to_string(), d.to_string()))
                 .collect::<Vec<_>>(),
-            &mut verts,
+            &mut batch,
         );
 
-        // The chrome batch is in painter's order — each panel's background is
-        // pushed before the accent segments and glyph boxes that sit on it —
-        // but a smithay element list is front-to-back. Reverse it, or every
-        // background occludes its own contents and the chrome renders as blank
-        // slabs.
+        // Glyphs first, then panels. Within a panel the glyphs are drawn on top
+        // of its background, and chrome panels never overlap each other, so
+        // hoisting every glyph in front of every panel is equivalent to a strict
+        // reverse of painter's order and saves interleaving the two lists.
+        let render_scale = output.current_scale().fractional_scale();
         elements.extend(
-            solid_elements_from_verts(&verts)
+            glyph_elements(chrome, renderer, &batch.glyphs, render_scale)
+                .into_iter()
+                .map(ChromeRenderElements::Texture),
+        );
+        // The panel batch is in painter's order but a smithay element list is
+        // front-to-back. Reverse it, or every background occludes the accent
+        // segments drawn on top of it.
+        elements.extend(
+            solid_elements_from_verts(&batch.verts)
                 .into_iter()
                 .rev()
                 .map(ChromeRenderElements::Solid),
@@ -176,6 +186,64 @@ where
     }
 
     elements
+}
+
+/// Upload the glyph atlas (once per change) and build one textured element per
+/// glyph, sampling that glyph's cell out of the shared atlas texture.
+///
+/// Chrome geometry is in physical pixels, but a `TextureRenderElement` sizes
+/// itself in logical pixels and scales by the output scale at render time — so
+/// the destination size is divided by that scale here to land back on the exact
+/// physical rect the atlas rasterized for.
+fn glyph_elements<R: Renderer + ImportMem>(
+    chrome: &mut Chrome,
+    renderer: &mut R,
+    glyphs: &[GlyphQuad],
+    render_scale: f64,
+) -> Vec<TextureRenderElement<<R as RendererSuper>::TextureId>>
+where
+    <R as RendererSuper>::TextureId: Clone + 'static,
+{
+    if glyphs.is_empty() {
+        return Vec::new();
+    }
+    let Some(texture) = chrome.atlas_texture(renderer) else {
+        return Vec::new();
+    };
+    let context_id = renderer.context_id();
+    let atlas_size = chrome.atlas.texture_size as f64;
+    glyphs
+        .iter()
+        .enumerate()
+        .map(|(index, g)| {
+            // `src` is in the texture's own pixels (the buffer has scale 1, so
+            // logical and buffer coordinates coincide).
+            let src = Rectangle::new(
+                Point::from((g.u0 as f64 * atlas_size, g.v0 as f64 * atlas_size)),
+                Size::from((
+                    (g.u1 - g.u0) as f64 * atlas_size,
+                    (g.v1 - g.v0) as f64 * atlas_size,
+                )),
+            );
+            let logical = Size::from((
+                (g.w as f64 / render_scale).round() as i32,
+                (g.h as f64 / render_scale).round() as i32,
+            ));
+            TextureRenderElement::from_static_texture(
+                chrome.glyph_id(index),
+                context_id.clone(),
+                Point::<f64, Physical>::from((g.x as f64, g.y as f64)),
+                texture.clone(),
+                1,
+                Transform::Normal,
+                None,
+                Some(src),
+                Some(logical),
+                None,
+                Kind::Unspecified,
+            )
+        })
+        .collect()
 }
 
 /// Deliver frame callbacks to the focused toplevel against the time of the next

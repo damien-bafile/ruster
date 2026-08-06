@@ -41,18 +41,18 @@ untested claim, not a passing one.
 | Clippy clean | `cargo clippy --all-targets -- -D warnings` | ✅ passes |
 | Shell state unit tests | `cargo test -p ruster-shell` | ✅ passes |
 | Render-gles unit tests | `cargo test -p ruster-render-gles` | ✅ passes |
-| Compositor unit tests | `cargo test -p ruster-compositor` | ✅ 30 passed |
-| Compositor unit tests (udev) | `cargo test -p ruster-compositor --features ruster-compositor/udev` | ✅ 36 passed |
+| Compositor unit tests | `cargo test -p ruster-compositor` | ✅ 34 passed |
+| Compositor unit tests (udev) | `cargo test -p ruster-compositor --features ruster-compositor/udev` | ✅ 40 passed |
 | Winit compositor boots | `just compositor` | ✅ boots, GLES renderer up, socket `wayland-1` |
 | Client maps & composites | `just compositor` + auto-launched `foot` | ✅ foot maps and composites fullscreen (needed `wl_data_device_manager`, `on_commit_buffer_handler`) |
 | Frame is the right way up | prompt reads top-left, not mirrored | ✅ fixed by `Transform::Flipped180` on the winit output |
-| Chrome contents visible | accent segment + glyph boxes over their backgrounds | ✅ fixed by reversing the chrome element order |
+| Chrome contents visible | accent segment + glyphs over their backgrounds | ✅ fixed by reversing the chrome element order |
 | Editor frame + which-key visible | visual check | ✅ which-key top-left, editor frame centred with accent titlebar |
-| Chrome text legible | statusline reads `N  WS 1  <title>` | ⛔ by design — glyphs are solid blocks until the atlas rasterizes (`TODO(next phase)` on `Chrome::text`) |
-| Titlebar chrome updates on focus | focus `foot`, title shows in statusline | ⛔ not verifiable while text is solid blocks |
-| Lua keybinds work | `M-t` cycles WS label; `M-S-q` quits | ⛔ not run (keybind config parsing is covered by `cargo test -p ruster-compositor`) |
+| Chrome text legible | statusline reads `N  WS 1  <title>` | ✅ real glyphs, rasterized through `cosmic-text` into the atlas |
+| Titlebar chrome updates on focus | launch a second client, its title takes the statusline | ✅ statusline went from the shell's title to `RUSTER-FOCUS-TEST` when that client mapped and took focus |
+| Lua keybinds work | `M-t` cycles WS label; `M-S-q` quits | ⛔ not run — no key-injection tool on this box. Bind parsing and action dispatch are covered by `cargo test -p ruster-compositor`; the keypress path itself is unverified |
 | DRM boots (hardware) | `just compositor-drm` on a free VT | ⛔ not run — requires a free VT + seatd/logind |
-| SIGINT quits cleanly | `Ctrl-C`, process exits 0 | ⛔ not run |
+| SIGINT quits cleanly | `Ctrl-C`, process exits 0 | ✅ exits 0, logs `shutting down` |
 
 ## Running the real thing
 

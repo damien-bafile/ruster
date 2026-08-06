@@ -5,6 +5,23 @@
 /// for future UV use; solid quads leave them zero.
 pub type Vertex = [f32; 8];
 
+/// A textured quad: where to draw a glyph, and where to sample it from.
+///
+/// `x`/`y`/`w`/`h` are the destination rect in physical pixels with the origin
+/// at the output's top-left; `u0`..`v1` are the source rect in the glyph atlas,
+/// normalized to the atlas texture.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GlyphQuad {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub u0: f32,
+    pub v0: f32,
+    pub u1: f32,
+    pub v1: f32,
+}
+
 pub fn rect_verts(x: f32, y: f32, w: f32, h: f32, color: (f32, f32, f32, f32)) -> Vec<Vertex> {
     let (r, g, b, a) = color;
     vec![

@@ -167,12 +167,7 @@ impl CompositorState<RusterWinitData> {
                     refresh: 60_000,
                 };
                 let output = self.backend_data.output.clone();
-                output.change_current_state(
-                    Some(mode),
-                    None,
-                    Some(Scale::Fractional(scale)),
-                    None,
-                );
+                output.change_current_state(Some(mode), None, Some(Scale::Fractional(scale)), None);
                 output.set_preferred(mode);
                 self.backend_data.reset_buffers(&output);
             }

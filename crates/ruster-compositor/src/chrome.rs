@@ -1,30 +1,82 @@
 //! The compositor's UI chrome: statusline, editor frame, which-key overlay.
 //!
-//! Phase 0 draws chrome as flat vertex geometry (`Vertex` = x, y, reserved,
-//! reserved, r, g, b, a). The `draw_*` methods are pure and testable — they
-//! never touch GL — and are the geometry source of truth. `render_frame`
-//! converts the collected vertex batch into smithay render elements via
-//! [`solid_elements_from_verts`] and composites it above the client surface.
-//!
-//! Text is currently drawn as solid-color blocks sized to each glyph's pixel
-//! box (the atlas provides metrics, not pixels yet); real glyph texture
-//! rendering is deferred to the next phase (see the `TODO(next phase)` marker
-//! on `Chrome::text`).
+//! Chrome is drawn as two kinds of quad, collected into a [`ChromeBatch`]: flat
+//! vertex geometry for panels and bars (`Vertex` = x, y, reserved, reserved, r,
+//! g, b, a), and textured glyph quads carrying a UV rect into the glyph atlas.
+//! The `draw_*` methods are pure and testable — they never touch GL — and are
+//! the geometry source of truth. `render_frame` turns the batch into smithay
+//! render elements and composites it above the client surface.
+
+use std::any::Any;
 
 use ruster_render::Theme;
 use ruster_render_gles::atlas::{layout_text, Atlas};
-use ruster_render_gles::geometry::{rect_verts, rounded_rect_verts, Vertex};
+use ruster_render_gles::geometry::{rect_verts, rounded_rect_verts, GlyphQuad, Vertex};
+use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::solid::{SolidColorBuffer, SolidColorRenderElement};
-use smithay::backend::renderer::element::Kind;
-use smithay::backend::renderer::Color32F;
+use smithay::backend::renderer::element::{Id, Kind};
+use smithay::backend::renderer::{Color32F, ImportMem, Renderer};
+
+/// One frame's worth of chrome geometry: solid quads and textured glyph quads,
+/// both in physical pixels with the origin at the output's top-left.
+///
+/// The two lists are appended in painter's order — a panel's background, then
+/// the glyphs that sit on it — and `render_frame` reverses them into smithay's
+/// front-to-back element order.
+#[derive(Debug, Default)]
+pub struct ChromeBatch {
+    pub verts: Vec<Vertex>,
+    pub glyphs: Vec<GlyphQuad>,
+}
+
+/// How much of a [`ChromeBatch`] had been drawn at some point, so a later
+/// [`ChromeBatch::translate_since`] can move everything drawn after it.
+#[derive(Debug, Clone, Copy)]
+pub struct BatchMark {
+    verts: usize,
+    glyphs: usize,
+}
+
+impl ChromeBatch {
+    /// Record the current end of the batch.
+    pub fn mark(&self) -> BatchMark {
+        BatchMark {
+            verts: self.verts.len(),
+            glyphs: self.glyphs.len(),
+        }
+    }
+
+    /// Shift everything appended since `mark` by `(dx, dy)`. `render_frame` uses
+    /// this to centre the welcome editor frame after laying it out at the origin.
+    pub fn translate_since(&mut self, mark: BatchMark, dx: f32, dy: f32) {
+        for v in &mut self.verts[mark.verts..] {
+            v[0] += dx;
+            v[1] += dy;
+        }
+        for g in &mut self.glyphs[mark.glyphs..] {
+            g.x += dx;
+            g.y += dy;
+        }
+    }
+}
 
 /// The compositor's UI chrome: statusline, editor frame, which-key overlay.
-/// Phase 0 builds vertex lists; the render loop uploads them to the GLES
-/// renderer (Task 7/8 render.rs).
 pub struct Chrome {
     pub atlas: Atlas,
     pub theme: Theme,
     line_h: i32,
+    /// The atlas as uploaded to the GPU, with the atlas generation it was built
+    /// from. Boxed as `Any` because the texture type belongs to the renderer,
+    /// and the two backends composite through different ones (`GlesRenderer`
+    /// nested, `MultiRenderer` on DRM) while `Chrome` itself is shared.
+    texture: Option<(u64, Box<dyn Any>)>,
+    /// One render-element id per glyph slot, reused across frames.
+    ///
+    /// The damage tracker keys element state by id, so glyphs sharing one id
+    /// would collapse into a single tracked element and damage the wrong
+    /// regions. Ids are handed out by position in the batch and kept stable, so
+    /// a glyph that does not move reports no damage.
+    glyph_ids: Vec<Id>,
 }
 
 impl Chrome {
@@ -33,7 +85,50 @@ impl Chrome {
             atlas: Atlas::new(),
             theme,
             line_h: 24,
+            texture: None,
+            glyph_ids: Vec::new(),
         }
+    }
+
+    /// The uploaded glyph atlas for `renderer`, re-uploading when the atlas has
+    /// rasterized new glyphs since the last upload. Returns `None` if the
+    /// texture cannot be imported, in which case chrome text is skipped for the
+    /// frame rather than failing it.
+    pub fn atlas_texture<R>(&mut self, renderer: &mut R) -> Option<R::TextureId>
+    where
+        R: Renderer + ImportMem,
+        R::TextureId: Clone + 'static,
+    {
+        let generation = self.atlas.generation();
+        if let Some((uploaded, cached)) = self.texture.as_ref() {
+            if *uploaded == generation {
+                if let Some(texture) = cached.downcast_ref::<R::TextureId>() {
+                    return Some(texture.clone());
+                }
+            }
+        }
+        let size = self.atlas.texture_size as i32;
+        let texture = renderer
+            .import_memory(
+                self.atlas.pixels(),
+                Fourcc::Abgr8888,
+                (size, size).into(),
+                false,
+            )
+            .inspect_err(|_| {
+                tracing::warn!("failed to upload the glyph atlas; chrome text skipped")
+            })
+            .ok()?;
+        self.texture = Some((generation, Box::new(texture.clone())));
+        Some(texture)
+    }
+
+    /// A stable render-element id for the glyph at `index` in the batch.
+    pub fn glyph_id(&mut self, index: usize) -> Id {
+        while self.glyph_ids.len() <= index {
+            self.glyph_ids.push(Id::new());
+        }
+        self.glyph_ids[index].clone()
     }
 
     /// Bottom statusline: returns its height in px.
@@ -48,7 +143,7 @@ impl Chrome {
         h: i32,
         workspace: u32,
         focused_title: &str,
-        verts: &mut Vec<Vertex>,
+        batch: &mut ChromeBatch,
     ) -> i32 {
         let bar_h = crate::render::chrome_height(h);
         let y = (h - bar_h) as f32;
@@ -58,13 +153,17 @@ impl Chrome {
         let accent: (f32, f32, f32, f32) = self.theme.accent.into();
         let accent_fg: (f32, f32, f32, f32) = self.theme.accent_fg.into();
 
-        verts.extend(rect_verts(0.0, y, bar_w, bar_h as f32, bg));
+        batch
+            .verts
+            .extend(rect_verts(0.0, y, bar_w, bar_h as f32, bg));
 
         // Mode segment: accent background, "N" (Normal) in the accent foreground.
         let mode_w = 64.0;
         let pad = (bar_h as f32 - 16.0) / 2.0;
-        verts.extend(rect_verts(0.0, y, mode_w, bar_h as f32, accent));
-        self.text("N", 16, (mode_w - 16.0) / 2.0, y + pad, accent_fg, verts);
+        batch
+            .verts
+            .extend(rect_verts(0.0, y, mode_w, bar_h as f32, accent));
+        self.text("N", 16, (mode_w - 16.0) / 2.0, y + pad, accent_fg, batch);
 
         // Workspace label + focused title in the statusline foreground.
         let ws = format!("WS {workspace}");
@@ -74,8 +173,8 @@ impl Chrome {
             focused_title
         };
         let cursor = mode_w + 12.0;
-        let ws_w = self.text(&ws, 16, cursor, y + pad, fg, verts);
-        self.text(title, 16, cursor + ws_w + 20.0, y + pad, fg, verts);
+        let ws_w = self.text(&ws, 16, cursor, y + pad, fg, batch);
+        self.text(title, 16, cursor + ws_w + 20.0, y + pad, fg, batch);
 
         bar_h
     }
@@ -88,7 +187,7 @@ impl Chrome {
         h: i32,
         buffer: &[String],
         title: &str,
-        verts: &mut Vec<Vertex>,
+        batch: &mut ChromeBatch,
     ) {
         let bar_h = 28;
         let bg: (f32, f32, f32, f32) = self.theme.bg.into();
@@ -96,15 +195,19 @@ impl Chrome {
         let accent: (f32, f32, f32, f32) = self.theme.accent.into();
         let accent_fg: (f32, f32, f32, f32) = self.theme.accent_fg.into();
 
-        verts.extend(rounded_rect_verts(0.0, 0.0, w as f32, h as f32, 4.0, bg));
-        verts.extend(rect_verts(0.0, 0.0, w as f32, bar_h as f32, accent));
+        batch
+            .verts
+            .extend(rounded_rect_verts(0.0, 0.0, w as f32, h as f32, 4.0, bg));
+        batch
+            .verts
+            .extend(rect_verts(0.0, 0.0, w as f32, bar_h as f32, accent));
         self.text(
             title,
             16,
             6.0,
             (bar_h as f32 - 16.0) / 2.0,
             accent_fg,
-            verts,
+            batch,
         );
 
         let rows = (h - bar_h - 8) / self.line_h;
@@ -112,12 +215,12 @@ impl Chrome {
         for line in 0..shown {
             let text = &buffer[line as usize];
             let gy = (bar_h + 6 + line * self.line_h) as f32;
-            self.text(text, 14, 6.0, gy, fg, verts);
+            self.text(text, 14, 6.0, gy, fg, batch);
         }
     }
 
     /// Bottom which-key overlay panel.
-    pub fn draw_whichkey(&mut self, binds: &[(String, String)], verts: &mut Vec<Vertex>) {
+    pub fn draw_whichkey(&mut self, binds: &[(String, String)], batch: &mut ChromeBatch) {
         let w = 420.0;
         let row_h = 20.0;
         let h = 12.0 + binds.len() as f32 * row_h;
@@ -126,19 +229,20 @@ impl Chrome {
         let bg: (f32, f32, f32, f32) = self.theme.whichkey_bg.into();
         let fg: (f32, f32, f32, f32) = self.theme.whichkey_fg.into();
 
-        verts.extend(rounded_rect_verts(x, y, w, h, 6.0, bg));
+        batch.verts.extend(rounded_rect_verts(x, y, w, h, 6.0, bg));
         for (i, (key, desc)) in binds.iter().enumerate() {
             let ty = y + 10.0 + i as f32 * row_h;
-            self.text(&format!("{key}  {desc}"), 14, x + 10.0, ty, fg, verts);
+            self.text(&format!("{key}  {desc}"), 14, x + 10.0, ty, fg, batch);
         }
     }
 
-    /// Lay `text` out and append one solid quad per glyph, sized to the glyph's
-    /// pixel box, at `(x, y)` plus the layout's glyph offsets. Returns the run's
+    /// Lay `text` out and append one textured quad per glyph, positioned at
+    /// `(x, y)` — the pen position and the top of the line box — plus the
+    /// layout's per-glyph advance and the glyph's own bearing. Returns the run's
     /// advance width so callers can chain text to the right.
     ///
-    /// // TODO(next phase): rasterize the atlas glyphs and draw real glyph textures
-    /// // via `TextureRenderElement` instead of solid-color blocks.
+    /// Glyphs with no bitmap (spaces, control chars) advance the pen and draw
+    /// nothing.
     fn text(
         &mut self,
         text: &str,
@@ -146,28 +250,34 @@ impl Chrome {
         x: f32,
         y: f32,
         color: (f32, f32, f32, f32),
-        verts: &mut Vec<Vertex>,
+        batch: &mut ChromeBatch,
     ) -> f32 {
+        let rgb = rgb8(color);
         let layout = layout_text(text, font_size, None);
         for (gx, _, c) in layout.glyphs {
-            let g = self.atlas.glyph(font_size, c);
-            if g.w <= 0.0 || g.h <= 0.0 {
+            let g = self.atlas.glyph(font_size, rgb, c);
+            if g.is_empty() {
                 continue;
             }
-            verts.extend(rect_verts(x + gx, y, g.w, g.h, color));
+            batch.glyphs.push(GlyphQuad {
+                x: x + gx + g.x,
+                y: y + g.y,
+                w: g.w,
+                h: g.h,
+                u0: g.u0,
+                v0: g.v0,
+                u1: g.u1,
+                v1: g.v1,
+            });
         }
         layout.width_px
     }
 }
 
-/// Shift a batch of chrome vertices by `(dx, dy)` in place. `render_frame` uses
-/// this to centre the welcome editor frame on the output after it is laid out
-/// at the origin.
-pub fn translate_verts(verts: &mut [Vertex], dx: f32, dy: f32) {
-    for v in verts {
-        v[0] += dx;
-        v[1] += dy;
-    }
+/// A chrome colour as the 8-bit RGB the atlas bakes into a glyph cell.
+fn rgb8(color: (f32, f32, f32, f32)) -> [u8; 3] {
+    let to_u8 = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
+    [to_u8(color.0), to_u8(color.1), to_u8(color.2)]
 }
 
 /// Convert a chrome vertex batch (physical pixels, origin top-left) into
@@ -223,13 +333,36 @@ mod tests {
     #[test]
     fn statusline_emits_quads() {
         let mut chrome = Chrome::new(theme());
-        let mut verts = Vec::new();
-        let h = chrome.draw_statusline(800, 600, 1, "foot", &mut verts);
+        let mut batch = ChromeBatch::default();
+        let h = chrome.draw_statusline(800, 600, 1, "foot", &mut batch);
         assert!(h > 0);
-        assert!(verts.len() >= 6);
+        assert!(batch.verts.len() >= 6);
         // every vertex within the bar band
-        for v in &verts {
+        for v in &batch.verts {
             assert!(v[1] >= 600.0 - h as f32 - 1.0 && v[1] <= 600.0 + 1.0);
+        }
+    }
+
+    #[test]
+    fn statusline_draws_its_text_as_glyphs() {
+        // The mode letter, the workspace label and the focused title all reach
+        // the batch as glyph quads inside the bar — not as solid blocks, and not
+        // dropped on the floor.
+        let mut chrome = Chrome::new(theme());
+        let mut batch = ChromeBatch::default();
+        let h = chrome.draw_statusline(800, 600, 1, "foot", &mut batch);
+        assert!(
+            batch.glyphs.len() >= "N".len() + "WS 1".len(),
+            "expected a glyph per drawn character, got {}",
+            batch.glyphs.len()
+        );
+        for g in &batch.glyphs {
+            assert!(g.w > 0.0 && g.h > 0.0, "glyph quads carry a bitmap");
+            assert!(
+                g.y >= 600.0 - h as f32 - 1.0 && g.y + g.h <= 600.0 + 1.0,
+                "glyph at y={} escapes the {h}px bar",
+                g.y
+            );
         }
     }
 
@@ -237,9 +370,10 @@ mod tests {
     fn editor_frame_renders_title_and_lines() {
         let mut chrome = Chrome::new(theme());
         let buf: Vec<String> = (0..20).map(|i| format!("line {i}")).collect();
-        let mut verts = Vec::new();
-        chrome.draw_editor_frame(400, 300, &buf, "welcome", &mut verts);
-        assert!(verts.len() >= 6 * 2); // title bar + at least one text row
+        let mut batch = ChromeBatch::default();
+        chrome.draw_editor_frame(400, 300, &buf, "welcome", &mut batch);
+        assert!(batch.verts.len() >= 6 * 2); // frame + title bar
+        assert!(!batch.glyphs.is_empty(), "title and rows draw glyphs");
     }
 
     #[test]
@@ -249,9 +383,35 @@ mod tests {
             ("M-q".into(), "quit".into()),
             ("M-t".into(), "cycle workspace".into()),
         ];
-        let mut verts = Vec::new();
-        chrome.draw_whichkey(&binds, &mut verts);
-        assert!(!verts.is_empty());
+        let mut batch = ChromeBatch::default();
+        chrome.draw_whichkey(&binds, &mut batch);
+        assert!(!batch.verts.is_empty());
+        assert!(!batch.glyphs.is_empty());
+    }
+
+    #[test]
+    fn translate_since_moves_both_panels_and_glyphs() {
+        let mut chrome = Chrome::new(theme());
+        let mut batch = ChromeBatch::default();
+        chrome.draw_editor_frame(400, 300, &["hi".to_string()], "welcome", &mut batch);
+        let (vert, glyph) = (batch.verts[0], batch.glyphs[0]);
+
+        let mark = batch.mark();
+        chrome.draw_editor_frame(400, 300, &["hi".to_string()], "welcome", &mut batch);
+        batch.translate_since(mark, 10.0, 20.0);
+
+        // Everything before the mark stays put; everything after it shifts.
+        assert_eq!(batch.verts[0], vert);
+        assert_eq!(batch.glyphs[0], glyph);
+        let moved_vert = batch.verts[vert_count(&batch)];
+        assert_eq!(
+            (moved_vert[0], moved_vert[1]),
+            (vert[0] + 10.0, vert[1] + 20.0)
+        );
+    }
+
+    fn vert_count(batch: &ChromeBatch) -> usize {
+        batch.verts.len() / 2
     }
 
     #[test]
@@ -259,10 +419,12 @@ mod tests {
         // Text on the statusline is drawn in the statusline foreground (and the
         // mode glyph in the accent foreground), never in the accent color that
         // fills the mode segment — the brief flagged amber-on-amber as a bug.
+        // Glyph colour is baked into the atlas cell, so ask the atlas which
+        // cells the draw actually produced.
         let mut chrome = Chrome::new(theme());
-        let mut verts = Vec::new();
-        let _ = chrome.draw_statusline(800, 600, 1, "foot", &mut verts);
-        let quad = |i: usize| &verts[i * 6..i * 6 + 6];
+        let mut batch = ChromeBatch::default();
+        let _ = chrome.draw_statusline(800, 600, 1, "foot", &mut batch);
+        let quad = |i: usize| &batch.verts[i * 6..i * 6 + 6];
         assert!(
             quad(0).iter().all(|v| v[4] == 69.0 / 255.0),
             "bar = statusline_bg"
@@ -271,8 +433,23 @@ mod tests {
             quad(1).iter().all(|v| v[4] == 243.0 / 255.0),
             "mode segment = accent"
         );
-        for v in &verts[12..] {
-            assert_ne!(v[4], 243.0 / 255.0, "text never uses the accent color");
+
+        let accent = [243, 139, 168];
+        let accent_fg = [30, 30, 30];
+        let statusline_fg = [205, 214, 244];
+        assert!(
+            chrome.atlas.contains(16, accent_fg, 'N'),
+            "the mode letter is drawn in the accent foreground"
+        );
+        assert!(
+            chrome.atlas.contains(16, statusline_fg, 'W'),
+            "the workspace label is drawn in the statusline foreground"
+        );
+        for c in "NWS1foot".chars() {
+            assert!(
+                !chrome.atlas.contains(16, accent, c),
+                "no statusline text is drawn in the accent fill color ({c})"
+            );
         }
     }
 }
