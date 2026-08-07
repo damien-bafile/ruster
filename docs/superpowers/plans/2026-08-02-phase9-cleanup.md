@@ -349,12 +349,12 @@ one-line repro.
       TUI, `Ctrl-\` round-trips TERMINAL → NORMAL → `gg` moves → `i` →
       TERMINAL; in both backends `terminal.escape = "<Esc>"` does the same.
 
-      **Still unverified:** `Ctrl-\` in the GUI *by hand*. System Events
-      cannot deliver Ctrl chords to the raylib window — `C-w v` leaves the
-      editor in VISUAL mode, so the `v` lands and the `C-w` does not — which
-      means the capture harness can neither confirm nor refute it. The
-      `KEY_BACKSLASH` mapping it needed was unambiguously absent and is now
-      present with tests, but a human keypress is the only proof.
+      **`Ctrl-\` in the GUI is untested by hand.** System Events cannot
+      deliver Ctrl chords to a GLFW window, so the harness cannot reach it;
+      a real `Ctrl-w v` was confirmed working, which establishes that Ctrl
+      chords themselves are fine there. The `KEY_BACKSLASH` mapping the escape
+      needed was unambiguously absent and is now present with tests, so the
+      remaining risk is small — but it is one keypress from certainty.
 
 - [x] **Typing a `:` command in Terminal-Normal leaked into the shell.**
       *(fixed)* The `i`/`a`/`I`/`A` re-focus check runs before the cmdline is
@@ -365,18 +365,17 @@ one-line repro.
       `Normal` while waiting for a character that may be `i`. Found by driving
       the terminal through a PTY, not by reading the code.
 
-- [ ] **Ctrl chords may not reach the GUI at all.** `Ctrl-w v` splits correctly
-      headlessly (`drive.rs::ctrl_w_v_splits_the_window`), so the app layer is
-      right, but the same chord sent to the raylib window leaves the editor in
-      VISUAL mode — the `v` lands, the `C-w` does not. Tried three ways:
-      `keystroke "w" using control down`, `key code 13 using control down`, and
-      `key down control` / `key code 13` / `key up control` with 150ms holds
-      (~9 frames at 60fps, so `is_key_down` cannot have missed it). All three
-      failed identically. Either GLFW/raylib drops Ctrl chords on macOS — which
-      would also kill `Ctrl-n`, `Ctrl-d`/`Ctrl-u` and every Emacs binding in the
-      GUI — or synthetic events cannot reproduce it. **Needs one human keypress
-      to settle**; no automated route can distinguish the two.
-      *Repro:* `just gui`, press `Ctrl-w` then `v`; two windows means fine.
+- [x] **Ctrl chords in the GUI: not a defect.** *(closed)* Recorded here
+      briefly because the evidence pointed the wrong way and the next session
+      should not re-run it. `Ctrl-w v` sent to the raylib window by osascript
+      leaves the editor in VISUAL mode — the `v` lands, the `C-w` does not —
+      and that held across `keystroke ... using control down`, `key code ...
+      using control down`, and `key down control` / `key code` / `key up
+      control` with 150ms holds. A real keypress splits the window correctly.
+      So System Events cannot deliver Ctrl chords to a GLFW window, and no
+      capture from `scripts/gui-keys.sh` is evidence about a `C-` binding in
+      either direction. Documented in that script and in
+      `docs/verification/README.md`.
 
 - [ ] **Terminal scrollback is retained and unreachable.** `terminal.scrollback`
       defaults to 10000 lines and alacritty_terminal keeps them, but
