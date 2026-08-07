@@ -61,6 +61,7 @@ ordinary keycodes.
 | Titlebar chrome updates on focus | launch a second client, its title takes the statusline | ✅ statusline went from the shell's title to `RUSTER-FOCUS-TEST` when that client mapped and took focus |
 | Keyboard reaches the client | type into the nested client | ✅ keys are forwarded to the focused toplevel |
 | Lua user config is loaded | `~/.config/ruster/compositor.lua` binds a key | ✅ a config binding `M-F9`/`M-F10` was loaded and both binds took effect |
+| `ruster.wm.*` API works | a config that only calls the API | ✅ `set_keybind` + `switch_workspace(4)` + a branched `launch_client` all took effect: statusline showed `WS 4`, the client launched, and the API-registered `M-F9` moved it to `WS 5`. `focus` warns and does nothing by design |
 | Lua keybinds work | cycle binding changes the WS label; quit binding exits 0 | ✅ injected `Super+F9` at the evdev level → statusline went `WS 1` → `WS 2`; `Super+F10` → process exits 0 |
 | SIGINT quits cleanly | `Ctrl-C`, process exits 0 | ✅ exits 0, logs `shutting down` |
 | DRM fails gracefully without a seat | `--drm` inside a Wayland session | ✅ exits 1 with `failed to initialize libseat session` plus the seatd/logind hint; display untouched |

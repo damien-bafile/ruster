@@ -4,7 +4,9 @@
 //! a compositor config needs). Keeping this parser here also avoids coupling
 //! the compositor to the editor crate's plugin model.
 
+use std::cell::RefCell;
 use std::process::Command;
+use std::rc::Rc;
 
 use mlua::Lua;
 use smithay::input::keyboard::ModifiersState;
@@ -22,12 +24,14 @@ pub enum Action {
     CycleWorkspace,
 }
 
-/// The parsed compositor config: keybinds as `(binding, action-name)` pairs
-/// and the list of clients to launch on startup.
+/// The parsed compositor config: keybinds as `(binding, action-name)` pairs,
+/// the clients to launch on startup, and the workspace to start on.
 #[derive(Debug, Clone, Default)]
 pub struct LuaShell {
     pub keybinds: Vec<(String, String)>,
     pub startup_clients: Vec<String>,
+    /// Workspace to start on, when the config asked for one.
+    pub initial_workspace: Option<u32>,
 }
 
 /// Load `compositor.lua` from the config dir (`~/.config/ruster/`), falling
@@ -56,8 +60,9 @@ pub fn load_compositor_config() -> LuaShell {
     }
 }
 
-/// Parse a compositor.lua source into a [`LuaShell`]. The Lua is a single
-/// table:
+/// Parse a compositor.lua source into a [`LuaShell`].
+///
+/// A config can declare itself as a table:
 ///
 /// ```lua
 /// return {
@@ -68,10 +73,37 @@ pub fn load_compositor_config() -> LuaShell {
 ///   startup_clients = { "foot" },
 /// }
 /// ```
+///
+/// or call the `ruster.wm` API, which is what makes conditional configuration
+/// possible — a table cannot branch on the machine it is being read on:
+///
+/// ```lua
+/// ruster.wm.set_keybind("M-S-q", "quit")
+/// ruster.wm.launch_client("foot")
+/// ruster.wm.switch_workspace(2)
+/// ```
+///
+/// Both may be used together; calls and table entries accumulate, in that
+/// order. Nothing is applied while the config runs — the compositor does not
+/// exist yet — so the calls record intent that [`apply_config_to_shell`] acts
+/// on at startup.
 pub fn parse_config(source: &str) -> mlua::Result<LuaShell> {
     let lua = Lua::new();
-    let table: mlua::Table = lua.load(source).eval()?;
-    let mut shell = LuaShell::default();
+    let recorded = Rc::new(RefCell::new(LuaShell::default()));
+    install_wm_api(&lua, &recorded)?;
+
+    // Evaluate as a value, not a table: a config that only calls the API
+    // returns nothing, and demanding a table would make it a parse error.
+    let returned: mlua::Value = lua.load(source).eval()?;
+    let mut shell = recorded.borrow().clone();
+    if let mlua::Value::Table(table) = returned {
+        merge_config_table(&table, &mut shell)?;
+    }
+    Ok(shell)
+}
+
+/// Fold a declarative config table into `shell`, after any `ruster.wm` calls.
+fn merge_config_table(table: &mlua::Table, shell: &mut LuaShell) -> mlua::Result<()> {
     if let Ok(binds) = table.get::<mlua::Table>("keybinds") {
         for row in binds.sequence_values::<mlua::Table>() {
             let row = row?;
@@ -83,7 +115,87 @@ pub fn parse_config(source: &str) -> mlua::Result<LuaShell> {
             shell.startup_clients.push(c?);
         }
     }
-    Ok(shell)
+    if let Ok(ws) = table.get::<u32>("workspace") {
+        shell.initial_workspace = valid_workspace(ws);
+    }
+    Ok(())
+}
+
+/// A workspace number the shell will accept, or `None` for one it will not.
+/// Out-of-range values are dropped with a warning rather than clamped: a config
+/// asking for workspace 20 has a bug in it, and silently landing on 9 would
+/// hide that.
+fn valid_workspace(ws: u32) -> Option<u32> {
+    if (1..=ruster_shell::WORKSPACE_COUNT).contains(&ws) {
+        Some(ws)
+    } else {
+        tracing::warn!(
+            workspace = ws,
+            max = ruster_shell::WORKSPACE_COUNT,
+            "config asked for a workspace that does not exist; ignoring"
+        );
+        None
+    }
+}
+
+/// Install the `ruster.wm` table into the Lua globals.
+///
+/// Every function records into `shell` rather than acting: the config is read
+/// before the compositor state exists, and even if it did, a config is a
+/// declaration of what the session should look like rather than a script driving
+/// a live session. Runtime control lands with the full keymap in Phase 1.
+fn install_wm_api(lua: &Lua, shell: &Rc<RefCell<LuaShell>>) -> mlua::Result<()> {
+    let wm = lua.create_table()?;
+
+    let recorder = shell.clone();
+    wm.set(
+        "set_keybind",
+        lua.create_function(move |_, (bind, action): (String, String)| {
+            recorder.borrow_mut().keybinds.push((bind, action));
+            Ok(())
+        })?,
+    )?;
+
+    let recorder = shell.clone();
+    wm.set(
+        "launch_client",
+        lua.create_function(move |_, command: String| {
+            recorder.borrow_mut().startup_clients.push(command);
+            Ok(())
+        })?,
+    )?;
+
+    let recorder = shell.clone();
+    wm.set(
+        "switch_workspace",
+        lua.create_function(move |_, workspace: u32| {
+            if let Some(ws) = valid_workspace(workspace) {
+                recorder.borrow_mut().initial_workspace = Some(ws);
+            }
+            Ok(())
+        })?,
+    )?;
+
+    // `focus` is deliberately inert. Focus is a runtime operation against
+    // windows that do not exist while the config is being read, and Phase 0 has
+    // no addressing scheme for them — no directions, because there is no layout
+    // until Phase 1, and no stable ids a user could write down. It exists so a
+    // config calling it does not blow up, and says so.
+    wm.set(
+        "focus",
+        lua.create_function(move |_, target: mlua::Value| {
+            tracing::warn!(
+                ?target,
+                "ruster.wm.focus is not implemented in Phase 0 (no windows exist at config time); ignoring"
+            );
+            Ok(())
+        })?,
+    )?;
+
+    let ruster = lua.create_table()?;
+    ruster.set("wm", wm)?;
+    lua.globals().set("ruster", ruster)?;
+    Ok(())
 }
 
 /// The modifier set a keybind string asks for. Matching is *exact* — a bind
@@ -180,6 +292,9 @@ pub fn apply_config_to_shell<B: Backend + 'static>(
     socket_name: &str,
 ) {
     state.keybinds = shell.keybinds;
+    if let Some(workspace) = shell.initial_workspace {
+        state.shell.workspace = workspace;
+    }
     spawn_startup_clients(&shell.startup_clients, socket_name);
 }
 
@@ -337,6 +452,100 @@ mod tests {
             ]
         );
         assert_eq!(shell.startup_clients, vec!["foot".to_string()]);
+    }
+
+    #[test]
+    fn wm_api_records_binds_clients_and_workspace() {
+        let shell = parse_config(
+            r#"
+            ruster.wm.set_keybind("M-S-q", "quit")
+            ruster.wm.set_keybind("M-F9", "cycle workspace")
+            ruster.wm.launch_client("foot")
+            ruster.wm.switch_workspace(3)
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            shell.keybinds,
+            vec![
+                ("M-S-q".into(), "quit".into()),
+                ("M-F9".into(), "cycle workspace".into())
+            ]
+        );
+        assert_eq!(shell.startup_clients, vec!["foot".to_string()]);
+        assert_eq!(shell.initial_workspace, Some(3));
+    }
+
+    #[test]
+    fn a_config_that_only_calls_the_api_returns_nothing_and_still_parses() {
+        // The declarative form returns a table; the imperative form returns
+        // nil. Requiring a table would make every API-only config a parse error
+        // and silently fall back to defaults.
+        let shell = parse_config(r#"ruster.wm.launch_client("foot")"#).unwrap();
+        assert_eq!(shell.startup_clients, vec!["foot".to_string()]);
+    }
+
+    #[test]
+    fn api_calls_and_a_returned_table_accumulate() {
+        let shell = parse_config(
+            r#"
+            ruster.wm.launch_client("foot")
+            return { startup_clients = { "weston-terminal" } }
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            shell.startup_clients,
+            vec!["foot".to_string(), "weston-terminal".to_string()]
+        );
+    }
+
+    #[test]
+    fn the_config_can_branch() {
+        // The point of the API over a table: a table cannot decide anything.
+        let shell = parse_config(
+            r#"
+            if os.getenv("DEFINITELY_NOT_SET_XYZ") then
+              ruster.wm.launch_client("alacritty")
+            else
+              ruster.wm.launch_client("foot")
+            end
+            "#,
+        )
+        .unwrap();
+        assert_eq!(shell.startup_clients, vec!["foot".to_string()]);
+    }
+
+    #[test]
+    fn an_out_of_range_workspace_is_ignored_not_clamped() {
+        let shell = parse_config("ruster.wm.switch_workspace(20)").unwrap();
+        assert_eq!(shell.initial_workspace, None);
+        let shell = parse_config("ruster.wm.switch_workspace(0)").unwrap();
+        assert_eq!(shell.initial_workspace, None);
+        let shell = parse_config("ruster.wm.switch_workspace(9)").unwrap();
+        assert_eq!(shell.initial_workspace, Some(9));
+    }
+
+    #[test]
+    fn focus_is_callable_but_inert() {
+        // Phase 0 has no way to name a window, so `focus` records nothing. It
+        // must still not raise, or a forward-looking config breaks the session.
+        let shell = parse_config(r#"ruster.wm.focus("left")"#).unwrap();
+        assert!(shell.keybinds.is_empty());
+        assert!(shell.startup_clients.is_empty());
+        assert_eq!(shell.initial_workspace, None);
+    }
+
+    #[test]
+    fn the_shipped_default_config_parses() {
+        // The embedded default is what every machine without a user config
+        // runs, so a syntax error in it would ship as "no keybinds at all".
+        let shell = parse_config(include_str!("../assets/compositor.lua")).unwrap();
+        assert!(!shell.keybinds.is_empty(), "default config binds keys");
+        assert!(
+            !shell.startup_clients.is_empty(),
+            "default config launches a client"
+        );
     }
 
     #[test]

@@ -5,5 +5,5 @@
 pub mod state;
 pub mod window;
 
-pub use state::ShellState;
+pub use state::{next_workspace, ShellState, WORKSPACE_COUNT};
 pub use window::{ClientWindow, WindowId};
