@@ -1,4 +1,6 @@
 ─ *messages* ───────────────────────────────────────────────────────────────────────────────────────────────────────────
+[ECHO] INFO first message
+[ECHO] INFO second message
 
 
 
@@ -35,6 +37,4 @@
 
 
 
-
-
- -- NORMAL -- │*messages*                                                                                     100%  1,1
+ -- NORMAL -- │*messages*                                                                                      33%  1,1

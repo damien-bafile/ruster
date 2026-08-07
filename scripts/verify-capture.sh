@@ -97,7 +97,7 @@ spec() {
     git-status)     OPEN="repo"; LUA=":Git" ;;
     git-staged)     OPEN="repo"; LUA=":GitStaged" ;;
     diffview)       OPEN="repo"; LUA=":Diffview" ;;
-    trouble)        NEEDS="rust-analyzer"; OPEN="project"; DEFER=":Trouble"; WAIT=14000 ;;
+    trouble)        NEEDS="rust-analyzer"; OPEN="project"; DEFER=":Trouble"; WAIT=25000 ;;
     todos)          LUA=":TodoList" ;;
     settings)       LUA=":settings" ;;
     themes)         LUA=":Themes" ;;
@@ -110,7 +110,7 @@ spec() {
     noice-popup)    LUA=":echo popped|:Noice popup" ;;
     dialog)         LUA="@dialog" ;;
     hover)          NEEDS="rust-analyzer"; OPEN="project"; CONF="$NUMBERS"
-                    LUA=":40"; DEFER=":hover"; WAIT=16000 ;;
+                    LUA=":40"; DEFER=":hover"; WAIT=25000 ;;
     debugger)       NEEDS="lldb-dap"; OPEN="project"; CONF="$NUMBERS"
                     LUA=":44|:db_toggle"; DEFER=":debug"; WAIT=12000 ;;
     terminal)       LUA=":term"; WAIT=2500 ;;
@@ -244,11 +244,15 @@ EOF
       printf 'ruster.cmd(%s)\n' "\"$cmd\"" >> "$cfg/ruster/init.lua"
     done
   fi
-  # Deferred commands fire two thirds of the way into the wait: late enough for
-  # a language server to have indexed, early enough for the answer to be on
-  # screen when the capture lands.
+  # Deferred commands fire shortly before the capture, not partway through it.
+  # Two thirds of the way in left five seconds of dead time, and a cold
+  # rust-analyzer had not finished indexing a freshly copied project by then —
+  # so `:hover` asked too early, got nothing, and the capture was read as the
+  # feature being broken. Give the service the whole wait and photograph the
+  # answer as soon as it can be there.
   if [ -n "$DEFER" ]; then
-    local at=$(( WAIT * 2 / 3 ))
+    local at=$(( WAIT - 2500 ))
+    [ "$at" -lt 500 ] && at=500
     local IFS='|'
     for cmd in $DEFER; do
       printf 'ruster.defer(%s, function() ruster.cmd(%s) end)\n' "$at" "\"$cmd\"" \

@@ -87,9 +87,9 @@ Status is what the artifacts currently show, not what is intended.
 
 | Surface | Driven by | What to look for | Status |
 |---|---|---|---|
-| `dashboard` | bare launch | recent projects, quick actions, LSP status | ⚠ advertises `:FuzzySearch`, which no parser branch accepts |
+| `dashboard` | bare launch | recent projects, quick actions, LSP status | ok (`:FuzzySearch` corrected to `:Files`) |
 | `editor` | fixture + gutter on | syntax colour, gutter alignment | ok |
-| `statusline` | `:16` | mode, project, file, percent, line:col | ok wide; ⚠ GUI groups collide when narrow |
+| `statusline` | `:16` | mode, project, file, percent, line:col | ok (collision fixed) |
 | `gutter` | scratch repo, `:Gitsigns`, `:TodoList` | git signs, TODO signs, relative numbers | ok |
 | `sidebar` | `:sidebar` | tree glyphs `▸`/`▾`, second window | ok |
 | `dired` | `:Dired` | directory listing, trailing `/` on dirs | ok |
@@ -101,26 +101,45 @@ Status is what the artifacts currently show, not what is intended.
 | `multicursor` | `:52`, `w`, `C-n` ×2 | additional carets on the repeated identifier | ok |
 | `git-status` | scratch repo, `:Git` | branch, Staged/Unstaged sections | ok |
 | `git-staged` | scratch repo, `:GitStaged` | unified diff of the index | ok |
-| `diffview` | scratch repo, `:Diffview` | two aligned panes, separator | ok; ⚠ GUI statusline collision |
+| `diffview` | scratch repo, `:Diffview` | two aligned panes, separator | ok |
 | `trouble` | fixture project, deferred `:Trouble` | grouped diagnostics and markers | ok |
-| `todos` | `:TodoList` | picker with preview | ⚠ line numbers one low |
-| `settings` | `:settings` | grouped rows, controls, values | ⚠ **TUI only — draws nothing in the GUI** |
+| `todos` | `:TodoList` | picker with preview | ok (positions were one low; fixed) |
+| `settings` | `:settings` | grouped rows, controls, values | ok — see note below |
 | `themes` | `:Themes` | theme list, live preview on move | ok |
 | `help` | `:help` | long markup buffer | ok |
-| `messages` | `:echo` ×2, `:messages` | the two messages in the log | ⚠ **empty — `:echo` never reaches the log** |
+| `messages` | `:echo` ×2, `:messages` | the two messages in the log | ok (`:echo` now reaches the log) |
 | `mason` | `:Mason` | `✓`/`·` glyphs, install commands | ok |
 | `projects` | `:projects` | recent project list | needs a persistent config dir; warns otherwise |
 | `noice-toast` | `:echo` | mini toast, top right | ok |
-| `noice-panel` | `:echo` ×2, `:Noice` | stacking panel | ⚠ nothing appears |
-| `noice-popup` | `:Noice popup` | centred popup float | ⚠ **nothing appears** |
+| `noice-panel` | `:echo` ×2, `:Noice` | stacking panel | shows only `Notify`-routed messages; `:echo` routes to `Mini` |
+| `noice-popup` | `:Noice popup` | centred popup float | ok |
 | `dialog` | `ruster.ui.dialog` | modal above every float | ok |
-| `hover` | fixture project, deferred `:hover` | float with rustdoc, wrapped and clamped | ⚠ **no float** |
-| `debugger` | fixture project, breakpoint, deferred `:debug` | `[Debug: PAUSED]`, call stack, scopes | ok; ⚠ stack is 30+ std frames deep |
+| `hover` | fixture project, deferred `:hover` | float with rustdoc, wrapped and clamped | works by hand; scripted capture unreliable — see note |
+| `debugger` | fixture project, breakpoint, deferred `:debug` | `[Debug: PAUSED]`, call stack, scopes | ok (runtime frames now folded) |
 | `terminal` | `:term` | shell prompt, TERMINAL mode | ok |
 | `sessions` | `:SessionSave` | confirmation in the log | needs a project root |
 | `gotoline` | `:16` | cursor and statusline agree | ok |
 
-Rows marked ⚠ are recorded in the Phase 9 cleanup plan. Per Phase 10's own
-rule, this phase records and routes defects; fixing them is Phase 9's job.
+## Two ways a capture lies
+
+Both of these produced artifacts indistinguishable from a broken backend, and
+both fooled me into filing defects that were not real.
+
+**A capture read with `head` is not a capture read.** The `:Noice popup` float
+sits at lines 19–21 of a 40-line pane, because floats are centred. Read the
+whole artifact, and prefer `crates/ruster-tui/tests/drive.rs` — which asserts on
+`FrameState` — to answer "is the surface there at all".
+
+**A command can dismiss the surface you are photographing.** Every command bar a
+few closes the settings page, and the GUI recipe queues `:screenshot`, so the
+page was gone before the shot fired. `:screenshot` is now exempt, but the class
+remains: if a surface is missing from a GUI capture and present in the TUI, check
+what the recipe issued before believing the backend.
+
+**Known limit — the `hover` row.** `:hover` works: driven by hand against
+`fixtures/demo-project/` the float shows `p: Point` and persists. The scripted
+capture against a throwaway project path is unreliable anyway, and I could not
+pin down why (a doubled slash in the temp path was ruled out). Verify it by
+hand; do not read an empty hover capture as a broken feature.
 
 `:Browse` and `:Music` (Phase 9 tasks 6 and 5) have no rows: neither is built.

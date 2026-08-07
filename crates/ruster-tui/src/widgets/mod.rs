@@ -690,7 +690,7 @@ impl Widget for WelcomeWidget {
         let actions = [
             (":e <path>", "Open file (Tab to complete)"),
             (":Dired", "File Explorer"),
-            (":FuzzySearch", "Find Files"),
+            (":Files", "Find Files"),
             (":term", "Terminal"),
         ];
         for (cmd, desc) in &actions {

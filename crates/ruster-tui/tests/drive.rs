@@ -361,6 +361,17 @@ fn echo_raises_a_notification_toast() {
 }
 
 #[test]
+fn noice_popup_raises_a_float() {
+    let log = Drive::new().content(DEMO).setup("ruster.cmd(':Noice popup')").run();
+    let frame = log.last();
+    assert!(
+        !frame.floats.is_empty(),
+        "`:Noice popup` should put a float on the frame:\n{}",
+        log.transcript()
+    );
+}
+
+#[test]
 fn the_theme_picker_lists_the_built_in_themes() {
     let log = Drive::new().content(DEMO).setup("ruster.cmd(':Themes')").run();
     let frame = log.last();

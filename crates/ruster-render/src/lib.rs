@@ -634,6 +634,31 @@ pub struct SettingsView {
     pub footer: String,
 }
 
+/// Where a statusline's centre section may sit, or `None` if it cannot be drawn
+/// without touching its neighbours. All widths are in the same unit (cells or
+/// pixels); the result is an offset from the bar's left edge.
+///
+/// Centring it and checking only that the three sections *sum* to less than the
+/// bar is not enough, and the difference is visible: a long left section pushes
+/// the centred text underneath itself, because the centre starts at
+/// `(total - center) / 2` regardless of how much of the bar the left already
+/// claimed. With a sidebar open, the GUI drew `[ruster-render]` and `script.rs`
+/// into the same cells and produced `[rustersscrenipt.rn]s`.
+///
+/// The centre is dropped rather than shifted: a filename nudged off-centre to
+/// dodge the mode label reads as a rendering fault, where a missing one reads
+/// as a bar too narrow to hold it — which is the truth.
+pub fn statusline_center_x(total: f32, left: f32, center: f32, right: f32) -> Option<f32> {
+    if center <= 0.0 || total <= 0.0 {
+        return None;
+    }
+    let x = (total - center) / 2.0;
+    if x < left || x + center > total - right {
+        return None;
+    }
+    Some(x)
+}
+
 /// Scroll a list so `selected` stays visible **without recentering**: the view
 /// holds its position until the selection crosses an edge, then scrolls just
 /// enough to keep it on-screen — the behavior of a normal list widget. `prev`
@@ -955,9 +980,9 @@ pub trait Renderer {
 #[cfg(test)]
 mod tests {
     use crate::{
-        floats_in_draw_order, Color, FloatAnchor, FloatEdge, FloatView, FrameState, Rect,
-        Renderer, SelectionKind, SelectionView, StatuslineView, StyledLine, TermCellView,
-        TermGridView, UIMode, WindowView,
+        floats_in_draw_order, statusline_center_x, Color, FloatAnchor, FloatEdge, FloatView,
+        FrameState, Rect, Renderer, SelectionKind, SelectionView, StatuslineView, StyledLine,
+        TermCellView, TermGridView, UIMode, WindowView,
     };
 
     struct TestRenderer;
@@ -1026,6 +1051,35 @@ mod tests {
         assert_eq!(t.width, 0);
         assert_eq!(t.x, 4, "clamped to the window's right edge");
         assert_eq!(t.cell_at(0, 1), None);
+    }
+
+    /// The regression this exists for: a long left section and a short right
+    /// one sum to less than the bar, so a total-width check passes, and the
+    /// centred text still starts underneath the left. That is what produced
+    /// `[rustersscrenipt.rn]s` in the GUI with a sidebar open.
+    #[test]
+    fn a_long_left_section_suppresses_the_centre_rather_than_overlapping_it() {
+        // left 60, centre 20, right 10 in a bar of 100: sums to 90 < 100, but
+        // the centre would start at 40 — twenty units inside the left section.
+        assert_eq!(statusline_center_x(100.0, 60.0, 20.0, 10.0), None);
+    }
+
+    #[test]
+    fn a_centre_that_fits_between_both_sections_is_placed_centrally() {
+        // left 20, centre 20, right 20 in 100: starts at 40, ends at 60, clear
+        // of the left (20) and the right (80).
+        assert_eq!(statusline_center_x(100.0, 20.0, 20.0, 20.0), Some(40.0));
+    }
+
+    #[test]
+    fn a_centre_running_into_the_right_section_is_suppressed() {
+        assert_eq!(statusline_center_x(100.0, 10.0, 20.0, 60.0), None);
+    }
+
+    #[test]
+    fn an_empty_or_zero_width_centre_is_never_placed() {
+        assert_eq!(statusline_center_x(100.0, 0.0, 0.0, 0.0), None);
+        assert_eq!(statusline_center_x(0.0, 0.0, 10.0, 0.0), None);
     }
 
     #[test]

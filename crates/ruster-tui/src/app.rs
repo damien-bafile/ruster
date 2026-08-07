@@ -511,6 +511,27 @@ fn plain_lines(content: &str) -> Vec<StyledLine> {
 
 /// Map a crossterm key event onto a terminal `Key`/`Mods` for PTY encoding.
 /// Returns `None` for keys with no terminal representation.
+/// Whether a stack frame's `path:line` belongs to the language runtime or a
+/// dependency rather than to code the user is debugging.
+///
+/// Matched on the source path, because that is the one thing every adapter
+/// reports and it does not depend on demangled symbol shapes. A frame with no
+/// source at all (`?`) is runtime too: the user cannot open it.
+fn is_runtime_frame(loc: &str) -> bool {
+    if loc.starts_with("?:") || loc == "?" {
+        return true;
+    }
+    const RUNTIME: &[&str] = &[
+        "/rustc/",            // std shipped with the toolchain
+        "/.rustup/",          // a locally unpacked rust-src
+        "/.cargo/registry/",  // dependencies
+        "/library/std/",
+        "/library/core/",
+        "/library/alloc/",
+    ];
+    RUNTIME.iter().any(|m| loc.contains(m))
+}
+
 /// Whether `ck` is the key that leaves Terminal-Insert, per `terminal.escape`.
 ///
 /// The `Ctrl-\` case is why this is a function rather than a `matches!`. A
@@ -4598,6 +4619,13 @@ impl App {
                     self.settings = None;
                     return;
                 }
+                // Taking a picture of a page is not asking to leave it. This
+                // is the whole reason the settings page appeared broken in the
+                // GUI: the capture recipe queues `:screenshot`, which closed
+                // the page, and the shot two frames later showed a bare
+                // buffer — indistinguishable from a backend that cannot draw
+                // the overlay at all.
+                CmdAction::Screenshot(_) => {}
                 _ => self.settings = None,
             }
         }
@@ -4787,6 +4815,16 @@ impl App {
                 ));
             }
             CmdAction::Echo(text, level) => {
+                // Both stores, not just the transient one. The toast expires
+                // after `noice.*_timeout`; the log is what `:messages` reads.
+                // Writing only the toast meant every `:echo`, `:echom` and
+                // `:echoe` vanished for good and `:messages` opened an empty
+                // buffer — the one surface whose whole job is remembering.
+                self.push_message(
+                    level,
+                    ruster_core::message::MessageSource::Echo,
+                    text.clone(),
+                );
                 self.notify.push(Notification::new(level, ruster_core::message::MessageSource::Echo, text));
             }
             CmdAction::NoicePanel => self.show_noice_panel = !self.show_noice_panel,
@@ -7386,8 +7424,13 @@ impl App {
             .into_iter()
             .map(|(path, m)| QuickfixItem {
                 path,
-                line: m.line,
-                col: m.col,
+                // `TodoMarker` is 0-based; `QuickfixItem` is documented 1-based
+                // and `open_path` subtracts one when it jumps. Passing the
+                // marker through raw showed every entry one line and one column
+                // low and landed the cursor a line above the marker — while
+                // `:Trouble`, which converts, showed the same marker correctly.
+                line: m.line + 1,
+                col: m.col + 1,
                 message: if m.text.is_empty() {
                     m.keyword.clone()
                 } else {
@@ -7921,7 +7964,7 @@ impl App {
         let session = self.debug.session()?;
         let status = if session.stopped() { "PAUSED" } else { "RUNNING" };
         let toolbar = format!("[Debug: {}] F5:Continue F10:Next F11:StepIn S-F5:Stop", status);
-        let stack: Vec<(u16, String, String)> = session
+        let all: Vec<(u16, String, String)> = session
             .stack_frames
             .iter()
             .enumerate()
@@ -7930,6 +7973,26 @@ impl App {
                 (i as u16, f.name.clone(), format!("{}:{}", loc, f.line))
             })
             .collect();
+        // Stopping in `main` of a trivial binary yields thirty-odd frames of
+        // `lang_start`, `catch_unwind` and friends, and the one frame the user
+        // wrote is the first line of a dock full of runtime. Hide those, but
+        // say how many — silently dropping frames from a call stack is its own
+        // way of lying, and the runtime frames matter when the fault is in an
+        // unwind or a thread spawn.
+        let hidden = all.iter().filter(|(_, _, loc)| is_runtime_frame(loc)).count();
+        let mut stack: Vec<(u16, String, String)> =
+            all.iter().filter(|(_, _, loc)| !is_runtime_frame(loc)).cloned().collect();
+        if stack.is_empty() {
+            // Stopped entirely inside the runtime: showing nothing would be
+            // worse than showing everything.
+            stack = all;
+        } else if hidden > 0 {
+            stack.push((
+                stack.len() as u16,
+                "…".to_string(),
+                format!("{hidden} runtime frame{} hidden", if hidden == 1 { "" } else { "s" }),
+            ));
+        }
         let scopes: Vec<(String, Vec<(String, String)>)> = session
             .variables
             .iter()
@@ -9761,6 +9824,97 @@ mod tests {
             a.handle_key(CtKey::new(KeyCode::Char(c), KeyModifiers::NONE));
             assert!(a.terminal_focused, "{c} re-focuses the terminal");
         }
+    }
+
+    /// The call stack shows the user's frames, not thirty of the runtime's.
+    ///
+    /// Stopping in `main` of a trivial binary yielded `demo_project::main`
+    /// followed by `lang_start`, `catch_unwind` and the rest filling the dock.
+    #[test]
+    fn runtime_frames_are_told_apart_from_the_users_own() {
+        assert!(is_runtime_frame("/rustc/abc123/library/std/src/rt.rs:165"));
+        assert!(is_runtime_frame("/Users/x/.cargo/registry/src/serde-1.0/lib.rs:42"));
+        assert!(is_runtime_frame("/Users/x/.rustup/toolchains/stable/lib/rs.rs:9"));
+        assert!(is_runtime_frame("?"), "a frame with no source cannot be opened");
+        assert!(is_runtime_frame("?:0"));
+
+        assert!(!is_runtime_frame("/Users/x/Dev/demo/src/main.rs:31"));
+        assert!(!is_runtime_frame("/tmp/proj/src/lib.rs:1"));
+        // A project that merely has "library" in its path is still the user's.
+        assert!(!is_runtime_frame("/Users/x/Dev/library-app/src/main.rs:3"));
+    }
+
+    /// `:TodoList` and `:Trouble` must agree about where a marker is.
+    ///
+    /// `QuickfixItem` is documented 1-based (`quickfix.rs`) and `open_path`
+    /// subtracts one when it jumps, but `TodoMarker` is 0-based and the todo
+    /// list passed it through raw. Every entry displayed one line low and
+    /// landed the cursor a line above the marker, while `:Trouble` — which
+    /// converts — showed the same marker correctly.
+    #[test]
+    fn the_todo_list_reports_one_based_positions() {
+        let dir = shot_dir();
+        let path = dir.join("todo_fixture.rs");
+        // The marker is on line 3, column 4 counting from one.
+        std::fs::write(&path, "fn a() {}\n\n// TODO: fix me\n").unwrap();
+
+        let mut a = App::new(std::fs::read_to_string(&path).unwrap(), path.clone());
+        a.apply_cmd(CmdAction::TodoList);
+
+        let items = a.quickfix.items();
+        assert_eq!(items.len(), 1, "one marker in the fixture: {items:?}");
+        assert_eq!(items[0].line, 3, "the TODO is on line 3, one-based");
+        assert_eq!(items[0].col, 4, "and column 4, one-based");
+    }
+
+    /// `:echo` has to reach the log, not just the toast.
+    ///
+    /// The toast expires on `noice.info_timeout`; the log is what `:messages`
+    /// reads. Writing only the toast meant every echoed message vanished for
+    /// good and `:messages` opened an empty buffer.
+    #[test]
+    fn echo_is_recorded_in_the_message_log() {
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::Echo(
+            "first".into(),
+            ruster_core::message::MessageLevel::Info,
+        ));
+        a.apply_cmd(CmdAction::Echo(
+            "second".into(),
+            ruster_core::message::MessageLevel::Warning,
+        ));
+        a.apply_cmd(CmdAction::Messages);
+
+        let text = {
+            let w = a.ws.borrow();
+            w.buffers.get(a.messages_buf.expect("messages buffer")).unwrap().buffer.to_string()
+        };
+        assert!(text.contains("first"), "the log kept the first echo: {text:?}");
+        assert!(text.contains("second"), "the log kept the second echo: {text:?}");
+    }
+
+    /// `:screenshot` must not dismiss the thing being photographed.
+    ///
+    /// Every other command closes the settings page, deliberately — asking for
+    /// something else is a clear signal the page has served its purpose. A
+    /// screenshot is not asking for something else, and treating it as such is
+    /// what made the GUI look like it could not draw the settings overlay at
+    /// all: the capture queued `:screenshot`, that closed the page, and the
+    /// shot two frames later showed a bare buffer.
+    #[test]
+    fn a_screenshot_does_not_close_the_settings_page() {
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::Settings);
+        assert!(a.settings.is_some(), "the settings page opened");
+
+        a.apply_cmd(CmdAction::Screenshot(Some(
+            shot_dir().join("s.png").to_string_lossy().into_owned(),
+        )));
+        assert!(a.settings.is_some(), "the page survives being photographed");
+
+        // Anything else still closes it — that behaviour is intentional.
+        a.apply_cmd(CmdAction::Messages);
+        assert!(a.settings.is_none(), "another command still dismisses the page");
     }
 
     /// Typing a `:` command in Terminal-Normal must not be interrupted by the
