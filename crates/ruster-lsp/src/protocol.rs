@@ -7,10 +7,30 @@ use serde_json::{json, Value};
 
 use crate::position::LspPosition;
 
-/// `file://` URI for a filesystem path (absolute paths only; best-effort).
+/// `file://` URI for a filesystem path, with symlinks resolved.
+///
+/// Resolving matters because the server resolves too, and a workspace root and
+/// a document that disagree about the same directory are not the same place to
+/// it. On macOS `/var` and `/tmp` are symlinks (`/private/var`, `/private/tmp`),
+/// so a project opened under either got `rootUri: file:///var/…` while its
+/// documents — which were already canonicalised at the call site — arrived as
+/// `file:///private/var/…`. rust-analyzer put every one of them outside the
+/// workspace and answered `null`, which reads on screen as hover, definition
+/// and references all being broken rather than as a path mismatch.
+///
+/// Canonicalising here rather than at each call site is deliberate: the root
+/// and the documents have to agree, and they only reliably agree if the same
+/// function decides for both.
+///
+/// A path that does not exist is left alone — `canonicalize` needs a real file,
+/// and a best-effort URI beats none.
 pub fn uri_from_path(path: &Path) -> String {
-    // Relative paths are uncommon here, but servers generally still accept them.
-    format!("file://{}", path.to_string_lossy())
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let text = resolved.to_string_lossy();
+    // Windows canonicalisation yields a verbatim prefix (`\\?\C:\…`) that no
+    // language server accepts inside a `file://` URI.
+    let text = text.strip_prefix(r"\\?\").unwrap_or(&text);
+    format!("file://{}", text)
 }
 
 /// `initialize` params advertising the capabilities ruster actually uses.
@@ -132,7 +152,51 @@ mod tests {
 
     #[test]
     fn uri_has_file_scheme() {
-        assert_eq!(uri_from_path(Path::new("/tmp/x.rs")), "file:///tmp/x.rs");
+        // Nonexistent: canonicalisation cannot apply, so the path is used as-is.
+        assert_eq!(
+            uri_from_path(Path::new("/nonexistent-uri-test/x.rs")),
+            "file:///nonexistent-uri-test/x.rs"
+        );
+    }
+
+    /// A workspace root and its documents must resolve to the same directory.
+    ///
+    /// The root was left unresolved while documents were canonicalised at the
+    /// call site, so on macOS — where `/var` and `/tmp` are symlinks — a project
+    /// under either got `rootUri: file:///var/…` and documents at
+    /// `file:///private/var/…`. rust-analyzer placed every document outside the
+    /// workspace and answered `null`, which looks exactly like hover, goto and
+    /// references being broken.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_root_and_its_documents_resolve_to_the_same_place() {
+        use std::os::unix::fs::symlink;
+
+        let base = std::env::temp_dir().join(format!("ruster_uri_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let real = base.join("real");
+        std::fs::create_dir_all(real.join("src")).unwrap();
+        std::fs::write(real.join("src").join("main.rs"), "fn main() {}\n").unwrap();
+
+        let link = base.join("link");
+        symlink(&real, &link).unwrap();
+
+        // The root reached through the symlink, the document through the same.
+        let root_uri = uri_from_path(&link);
+        let doc_uri = uri_from_path(&link.join("src").join("main.rs"));
+
+        assert!(
+            doc_uri.starts_with(&format!("{root_uri}/")),
+            "the document must sit inside the root it was opened from:\n  root {root_uri}\n  doc  {doc_uri}"
+        );
+        // And the root reached directly must name that same place.
+        assert_eq!(
+            root_uri,
+            uri_from_path(&real),
+            "both routes name one directory"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

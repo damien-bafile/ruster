@@ -114,7 +114,7 @@ Status is what the artifacts currently show, not what is intended.
 | `noice-panel` | `:echo` ×2, `:Noice` | stacking panel | shows only `Notify`-routed messages; `:echo` routes to `Mini` |
 | `noice-popup` | `:Noice popup` | centred popup float | ok |
 | `dialog` | `ruster.ui.dialog` | modal above every float | ok |
-| `hover` | fixture project, deferred `:hover` | float with rustdoc, wrapped and clamped | works by hand; scripted capture unreliable — see note |
+| `hover` | fixture project, deferred `:hover` | float with rustdoc, wrapped and clamped | ok |
 | `debugger` | fixture project, breakpoint, deferred `:debug` | `[Debug: PAUSED]`, call stack, scopes | ok — runtime frames folded, at the depth they stand for |
 | `terminal` | `:term` | shell prompt, TERMINAL mode | ok |
 | `sessions` | `:SessionSave` | confirmation in the log | ok (`Session saved (N files)`) |
@@ -136,11 +136,13 @@ page was gone before the shot fired. `:screenshot` is now exempt, but the class
 remains: if a surface is missing from a GUI capture and present in the TUI, check
 what the recipe issued before believing the backend.
 
-**Known limit — the `hover` row.** `:hover` works: driven by hand against
-`fixtures/demo-project/` the float shows `p: Point` and persists. The scripted
-capture against a throwaway project path is unreliable anyway, and I could not
-pin down why (a doubled slash in the temp path was ruled out). Verify it by
-hand; do not read an empty hover capture as a broken feature.
+**A capture that fails for a real reason is still telling you something.** The
+`hover` row was unreliable for days and was written off here as a harness quirk.
+It was not: `uri_from_path` did not resolve symlinks, so a project under
+`$TMPDIR` — `/var/folders/…`, where `/var` is a symlink to `/private/var` —
+got `rootUri: file:///var/…` while its documents arrived canonicalised as
+`file:///private/var/…`. rust-analyzer placed every document outside the
+workspace and answered `null`. The capture was right and the note was wrong.
 
 `:Browse` and `:Music` have no rows: both were declined in Phase 9, so there is
 nothing to capture.
