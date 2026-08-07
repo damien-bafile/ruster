@@ -41,10 +41,23 @@ fn index(workspace: u32) -> Option<usize> {
         .then(|| (workspace - 1) as usize)
 }
 
+/// The smallest a floating window may be resized to, and the least of it that
+/// must stay on the output. A window dragged fully past the edge cannot be
+/// dragged back, and one shrunk to nothing cannot be grabbed at all.
+const FLOATING_MIN: i32 = 40;
+
 /// Nine container trees and the number of the one on screen.
+///
+/// Each workspace also has floating windows, which are *not* in its tree: they
+/// sit above the tiling at their own rectangle and take no part in dividing the
+/// space. A window is in exactly one of the two — the tree or the float list —
+/// and [`Workspaces::toggle_floating`] is the only way across.
 #[derive(Debug, Clone)]
 pub struct Workspaces {
     trees: [Tree; WORKSPACE_COUNT as usize],
+    /// Per workspace, bottom of the stack first. See [`Workspaces::layout`] for
+    /// why that end, and who depends on it.
+    floating: [Vec<(WindowId, Rect)>; WORKSPACE_COUNT as usize],
     active: u32,
 }
 
@@ -58,6 +71,7 @@ impl Workspaces {
     pub fn new() -> Self {
         Workspaces {
             trees: std::array::from_fn(|_| Tree::new()),
+            floating: std::array::from_fn(|_| Vec::new()),
             active: 1,
         }
     }
@@ -105,8 +119,106 @@ impl Workspaces {
     /// Where each window on the active workspace sits, given the whole output.
     /// Windows on the other eight get no rectangle at all, which is what hides
     /// them: the renderer and the pointer both work from this list.
+    ///
+    /// **Ordered bottom to top**: the tiled windows first, then the floating
+    /// ones with the topmost last. Both consumers depend on that and read it
+    /// from opposite ends — the renderer reverses it because a smithay element
+    /// list is front-to-back, and hit-testing reverses it because a click
+    /// belongs to the window nearest the front. Changing this order silently
+    /// puts floating windows behind the tiling and makes clicks land through
+    /// them.
     pub fn layout(&self, area: Rect) -> Vec<(WindowId, Rect)> {
-        self.tree().layout(area)
+        let mut out = self.tree().layout(area);
+        out.extend(self.floating[(self.active - 1) as usize].iter().copied());
+        out
+    }
+
+    /// Whether `window` floats above the tiling rather than sitting in it.
+    pub fn is_floating(&self, window: WindowId) -> bool {
+        self.floating
+            .iter()
+            .any(|f| f.iter().any(|(w, _)| *w == window))
+    }
+
+    /// Move `window` between the tree and the float list.
+    ///
+    /// A window that starts floating takes the rectangle it already occupied,
+    /// so it does not jump under the pointer at the moment it is released from
+    /// the tiling. Going back the other way it rejoins the tree beside whatever
+    /// is there, and the tree re-divides the space as usual.
+    pub fn toggle_floating(&mut self, window: WindowId, area: Rect) -> bool {
+        let Some(workspace) = self.workspace_of(window) else {
+            return false;
+        };
+        let i = (workspace - 1) as usize;
+
+        if let Some(at) = self.floating[i].iter().position(|(w, _)| *w == window) {
+            self.floating[i].remove(at);
+            self.trees[i].insert(window, None, Layout::Horizontal);
+            return true;
+        }
+
+        let Some(rect) = self.trees[i]
+            .layout(area)
+            .into_iter()
+            .find(|(w, _)| *w == window)
+            .map(|(_, r)| r)
+        else {
+            return false;
+        };
+        self.trees[i].remove(window);
+        self.floating[i].push((window, rect));
+        true
+    }
+
+    /// Bring `window` to the front of its workspace's floating stack.
+    ///
+    /// Called when a floating window takes focus: without it the stack order is
+    /// whatever order the windows happened to be floated in, and clicking a
+    /// half-covered window would focus it without revealing it.
+    pub fn raise_floating(&mut self, window: WindowId) {
+        let Some(workspace) = self.workspace_of(window) else {
+            return;
+        };
+        let i = (workspace - 1) as usize;
+        if let Some(at) = self.floating[i].iter().position(|(w, _)| *w == window) {
+            let entry = self.floating[i].remove(at);
+            self.floating[i].push(entry);
+        }
+    }
+
+    /// Shift a floating window by `(dx, dy)`, keeping a grabbable edge on the
+    /// output.
+    pub fn move_floating(&mut self, window: WindowId, dx: i32, dy: i32, area: Rect) -> bool {
+        self.with_floating(window, |rect| {
+            rect.x = (rect.x + dx).clamp(
+                area.x - rect.w + FLOATING_MIN,
+                area.x + area.w - FLOATING_MIN,
+            );
+            rect.y = (rect.y + dy).clamp(
+                area.y - rect.h + FLOATING_MIN,
+                area.y + area.h - FLOATING_MIN,
+            );
+        })
+    }
+
+    /// Grow or shrink a floating window, never below a size it can be grabbed
+    /// by.
+    pub fn resize_floating(&mut self, window: WindowId, dw: i32, dh: i32) -> bool {
+        self.with_floating(window, |rect| {
+            rect.w = (rect.w + dw).max(FLOATING_MIN);
+            rect.h = (rect.h + dh).max(FLOATING_MIN);
+        })
+    }
+
+    fn with_floating(&mut self, window: WindowId, f: impl FnOnce(&mut Rect)) -> bool {
+        for list in self.floating.iter_mut() {
+            if let Some((_, rect)) = list.iter_mut().find(|(w, _)| *w == window) {
+                f(rect);
+                return true;
+            }
+        }
+        false
     }
 
     /// Insert `window` into the active workspace. A new window belongs on the
@@ -125,14 +237,18 @@ impl Workspaces {
         let Some(workspace) = self.workspace_of(window) else {
             return;
         };
-        self.trees[(workspace - 1) as usize].remove(window);
+        let i = (workspace - 1) as usize;
+        self.trees[i].remove(window);
+        self.floating[i].retain(|(w, _)| *w != window);
     }
 
     /// The workspace holding `window`, if any.
     pub fn workspace_of(&self, window: WindowId) -> Option<u32> {
-        self.trees
-            .iter()
-            .position(|tree| tree.find(window).is_some())
+        (0..self.trees.len())
+            .find(|&i| {
+                self.trees[i].find(window).is_some()
+                    || self.floating[i].iter().any(|(w, _)| *w == window)
+            })
             .map(|i| i as u32 + 1)
     }
 
@@ -142,7 +258,7 @@ impl Workspaces {
     /// a hidden window has no rectangle, so there is nothing to click and no
     /// reason for it to hold the keyboard.
     pub fn is_visible(&self, window: WindowId) -> bool {
-        self.tree().find(window).is_some()
+        self.workspace_of(window) == Some(self.active)
     }
 
     /// Move `window` to `workspace`, reporting whether anything moved.
@@ -157,8 +273,22 @@ impl Workspaces {
         if from == workspace {
             return false;
         }
+        let floating_rect = {
+            let i = (from - 1) as usize;
+            self.floating[i]
+                .iter()
+                .position(|(w, _)| *w == window)
+                .map(|at| self.floating[i].remove(at).1)
+        };
         self.trees[(from - 1) as usize].remove(window);
-        self.trees[to].insert(window, None, Layout::Horizontal);
+        // A floating window stays floating when it moves; it keeps its
+        // rectangle rather than being tiled into the workspace it lands on.
+        match floating_rect {
+            Some(rect) => self.floating[to].push((window, rect)),
+            None => {
+                self.trees[to].insert(window, None, Layout::Horizontal);
+            }
+        }
         true
     }
 
@@ -172,13 +302,216 @@ impl Workspaces {
     pub fn focus_for_active(&self, current: Option<WindowId>) -> Option<WindowId> {
         match current {
             Some(window) if self.is_visible(window) => Some(window),
-            _ => self.tree().windows().last().copied(),
+            // Prefer the topmost float, since that is what is actually in
+            // front of the user, before falling back to the tiling.
+            _ => self.floating[(self.active - 1) as usize]
+                .last()
+                .map(|(w, _)| *w)
+                .or_else(|| self.tree().windows().last().copied()),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    const AREA: Rect = Rect {
+        x: 0,
+        y: 0,
+        w: 1000,
+        h: 800,
+    };
+
+    fn ids(layout: &[(WindowId, Rect)]) -> Vec<WindowId> {
+        layout.iter().map(|(w, _)| *w).collect()
+    }
+
+    #[test]
+    fn a_floating_window_leaves_the_tiling_to_the_rest() {
+        // The point of floating: it stops dividing the space. The window left
+        // behind should get the whole output, exactly as if the float had been
+        // closed.
+        let mut ws = Workspaces::new();
+        ws.insert(WindowId(1), None, Layout::Horizontal);
+        ws.insert(WindowId(2), Some(WindowId(1)), Layout::Horizontal);
+        assert!(ws.toggle_floating(WindowId(2), AREA));
+
+        let tiled = ws.tree().layout(AREA);
+        assert_eq!(tiled, vec![(WindowId(1), AREA)], "the tiling re-divides");
+        assert!(ws.is_floating(WindowId(2)));
+        assert!(!ws.is_floating(WindowId(1)));
+    }
+
+    #[test]
+    fn a_floated_window_keeps_the_rectangle_it_had() {
+        // It must not jump out from under the pointer at the moment it is
+        // released from the tiling.
+        let mut ws = Workspaces::new();
+        ws.insert(WindowId(1), None, Layout::Horizontal);
+        ws.insert(WindowId(2), Some(WindowId(1)), Layout::Horizontal);
+        let before = ws
+            .layout(AREA)
+            .into_iter()
+            .find(|(w, _)| *w == WindowId(2))
+            .unwrap()
+            .1;
+        ws.toggle_floating(WindowId(2), AREA);
+        let after = ws
+            .layout(AREA)
+            .into_iter()
+            .find(|(w, _)| *w == WindowId(2))
+            .unwrap()
+            .1;
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn floating_windows_come_last_so_they_draw_and_click_above_the_tiling() {
+        // Both consumers read this list from the back — the renderer because a
+        // smithay element list is front-to-back, hit-testing because the
+        // topmost window owns the click. If floats were emitted first they
+        // would be drawn under the tiling and clicked through.
+        let mut ws = Workspaces::new();
+        ws.insert(WindowId(1), None, Layout::Horizontal);
+        ws.insert(WindowId(2), Some(WindowId(1)), Layout::Horizontal);
+        ws.toggle_floating(WindowId(2), AREA);
+        assert_eq!(ids(&ws.layout(AREA)), vec![WindowId(1), WindowId(2)]);
+    }
+
+    #[test]
+    fn the_most_recently_raised_float_is_the_topmost() {
+        let mut ws = Workspaces::new();
+        for i in 1..=3 {
+            ws.insert(WindowId(i), None, Layout::Horizontal);
+        }
+        ws.toggle_floating(WindowId(2), AREA);
+        ws.toggle_floating(WindowId(3), AREA);
+        // 3 floated last, so it is on top.
+        assert_eq!(ids(&ws.layout(AREA)).last(), Some(&WindowId(3)));
+        ws.raise_floating(WindowId(2));
+        assert_eq!(ids(&ws.layout(AREA)).last(), Some(&WindowId(2)));
+    }
+
+    #[test]
+    fn raising_a_tiled_window_does_nothing() {
+        let mut ws = Workspaces::new();
+        ws.insert(WindowId(1), None, Layout::Horizontal);
+        let before = ws.layout(AREA);
+        ws.raise_floating(WindowId(1));
+        assert_eq!(ws.layout(AREA), before);
+    }
+
+    #[test]
+    fn toggling_back_returns_a_window_to_the_tiling() {
+        let mut ws = Workspaces::new();
+        ws.insert(WindowId(1), None, Layout::Horizontal);
+        ws.insert(WindowId(2), Some(WindowId(1)), Layout::Horizontal);
+        ws.toggle_floating(WindowId(2), AREA);
+        assert!(ws.toggle_floating(WindowId(2), AREA));
+        assert!(!ws.is_floating(WindowId(2)));
+        // Back to sharing the output half and half.
+        let tiled = ws.tree().layout(AREA);
+        assert_eq!(tiled.len(), 2);
+        assert_eq!(tiled.iter().map(|(_, r)| r.w).sum::<i32>(), AREA.w);
+    }
+
+    #[test]
+    fn floating_the_only_window_leaves_an_empty_tree() {
+        // The tree has to stay coherent when its last leaf floats away, or the
+        // next insert lands in a tree that still thinks it has a root.
+        let mut ws = Workspaces::new();
+        ws.insert(WindowId(1), None, Layout::Horizontal);
+        assert!(ws.toggle_floating(WindowId(1), AREA));
+        assert!(ws.tree().is_empty());
+        assert_eq!(ids(&ws.layout(AREA)), vec![WindowId(1)]);
+
+        ws.insert(WindowId(2), None, Layout::Horizontal);
+        assert_eq!(ws.tree().layout(AREA), vec![(WindowId(2), AREA)]);
+    }
+
+    #[test]
+    fn a_float_survives_a_workspace_switch() {
+        let mut ws = Workspaces::new();
+        ws.insert(WindowId(1), None, Layout::Horizontal);
+        ws.toggle_floating(WindowId(1), AREA);
+        ws.switch_to(4);
+        assert!(ws.layout(AREA).is_empty(), "hidden with its workspace");
+        assert!(!ws.is_visible(WindowId(1)));
+        ws.switch_to(1);
+        assert_eq!(ids(&ws.layout(AREA)), vec![WindowId(1)]);
+    }
+
+    #[test]
+    fn closing_a_floating_window_removes_it() {
+        let mut ws = Workspaces::new();
+        ws.insert(WindowId(1), None, Layout::Horizontal);
+        ws.toggle_floating(WindowId(1), AREA);
+        ws.remove(WindowId(1));
+        assert!(ws.layout(AREA).is_empty());
+        assert_eq!(ws.workspace_of(WindowId(1)), None);
+    }
+
+    #[test]
+    fn a_moved_float_stays_floating() {
+        let mut ws = Workspaces::new();
+        ws.insert(WindowId(1), None, Layout::Horizontal);
+        ws.toggle_floating(WindowId(1), AREA);
+        assert!(ws.move_to_workspace(WindowId(1), 5));
+        ws.switch_to(5);
+        assert!(ws.is_floating(WindowId(1)));
+        assert_eq!(ids(&ws.layout(AREA)), vec![WindowId(1)]);
+    }
+
+    #[test]
+    fn a_float_cannot_be_dragged_off_the_output() {
+        // Off the edge entirely and it cannot be dragged back.
+        let mut ws = Workspaces::new();
+        ws.insert(WindowId(1), None, Layout::Horizontal);
+        ws.toggle_floating(WindowId(1), AREA);
+        ws.resize_floating(WindowId(1), -800, -600);
+
+        ws.move_floating(WindowId(1), -100_000, -100_000, AREA);
+        let (_, r) = ws.layout(AREA)[0];
+        assert!(r.x + r.w >= AREA.x + 40, "a grabbable edge stays on screen");
+        assert!(r.y + r.h >= AREA.y + 40);
+
+        ws.move_floating(WindowId(1), 100_000, 100_000, AREA);
+        let (_, r) = ws.layout(AREA)[0];
+        assert!(r.x <= AREA.x + AREA.w - 40);
+        assert!(r.y <= AREA.y + AREA.h - 40);
+    }
+
+    #[test]
+    fn a_float_cannot_be_shrunk_to_nothing() {
+        let mut ws = Workspaces::new();
+        ws.insert(WindowId(1), None, Layout::Horizontal);
+        ws.toggle_floating(WindowId(1), AREA);
+        ws.resize_floating(WindowId(1), -100_000, -100_000);
+        let (_, r) = ws.layout(AREA)[0];
+        assert!(
+            r.w >= 40 && r.h >= 40,
+            "still big enough to grab, got {r:?}"
+        );
+    }
+
+    #[test]
+    fn floating_an_unknown_window_is_refused() {
+        let mut ws = Workspaces::new();
+        assert!(!ws.toggle_floating(WindowId(99), AREA));
+        assert!(!ws.move_floating(WindowId(99), 10, 10, AREA));
+        assert!(!ws.resize_floating(WindowId(99), 10, 10));
+    }
+
+    #[test]
+    fn focus_prefers_the_float_in_front() {
+        // A float is what the user is actually looking at, so it should take
+        // focus ahead of a tiled window behind it.
+        let mut ws = Workspaces::new();
+        ws.insert(WindowId(1), None, Layout::Horizontal);
+        ws.insert(WindowId(2), Some(WindowId(1)), Layout::Horizontal);
+        ws.toggle_floating(WindowId(2), AREA);
+        assert_eq!(ws.focus_for_active(None), Some(WindowId(2)));
+    }
+
     use super::*;
 
     const OUTPUT: Rect = Rect {

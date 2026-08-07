@@ -110,9 +110,14 @@ pub fn tile_under(
     geometry: &[(WindowId, Rect)],
     pointer: Point<f64, Logical>,
 ) -> Option<(WindowId, Point<f64, Logical>)> {
+    // Searched from the back, because `geometry` is ordered bottom to top and a
+    // click belongs to whatever is nearest the front. Read the other way a
+    // floating window would be clicked *through* — the tiled window beneath it
+    // comes first in the list and would match the same point.
     let (px, py) = (pointer.x.floor() as i32, pointer.y.floor() as i32);
     geometry
         .iter()
+        .rev()
         .find(|(_, r)| r.contains(px, py))
         .map(|(id, r)| (*id, Point::from((r.x as f64, r.y as f64))))
 }
@@ -866,6 +871,32 @@ mod tests {
             tile_under(&geom(), Point::from((500.0, 400.0))).map(|(id, _)| id),
             Some(WindowId(1))
         );
+    }
+
+    #[test]
+    fn a_click_lands_on_the_float_not_through_it() {
+        // A floating window overlaps the tiled one beneath it. The geometry
+        // slice is ordered bottom to top, so reading it forwards finds the
+        // tiled window first and the click goes straight through the float —
+        // which is what this pins.
+        let geometry = vec![
+            (WindowId(0), Rect::new(0, 0, 1000, 800)),
+            (WindowId(1), Rect::new(100, 100, 200, 200)),
+        ];
+        assert_eq!(
+            tile_under(&geometry, Point::from((150.0, 150.0))).map(|(id, _)| id),
+            Some(WindowId(1)),
+            "the float owns the overlap"
+        );
+        assert_eq!(
+            tile_under(&geometry, Point::from((600.0, 400.0))).map(|(id, _)| id),
+            Some(WindowId(0)),
+            "and the tiled window owns everywhere else"
+        );
+        // The float's origin, not the output's, or its client is told the
+        // pointer is 100px up and left of where it is.
+        let (_, origin) = tile_under(&geometry, Point::from((150.0, 150.0))).unwrap();
+        assert_eq!(origin, Point::from((100.0, 100.0)));
     }
 
     #[test]
