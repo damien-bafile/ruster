@@ -16,6 +16,7 @@ use smithay::wayland::shell::xdg::{
 
 use crate::backend::Backend;
 use crate::compositor::CompositorState;
+use ruster_shell::Layout;
 
 impl<B: Backend + 'static> XdgShellHandler for CompositorState<B> {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
@@ -28,9 +29,16 @@ impl<B: Backend + 'static> XdgShellHandler for CompositorState<B> {
         // `title_changed`. Start the window record with whatever we have.
         let title = toplevel_title(&surface).unwrap_or_default();
         let id = self.shell.add_window(title, 800, 600);
+        // Insert beside whatever has focus, so a new window splits the one you
+        // were looking at rather than appearing somewhere arbitrary.
+        let near = self.shell.focus;
+        self.tree.insert(id, near, Layout::Horizontal);
         self.shell.set_focus(id);
         self.toplevels.insert(id, surface);
         self.pending_focus = Some(id);
+        // Every existing window just got smaller; tell them before the new one
+        // draws, or the first frame overlaps its neighbour.
+        self.reconfigure_tiles();
         tracing::info!(?id, "new toplevel");
         // No configure is sent here: per the xdg protocol the initial
         // configure is sent on the first commit (anvil does the same).
@@ -83,9 +91,12 @@ impl<B: Backend + 'static> XdgShellHandler for CompositorState<B> {
         };
         self.toplevels.remove(&id);
         self.mapped.remove(&id);
+        self.tree.remove(id);
         // `remove_window` refocuses the shell onto the most recent window (or
         // clears focus); re-apply that to the seat keyboard.
         self.shell.remove_window(id);
+        // The survivors grow into the space; they have to be told.
+        self.reconfigure_tiles();
         self.update_keyboard_focus(SCOUNTER.next_serial());
         tracing::info!(?id, "toplevel destroyed");
     }

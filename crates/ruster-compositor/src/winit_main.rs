@@ -81,6 +81,9 @@ fn run_winit() -> anyhow::Result<()> {
         } else {
             state.backend_data.backend.buffer_age().unwrap_or(0)
         };
+        // Read before `bind()` takes a mutable borrow of the backend for the
+        // rest of the frame.
+        let geometry = state.geometry();
         let render_res = state
             .backend_data
             .backend
@@ -106,6 +109,7 @@ fn run_winit() -> anyhow::Result<()> {
                     age,
                     &cursor_status,
                     cursor_location,
+                    &geometry,
                 )
                 .map_err(|err| match err {
                     OutputDamageTrackerError::Rendering(err) => err.into(),

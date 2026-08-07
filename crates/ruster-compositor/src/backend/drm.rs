@@ -395,6 +395,9 @@ impl CompositorState<RusterUdevData> {
     /// the next frame to keep polling for damage.
     fn render_surface(&mut self) {
         let output = self.backend_data.output.clone();
+        // Read before the renderer is acquired: `single_renderer` borrows
+        // `self` mutably for the rest of the frame.
+        let geometry = self.geometry();
         let focused_title = self
             .shell
             .focused()
@@ -425,6 +428,7 @@ impl CompositorState<RusterUdevData> {
             &mut renderer,
             &cursor_status,
             cursor_location,
+            &geometry,
         );
         send_frame_callbacks(self.shell.focus, &self.toplevels, &output);
 

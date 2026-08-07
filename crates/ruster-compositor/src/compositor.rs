@@ -39,7 +39,7 @@ use crate::backend::{logical_output_size, Backend};
 use crate::chrome::Chrome;
 use crate::shell::CommitBuffer;
 use ruster_render::Theme;
-use ruster_shell::{ShellState, WindowId};
+use ruster_shell::{Rect, ShellState, Tree, WindowId};
 
 /// The compositor's composition root: everything the backend and the input
 /// handlers need to reach. Mirrors anvil's `AnvilState` but trimmed to Phase 0.
@@ -62,6 +62,9 @@ pub struct CompositorState<B: Backend + 'static> {
     /// named cursor, which the compositor draws itself; a client focusing the
     /// pointer replaces it with its own surface.
     pub cursor_status: CursorImageStatus,
+    /// How the mapped windows divide the output. Phase 1's container tree;
+    /// one tree for now, one per workspace once workspaces hold windows.
+    pub tree: Tree,
     /// xdg toplevel surfaces keyed by their `ShellState` window id.
     pub toplevels: HashMap<WindowId, ToplevelSurface>,
     /// Window that should take focus once the seat is set up (Task 10).
@@ -97,6 +100,52 @@ impl<B: Backend + 'static> CompositorState<B> {
             .map(|toplevel| toplevel.wl_surface().clone());
         let keyboard = self.keyboard.clone();
         keyboard.set_focus(self, focus, serial);
+    }
+}
+
+impl<B: Backend + 'static> CompositorState<B> {
+    /// The output's whole area, in logical pixels, as the tree's root rectangle.
+    pub fn output_rect(&self) -> Rect {
+        let size = logical_output_size(self.backend_data.output()).unwrap_or_default();
+        Rect::new(0, 0, size.w, size.h)
+    }
+
+    /// Where each window sits, per the tree.
+    pub fn geometry(&self) -> Vec<(WindowId, Rect)> {
+        self.tree.layout(self.output_rect())
+    }
+
+    /// The rectangle assigned to one window, if the tree holds it.
+    pub fn window_rect(&self, id: WindowId) -> Option<Rect> {
+        self.geometry()
+            .into_iter()
+            .find(|(w, _)| *w == id)
+            .map(|(_, r)| r)
+    }
+
+    /// Tell every mapped client the size its leaf now has.
+    ///
+    /// Called whenever the tree changes shape, because inserting or removing one
+    /// window resizes its neighbours too — a client that is never told keeps
+    /// drawing at its old size and either overlaps the window beside it or
+    /// leaves a gap.
+    pub fn reconfigure_tiles(&mut self) {
+        for (id, rect) in self.geometry() {
+            let Some(toplevel) = self.toplevels.get(&id) else {
+                continue;
+            };
+            toplevel.with_pending_state(|state| {
+                state.size = Some((rect.w, rect.h).into());
+                // Tiled on every edge: the honest way to tell a client it does
+                // not own its borders, so it drops rounded corners and shadows.
+                // Server-side decoration is Phase 2's frame theming.
+                state.states.set(xdg_toplevel::State::TiledLeft);
+                state.states.set(xdg_toplevel::State::TiledRight);
+                state.states.set(xdg_toplevel::State::TiledTop);
+                state.states.set(xdg_toplevel::State::TiledBottom);
+            });
+            toplevel.send_pending_configure();
+        }
     }
 }
 
@@ -164,6 +213,7 @@ pub fn create_state<B: Backend + 'static>(
         keyboard: globals.keyboard,
         pointer: globals.pointer,
         cursor_status: CursorImageStatus::default_named(),
+        tree: Tree::new(),
         toplevels: HashMap::new(),
         pending_focus: None,
         mapped: HashSet::new(),
@@ -270,14 +320,19 @@ impl<B: Backend + 'static> CompositorHandler for CompositorState<B> {
         // map/unmap match below. Spec-compliant clients wait for
         // `xdg_surface.configure` before mapping; `send_configure` flags
         // `initial_configure_sent` internally, so later commits don't
-        // re-send. Phase 0 renders the toplevel fullscreen from the origin,
-        // so the configure sizes it to the output's logical size.
+        // re-send. The size is the window's leaf rectangle in the tree, not the
+        // whole output — with one window those are the same thing, which is why
+        // Phase 0 could get away with the output size.
+        let rect = self.window_rect(id);
         if let Some(toplevel) = self.toplevels.get(&id) {
             if !toplevel.is_initial_configure_sent() {
-                if let Some(size) = logical_output_size(self.backend_data.output()) {
+                if let Some(rect) = rect {
                     toplevel.with_pending_state(|state| {
-                        state.states.set(xdg_toplevel::State::Fullscreen);
-                        state.size = Some(size);
+                        state.size = Some((rect.w, rect.h).into());
+                        state.states.set(xdg_toplevel::State::TiledLeft);
+                        state.states.set(xdg_toplevel::State::TiledRight);
+                        state.states.set(xdg_toplevel::State::TiledTop);
+                        state.states.set(xdg_toplevel::State::TiledBottom);
                     });
                 }
                 toplevel.send_configure();

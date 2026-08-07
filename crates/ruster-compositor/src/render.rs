@@ -93,6 +93,7 @@ pub fn render_frame(
     age: usize,
     cursor_status: &CursorImageStatus,
     cursor_location: Point<f64, Logical>,
+    geometry: &[(WindowId, ruster_shell::Rect)],
 ) -> Result<Option<Vec<Rectangle<i32, Physical>>>, RenderError> {
     let elements = collect_render_elements(
         focus,
@@ -104,6 +105,7 @@ pub fn render_frame(
         renderer,
         cursor_status,
         cursor_location,
+        geometry,
     );
     let result =
         damage_tracker.render_output(renderer, framebuffer, age, &elements, CLEAR_COLOR)?;
@@ -118,7 +120,9 @@ pub fn render_frame(
 /// the winit (`GlesRenderer`) and DRM (`MultiRenderer`) backends share it.
 #[allow(clippy::too_many_arguments)]
 pub fn collect_render_elements<R: Renderer + ImportAll + ImportMem>(
-    focus: Option<WindowId>,
+    // Kept for the chrome, which still names the focused window; the surfaces
+    // themselves now come from the tree rather than from focus.
+    _focus: Option<WindowId>,
     toplevels: &HashMap<WindowId, ToplevelSurface>,
     output: &Output,
     chrome: &mut Option<Chrome>,
@@ -127,6 +131,7 @@ pub fn collect_render_elements<R: Renderer + ImportAll + ImportMem>(
     renderer: &mut R,
     cursor_status: &CursorImageStatus,
     cursor_location: Point<f64, Logical>,
+    geometry: &[(WindowId, ruster_shell::Rect)],
 ) -> Vec<ChromeRenderElements<R>>
 where
     <R as RendererSuper>::TextureId: Clone + 'static,
@@ -195,12 +200,21 @@ where
         );
     }
 
-    if let Some(surface) = focus.and_then(|id| toplevels.get(&id)) {
+    // Every tiled window, at the rectangle the container tree gave it. Drawn
+    // back to front in reverse layout order so the focused window — which is
+    // listed first below — ends up nearest the front; tiled windows do not
+    // overlap, so the order only matters for the moment during a resize when
+    // two rectangles briefly disagree.
+    let scale = Scale::from(output.current_scale().fractional_scale());
+    for (id, rect) in geometry.iter().rev() {
+        let Some(surface) = toplevels.get(id) else {
+            continue;
+        };
         let wl_surface = surface.wl_surface().clone();
-        let tree = SurfaceTree::from_surface(&wl_surface);
-        let scale = Scale::from(output.current_scale().fractional_scale());
+        let surface_tree = SurfaceTree::from_surface(&wl_surface);
+        let origin = Point::<i32, Logical>::from((rect.x, rect.y)).to_physical_precise_round(scale);
         elements.extend(
-            AsRenderElements::<R>::render_elements(&tree, renderer, (0, 0).into(), scale, 1.0)
+            AsRenderElements::<R>::render_elements(&surface_tree, renderer, origin, scale, 1.0)
                 .into_iter()
                 .map(ChromeRenderElements::Surface),
         );
