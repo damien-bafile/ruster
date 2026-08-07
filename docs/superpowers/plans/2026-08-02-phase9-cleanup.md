@@ -377,17 +377,22 @@ one-line repro.
       either direction. Documented in that script and in
       `docs/verification/README.md`.
 
-- [ ] **Terminal scrollback is retained and unreachable.** `terminal.scrollback`
-      defaults to 10000 lines and alacritty_terminal keeps them, but
-      `TerminalSession::snapshot` (`ruster-terminal/src/lib.rs:219`) reads only
-      `grid.screen_lines()` — the visible viewport — so Terminal-Normal mirrors
-      one screen. `PageUp`/`PageDown` are forwarded to the shell rather than
-      scrolling the viewport. There is no way to see output that has scrolled
-      off, which makes the setting a promise the editor cannot keep.
+- [x] **Terminal scrollback is retained and unreachable.** *(fixed)*
+      `TerminalSession::snapshot` returns the viewport, which is right for the
+      renderer and wrong for the mirror, so `terminal.scrollback` retained
+      10000 lines nothing could show. `scrollback_text()` reads from
+      `topmost_line()` — history is addressed with negative indices — and
+      Terminal-Normal mirrors all of it, so `gg` reaches output that scrolled
+      off and `G` reaches the newest.
 
-- [ ] **Terminal-Normal is a frozen copy, not a live view.**
-      `enter_terminal_normal` snapshots the grid into a buffer once; the shell
-      keeps running behind it and the text goes stale with no indication.
+- [x] **Terminal-Normal is a frozen copy, not a live view.** *(fixed)*
+      It was a photograph taken on the way in; the shell kept running behind it
+      and anything printed afterwards was invisible, with nothing on screen to
+      say the text had gone stale. `refresh_terminal_mirror` re-mirrors each
+      frame in both loops, skipping the write when the text is unchanged so the
+      cursor and undo history are left alone. Mirroring the *whole* scrollback
+      is what makes this safe: new output only appends, so earlier lines keep
+      their buffer positions and the caret stays where the user put it.
 
 **Retracted — three defects I reported that were not real**
 

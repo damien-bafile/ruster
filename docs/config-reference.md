@@ -160,7 +160,7 @@ Keys are addressed as `group.key`.
 | `lsp.format_on_save` | boolean | false | Format via LSP before writing on `:w` |
 | `lsp.diagnostics` / `hover` / `autostart` | boolean | true | LSP feature toggles |
 | `terminal.shell` | string | _(platform)_ | `:term` program. Unset → `$SHELL` / `%COMSPEC%` (→ `/bin/sh` / `cmd.exe`) |
-| `terminal.scrollback` | integer | 10000 | Terminal scrollback lines |
+| `terminal.scrollback` | integer | 10000 | Lines of history retained; reachable in Terminal-Normal |
 | `terminal.default_mode` | enum | "insert" | New terminal starts in `insert` or `normal` |
 | `terminal.escape` | string | `<C-\>` | Key that leaves Terminal-Insert. `<Esc>` gives evil-style controls; see below |
 | `dired.show_hidden` | boolean | false | Show dotfiles in the file explorer |

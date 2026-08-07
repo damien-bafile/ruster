@@ -522,8 +522,10 @@ It has two modes, like Neovim's terminal:
 | _any key_ | Forwarded to the shell (`Ctrl-C`, arrows, Tab-completion, …) |
 | `Ctrl-\` | Switch to Terminal-Normal (`Ctrl-4` too — the same byte) |
 
-**Terminal-Normal** — the visible output is mirrored into a read-only buffer, so the
-normal editor keys work over it:
+**Terminal-Normal** — the terminal's output is mirrored into a read-only buffer, so
+the normal editor keys work over it. The mirror covers the whole scrollback
+(`terminal.scrollback`, 10000 lines by default), so `gg` reaches output that has
+scrolled off the screen, and it keeps up with the shell while you read it:
 
 | Key | Action |
 |-----|--------|

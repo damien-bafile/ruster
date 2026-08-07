@@ -2900,6 +2900,7 @@ impl App {
             let (line, col) = self.cursor_line_col();
             self.cursor_anim.update(dt, col, line, self.config.cursor_anim_enabled, self.config.cursor_anim_speed);
 
+            self.refresh_terminal_mirror();
             self.sync_diff_scroll();
             self.render();
             if self.should_quit { break; }
@@ -3110,6 +3111,7 @@ impl App {
 
             let (line, col) = self.cursor_line_col();
             self.cursor_anim.update(dt, col, line, self.config.cursor_anim_enabled, self.config.cursor_anim_speed);
+            self.refresh_terminal_mirror();
             self.sync_diff_scroll();
             self.render();
             // Reported here rather than at the command, so the message reflects
@@ -5283,27 +5285,57 @@ impl App {
     /// the (read-only) buffer so the vim layer's motions, visual selection and
     /// yank operate over the terminal's output. `i`/`a`/Enter resume insert.
     fn enter_terminal_normal(&mut self, bid: BufferId) {
-        if let Some(session) = self.terminals.get(&bid) {
-            let grid = session.snapshot();
-            let mut lines: Vec<String> =
-                (0..grid.rows).map(|r| grid.row_text(r).trim_end().to_string()).collect();
-            while lines.last().map(|l| l.is_empty()).unwrap_or(false) {
-                lines.pop();
-            }
-            let text = lines.join("\n");
-            let cursor_line = grid.cursor.0.min(lines.len().saturating_sub(1));
-            let mut w = self.ws.borrow_mut();
-            if let Some(doc) = w.buffers.get_mut(bid) {
-                doc.buffer = Buffer::from_str(&text);
-                let pos = doc.buffer.line_start_char(cursor_line);
-                if w.active_buffer() == bid {
-                    w.windows.active_window_mut().cursors = CursorSet::single(pos);
-                }
-            }
-        }
+        self.mirror_terminal(bid, true);
         self.terminal_focused = false;
         self.vim = VimState::new();
         self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::System, "terminal: NORMAL — motions/visual/y to yank, i to resume".to_string()));
+    }
+
+    /// Copy the terminal's retained output into its buffer so the vim layer can
+    /// work over it. `move_cursor` places the caret at the shell's cursor —
+    /// wanted when entering Terminal-Normal, unwanted on the per-frame refresh,
+    /// which would otherwise drag the caret away from whatever the user is
+    /// reading every time a command printed a line.
+    ///
+    /// The whole scrollback, not the visible screen. Mirroring one screenful
+    /// made `terminal.scrollback` unreachable — the grid retained the history
+    /// and nothing could show it — and it is also what made a live refresh
+    /// unsafe: appending to the full history leaves earlier lines at the same
+    /// buffer positions, so the caret stays where it was put.
+    fn mirror_terminal(&mut self, bid: BufferId, move_cursor: bool) {
+        let Some(session) = self.terminals.get(&bid) else { return };
+        let (mut lines, cursor_line) = session.scrollback_text();
+        while lines.last().map(|l| l.is_empty()).unwrap_or(false) {
+            lines.pop();
+        }
+        let text = lines.join("\n");
+
+        let mut w = self.ws.borrow_mut();
+        let Some(doc) = w.buffers.get_mut(bid) else { return };
+        if doc.buffer.to_string() == text {
+            return; // Nothing new; leave the cursor and the undo history alone.
+        }
+        doc.buffer = Buffer::from_str(&text);
+        if move_cursor && w.active_buffer() == bid {
+            let line = cursor_line.min(lines.len().saturating_sub(1));
+            let pos = w.buffers.get(bid).map(|d| d.buffer.line_start_char(line)).unwrap_or(0);
+            w.windows.active_window_mut().cursors = CursorSet::single(pos);
+        }
+    }
+
+    /// Keep the Terminal-Normal mirror current while the user reads it.
+    ///
+    /// Without this the buffer was a photograph taken on the way in: the shell
+    /// kept running behind it and anything it printed was invisible until the
+    /// user went back to insert and out again, with nothing on screen to say
+    /// the text had gone stale.
+    fn refresh_terminal_mirror(&mut self) {
+        if self.terminal_focused {
+            return;
+        }
+        if let Some(bid) = self.active_terminal_buffer() {
+            self.mirror_terminal(bid, false);
+        }
     }
 
     /// Handle a key in a dired buffer. Returns true if the key was consumed
@@ -9824,6 +9856,86 @@ mod tests {
             a.handle_key(CtKey::new(KeyCode::Char(c), KeyModifiers::NONE));
             assert!(a.terminal_focused, "{c} re-focuses the terminal");
         }
+    }
+
+    /// Terminal-Normal mirrors the whole scrollback, not one screenful.
+    ///
+    /// `terminal.scrollback` retains 10000 lines by default and nothing could
+    /// reach them: the mirror copied only the visible grid, so anything that
+    /// scrolled off was gone and the setting promised a history the editor
+    /// could not show.
+    #[cfg(not(windows))]
+    #[test]
+    fn terminal_normal_mirrors_the_scrollback_not_just_the_screen() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        let id = a.ws.borrow_mut().buffers.create_special(SpecialKind::Terminal, "*terminal*");
+        a.ws.borrow_mut().set_active_buffer(id);
+        // Six visible rows, 1000 of history; 200 lines overflow the screen.
+        a.terminals.insert(
+            id,
+            TerminalSession::spawn("sh", &["-c".into(), "seq 1 200".into()], 40, 6, 1000)
+                .expect("spawn"),
+        );
+        a.terminal_focused = true;
+
+        for _ in 0..300 {
+            std::thread::sleep(Duration::from_millis(10));
+            if a.terminals.get(&id).unwrap().scrollback_text().0.iter().any(|l| l.trim() == "200") {
+                break;
+            }
+        }
+
+        a.handle_key(CtKey::new(KeyCode::Char('4'), KeyModifiers::CONTROL));
+        let buf = a.ws.borrow().buffers.get(id).unwrap().buffer.to_string();
+        assert!(buf.lines().any(|l| l.trim() == "200"), "the newest line is mirrored");
+        assert!(
+            buf.lines().any(|l| l.trim() == "1"),
+            "and so is the oldest, which scrolled off six rows ago"
+        );
+    }
+
+    /// The mirror keeps up with the shell instead of freezing on entry.
+    ///
+    /// It used to be a photograph taken on the way in: the shell kept running
+    /// behind it and anything printed afterwards was invisible, with nothing on
+    /// screen to say the text had gone stale.
+    #[cfg(not(windows))]
+    #[test]
+    fn the_terminal_normal_mirror_keeps_up_with_new_output() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        let id = a.ws.borrow_mut().buffers.create_special(SpecialKind::Terminal, "*terminal*");
+        a.ws.borrow_mut().set_active_buffer(id);
+        a.terminals.insert(id, TerminalSession::spawn("cat", &[], 40, 6, 1000).expect("spawn"));
+        a.terminal_focused = true;
+
+        // Something to see, then leave insert so the mirror is taken.
+        for c in "before".chars() {
+            a.handle_key(CtKey::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        a.handle_key(CtKey::new(KeyCode::Enter, KeyModifiers::NONE));
+        for _ in 0..200 {
+            std::thread::sleep(Duration::from_millis(10));
+            if a.terminals.get(&id).unwrap().snapshot().row_text(0).contains("before") {
+                break;
+            }
+        }
+        a.handle_key(CtKey::new(KeyCode::Char('4'), KeyModifiers::CONTROL));
+        assert!(!a.terminal_focused);
+
+        // The shell prints again while the user is reading the mirror.
+        a.terminals.get(&id).unwrap().write_input(b"after\n").expect("write");
+        let mut caught = false;
+        for _ in 0..200 {
+            std::thread::sleep(Duration::from_millis(10));
+            a.refresh_terminal_mirror();
+            if a.ws.borrow().buffers.get(id).unwrap().buffer.to_string().contains("after") {
+                caught = true;
+                break;
+            }
+        }
+        assert!(caught, "output arriving during Terminal-Normal must reach the mirror");
     }
 
     /// The call stack shows the user's frames, not thirty of the runtime's.

@@ -106,20 +106,37 @@ $T send-keys -t t4 'C-w' 'v'; sleep 1
 contains "Ctrl-w v splits from Terminal-Normal" "terminal" "$(pane t4)"
 stop t4
 
-echo "=== 5. scrollback reachability ==="
+echo "=== 5. scrollback is reachable from Terminal-Normal ==="
 setup '' 'ruster.cmd(":term")'; start t5
 $T send-keys -t t5 "seq 1 300" Enter; sleep 2.5
 contains "recent output visible" "300" "$(pane t5)"
-$T send-keys -t t5 'C-\'; sleep 0.8; $T send-keys -t t5 'gg'; sleep 0.6
-absent "KNOWN GAP: scrollback unreachable (PASS here = still unreachable)" "^1$" "$(pane t5)"
+$T send-keys -t t5 'C-\'; sleep 0.8; $T send-keys -t t5 'gg'; sleep 0.8
+# `^2$`, not `^1$`: the very first output row can be merged with the shell's
+# echo of the command that produced it, depending on how the prompt redraws.
+# Line 2 scrolled off just as long ago and is unambiguous.
+contains "gg reaches output that scrolled off" "^2$" "$(pane t5)"
+$T send-keys -t t5 'G'; sleep 0.8
+contains "G reaches the newest output" "300" "$(pane t5)"
 stop t5
 
-echo "=== 6. terminal.default_mode = normal ==="
+echo "=== 6. the Terminal-Normal mirror stays live ==="
+setup '' 'ruster.cmd(":term")'; start t8
+$T send-keys -t t8 "echo before-escape" Enter; sleep 1.5
+$T send-keys -t t8 'C-\'; sleep 1
+contains "mirror has the pre-escape output" "before-escape" "$(pane t8)"
+# The shell keeps working while the user reads the mirror.
+$T send-keys -t t8 'i'; sleep 0.5
+$T send-keys -t t8 "echo after-escape" Enter; sleep 1.5
+$T send-keys -t t8 'C-\'; sleep 1
+contains "mirror picked up later output" "after-escape" "$(pane t8)"
+stop t8
+
+echo "=== 7. terminal.default_mode = normal ==="
 setup 'terminal = { default_mode = "normal" }' 'ruster.cmd(":term")'; start t6
 check "starts in Terminal-Normal" "-- NORMAL --" "$(mode t6)"
 stop t6
 
-echo "=== 7. shell exit ==="
+echo "=== 8. shell exit ==="
 setup '' 'ruster.cmd(":term")'; start t7
 $T send-keys -t t7 "exit" Enter; sleep 2
 contains "editor survives the shell exiting" "terminal" "$(pane t7)"
