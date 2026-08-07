@@ -25,7 +25,23 @@
 -- "M-S-q", "M-t", "M-F9", "C-A-space". Modifiers match exactly, so "M-t" does
 -- not fire while Shift is held.
 --
--- Actions: "quit", "cycle workspace", "screenshot".
+-- Actions:
+--
+--   quit                     shut the compositor down
+--   cycle workspace          advance to the next workspace
+--   screenshot               write the screen to a PNG
+--   focus <direction>        move focus to the window drawn that way
+--   swap <direction>         exchange the focused window with that neighbour
+--   resize <direction>       move the boundary between them
+--   split horizontal|vertical   re-divide this window's container that way,
+--                            which is also the axis the next window here uses
+--   toggle floating          float the focused window, or re-tile it
+--   workspace <1-9>          show a numbered workspace
+--   move to workspace <1-9>  send the focused window there
+--
+-- <direction> is left, right, up or down (or h, l, k, j). Underscores and
+-- dashes work in place of spaces, so "move_to_workspace_3" is the same action
+-- as "move to workspace 3". An action that does not parse binds nothing.
 --
 -- `screenshot` writes the composited output to $XDG_RUNTIME_DIR/ruster-shot-N.png
 -- (or /tmp when that is unset, as on a bare VT). It exists because the
@@ -40,6 +56,47 @@ return {
     { "M-S-q", "quit" },
     { "M-t",   "cycle workspace" },
     { "M-S-s", "screenshot" },
+
+    -- hjkl, because the editor this compositor is named after uses them.
+    { "M-h",   "focus left" },
+    { "M-j",   "focus down" },
+    { "M-k",   "focus up" },
+    { "M-l",   "focus right" },
+
+    { "M-S-h", "swap left" },
+    { "M-S-j", "swap down" },
+    { "M-S-k", "swap up" },
+    { "M-S-l", "swap right" },
+
+    { "M-C-h", "resize left" },
+    { "M-C-j", "resize down" },
+    { "M-C-k", "resize up" },
+    { "M-C-l", "resize right" },
+
+    -- `b` rather than i3's `h`, which is spoken for above.
+    { "M-b",   "split horizontal" },
+    { "M-v",   "split vertical" },
+    { "M-S-space", "toggle floating" },
+
+    { "M-1",   "workspace 1" },
+    { "M-2",   "workspace 2" },
+    { "M-3",   "workspace 3" },
+    { "M-4",   "workspace 4" },
+    { "M-5",   "workspace 5" },
+    { "M-6",   "workspace 6" },
+    { "M-7",   "workspace 7" },
+    { "M-8",   "workspace 8" },
+    { "M-9",   "workspace 9" },
+
+    { "M-S-1", "move to workspace 1" },
+    { "M-S-2", "move to workspace 2" },
+    { "M-S-3", "move to workspace 3" },
+    { "M-S-4", "move to workspace 4" },
+    { "M-S-5", "move to workspace 5" },
+    { "M-S-6", "move to workspace 6" },
+    { "M-S-7", "move to workspace 7" },
+    { "M-S-8", "move to workspace 8" },
+    { "M-S-9", "move to workspace 9" },
   },
   startup_clients = { "foot" },
 }

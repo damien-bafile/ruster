@@ -33,10 +33,11 @@ use smithay::wayland::{
     shell::xdg::{ToplevelSurface, XdgShellState},
     shm::{ShmHandler, ShmState},
 };
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::backend::{logical_output_size, Backend};
 use crate::chrome::Chrome;
+use crate::lua::Action;
 use crate::shell::CommitBuffer;
 use ruster_render::Theme;
 use ruster_shell::{Rect, ShellState, WindowId, Workspaces};
@@ -126,6 +127,81 @@ impl<B: Backend + 'static> CompositorState<B> {
     pub fn output_rect(&self) -> Rect {
         let size = logical_output_size(self.backend_data.output()).unwrap_or_default();
         Rect::new(0, 0, size.w, size.h)
+    }
+
+    /// Carry out a bound action.
+    ///
+    /// One place, so adding an action means adding one arm rather than another
+    /// branch in the keyboard filter — and so the Lua control plane in the rest
+    /// of Phase 2 has something to call that is not the key handler.
+    ///
+    /// Every layout operation needs a focused window to act on and does nothing
+    /// without one, which is the honest behaviour: on an empty workspace there
+    /// is no "window to the left".
+    pub fn dispatch(&mut self, action: Action) {
+        let area = self.output_rect();
+        let focus = self.shell.focus;
+        // Say what was asked for and what the tree looked like when it was
+        // asked. Several actions are legitimately no-ops — `swap right` on the
+        // rightmost window has nothing to swap with — and from a screenshot
+        // that is indistinguishable from a broken keybind. On DRM there is not
+        // even a screenshot unless someone presses the key for one.
+        debug!(?action, ?focus, "dispatch");
+        match action {
+            Action::Quit => {
+                info!("quit keybinding pressed, shutting down");
+                self.running.store(false, Ordering::SeqCst);
+            }
+            Action::CycleWorkspace => self.cycle_workspace(),
+            Action::Workspace(n) => {
+                self.switch_workspace(n);
+            }
+            Action::Screenshot => self.screenshot_pending = true,
+            Action::Focus(dir) => {
+                if let Some(next) = focus
+                    .and_then(|id| self.workspaces.tree().focus_target(id, dir, area))
+                    .filter(|id| self.focusable(*id))
+                {
+                    self.shell.set_focus(next);
+                    self.workspaces.raise_floating(next);
+                    self.update_keyboard_focus(SCOUNTER.next_serial());
+                }
+            }
+            Action::Swap(dir) => {
+                if let (Some(from), Some(to)) = (
+                    focus,
+                    focus.and_then(|id| self.workspaces.tree().focus_target(id, dir, area)),
+                ) {
+                    self.workspaces.tree_mut().swap(from, to);
+                    self.reconfigure_tiles();
+                }
+            }
+            Action::Resize(dir) => {
+                if let Some(id) = focus {
+                    self.workspaces.tree_mut().resize(id, dir, RESIZE_STEP);
+                    self.reconfigure_tiles();
+                }
+            }
+            Action::Split(layout) => {
+                if let Some(id) = focus {
+                    self.workspaces.tree_mut().split(id, layout);
+                }
+            }
+            Action::ToggleFloating => {
+                if let Some(id) = focus {
+                    self.workspaces.toggle_floating(id, area);
+                    self.reconfigure_tiles();
+                }
+            }
+            Action::MoveToWorkspace(n) => {
+                if let Some(id) = focus {
+                    self.move_to_workspace(id, n);
+                }
+            }
+        }
+        // The layout afterwards, which is the only evidence that separates
+        // "the action ran and changed nothing" from "the key never arrived".
+        debug!(geometry = ?self.geometry(), focus = ?self.shell.focus, "dispatched");
     }
 
     /// What the statusline should say about the layout: the axis of the split
@@ -227,6 +303,11 @@ impl<B: Backend + 'static> CompositorState<B> {
         self.backend_data.reset_buffers(&output);
     }
 }
+
+/// How far one `resize` keypress moves a boundary. A whole tenth is coarse
+/// enough to be worth pressing and fine enough to land where you meant after a
+/// couple of taps.
+const RESIZE_STEP: f32 = 0.05;
 
 /// The window that should take keyboard focus after `unmapped` hid itself:
 /// the most recently mapped window still visible, or `None` when nothing else

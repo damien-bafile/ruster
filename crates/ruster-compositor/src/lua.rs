@@ -13,15 +13,35 @@ use smithay::input::keyboard::ModifiersState;
 
 use crate::backend::Backend;
 use crate::compositor::CompositorState;
+use ruster_shell::{Direction, Layout};
 
-/// The WM action bound to a keybind. Phase 0 knows two; a full keymap lands in
-/// Phase 1.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The WM action bound to a keybind.
+///
+/// Several carry an argument, which is what lets one action name cover a family
+/// — `focus left` and `focus right` are the same operation pointed differently,
+/// and spelling them as separate variants would mean four of everything.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Action {
     /// Shut the compositor down (Super+Shift+q by default).
     Quit,
     /// Advance the active workspace (Super+t by default).
     CycleWorkspace,
+    /// Move keyboard focus to the window drawn in that direction.
+    Focus(Direction),
+    /// Exchange the focused window with its neighbour that way.
+    Swap(Direction),
+    /// Move the boundary between the focused window and its neighbour.
+    Resize(Direction),
+    /// Re-divide the container holding the focused window along this axis,
+    /// restacking what is already in it — and, as a consequence, deciding the
+    /// axis the next window inserted here arrives on.
+    Split(Layout),
+    /// Float the focused window, or return it to the tiling.
+    ToggleFloating,
+    /// Show a numbered workspace.
+    Workspace(u32),
+    /// Send the focused window to a numbered workspace.
+    MoveToWorkspace(u32),
     /// Write the composited output to a PNG.
     ///
     /// The compositor implements no screencopy protocol, so on a real boot
@@ -204,6 +224,17 @@ fn install_wm_api(lua: &Lua, shell: &Rc<RefCell<LuaShell>>) -> mlua::Result<()> 
     Ok(())
 }
 
+/// A compass word as a [`Direction`], or `None` for anything else.
+fn direction(word: &str) -> Option<Direction> {
+    match word {
+        "left" | "l" => Some(Direction::Left),
+        "right" | "r" => Some(Direction::Right),
+        "up" | "u" => Some(Direction::Up),
+        "down" | "d" => Some(Direction::Down),
+        _ => None,
+    }
+}
+
 /// The modifier set a keybind string asks for. Matching is *exact* — a bind
 /// that does not name Shift does not fire while Shift is held, so `M-t` and
 /// `M-S-t` stay distinct bindings rather than the first shadowing the second.
@@ -257,15 +288,35 @@ impl Action {
     /// and case are all accepted so `cycle_workspace`, `cycle-workspace` and
     /// `Cycle Workspace` name the same thing.
     pub fn from_name(name: &str) -> Option<Action> {
-        match name
-            .trim()
-            .to_ascii_lowercase()
-            .replace(['_', '-'], " ")
-            .as_str()
-        {
-            "quit" => Some(Action::Quit),
-            "cycle workspace" => Some(Action::CycleWorkspace),
-            "screenshot" => Some(Action::Screenshot),
+        let name = name.trim().to_ascii_lowercase().replace(['_', '-'], " ");
+        // Several actions take an argument, and it is always the last word, so
+        // the verb is everything before it. Keeping the whole action in one
+        // string is what lets the config stay `(binding, action)` pairs rather
+        // than growing a third column.
+        let (verb, arg) = match name.rsplit_once(' ') {
+            Some((verb, arg)) => (verb, Some(arg)),
+            None => (name.as_str(), None),
+        };
+        match (name.as_str(), verb, arg) {
+            ("quit", _, _) => Some(Action::Quit),
+            ("cycle workspace", _, _) => Some(Action::CycleWorkspace),
+            ("screenshot", _, _) => Some(Action::Screenshot),
+            ("toggle floating" | "float", _, _) => Some(Action::ToggleFloating),
+            (_, "focus", Some(d)) => direction(d).map(Action::Focus),
+            (_, "swap", Some(d)) => direction(d).map(Action::Swap),
+            (_, "resize", Some(d)) => direction(d).map(Action::Resize),
+            (_, "split", Some("horizontal" | "h")) => Some(Action::Split(Layout::Horizontal)),
+            (_, "split", Some("vertical" | "v")) => Some(Action::Split(Layout::Vertical)),
+            (_, "workspace", Some(n)) => n
+                .parse()
+                .ok()
+                .and_then(valid_workspace)
+                .map(Action::Workspace),
+            (_, "move to workspace", Some(n)) => n
+                .parse()
+                .ok()
+                .and_then(valid_workspace)
+                .map(Action::MoveToWorkspace),
             _ => None,
         }
     }
@@ -420,6 +471,111 @@ mod tests {
                 "S"
             ))
         );
+    }
+
+    #[test]
+    fn every_binding_the_shipped_config_declares_actually_works() {
+        // A binding whose action name does not parse, or whose chord does not,
+        // is silently dead: the key does nothing and nothing is logged. That is
+        // the same defect `advertised_commands_exist` exists to catch on the
+        // editor side, and with ~40 binds now shipped a typo is likely.
+        let shell = parse_config(include_str!("../assets/compositor.lua"))
+            .expect("the shipped config must parse");
+        assert!(!shell.keybinds.is_empty());
+        for (bind, action) in &shell.keybinds {
+            assert!(
+                Action::from_name(action).is_some(),
+                "config binds {bind:?} to {action:?}, which is not an action"
+            );
+            assert!(
+                parse_bind(bind).is_some(),
+                "config binding {bind:?} is not a parseable chord"
+            );
+        }
+    }
+
+    #[test]
+    fn no_two_shipped_bindings_claim_the_same_chord() {
+        // First match wins in `resolve_wm_action`, so a duplicate chord makes
+        // the later binding unreachable without saying so.
+        let shell = parse_config(include_str!("../assets/compositor.lua")).unwrap();
+        let mut seen = std::collections::HashSet::new();
+        for (bind, _) in &shell.keybinds {
+            let chord = bind.to_ascii_lowercase();
+            assert!(seen.insert(chord), "{bind:?} is bound twice");
+        }
+    }
+
+    #[test]
+    fn actions_take_their_argument_from_the_last_word() {
+        assert_eq!(
+            Action::from_name("focus left"),
+            Some(Action::Focus(Direction::Left))
+        );
+        assert_eq!(
+            Action::from_name("swap down"),
+            Some(Action::Swap(Direction::Down))
+        );
+        assert_eq!(
+            Action::from_name("resize right"),
+            Some(Action::Resize(Direction::Right))
+        );
+        assert_eq!(
+            Action::from_name("split vertical"),
+            Some(Action::Split(Layout::Vertical))
+        );
+        assert_eq!(Action::from_name("workspace 3"), Some(Action::Workspace(3)));
+        assert_eq!(
+            Action::from_name("move to workspace 7"),
+            Some(Action::MoveToWorkspace(7))
+        );
+        assert_eq!(
+            Action::from_name("toggle floating"),
+            Some(Action::ToggleFloating)
+        );
+    }
+
+    #[test]
+    fn argument_spellings_a_user_would_reach_for_all_work() {
+        // Underscores and dashes normalise to spaces already, and the short
+        // forms are what anyone who has used i3 will type first.
+        assert_eq!(
+            Action::from_name("move_to_workspace_2"),
+            Some(Action::MoveToWorkspace(2))
+        );
+        assert_eq!(
+            Action::from_name("Focus-Left"),
+            Some(Action::Focus(Direction::Left))
+        );
+        assert_eq!(
+            Action::from_name("focus l"),
+            Some(Action::Focus(Direction::Left))
+        );
+        assert_eq!(
+            Action::from_name("split h"),
+            Some(Action::Split(Layout::Horizontal))
+        );
+        assert_eq!(Action::from_name("float"), Some(Action::ToggleFloating));
+    }
+
+    #[test]
+    fn a_nonsense_argument_binds_nothing_rather_than_guessing() {
+        // Binding `focus sideways` to *something* would be worse than binding
+        // it to nothing: the key would work, just not as written.
+        assert_eq!(Action::from_name("focus sideways"), None);
+        assert_eq!(Action::from_name("focus"), None);
+        assert_eq!(Action::from_name("split diagonal"), None);
+        assert_eq!(Action::from_name("workspace twelve"), None);
+    }
+
+    #[test]
+    fn a_workspace_argument_out_of_range_is_refused() {
+        // Same reasoning as the config's `switch_workspace`: asking for
+        // workspace 20 is a bug, and quietly landing on 9 hides it.
+        assert_eq!(Action::from_name("workspace 0"), None);
+        assert_eq!(Action::from_name("workspace 10"), None);
+        assert_eq!(Action::from_name("move to workspace 99"), None);
+        assert_eq!(Action::from_name("workspace 9"), Some(Action::Workspace(9)));
     }
 
     #[test]
