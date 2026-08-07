@@ -107,14 +107,20 @@ capture_built() {
 
     ( cd "$wt" && cargo run -q -p ruster-lua --example dump 2>/dev/null ) > "$out/schema-and-themes.txt"
 
-    # Per package, so names are attributed and ordering is ours rather than
+    # Per package, so names are attributed and the ordering is ours rather than
     # cargo's. stderr carries binary paths with unstable hashes — drop it.
+    #
+    # The package list must come from `.packages[].name` specifically. Grepping
+    # the metadata JSON for `"name"` also matches every entry in each package's
+    # dependencies array, and `cargo test -p` accepts those, so the inventory
+    # quietly filled up with lsp-types' and serde's unit tests — 97 of them,
+    # tracking dependency versions rather than our own code.
     ( cd "$wt" && cargo metadata --no-deps --format-version 1 2>/dev/null ) \
-        | grep -oE '"name":"[a-z-]+"' | grep -oE '"[a-z-]+"$' | tr -d '"' | sort -u \
+        | jq -r '.packages[].name' | sort -u \
         | while read -r p; do
             ( cd "$wt" && cargo test -q -p "$p" -- --list 2>/dev/null ) \
                 | grep ': test$' | sed "s|^|$p |"
-          done | sort > "$out/tests.txt"
+          done | sort -u > "$out/tests.txt"
 
     git worktree remove --force "$wt" 2>/dev/null || true
 }
@@ -157,11 +163,15 @@ check() {
         echo "  ok   settings keys"
     fi
 
+    # Reported against the *first* parent rather than the union: the union
+    # already contains everything the second parent brought, so measuring
+    # against it would always read as zero. What a reviewer wants to know is
+    # what the destination branch gained.
     echo
-    echo "Additions (informational):"
+    echo "Gained by $(basename "$a") (informational):"
     for s in "${SETS[@]}"; do
         local n
-        n="$(comm -13 <(sort -u "$a/$s.txt" "$b/$s.txt") <(sort -u "$after/$s.txt") | wc -l)"
+        n="$(comm -13 <(sort -u "$a/$s.txt") <(sort -u "$after/$s.txt") | wc -l)"
         [ "$n" -gt 0 ] && echo "  +$n $s"
     done
 

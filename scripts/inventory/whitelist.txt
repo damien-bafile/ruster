@@ -12,7 +12,7 @@ theme = "default"
 # Renamed in crates/ruster-tui/src/lsp_state.rs when LSP clients became keyed by
 # (language, project root) rather than language alone. Three tests replace it,
 # including two that pin the new behaviour, so this is net +3.
-ruster-tui a_pending_action_is_keyed_by_language_as_well_as_id
+ruster-tui lsp_state::tests::a_pending_action_is_keyed_by_language_as_well_as_id: test
 
 # Never a real command. It appeared only as a dashboard Quick Actions string in
 # widgets/mod.rs and the raylib backend — `parse_cmdline` has never had a branch
