@@ -1,5 +1,17 @@
 # Ruster Core Engine Implementation Plan (Plan A)
 
+> **Status:** delivered; boxes resolved 2026-08-07.
+>
+> This plan was executed but never ticked as it went, leaving 65 boxes
+> that read as outstanding work. They are **plain bullets now, not back-ticked**:
+> a box ticked long after the fact asserts a verification that did not happen,
+> and this tree has already been bitten by exactly that. The bullets stand as a
+> record of what was built.
+>
+> Evidence it shipped: all 87 identifiers this plan names in backticks exist in
+> the tree, and `ruster-core` carries 182 tests over the rope, motions, undo tree, multi-cursor and window model.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Deliver `ruster-core`, a headless editor engine (buffer, cursor-set, linear undo, command executor, keymap trie, Vim Normal/Insert/Visual modes, operators+motions, text objects, dot-repeat) proven by scenario tests — no UI, no Lua.
@@ -57,7 +69,7 @@ crates/ruster-core/
 - Consumes: nothing
 - Produces: a buildable, empty `ruster-core` crate; workspace `cargo test` runs and passes with zero tests.
 
-- [ ] **Step 1: Write the failing test**
+- **Step 1: Write the failing test**
 
 `crates/ruster-core/src/lib.rs`:
 ```rust
@@ -70,12 +82,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails (no crate yet)**
+- **Step 2: Run test to verify it fails (no crate yet)**
 
 Run: `cargo test -p ruster-core`
 Expected: error `package `ruster-core` does not exist` (or `could not find Cargo.toml`).
 
-- [ ] **Step 3: Write minimal implementation**
+- **Step 3: Write minimal implementation**
 
 `Cargo.toml` (workspace root):
 ```toml
@@ -121,7 +133,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 4: Create stub modules so it compiles**
+- **Step 4: Create stub modules so it compiles**
 
 Replace `crates/ruster-core/src/lib.rs` module declarations with stubs by creating each file empty:
 
@@ -148,12 +160,12 @@ pub mod vim;
 mod scenario;
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- **Step 5: Run test to verify it passes**
 
 Run: `cargo test -p ruster-core`
 Expected: `running 0 tests` + `test result: ok. 0 passed`.
 
-- [ ] **Step 6: Commit**
+- **Step 6: Commit**
 
 ```bash
 git add Cargo.toml crates/
@@ -171,7 +183,7 @@ git commit -m "chore: scaffold ruster-core workspace crate"
 - Consumes: `ropey::Rope`
 - Produces: `pub struct Buffer`, `pub struct Change { at: usize, deleted: String, inserted: String }`, methods: `Buffer::new()`, `Buffer::from_str(s)`, `len_chars()`, `line_count()`, `char_at(idx)`, `slice_string(start..end)`, `to_string()`, `insert(at, text) -> Change`, `delete(range) -> Change`, `apply(&Change) -> Change` (returns inverse).
 
-- [ ] **Step 1: Write the failing test**
+- **Step 1: Write the failing test**
 
 `crates/ruster-core/src/buffer.rs` (append to the stub line, which you delete):
 ```rust
@@ -222,12 +234,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p ruster-core buffer`
 Expected: compile error (`Buffer` not found / methods undefined).
 
-- [ ] **Step 3: Write minimal implementation**
+- **Step 3: Write minimal implementation**
 
 Replace `crates/ruster-core/src/buffer.rs` entirely:
 ```rust
@@ -299,12 +311,12 @@ impl Default for Buffer {
 
 Note: `insert`/`delete` build a forward `Change` describing what happened (the produced text or removed text); `apply` is only used by UndoStack to invert. The round-trip in the test confirms the semantics: `apply(insert_change)` returns the deletion change.
 
-- [ ] **Step 4: Run test to verify it passes**
+- **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p ruster-core buffer`
 Expected: 3 passed.
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add crates/ruster-core/src/buffer.rs
@@ -324,7 +336,7 @@ git commit -m "feat(core): Buffer with ropey-backed edit ops and invertible Chan
 
 Grapheme movement uses `unicode_segmentation::Graphemes` over the buffer's `to_string()` — acceptable for Plan A; performance compaction comes later.
 
-- [ ] **Step 1: Write the failing test**
+- **Step 1: Write the failing test**
 
 `crates/ruster-core/src/cursor.rs`:
 ```rust
@@ -395,12 +407,12 @@ mod tests {
 
 Note: "col" here is grapheme-column; for Plan A char-column is acceptable, but the test uses combining marks only in the grapheme-right test, so line movement can stay char-based. Make line movement char-based (track `desired_col` as char count).
 
-- [ ] **Step 2: Run test to verify it fails**
+- **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p ruster-core cursor`
 Expected: compile error.
 
-- [ ] **Step 3: Write minimal implementation**
+- **Step 3: Write minimal implementation**
 
 Replace `crates/ruster-core/src/cursor.rs`:
 ```rust
@@ -539,12 +551,12 @@ Note on `move_line`: `desired_col` is the sticky column intent, initialized to `
 
 The `move_line_edge` End stops before the newline so Vim's `$` lands on the last printable char rather than the `\n`.
 
-- [ ] **Step 4: Run test to verify it passes**
+- **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p ruster-core cursor`
 Expected: 5 passed.
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add crates/ruster-core/src/cursor.rs
@@ -562,7 +574,7 @@ git commit -m "feat(core): CursorSet with grapheme-aware and line movement"
 - Consumes: `crate::buffer::Change`
 - Produces: `pub struct UndoStack`, methods: `new()`, `begin_batch()`, `push(Change)`, `end_batch()`, `undo(&mut Buffer) -> Option<usize>` (returns number of changes undone), `redo(&mut Buffer) -> Option<usize>`, `is_empty()`. Batching rule: `begin_batch` opens a fresh unit; consecutive `push`es accumulate until `end_batch`. A new batch auto-closes any open batch.
 
-- [ ] **Step 1: Write the failing test**
+- **Step 1: Write the failing test**
 
 `crates/ruster-core/src/undo.rs`:
 ```rust
@@ -634,12 +646,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p ruster-core undo`
 Expected: compile error.
 
-- [ ] **Step 3: Write minimal implementation**
+- **Step 3: Write minimal implementation**
 
 Replace `crates/ruster-core/src/undo.rs`:
 ```rust
@@ -714,12 +726,12 @@ impl Default for UndoStack {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p ruster-core undo`
 Expected: 4 passed.
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add crates/ruster-core/src/undo.rs
@@ -737,7 +749,7 @@ git commit -m "feat(core): linear batched UndoStack with inverse-change replay"
 - Consumes: nothing
 - Produces: `pub enum KeyEvent { Char(char), Ctrl(char), Alt(char), Esc, Enter, Backspace, Delete, Arrow(Arrow), }`, `pub enum Arrow { Up, Down, Left, Right }`. `pub struct KeyTrie<T>` with `new()`, `insert(&mut self, keys: &[KeyEvent], value: T)`, `lookup(&self, pressed: &[KeyEvent]) -> Lookup<T>` where `enum Lookup<T> { Miss, Pending, Match(T) }`. A `match` ends a prefix and returns the bound value; the engine caller drives `timeoutlen` outside the trie.
 
-- [ ] **Step 1: Write the failing test**
+- **Step 1: Write the failing test**
 
 `crates/ruster-core/src/key.rs`:
 ```rust
@@ -809,12 +821,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p ruster-core key`
 Expected: compile error.
 
-- [ ] **Step 3: Write minimal implementation**
+- **Step 3: Write minimal implementation**
 
 Replace `crates/ruster-core/src/key.rs`:
 ```rust
@@ -899,13 +911,13 @@ impl<T> Default for KeyTrie<T> {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p ruster-core key`
 Expected: 4 passed.
 Note: the `longer-and-shorter-coexist` test exercises the `Leaf(v) => Match` even when more keys were pressed than the binding needs. The caller (VimState) is responsible for `timeoutlen`: on `Pending` after a deadline, it re-looks-up with the longest consumed prefix and sleeps a `Match` if one exists (we add a helper for prefix-matching in Task 8).
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add crates/ruster-core/src/key.rs
@@ -928,7 +940,7 @@ git commit -m "feat(core): KeyTrie keymap engine with Match/Pending/Miss lookup"
   - `pub enum Action { Move(Motion), Edit(EditOp), BeginBatch, EndBatch, Undo, Redo, }`
   - `pub struct Editor { buffer, cursors, undo }` with `from_str(s)`, `buffer(&self) -> &Buffer`, `execute(&mut self, action)`, `primary_head(&self) -> usize`.
 
-- [ ] **Step 1: Write the failing test**
+- **Step 1: Write the failing test**
 
 `crates/ruster-core/src/action.rs`:
 ```rust
@@ -1016,12 +1028,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p ruster-core editor`
 Expected: compile error.
 
-- [ ] **Step 3: Write minimal implementation**
+- **Step 3: Write minimal implementation**
 
 Replace `crates/ruster-core/src/action.rs` with the contents shown in Step 1 (it already is the implementation — fix module/imports):
 
@@ -1135,12 +1147,12 @@ impl Editor {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p ruster-core editor`
 Expected: 3 passed. Also run `cargo test -p ruster-core` to ensure earlier suites still green.
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add crates/ruster-core/src/action.rs crates/ruster-core/src/editor.rs
@@ -1161,7 +1173,7 @@ git commit -m "feat(core): Action verbs and Editor facade binding buffer/cursors
 
 VimState does NOT mutate the editor in `handle` — it returns `Vec<Action>` for the Editor to execute. This keeps it pure and unit-testable.
 
-- [ ] **Step 1: Write the failing test**
+- **Step 1: Write the failing test**
 
 `crates/ruster-core/src/vim/mod.rs`:
 ```rust
@@ -1267,12 +1279,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p ruster-core vim::motions`
 Expected: compile error or failing assertions (handle returns `vec![]`).
 
-- [ ] **Step 3: Write minimal implementation**
+- **Step 3: Write minimal implementation**
 
 Create `crates/ruster-core/src/vim/motions.rs`:
 ```rust
@@ -1483,12 +1495,12 @@ fn do_word_motion<F: Fn(&crate::buffer::Buffer, usize) -> usize>(
 
 Re-run tasks Step 4.
 
-- [ ] **Step 4: Run test to verify it passes**
+- **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p ruster-core vim::motions`
 Expected: all motion tests pass, including insert/esc.
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add crates/ruster-core/src/action.rs crates/ruster-core/src/editor.rs crates/ruster-core/src/vim/
@@ -1507,7 +1519,7 @@ git commit -m "feat(core): VimState Normal/Insert with counts, word/line motions
 - Consumes: Word-motion helpers, `Motion`, `CursorSet::Range`
 - Produces: operator handling that, on `d`/`y`/`c` followed by a motion or text object, emits BeginBatch → Edit op → EndBatch (for c, switches to Insert after deleting).
 
-- [ ] **Step 1: Write failing test** (`crates/ruster-core/src/vim/ops.rs`)
+- **Step 1: Write failing test** (`crates/ruster-core/src/vim/ops.rs`)
 ```rust
 use crate::editor::Editor;
 use crate::key::KeyEvent;
@@ -1566,9 +1578,9 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run to fail** — `cargo test -p ruster-core vim::ops` → currently `dd`/`dw`/`y`/`p`/`c` are no-ops in handle_normal.
+- **Step 2: Run to fail** — `cargo test -p ruster-core vim::ops` → currently `dd`/`dw`/`y`/`p`/`c` are no-ops in handle_normal.
 
-- [ ] **Step 3: Implementation**
+- **Step 3: Implementation**
 
 Add to `VimState` (in `vim/mod.rs`):
 ```rust
@@ -1707,14 +1719,14 @@ pending: Pending,
 ```
 and the `Pending` enum plus `Default`-style init in `new()`.
 
-- [ ] **Step 4: Run test to verify it passes**
+- **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p ruster-core vim::ops`
 Expected: 5 passed. Run `cargo test -p ruster-core` for the whole crate; all earlier suites should stay green.
 
 If the `y p` test for slice semantics needs adjusting, the test asserts `e.buffer().to_string() == "hhello"` after `p` pastes yanked line content `"hello"` at cursor+1. Update `range_for_motion('d', n)` to capture full-line text including newline for `yy`; and `p` to insert at `cursor+1`. If a discrepancy appears, fix the semantic in `ops.rs`, not the test — the test encodes the slice contract.
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add crates/ruster-core/src/vim/
@@ -1729,7 +1741,7 @@ git commit -m "feat(core): Vim operators d/y/c with motion composition and paste
 - Create: `crates/ruster-core/src/vim/textobj.rs`
 - Modify: `crates/ruster-core/src/vim/mod.rs`
 
-- [ ] **Step 1: Failing test** (`crates/ruster-core/src/vim/textobj.rs`)
+- **Step 1: Failing test** (`crates/ruster-core/src/vim/textobj.rs`)
 ```rust
 use crate::editor::Editor;
 use crate::key::KeyEvent;
@@ -1786,9 +1798,9 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run to fail** — operator-pending `i`/`a` + char are unsupported; tests fail.
+- **Step 2: Run to fail** — operator-pending `i`/`a` + char are unsupported; tests fail.
 
-- [ ] **Step 3: Implementation**
+- **Step 3: Implementation**
 
 `crates/ruster-core/src/vim/textobj.rs`:
 ```rust
@@ -1909,12 +1921,12 @@ match key {
 
 (Add `use crate::vim::textobj::{inner_word, around_word, inner_pair, around_pair};` at the top of `vim/mod.rs`. The `count` for operator+textobject is ignored in the slice — Vim's count semantics on text objects are subtle; YAGNI here, plain single text object only.)
 
-- [ ] **Step 4: Run test to verify it passes**
+- **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p ruster-core vim::textobj`
 Expected: 3 passed. Full crate: `cargo test -p ruster-core` green.
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add crates/ruster-core/src/vim/
@@ -1928,7 +1940,7 @@ git commit -m "feat(core): Vim text objects iw aw i\" i' i( i{ with depth-aware 
 **Files:**
 - Modify: `crates/ruster-core/src/vim/mod.rs`
 
-- [ ] **Step 1: Failing test**
+- **Step 1: Failing test**
 ```rust
 #[test]
 fn dot_repeats_last_change() {
@@ -1947,9 +1959,9 @@ fn dot_repeats_last_change() {
 
 Place the test in `crates/ruster-core/src/vim/mod.rs` `#[cfg(test)] mod tests`.
 
-- [ ] **Step 2: Run to fail** — `.` is currently a no-op in `handle_normal`.
+- **Step 2: Run to fail** — `.` is currently a no-op in `handle_normal`.
 
-- [ ] **Step 3: Implementation**
+- **Step 3: Implementation**
 
 Add to `VimState`:
 ```rust
@@ -1971,12 +1983,12 @@ In every operator completion branch (`d`, `c`, and the `x` direct-delete arm), c
 
 `y` (yank) does not update `last_change`.
 
-- [ ] **Step 4: Run test to verify it passes**
+- **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p ruster-core vim`
 Expected: green.
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add crates/ruster-core/src/vim/mod.rs
@@ -1990,7 +2002,7 @@ git commit -m "feat(core): dot-repeat replays last change's emitted actions"
 **Files:**
 - Modify: `crates/ruster-core/src/vim/mod.rs`
 
-- [ ] **Step 1: Failing test**
+- **Step 1: Failing test**
 ```rust
 #[test]
 fn v_then_motion_extends_selection_d_x_deletes() {
@@ -2023,9 +2035,9 @@ fn esc_exits_visual_without_change() {
 }
 ```
 
-- [ ] **Step 2: Run to fail** — `v`/`V` are no-ops in `handle_normal`; `handle_visual` returns nothing except Esc.
+- **Step 2: Run to fail** — `v`/`V` are no-ops in `handle_normal`; `handle_visual` returns nothing except Esc.
 
-- [ ] **Step 3: Implementation**
+- **Step 3: Implementation**
 
 In `handle_normal`, add arms for entering visual:
 ```rust
@@ -2106,12 +2118,12 @@ fn visual_range(&self, editor: &Editor) -> (usize, usize) {
 
 Add helper `fn char_line(editor: &Editor, idx: usize) -> usize` (mirrors `char_to_line` in `ops.rs` — refactor both to share, or duplicate; duplicate is acceptable for Plan A).
 
-- [ ] **Step 4: Run test to verify it passes**
+- **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p ruster-core vim`
 Expected: all green.
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add crates/ruster-core/src/vim/mod.rs crates/ruster-core/src/cursor.rs crates/ruster-core/src/editor.rs
@@ -2127,7 +2139,7 @@ git commit -m "feat(core): Visual char/line mode with motions, d/y/c operators, 
 
 The harness runs a script of `KeyEvent`s against `Editor + VimState` and asserts the final buffer text and (optionally) the cursor head. This is the regression backbone.
 
-- [ ] **Step 1: Failing test**
+- **Step 1: Failing test**
 ```rust
 #[cfg(test)]
 mod tests {
@@ -2151,9 +2163,9 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run to fail** — `scenario` undefined.
+- **Step 2: Run to fail** — `scenario` undefined.
 
-- [ ] **Step 3: Implementation**
+- **Step 3: Implementation**
 
 `crates/ruster-core/src/scenario.rs`:
 ```rust
@@ -2194,12 +2206,12 @@ mod tests {
 
 (The harness is its own target; do not remove the inline tests in the Vim modules — they remain executable.)
 
-- [ ] **Step 4: Run test to verify it passes**
+- **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p ruster-core scenario`
 Expected: 2 passed. Full crate: `cargo test -p ruster-core` green.
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add crates/ruster-core/src/scenario.rs
@@ -2212,26 +2224,26 @@ git commit -m "test(core): scenario harness for full key-script regressions"
 
 **Files:** none — verification only.
 
-- [ ] **Step 1: Run the whole suite with warnings as a smoke check**
+- **Step 1: Run the whole suite with warnings as a smoke check**
 
 Run: `cargo test -p ruster-core --locked`
 Expected: all tests pass, no compile errors. Warnings are acceptable in Plan A but should be inspected: note `unused import: Arrow` in `vim/mod.rs` — remove it inline.
 
-- [ ] **Step 2: Remove dead imports / fix warnings**
+- **Step 2: Remove dead imports / fix warnings**
 
 In `crates/ruster-core/src/vim/mod.rs`, remove the now-unused `use crate::key::{Arrow, KeyEvent};` line, replacing with `use crate::key::KeyEvent;`. Remove any `Pending::None` variant shadow warnings by annotating `#[derive(Default)]` is not applicable — ensure `Pending::None` is initialized in `new()` via `self.pending = Pending::None`.
 
 Run: `cargo test -p ruster-core`
 Expected: green, warnings reduced.
 
-- [ ] **Step 3: Commit cleanup**
+- **Step 3: Commit cleanup**
 
 ```bash
 git add crates/ruster-core/src/vim/mod.rs
 git commit -m "chore(core): drop dead imports after Plan A"
 ```
 
-- [ ] **Step 4: Tag the milestone**
+- **Step 4: Tag the milestone**
 
 ```bash
 git tag plan-a-core-complete

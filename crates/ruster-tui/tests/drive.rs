@@ -296,6 +296,33 @@ fn ctrl_w_v_splits_the_window() {
     );
 }
 
+/// The Phase 2 manual smoke list, which could not be run when that plan shipped
+/// ("no display"): split, move between panes, and toggle fullscreen.
+#[test]
+fn splits_window_nav_and_fullscreen_round_trip() {
+    // `:vsplit`, then `C-w l` to the right pane, then `C-w z` fullscreen.
+    let log = Drive::new()
+        .content(DEMO)
+        .setup("ruster.cmd(':vsplit')")
+        .keys("<C-w>l")
+        .settle(6)
+        .run();
+    assert_eq!(log.last().windows.len(), 2, "vsplit gives two windows:\n{}", log.transcript());
+
+    let full = Drive::new()
+        .content(DEMO)
+        .setup("ruster.cmd(':vsplit')")
+        .keys("<C-w>z")
+        .settle(6)
+        .run();
+    assert_eq!(
+        full.last().windows.len(),
+        1,
+        "C-w z fullscreens the active window:\n{}",
+        full.transcript()
+    );
+}
+
 #[test]
 fn typing_a_colon_command_shows_it_on_the_cmdline_before_it_runs() {
     let log = Drive::new().content(DEMO).keys(":sidebar").run();

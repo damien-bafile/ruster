@@ -1,5 +1,17 @@
 # Plan C1: Tree-sitter Integration Implementation Plan
 
+> **Status:** delivered; boxes resolved 2026-08-07.
+>
+> This plan was executed but never ticked as it went, leaving 38 boxes
+> that read as outstanding work. They are **plain bullets now, not back-ticked**:
+> a box ticked long after the fact asserts a verification that did not happen,
+> and this tree has already been bitten by exactly that. The bullets stand as a
+> record of what was built.
+>
+> Evidence it shipped: all 21 identifiers this plan names in backticks exist in
+> the tree, and `docs/verification/editor-tui.txt` and `editor-gui.png` show highlighted Rust, and `drive.rs::the_buffer_arrives_syntax_highlighted_not_merely_as_text` asserts spans rather than text.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Deliver incremental syntax highlighting, structural textobjects (function, class, loop, parameter), and rainbow bracket coloring — all backed by Tree-sitter.
@@ -67,7 +79,7 @@ crates/ruster-tui/src/widgets.rs            — BufferWidget per-char coloring v
 - Consumes: nothing new
 - Produces: `Color`, `SyntaxStyle`, `StyledLine` types; `EditorState.lines` becomes `Vec<StyledLine>`
 
-- [ ] **Step 1: Add Color, SyntaxStyle, StyledLine above EditorState**
+- **Step 1: Add Color, SyntaxStyle, StyledLine above EditorState**
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,7 +109,7 @@ pub struct StyledLine {
 }
 ```
 
-- [ ] **Step 2: Change `EditorState.lines` type and update all fields**
+- **Step 2: Change `EditorState.lines` type and update all fields**
 
 ```rust
 pub struct EditorState<'a> {
@@ -112,7 +124,7 @@ pub struct EditorState<'a> {
 }
 ```
 
-- [ ] **Step 3: Fix the existing test to use StyledLine**
+- **Step 3: Fix the existing test to use StyledLine**
 
 Replace lines 28-41 of `crates/ruster-render/src/lib.rs`:
 
@@ -134,12 +146,12 @@ fn renderer_trait_is_object_safe() {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify**
+- **Step 4: Run tests to verify**
 
 Run: `cargo test -p ruster-render`
 Expected: 1 test PASS
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add crates/ruster-render/src/lib.rs
@@ -161,7 +173,7 @@ git commit -m "feat(render): add Color, SyntaxStyle, StyledLine; EditorState use
 - Consumes: `ruster-render` types (Color, SyntaxStyle, StyledLine)
 - Produces: `SyntaxEngine { new(), reparse(), highlight_line(), language_for_ext() }`
 
-- [ ] **Step 1: Create `crates/ruster-syntax/Cargo.toml`**
+- **Step 1: Create `crates/ruster-syntax/Cargo.toml`**
 
 ```toml
 [package]
@@ -185,13 +197,13 @@ tree-sitter-yaml = "0.21"
 ruster-render = { path = "../ruster-render" }
 ```
 
-- [ ] **Step 2: Add `ruster-syntax` to workspace in root `Cargo.toml`**
+- **Step 2: Add `ruster-syntax` to workspace in root `Cargo.toml`**
 
 ```toml
 members = ["crates/ruster-core", "crates/ruster-render", "crates/ruster-tui", "crates/ruster-bin", "crates/ruster-syntax"]
 ```
 
-- [ ] **Step 3: Add a placeholder highlight query for Rust**
+- **Step 3: Add a placeholder highlight query for Rust**
 
 Create `crates/ruster-syntax/queries/rust/highlights.scm`:
 
@@ -272,7 +284,7 @@ Create `crates/ruster-syntax/queries/rust/highlights.scm`:
 
 Then create the same file structure for other languages with minimal stubs (at least covering the same categories). For the initial iteration, only Rust needs a full query — other languages can ship single-line stubs that match everything as punctuation for graceful fallback.
 
-- [ ] **Step 4: Create `crates/ruster-syntax/src/theme.rs`**
+- **Step 4: Create `crates/ruster-syntax/src/theme.rs`**
 
 ```rust
 use ruster_render::{Color, SyntaxStyle};
@@ -307,7 +319,7 @@ pub const RAINBOW_PALETTE: [Color; 6] = [
 ];
 ```
 
-- [ ] **Step 5: Create `crates/ruster-syntax/src/highlighter.rs`**
+- **Step 5: Create `crates/ruster-syntax/src/highlighter.rs`**
 
 ```rust
 use std::collections::HashMap;
@@ -431,7 +443,7 @@ fn byte_to_line(byte: usize, line_starts: &[usize]) -> usize {
 
 Note: The `tree_sitter::QueryCursor::captures` API may differ slightly between versions. Adjust if necessary during implementation.
 
-- [ ] **Step 6: Create `crates/ruster-syntax/src/lib.rs`**
+- **Step 6: Create `crates/ruster-syntax/src/lib.rs`**
 
 ```rust
 pub mod highlighter;
@@ -662,17 +674,17 @@ mod tests {
 }
 ```
 
-- [ ] **Step 7: Run tests to verify**
+- **Step 7: Run tests to verify**
 
 Run: `cargo test -p ruster-syntax`
 Expected: All tests PASS
 
-- [ ] **Step 8: Build full workspace to check no regressions**
+- **Step 8: Build full workspace to check no regressions**
 
 Run: `cargo check --workspace`
 Expected: No errors
 
-- [ ] **Step 9: Commit**
+- **Step 9: Commit**
 
 ```bash
 git add Cargo.toml crates/ruster-syntax/
@@ -693,13 +705,13 @@ git commit -m "feat(syntax): add ruster-syntax crate with parsing, highlighting,
 - Consumes: `SyntaxEngine` from `ruster-syntax`, `StyledLine` from `ruster-render`
 - Produces: Colored terminal rendering on Rust source files
 
-- [ ] **Step 1: Add `ruster-syntax` dependency to `crates/ruster-tui/Cargo.toml`**
+- **Step 1: Add `ruster-syntax` dependency to `crates/ruster-tui/Cargo.toml`**
 
 ```toml
 ruster-syntax = { path = "../ruster-syntax" }
 ```
 
-- [ ] **Step 2: Add TuiRenderer method to convert Color → ratatui style**
+- **Step 2: Add TuiRenderer method to convert Color → ratatui style**
 
 In `crates/ruster-tui/src/renderer.rs`, add a helper:
 
@@ -723,7 +735,7 @@ pub fn ruster_style_to_ratatui(s: &ruster_render::SyntaxStyle) -> Style {
 }
 ```
 
-- [ ] **Step 3: Update BufferWidget to draw per-char colors from StyledLine**
+- **Step 3: Update BufferWidget to draw per-char colors from StyledLine**
 
 Replace `BufferWidget` in `crates/ruster-tui/src/widgets.rs`:
 
@@ -795,7 +807,7 @@ fn ruster_render_color_to_tui(c: &ruster_render::Color) -> Color {
 }
 ```
 
-- [ ] **Step 4: Update `App` to integrate SyntaxEngine**
+- **Step 4: Update `App` to integrate SyntaxEngine**
 
 In `crates/ruster-tui/src/app.rs`:
 
@@ -829,7 +841,7 @@ impl App {
 }
 ```
 
-- [ ] **Step 5: Update `App::render()` to build StyledLine-based EditorState**
+- **Step 5: Update `App::render()` to build StyledLine-based EditorState**
 
 Replace the render method:
 
@@ -883,7 +895,7 @@ fn render(&mut self) {
 }
 ```
 
-- [ ] **Step 6: Call `SyntaxEngine::reparse()` after each buffer mutation in the event loop**
+- **Step 6: Call `SyntaxEngine::reparse()` after each buffer mutation in the event loop**
 
 In `App::run()`, after the `for action in self.vim.handle(...)` loop, add:
 
@@ -924,7 +936,7 @@ fn render(&mut self) {
 
 This re-parses every frame. For files <100KB this is fast enough (microseconds). If it becomes a bottleneck, add a digest check later.
 
-- [ ] **Step 7: Pass `syntax` flag to BufferWidget in TuiRenderer**
+- **Step 7: Pass `syntax` flag to BufferWidget in TuiRenderer**
 
 In `crates/ruster-tui/src/renderer.rs`, the `render_frame` method:
 
@@ -936,20 +948,20 @@ let buf_widget = crate::widgets::BufferWidget::new(
 ).with_syntax(has_highlights);
 ```
 
-- [ ] **Step 8: Fix existing tests in ruster-tui**
+- **Step 8: Fix existing tests in ruster-tui**
 
 Update any test in `app.rs` that constructs `App` — no change needed since `App::new` now optionally initializes `SyntaxEngine`.
 
 Update `renderer.rs` tests if any exist.
 
-- [ ] **Step 9: Build and test the workspace**
+- **Step 9: Build and test the workspace**
 
 Run: `cargo test --workspace`
 Expected: 70+ tests PASS (some existing tests may need minor type fixes for `Vec<StyledLine>` in their `EditorState` construction)
 
 If there are test failures due to the `EditorState` change, fix them by wrapping strings in `StyledLine { text: s.into(), highlights: vec![] }`.
 
-- [ ] **Step 10: Commit**
+- **Step 10: Commit**
 
 ```bash
 git add crates/ruster-tui/
@@ -971,7 +983,7 @@ git commit -m "feat(tui): integrate syntax highlighting with colored BufferWidge
 - Consumes: `SyntaxEngine::ts_textobject()` — needs to be added
 - Produces: `Action::Textobject { op, kind, target, count }`; VimState dispatches `f`/`c`/`l`/`a` as TS textobjects; App resolves range via SyntaxEngine
 
-- [ ] **Step 1: Add `Action::Textobject` variant**
+- **Step 1: Add `Action::Textobject` variant**
 
 In `crates/ruster-core/src/action.rs`:
 
@@ -983,7 +995,7 @@ pub enum Action {
 }
 ```
 
-- [ ] **Step 2: Add no-op match in `Editor::execute`**
+- **Step 2: Add no-op match in `Editor::execute`**
 
 In `crates/ruster-core/src/editor.rs`:
 
@@ -991,7 +1003,7 @@ In `crates/ruster-core/src/editor.rs`:
 Action::Textobject { .. } => {}
 ```
 
-- [ ] **Step 3: Add Tree-sitter textobject dispatch in VimState**
+- **Step 3: Add Tree-sitter textobject dispatch in VimState**
 
 In `crates/ruster-core/src/vim/mod.rs`, modify the `pending_textobj` response in `handle_normal`:
 
@@ -1019,7 +1031,7 @@ KeyEvent::Char(c2 @ ('f' | 'c' | 'l' | 'a')) => {
 }
 ```
 
-- [ ] **Step 4: Create Rust textobjects query file**
+- **Step 4: Create Rust textobjects query file**
 
 `crates/ruster-syntax/queries/rust/textobjects.scm`:
 
@@ -1046,7 +1058,7 @@ KeyEvent::Char(c2 @ ('f' | 'c' | 'l' | 'a')) => {
 
 Note: `SyntaxEngine::ts_textobject()` is already implemented in Task 2's `lib.rs`. It compiles the textobject SCM query at call time using `tree_sitter::Query::new()`. The `textobject_scm` field stores the embedded bytes.
 
-- [ ] **Step 5: Handle `Action::Textobject` in the App's event loop**
+- **Step 5: Handle `Action::Textobject` in the App's event loop**
 
 In `crates/ruster-tui/src/app.rs`, modify the match in the event loop:
 
@@ -1114,7 +1126,7 @@ pub fn set_register(&mut self, text: String) {
 }
 ```
 
-- [ ] **Step 6: Add textobject tests in ruster-syntax and ruster-core**
+- **Step 6: Add textobject tests in ruster-syntax and ruster-core**
 
 In `crates/ruster-syntax/src/lib.rs`:
 
@@ -1145,12 +1157,12 @@ fn di_f_triggers_textobject_action() {
 }
 ```
 
-- [ ] **Step 7: Build and test workspace**
+- **Step 7: Build and test workspace**
 
 Run: `cargo test --workspace`
 Expected: All tests PASS (including new textobject tests)
 
-- [ ] **Step 8: Commit**
+- **Step 8: Commit**
 
 ```bash
 git add crates/ruster-core/src/action.rs crates/ruster-core/src/editor.rs crates/ruster-core/src/vim/mod.rs crates/ruster-tui/src/app.rs crates/ruster-syntax/queries/rust/textobjects.scm crates/ruster-syntax/src/lib.rs
@@ -1170,7 +1182,7 @@ Rainbow bracket colors were already built into Task 2's `Highlighter::highlight_
 
 This task is about verifying it works end-to-end.
 
-- [ ] **Step 1: Add integration test for rainbow brackets**
+- **Step 1: Add integration test for rainbow brackets**
 
 In `crates/ruster-syntax/src/lib.rs`:
 
@@ -1189,19 +1201,19 @@ fn rainbow_bracket_colors_applied() {
 }
 ```
 
-- [ ] **Step 2: Visual verification plan**
+- **Step 2: Visual verification plan**
 
 Since rainbow brackets are a visual feature, document manual verification:
 1. Run `cargo run -- crates/ruster-syntax/src/lib.rs`
 2. Verify that `(` `)` `{` `}` `[` `]` appear in cycling colors
 3. Verify nesting: `((()))` shows three different colors
 
-- [ ] **Step 3: Build and test**
+- **Step 3: Build and test**
 
 Run: `cargo test --workspace`
 Expected: All tests PASS
 
-- [ ] **Step 4: Commit**
+- **Step 4: Commit**
 
 ```bash
 git add crates/ruster-syntax/src/lib.rs
@@ -1212,7 +1224,7 @@ git commit -m "feat(syntax): end-to-end rainbow bracket coloring verified"
 
 ### Verification
 
-- [ ] **Final workspace check**
+- **Final workspace check**
 
 Run: `cargo test --workspace`
 Expected: All tests PASS, zero warnings
@@ -1223,7 +1235,7 @@ Expected: Clean build
 Run: `cargo run -- crates/ruster-core/src/editor.rs`
 Expected: Terminal opens with colored syntax, rainbow brackets, functional textobjects (`d i f`, `d a c`, etc.)
 
-- [ ] **Final commit**
+- **Final commit**
 
 ```bash
 git add -A && git commit -m "feat: Plan C1 Tree-sitter integration complete"
