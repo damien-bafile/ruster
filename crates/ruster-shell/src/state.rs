@@ -1,24 +1,13 @@
 use crate::window::{ClientWindow, WindowId};
 
-/// Number of workspaces; `next_workspace` cycles 1..=9.
-pub const WORKSPACE_COUNT: u32 = 9;
-
-pub fn next_workspace(ws: u32) -> u32 {
-    let next = ws + 1;
-    if next > WORKSPACE_COUNT {
-        1
-    } else {
-        next
-    }
-}
-
-/// Phase 0 shell state: insertion-ordered window list, a focus handle, and a
-/// workspace counter. The i3 container-tree replaces the flat list in Phase 1.
+/// The window records — title and last known size — in map order, plus the one
+/// focus handle. Where a window sits, and which workspace it is on, belong to
+/// [`Tree`](crate::Tree) and [`Workspaces`](crate::Workspaces); this is what is
+/// left once they have taken them.
 pub struct ShellState {
     windows: Vec<ClientWindow>,
     next_id: u32,
     pub focus: Option<WindowId>,
-    pub workspace: u32,
 }
 
 impl Default for ShellState {
@@ -33,7 +22,6 @@ impl ShellState {
             windows: Vec::new(),
             next_id: 0,
             focus: None,
-            workspace: 1,
         }
     }
 
@@ -75,10 +63,6 @@ impl ShellState {
 
     pub fn windows(&self) -> impl Iterator<Item = &ClientWindow> {
         self.windows.iter()
-    }
-
-    pub fn cycle_workspace(&mut self) {
-        self.workspace = next_workspace(self.workspace);
     }
 }
 
@@ -129,15 +113,6 @@ mod tests {
         s.set_focus(a);
         s.remove_window(a);
         assert_eq!(s.focused().unwrap().id, c);
-    }
-
-    #[test]
-    fn workspace_cycles_and_wraps() {
-        assert_eq!(next_workspace(1), 2);
-        assert_eq!(next_workspace(9), 1);
-        let mut s = ShellState::new();
-        s.cycle_workspace();
-        assert_eq!(s.workspace, 2);
     }
 
     #[test]

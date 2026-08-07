@@ -39,7 +39,7 @@ use crate::backend::{logical_output_size, Backend};
 use crate::chrome::Chrome;
 use crate::shell::CommitBuffer;
 use ruster_render::Theme;
-use ruster_shell::{Rect, ShellState, Tree, WindowId};
+use ruster_shell::{Rect, ShellState, WindowId, Workspaces};
 
 /// The compositor's composition root: everything the backend and the input
 /// handlers need to reach. Mirrors anvil's `AnvilState` but trimmed to Phase 0.
@@ -62,9 +62,11 @@ pub struct CompositorState<B: Backend + 'static> {
     /// named cursor, which the compositor draws itself; a client focusing the
     /// pointer replaces it with its own surface.
     pub cursor_status: CursorImageStatus,
-    /// How the mapped windows divide the output. Phase 1's container tree;
-    /// one tree for now, one per workspace once workspaces hold windows.
-    pub tree: Tree,
+    /// How the mapped windows divide the output: one container tree per
+    /// workspace, of which exactly one is on screen. Every question about where
+    /// a window is — or whether it is anywhere at all — is answered by the
+    /// active tree, so the eight hidden ones cost nothing but memory.
+    pub workspaces: Workspaces,
     /// xdg toplevel surfaces keyed by their `ShellState` window id.
     pub toplevels: HashMap<WindowId, ToplevelSurface>,
     /// Window that should take focus once the seat is set up (Task 10).
@@ -87,19 +89,28 @@ impl<B: Backend + 'static> CompositorState<B> {
     /// Apply the shell's focus to the seat keyboard: the surface of the focused
     /// toplevel becomes the keyboard focus, or focus is cleared when there is
     /// none. Consumes `pending_focus` — the window that should take focus once
-    /// the seat is up — falling back to the shell's tracked focus. Only mapped
-    /// toplevels are focused, so a click or a destroyed-but-not-yet-committed
-    /// window can never grab the keyboard for an invisible surface.
+    /// the seat is up — falling back to the shell's tracked focus. Only
+    /// [`focusable`](Self::focusable) windows are considered, so a click, a
+    /// destroyed-but-not-yet-committed window or a workspace switch can never
+    /// grab the keyboard for a surface that is not on screen.
     pub fn update_keyboard_focus(&mut self, serial: Serial) {
         let focus = self
             .pending_focus
             .take()
-            .filter(|id| self.mapped.contains(id))
-            .or_else(|| self.shell.focus.filter(|id| self.mapped.contains(id)))
+            .filter(|id| self.focusable(*id))
+            .or_else(|| self.shell.focus.filter(|id| self.focusable(*id)))
             .and_then(|id| self.toplevels.get(&id))
             .map(|toplevel| toplevel.wl_surface().clone());
         let keyboard = self.keyboard.clone();
         keyboard.set_focus(self, focus, serial);
+    }
+
+    /// Whether `window` may hold the keyboard: it has committed a buffer, and
+    /// it is on the workspace currently on screen. Both halves are about the
+    /// same failure — keystrokes disappearing into a window the user is not
+    /// looking at, with no way to tell where they went.
+    fn focusable(&self, window: WindowId) -> bool {
+        self.mapped.contains(&window) && self.workspaces.is_visible(window)
     }
 }
 
@@ -110,9 +121,14 @@ impl<B: Backend + 'static> CompositorState<B> {
         Rect::new(0, 0, size.w, size.h)
     }
 
-    /// Where each window sits, per the tree.
+    /// Where each window on the active workspace sits, per its tree.
+    ///
+    /// This is the whole of "switching workspaces hides the rest": the
+    /// renderer, the pointer and `reconfigure_tiles` all read this list and
+    /// nothing else, so a window on one of the other eight has no rectangle to
+    /// be drawn at, clicked on, or resized to.
     pub fn geometry(&self) -> Vec<(WindowId, Rect)> {
-        self.tree.layout(self.output_rect())
+        self.workspaces.layout(self.output_rect())
     }
 
     /// The rectangle assigned to one window, if the tree holds it.
@@ -146,6 +162,50 @@ impl<B: Backend + 'static> CompositorState<B> {
             });
             toplevel.send_pending_configure();
         }
+    }
+
+    /// Show `workspace` and hide whatever was on screen.
+    pub fn switch_workspace(&mut self, workspace: u32) {
+        if self.workspaces.switch_to(workspace) {
+            self.visible_windows_changed();
+        }
+    }
+
+    /// Show the next workspace, wrapping — the `M-t` binding.
+    pub fn cycle_workspace(&mut self) {
+        if self.workspaces.cycle() {
+            self.visible_windows_changed();
+        }
+    }
+
+    /// Send `window` to `workspace`. It keeps its client and its buffer; it
+    /// only stops being laid out here and starts being laid out there.
+    pub fn move_to_workspace(&mut self, window: WindowId, workspace: u32) {
+        if self.workspaces.move_to_workspace(window, workspace) {
+            self.visible_windows_changed();
+        }
+    }
+
+    /// Re-establish everything that depended on the previous set of on-screen
+    /// windows. Every path that changes which windows are visible ends here.
+    fn visible_windows_changed(&mut self) {
+        // Focus is one handle across all nine workspaces, so it can be left
+        // pointing at a window that is no longer drawn — after which every
+        // keystroke goes to a client the user cannot see.
+        self.shell.focus = self.workspaces.focus_for_active(self.shell.focus);
+        // A window that has been off screen was never told about the resizes
+        // that happened while it was away, and one arriving from another
+        // workspace has a rectangle it has never heard of. Either way it draws
+        // at a stale size until it is configured.
+        self.reconfigure_tiles();
+        self.update_keyboard_focus(SCOUNTER.next_serial());
+        // Ask for a full redraw rather than trusting incremental damage. The
+        // whole screen changes at once here — every client surface plus the
+        // workspace label in the statusline — and the backends swap between
+        // several buffers, so the ones not drawn this frame would otherwise
+        // keep showing the workspace we just left.
+        let output = self.backend_data.output().clone();
+        self.backend_data.reset_buffers(&output);
     }
 }
 
@@ -213,7 +273,7 @@ pub fn create_state<B: Backend + 'static>(
         keyboard: globals.keyboard,
         pointer: globals.pointer,
         cursor_status: CursorImageStatus::default_named(),
-        tree: Tree::new(),
+        workspaces: Workspaces::new(),
         toplevels: HashMap::new(),
         pending_focus: None,
         mapped: HashSet::new(),
@@ -353,8 +413,17 @@ impl<B: Backend + 'static> CompositorHandler for CompositorState<B> {
                     // The focused toplevel hid itself; hand the keyboard to the
                     // most recently mapped window still visible (mirroring
                     // `remove_window`'s fall back to the last remaining
-                    // window), or clear it when nothing is left.
-                    if let Some(next) = next_focus_after_unmap(&self.mapped, id) {
+                    // window), or clear it when nothing is left. Only windows on
+                    // the workspace being shown are candidates — a mapped window
+                    // on a hidden one is no more use to the keyboard than the
+                    // one that just disappeared.
+                    let visible: HashSet<WindowId> = self
+                        .mapped
+                        .iter()
+                        .copied()
+                        .filter(|w| self.workspaces.is_visible(*w))
+                        .collect();
+                    if let Some(next) = next_focus_after_unmap(&visible, id) {
                         self.shell.set_focus(next);
                     }
                     self.update_keyboard_focus(SCOUNTER.next_serial());

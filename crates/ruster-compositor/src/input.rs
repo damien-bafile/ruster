@@ -134,13 +134,12 @@ impl<B: Backend + 'static> CompositorState<B> {
         crate::backend::logical_output_size(self.backend_data.output())
     }
 
-    /// The toplevel window the pointer is over, or `None`. Phase 0 draws one
-    /// toplevel fullscreen from the origin, so the toplevel under the pointer
-    /// is the focused one when it is mapped; when focus is stale or cleared
-    /// (its toplevel unmapped) the most recently mapped window is the
-    /// fallback, which lets a click always recover a visible window.
-    /// [`tile_under`] supplies the containment test against the tree, so a
-    /// location over no window matches nothing.
+    /// The toplevel window the pointer is over, or `None`. [`tile_under`]
+    /// supplies the containment test against the laid-out tree, so a location
+    /// over no window matches nothing — and since the layout covers only the
+    /// active workspace, a click can never reach a window that is not on
+    /// screen. Answering from the geometry rather than from `shell.focus` is
+    /// what lets a click recover a visible window when focus has gone stale.
     fn toplevel_under(&self, location: Point<f64, Logical>) -> Option<WindowId> {
         tile_under(&self.geometry(), location)
             .map(|(id, _)| id)
@@ -148,10 +147,8 @@ impl<B: Backend + 'static> CompositorState<B> {
     }
 
     /// The surface under the pointer with its origin in global coordinates, or
-    /// `None` when the pointer is not over the focused mapped toplevel. Phase 0
-    /// is fullscreen: the focused toplevel covers the whole output from the
-    /// origin, so the surface under the pointer is the focused one and its
-    /// global origin is [`TOPLEVEL_OFFSET`].
+    /// `None` when the pointer is over no mapped window of the active
+    /// workspace.
     ///
     /// The focus tuple's second element is the surface's global origin: smithay
     /// subtracts it from the pointer location to derive the client-visible
@@ -246,9 +243,7 @@ impl<B: Backend + 'static> CompositorState<B> {
                     Some(Action::CycleWorkspace) => {
                         if key_state == KeyState::Pressed {
                             info!("workspace cycle keybinding");
-                            compositor.shell.cycle_workspace();
-                            let output = compositor.backend_data.output().clone();
-                            compositor.backend_data.reset_buffers(&output);
+                            compositor.cycle_workspace();
                         }
                         FilterResult::Intercept(())
                     }
@@ -399,6 +394,7 @@ mod tests {
     use smithay::reexports::wayland_server::Display;
 
     use crate::compositor::create_state;
+    use ruster_shell::Layout;
 
     /// A [`Backend`] with no graphics at all: just the `Output` the input path
     /// needs for its logical-size lookups, plus a counter so a test can tell
@@ -602,14 +598,14 @@ mod tests {
     #[test]
     fn super_t_through_the_seat_cycles_the_workspace_without_quitting() {
         let (_loop, mut state) = test_state();
-        let before = state.shell.workspace;
+        let before = state.workspaces.active();
 
         press(&mut state, KEY_LEFTMETA);
         press(&mut state, KEY_T);
         release(&mut state, KEY_T);
 
         assert_eq!(
-            state.shell.workspace,
+            state.workspaces.active(),
             before + 1,
             "Super+t should advance the workspace"
         );
@@ -622,20 +618,87 @@ mod tests {
         assert_eq!(state.backend_data.resets, 1);
     }
 
+    /// Give the compositor a window on the active workspace, mapped and
+    /// focused, without a client to map it. Everything the visibility paths
+    /// read — the tree, `mapped`, `shell.focus` — is reachable from here; only
+    /// the toplevel surface is missing, and no assertion below needs one.
+    fn add_visible_window(state: &mut CompositorState<TestBackend>, title: &str) -> WindowId {
+        let id = state.shell.add_window(title.into(), 100, 100);
+        let near = state.shell.focus;
+        state.workspaces.insert(id, near, Layout::Horizontal);
+        state.mapped.insert(id);
+        state.shell.set_focus(id);
+        id
+    }
+
+    #[test]
+    fn cycling_the_workspace_takes_the_windows_off_the_screen_with_it() {
+        // What Phase 0's counter never did: after M-t the windows of the
+        // workspace left behind have no rectangle, so nothing draws them and a
+        // click lands on nothing. They are hidden, not closed — cycling all the
+        // way round brings them back.
+        let (_loop, mut state) = test_state();
+        let a = add_visible_window(&mut state, "a");
+        assert_eq!(state.geometry().len(), 1);
+
+        press(&mut state, KEY_LEFTMETA);
+        press(&mut state, KEY_T);
+        release(&mut state, KEY_T);
+
+        assert_eq!(state.workspaces.active(), 2);
+        assert!(state.geometry().is_empty(), "workspace 2 holds no windows");
+        assert_eq!(
+            tile_under(&state.geometry(), Point::from((10.0, 10.0))),
+            None,
+            "a click cannot reach a window that is not on screen"
+        );
+        assert_eq!(
+            state.shell.focus, None,
+            "focus does not stay on a window that left the screen"
+        );
+
+        for _ in 0..(ruster_shell::WORKSPACE_COUNT - 1) {
+            press(&mut state, KEY_T);
+            release(&mut state, KEY_T);
+        }
+        assert_eq!(state.workspaces.active(), 1);
+        assert_eq!(state.geometry().len(), 1, "the window is still there");
+        assert_eq!(state.shell.focus, Some(a), "and takes focus back");
+    }
+
+    #[test]
+    fn moving_a_window_away_leaves_focus_on_one_that_is_still_shown() {
+        let (_loop, mut state) = test_state();
+        let a = add_visible_window(&mut state, "a");
+        let b = add_visible_window(&mut state, "b");
+
+        state.move_to_workspace(b, 3);
+
+        let ids: Vec<_> = state.geometry().into_iter().map(|(id, _)| id).collect();
+        assert_eq!(ids, vec![a], "only the window still here is laid out");
+        assert_eq!(state.shell.focus, Some(a));
+        assert_eq!(state.workspaces.workspace_of(b), Some(3));
+
+        state.switch_workspace(3);
+        let ids: Vec<_> = state.geometry().into_iter().map(|(id, _)| id).collect();
+        assert_eq!(ids, vec![b]);
+        assert_eq!(state.shell.focus, Some(b));
+    }
+
     #[test]
     fn unbound_key_is_forwarded_and_changes_nothing() {
         // Super+a matches no bind, so the filter returns `Forward`: the key
         // goes to the focused client (there is none here) and no compositor
         // state moves.
         let (_loop, mut state) = test_state();
-        let workspace = state.shell.workspace;
+        let workspace = state.workspaces.active();
 
         press(&mut state, KEY_LEFTMETA);
         press(&mut state, KEY_A);
         release(&mut state, KEY_A);
 
         assert!(state.running.load(Ordering::SeqCst));
-        assert_eq!(state.shell.workspace, workspace);
+        assert_eq!(state.workspaces.active(), workspace);
         assert_eq!(
             state.backend_data.resets, 0,
             "an unbound key must not trigger a redraw"

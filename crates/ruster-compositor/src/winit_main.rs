@@ -102,7 +102,7 @@ fn run_winit() -> anyhow::Result<()> {
                     &mut state.backend_data.damage_tracker,
                     &state.backend_data.output,
                     &mut state.chrome,
-                    state.shell.workspace,
+                    state.workspaces.active(),
                     &focused_title,
                     renderer,
                     &mut fb,

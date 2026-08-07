@@ -29,10 +29,11 @@ impl<B: Backend + 'static> XdgShellHandler for CompositorState<B> {
         // `title_changed`. Start the window record with whatever we have.
         let title = toplevel_title(&surface).unwrap_or_default();
         let id = self.shell.add_window(title, 800, 600);
-        // Insert beside whatever has focus, so a new window splits the one you
-        // were looking at rather than appearing somewhere arbitrary.
+        // Insert beside whatever has focus, on the workspace being shown, so a
+        // new window splits the one you were looking at rather than appearing
+        // somewhere arbitrary — or on a workspace you are not watching.
         let near = self.shell.focus;
-        self.tree.insert(id, near, Layout::Horizontal);
+        self.workspaces.insert(id, near, Layout::Horizontal);
         self.shell.set_focus(id);
         self.toplevels.insert(id, surface);
         self.pending_focus = Some(id);
@@ -91,10 +92,13 @@ impl<B: Backend + 'static> XdgShellHandler for CompositorState<B> {
         };
         self.toplevels.remove(&id);
         self.mapped.remove(&id);
-        self.tree.remove(id);
+        // Wherever it was: a client can close while its workspace is hidden.
+        self.workspaces.remove(id);
         // `remove_window` refocuses the shell onto the most recent window (or
-        // clears focus); re-apply that to the seat keyboard.
+        // clears focus), but it knows nothing of workspaces and will happily
+        // name one that is off screen; the workspaces have the last word.
         self.shell.remove_window(id);
+        self.shell.focus = self.workspaces.focus_for_active(self.shell.focus);
         // The survivors grow into the space; they have to be told.
         self.reconfigure_tiles();
         self.update_keyboard_focus(SCOUNTER.next_serial());

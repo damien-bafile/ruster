@@ -423,7 +423,7 @@ impl CompositorState<RusterUdevData> {
             &self.toplevels,
             &output,
             &mut self.chrome,
-            self.shell.workspace,
+            self.workspaces.active(),
             &focused_title,
             &mut renderer,
             &cursor_status,

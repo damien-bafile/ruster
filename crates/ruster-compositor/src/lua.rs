@@ -293,7 +293,7 @@ pub fn apply_config_to_shell<B: Backend + 'static>(
 ) {
     state.keybinds = shell.keybinds;
     if let Some(workspace) = shell.initial_workspace {
-        state.shell.workspace = workspace;
+        state.switch_workspace(workspace);
     }
     spawn_startup_clients(&shell.startup_clients, socket_name);
 }
