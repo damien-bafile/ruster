@@ -260,7 +260,7 @@ pub fn schema() -> Vec<SettingSpec> {
     add("general", "editmode", "Editing paradigm", Enum(&["neovim", "emacs"]), e("neovim"), "Modal (neovim) or modeless (emacs)");
     add("general", "editorconfig", "Honor .editorconfig", Bool, b(true), "Apply project .editorconfig files");
     add("general", "line_ending", "Default line ending", Enum(&["lf", "crlf"]), e("lf"), "Line ending for new files");
-    add("general", "theme", "Theme name", Text, t("default"), "Named color theme");
+    add("general", "theme", "Theme name", Text, t("catppuccin-mocha"), "Named color theme");
 
     // --- gui ---
     add("gui", "font", "Font", Text, t(""), "Font file/path; empty = auto-detect a Nerd font");
@@ -295,6 +295,7 @@ pub fn schema() -> Vec<SettingSpec> {
     add("terminal", "shell", "Shell", Text, t(""), "Program for :term; empty = platform default");
     add("terminal", "scrollback", "Scrollback", Int { min: 0, max: 1_000_000 }, i(10000), "Lines of history retained");
     add("terminal", "default_mode", "Start mode", Enum(&["insert", "normal"]), e("insert"), "Initial mode for a new terminal");
+    add("terminal", "escape", "Escape key", Text, t("<C-\\>"), "Key that leaves Terminal-Insert for Terminal-Normal; set to <Esc> for evil-style controls, at the cost of Esc no longer reaching programs in the shell");
 
     // --- dired ---
     add("dired", "show_hidden", "Show hidden files", Bool, b(false), "Show dotfiles in the file explorer");
@@ -342,6 +343,7 @@ pub fn schema() -> Vec<SettingSpec> {
     add("colors", "accent_fg", "Accent text", Text, t(""), "Override text drawn on accent bars");
     add("colors", "whichkey_bg", "Which-key background", Text, t(""), "Override the which-key panel background");
     add("colors", "whichkey_fg", "Which-key text", Text, t(""), "Override the which-key panel text");
+    add("colors", "whichkey_key", "Which-key key accent", Text, t(""), "Override the which-key key-letter accent");
     add("colors", "cmdline_bg", "Cmdline background", Text, t(""), "Override the cmdline background");
     add("colors", "cmdline_fg", "Cmdline text", Text, t(""), "Override the cmdline text");
     add("colors", "mode_normal_bg", "Normal mode bg", Text, t(""), "Statusline background in Normal mode");

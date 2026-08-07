@@ -126,9 +126,9 @@
 | Feature | Implementation / Tech |
 | :--- | :--- |
 | **Magit Clone** | A full-featured Git porcelain UI built in Lua on top of `git2-rs`. |
-| **Music Player** | `listen.el` style – control `mpd` or local player via UI. |
-| **Email Client** | Gmail support via IMAP/SMTP. Render emails as HTML/Markdown in a buffer. |
-| **Web Browser** | Embedded browser using `webkit2gtk` (Linux/macOS) / `WebView2` (Windows). Or text-mode browser for TUI. |
+| ~~**Music Player**~~ | *Declined 2026-08-07.* `listen.el` style – control `mpd` or local player via UI. |
+| ~~**Email Client**~~ | *Declined 2026-08-07* (full IMAP was already out of scope; compose-only was the fallback and is declined too). Gmail support via IMAP/SMTP. |
+| ~~**Web Browser**~~ | *Declined 2026-08-07.* The embedded engine was ruled out by the parity constraint; the text-mode `:Browse` fallback is declined as well. |
 | **Help Menu** | Interactive help system (`:help`). Shows keymaps, function docs, and plugin APIs in a formatted buffer. |
 | **Session Management** | Save/restore open buffers, window layouts, cursor positions, and terminal history. |
 
@@ -160,9 +160,9 @@ Plan: [docs/superpowers/plans/2026-08-02-phase8-finetuning.md](docs/superpowers/
 | **Notification popup backends** | Re-introduce `BackendKind::{CmdlinePopup, Popup, Confirm}` now that floats render; `Confirm` as a modal dialog. |
 | **`:hover` GUI capture** | Unblocked by `ruster.defer` (PR #59): deferred `:screenshot` after an LSP round-trip. |
 | **Raylib GUI surface check** | Verify sidebar, debugger overlay and noice toast with the `gui-check` skill. |
-| **`:Music`** | Control a running `mpd` over its plain-text protocol. **Decide at execution** — Phase 7 called it the least defensible feature. |
-| **`:Browse <url>`** | Text-mode HTTP fetch rendered as markup, reusing the `:help` path. Both backends, no engine. |
-| **Email (compose-only)** | Editor buffer handed to `mailto:`/`sendmail`. No IMAP, no credentials. |
+| ~~**`:Music`**~~ | **Declined 2026-08-07.** The *decide at execution* gate resolved to skip; Phase 7 called it the least defensible feature and nobody chooses an editor for it. |
+| ~~**`:Browse <url>`**~~ | **Declined 2026-08-07.** The fetch, the HTML-to-text pass and the failure modes around both are a real dependency for something a browser beside the editor already does. |
+| ~~**Email (compose-only)**~~ | **Declined 2026-08-07.** A `mailto:` handoff is what the OS already provides. |
 | **Doc hygiene** | Tick the completed-but-unticked plan boxes (Phase 6 T10/T11); close stale status headers. |
 
 Plan: [docs/superpowers/plans/2026-08-02-phase9-cleanup.md](docs/superpowers/plans/2026-08-02-phase9-cleanup.md)

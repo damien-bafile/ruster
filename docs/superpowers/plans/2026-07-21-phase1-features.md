@@ -1,5 +1,17 @@
 # Phase 1 Feature Completion — Implementation Plan
 
+> **Status:** delivered; boxes resolved 2026-08-07.
+>
+> This plan was executed but never ticked as it went, leaving 45 boxes
+> that read as outstanding work. They are **plain bullets now, not back-ticked**:
+> a box ticked long after the fact asserts a verification that did not happen,
+> and this tree has already been bitten by exactly that. The bullets stand as a
+> record of what was built.
+>
+> Evidence it shipped: all 51 identifiers this plan names in backticks exist in
+> the tree, and the motions, operators and text objects are covered by `ruster-core`'s suite.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Complete four remaining Phase 1 features: multi-cursor, system clipboard, tabs/indentation, and EditorConfig.
@@ -28,7 +40,7 @@
 - Consumes: existing `CursorSet`, `Action`, `Editor`
 - Produces: `CursorSet::add_cursor(usize)`, `CursorSet::clear_extra()`, `CursorSet::count()`, `Action::AddCursor(usize)`, `Action::ClearExtraCursors`
 
-- [ ] **Step 1: Add `add_cursor`, `clear_extra`, `count` to `CursorSet`**
+- **Step 1: Add `add_cursor`, `clear_extra`, `count` to `CursorSet`**
 
 Add to `cursor.rs`:
 ```rust
@@ -51,7 +63,7 @@ impl CursorSet {
 }
 ```
 
-- [ ] **Step 2: Add `AddCursor` and `ClearExtraCursors` to `Action`**
+- **Step 2: Add `AddCursor` and `ClearExtraCursors` to `Action`**
 
 In `action.rs`:
 ```rust
@@ -62,7 +74,7 @@ pub enum Action {
 }
 ```
 
-- [ ] **Step 3: Handle new actions in `Editor::execute`**
+- **Step 3: Handle new actions in `Editor::execute`**
 
 In `editor.rs` match block:
 ```rust
@@ -70,7 +82,7 @@ Action::AddCursor(pos) => self.cursors.add_cursor(pos),
 Action::ClearExtraCursors => self.cursors.clear_extra(),
 ```
 
-- [ ] **Step 4: Make edit ops apply to all cursors in reverse order**
+- **Step 4: Make edit ops apply to all cursors in reverse order**
 
 Replace `apply_edit` in `editor.rs`:
 ```rust
@@ -130,7 +142,7 @@ fn apply_edit(&mut self, e: EditOp) {
 
 Note: for single cursor, the existing behavior (old `apply_edit`) is preserved exactly. For multi-cursor, edits apply in reverse order so earlier inserts don't shift later cursor positions.
 
-- [ ] **Step 5: Add tests**
+- **Step 5: Add tests**
 
 In `cursor.rs` tests:
 ```rust
@@ -146,12 +158,12 @@ fn add_and_clear_extra_cursors() {
 }
 ```
 
-- [ ] **Step 6: Build & test**
+- **Step 6: Build & test**
 
 Run: `cargo test -p ruster-core`
 Expected: all 60+ tests pass
 
-- [ ] **Step 7: Commit**
+- **Step 7: Commit**
 
 ```bash
 git add crates/ruster-core/src/cursor.rs crates/ruster-core/src/action.rs crates/ruster-core/src/editor.rs
@@ -170,7 +182,7 @@ git commit -m "feat: multi-cursor data model and editing"
 - Consumes: `Action::AddCursor`, `Action::ClearExtraCursors`
 - Produces: Ctrl+D finds next word occurrence in buffer, Esc clears extras
 
-- [ ] **Step 1: Add helper to find next word occurrence**
+- **Step 1: Add helper to find next word occurrence**
 
 In `vim/mod.rs`, add a helper function (outside `impl VimState`):
 ```rust
@@ -209,7 +221,7 @@ Import `char_to_line` from `motions`:
 use crate::vim::motions::char_to_line;
 ```
 
-- [ ] **Step 2: Add Ctrl+D and Esc multi-cursor handling in `handle_normal`**
+- **Step 2: Add Ctrl+D and Esc multi-cursor handling in `handle_normal`**
 
 In `vim/mod.rs` `handle_normal`, add before the `_ =>` catch-all:
 ```rust
@@ -231,7 +243,7 @@ KeyEvent::Esc => {
 }
 ```
 
-- [ ] **Step 3: Add tests**
+- **Step 3: Add tests**
 
 In `vim/mod.rs` tests:
 ```rust
@@ -263,12 +275,12 @@ fn esc_clears_extra_cursors() {
 }
 ```
 
-- [ ] **Step 4: Build & test**
+- **Step 4: Build & test**
 
 Run: `cargo test -p ruster-core`
 Expected: all tests pass
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add crates/ruster-core/src/vim/mod.rs
@@ -288,7 +300,7 @@ git commit -m "feat: multi-cursor keybindings Ctrl+D and Esc"
 - Consumes: `arboard::Clipboard`
 - Produces: Vim unnamed register syncs to system clipboard
 
-- [ ] **Step 1: Add `arboard` dependency**
+- **Step 1: Add `arboard` dependency**
 
 In `ruster-core/Cargo.toml`:
 ```toml
@@ -297,7 +309,7 @@ arboard = "3"
 
 Note: arboard v3 is cross-platform and returns `Result` on failure.
 
-- [ ] **Step 2: Add clipboard helper methods to VimState**
+- **Step 2: Add clipboard helper methods to VimState**
 
 In `vim/mod.rs`, add a `Clipboard` field and helpers:
 ```rust
@@ -330,7 +342,7 @@ impl VimState {
 }
 ```
 
-- [ ] **Step 3: Wire clipboard into yank operations**
+- **Step 3: Wire clipboard into yank operations**
 
 In `apply_operator`, modify the `'y'` arm:
 ```rust
@@ -355,7 +367,7 @@ KeyEvent::Char('y') => {
 }
 ```
 
-- [ ] **Step 4: Wire clipboard into paste operations**
+- **Step 4: Wire clipboard into paste operations**
 
 Modify the `'p'` handler in `handle_normal`:
 ```rust
@@ -372,7 +384,7 @@ KeyEvent::Char('p') => {
 }
 ```
 
-- [ ] **Step 5: Add tests**
+- **Step 5: Add tests**
 
 ```rust
 #[test]
@@ -398,12 +410,12 @@ fn paste_uses_register_fallback() {
 }
 ```
 
-- [ ] **Step 6: Build & test**
+- **Step 6: Build & test**
 
 Run: `cargo test -p ruster-core`
 Expected: all tests pass (arboard may warn about no display in test environment — this is expected)
 
-- [ ] **Step 7: Commit**
+- **Step 7: Commit**
 
 ```bash
 git add crates/ruster-core/Cargo.toml crates/ruster-core/src/vim/mod.rs
@@ -423,7 +435,7 @@ git commit -m "feat: system clipboard via arboard"
 - Consumes: raylib Ctrl+C/Ctrl+V key events
 - Produces: Ctrl+C copies (visual yank), Ctrl+V pastes
 
-- [ ] **Step 1: Add Ctrl key handling to raylib key converter**
+- **Step 1: Add Ctrl key handling to raylib key converter**
 
 In `crates/ruster-render-raylib/src/key.rs`, add a function to convert raylib keys to ruster-core KeyEvent directly (bypassing crossterm intermediary):
 
@@ -461,7 +473,7 @@ Actually, let me simplify. The raylib `drain_raylib` already produces crossterm 
 
 Fix: in `drain_raylib`, map ASCII control codes to their letter equivalents when Ctrl modifier is set.
 
-- [ ] **Step 2: Fix Ctrl+letter encoding in raylib `drain_raylib`**
+- **Step 2: Fix Ctrl+letter encoding in raylib `drain_raylib`**
 
 In `crates/ruster-render-raylib/src/lib.rs`, modify the `get_char_pressed` loop:
 
@@ -479,14 +491,14 @@ while let Some(c) = self.rl.get_char_pressed() {
 
 This ensures Ctrl+C produces `KeyEvent::Char('c')` with CONTROL modifier, which `crossterm_to_ruster_key` correctly converts to `KeyEvent::Ctrl('c')`.
 
-- [ ] **Step 3: Build & test**
+- **Step 3: Build & test**
 
 Run: `cargo check -p ruster-render-raylib -p ruster-bin`
 Expected: clean build
 
 No unit test for the Ctrl fix (requires raylib window), but the key mapping tests in `key.rs` should still pass.
 
-- [ ] **Step 4: Commit**
+- **Step 4: Commit**
 
 ```bash
 git add crates/ruster-render-raylib/src/lib.rs
@@ -508,7 +520,7 @@ git commit -m "fix: Ctrl+letter encoding in raylib drain_raylib"
 - Consumes: `Config::tabstop`, `Config::expandtab`, `Config::shiftwidth`
 - Produces: `Action::IndentLine`, `Action::DeindentLine`, Tab key in Insert, `>>`/`<<` in Normal/Visual
 
-- [ ] **Step 1: Add `shiftwidth` and `indentwidth` to Config**
+- **Step 1: Add `shiftwidth` and `indentwidth` to Config**
 
 In `config.rs`:
 ```rust
@@ -523,7 +535,7 @@ In `Default::default()`:
 shiftwidth: 4,
 ```
 
-- [ ] **Step 2: Add indent/deindent actions**
+- **Step 2: Add indent/deindent actions**
 
 In `action.rs`:
 ```rust
@@ -534,7 +546,7 @@ pub enum Action {
 }
 ```
 
-- [ ] **Step 3: Handle indent/deindent in editor**
+- **Step 3: Handle indent/deindent in editor**
 
 In `editor.rs`, add methods:
 ```rust
@@ -590,7 +602,7 @@ fn cursor_line(&self) -> usize {
 }
 ```
 
-- [ ] **Step 4: Add Tab/Shift+Tab to Insert mode**
+- **Step 4: Add Tab/Shift+Tab to Insert mode**
 
 In `vim/mod.rs` `handle_insert`:
 ```rust
@@ -612,7 +624,7 @@ pub enum KeyEvent {
 }
 ```
 
-- [ ] **Step 5: Add `>>`/`<<` operator handling in Vim**
+- **Step 5: Add `>>`/`<<` operator handling in Vim**
 
 In `handle_normal`, add `>` and `<` key handling:
 ```rust
@@ -691,7 +703,7 @@ KeyEvent::Char('<') => {
 }
 ```
 
-- [ ] **Step 6: Add Tab event support**
+- **Step 6: Add Tab event support**
 
 In `ruster-core/src/key.rs`, add:
 ```rust
@@ -713,7 +725,7 @@ In `crates/ruster-render-raylib/src/key.rs`, add to `map_raylib_key`:
 KEY_TAB => KeyCode::Tab,  // Shift+Tab is handled via mods in drain_raylib
 ```
 
-- [ ] **Step 7: Wire config indent in app.rs key handling**
+- **Step 7: Wire config indent in app.rs key handling**
 
 In `app.rs` `handle_key`, before passing to Vim state for Insert mode Tab:
 ```rust
@@ -753,7 +765,7 @@ pub fn handle_key(&mut self, ck: crossterm::event::KeyEvent) {
 }
 ```
 
-- [ ] **Step 8: Add tests**
+- **Step 8: Add tests**
 
 ```rust
 #[test]
@@ -791,12 +803,12 @@ fn double_angle_indent_line() {
 }
 ```
 
-- [ ] **Step 9: Build & test**
+- **Step 9: Build & test**
 
 Run: `cargo test -p ruster-core -p ruster-tui`
 Expected: all tests pass
 
-- [ ] **Step 10: Commit**
+- **Step 10: Commit**
 
 ```bash
 git add crates/ruster-core/src/action.rs crates/ruster-core/src/editor.rs \
@@ -817,7 +829,7 @@ git commit -m "feat: tabs, indent/deindent, and Tab key"
 **Interfaces:**
 - Produces: `editorconfig::parse(root: &Path, file_path: &Path) -> HashMap<String, String>`
 
-- [ ] **Step 1: Create `editorconfig.rs` module**
+- **Step 1: Create `editorconfig.rs` module**
 
 ```rust
 use std::collections::HashMap;
@@ -938,18 +950,18 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Register module in lib.rs**
+- **Step 2: Register module in lib.rs**
 
 ```rust
 pub mod editorconfig;
 ```
 
-- [ ] **Step 3: Build & test**
+- **Step 3: Build & test**
 
 Run: `cargo test -p ruster-core`
 Expected: all tests pass
 
-- [ ] **Step 4: Commit**
+- **Step 4: Commit**
 
 ```bash
 git add crates/ruster-core/src/editorconfig.rs crates/ruster-core/src/lib.rs
@@ -969,7 +981,7 @@ git commit -m "feat: EditorConfig parser"
 - Consumes: `editorconfig::parse()`, `Config`
 - Produces: EditorConfig properties merged into `Config` and passed to Editor
 
-- [ ] **Step 1: Add `EditorConfig` override in App construction**
+- **Step 1: Add `EditorConfig` override in App construction**
 
 In `app.rs` `new()`, after creating config:
 ```rust
@@ -990,7 +1002,7 @@ if let Some(val) = ec_props.get("tab_width") {
 }
 ```
 
-- [ ] **Step 2: Pass config values to Editor**
+- **Step 2: Pass config values to Editor**
 
 In `app.rs` `handle_key` Tab handler, use `self.config.tabstop`:
 ```rust
@@ -1003,7 +1015,7 @@ if self.vim.mode == VimMode::Insert && key == KeyEvent::Tab {
 }
 ```
 
-- [ ] **Step 3: Add tests**
+- **Step 3: Add tests**
 
 In `editorconfig.rs` tests:
 ```rust
@@ -1023,12 +1035,12 @@ fn parse_with_dot_editorconfig() {
 }
 ```
 
-- [ ] **Step 4: Build & test**
+- **Step 4: Build & test**
 
 Run: `cargo test -p ruster-core -p ruster-tui`
 Expected: all tests pass
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add crates/ruster-tui/src/app.rs crates/ruster-lua/src/config.rs
@@ -1039,6 +1051,6 @@ git commit -m "feat: EditorConfig applied on file open"
 
 ### Final Verification
 
-- [ ] Run full test suite: `cargo test -p ruster-core -p ruster-tui -p ruster-syntax -p ruster-render -p ruster-render-raylib`
-- [ ] Build all: `cargo check -p ruster-bin -p ruster-tui -p ruster-render-raylib`
-- [ ] Expected: all tests pass, no new warnings
+- Run full test suite: `cargo test -p ruster-core -p ruster-tui -p ruster-syntax -p ruster-render -p ruster-render-raylib`
+- Build all: `cargo check -p ruster-bin -p ruster-tui -p ruster-render-raylib`
+- Expected: all tests pass, no new warnings

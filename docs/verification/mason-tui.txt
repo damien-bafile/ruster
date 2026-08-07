@@ -1,0 +1,40 @@
+─ *mason* ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+Language servers:
+  ✓ clangd                           brew install llvm
+  · json-languageserver              npm install -g vscode-langservers-extracted
+  · lua-language-server              brew install lua-language-server
+  · pyright                          npm install -g pyright
+  ✓ rust-analyzer                    rustup component add rust-analyzer
+  · taplo (TOML)                     cargo install taplo-cli --locked --features lsp
+  · typescript-language-server       npm install -g typescript-language-server typescript
+  · yaml-language-server             npm install -g yaml-language-server
+
+Debug adapters:
+  · codelldb                         brew install codelldb
+  ✓ debugpy                          python3 -m pip install --user debugpy
+
+Formatters:
+  ✓ black                            python3 -m pip install --user black
+  ✓ clang-format                     brew install clang-format
+  ✓ prettier                         npm install -g prettier
+  ✓ rustfmt                          rustup component add rustfmt
+  · stylua                           cargo install stylua
+
+7 of 15 installed. Press Enter on a row to install it.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ -- NORMAL -- │*mason*                                                                                          4%  1,1

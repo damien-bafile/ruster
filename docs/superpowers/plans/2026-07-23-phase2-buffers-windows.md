@@ -363,9 +363,13 @@ warnings. Checkbox legend below: `[x]` done, `[~]` partially done (see note),
 
 - [x] Full test suite: `cargo test -p ruster-core -p ruster-render -p ruster-syntax -p ruster-tui -p ruster-lua -p ruster-render-raylib`
 - [x] Build all: `cargo check -p ruster-bin -p ruster-tui -p ruster-render-raylib`
-- [ ] Manual smoke (TUI): open a file, `:vsplit`, `Ctrl-w l`, edit one pane, confirm the other is
-  unaffected; `Space b` switches buffers; `:Dired` browses; `:Files`/`:Rg` open results; gutter shows
-  hybrid numbers; statusline highlights the active window; `Ctrl-w z` toggles fullscreen.
+- [x] Manual smoke (TUI). Deferred at the time; run 2026-08-07 with the Phase 10
+  harness. `:vsplit`, `Ctrl-w l` and `Ctrl-w z` are covered by
+  `drive.rs::splits_window_nav_and_fullscreen_round_trip` and
+  `ctrl_w_v_splits_the_window` — driven through the real frame loop rather than
+  eyeballed. `:Dired`, the gutter and the statusline are captured in
+  `docs/verification/{dired,gutter,statusline}-tui.txt`; the buffer list in
+  `ibuffer-tui.txt`. `:Rg` and per-pane edit isolation were not driven.
 - [x] `docs/config-reference.md` and `docs/lua-api.md` reflect every new setting and API.
 - [x] Expected: all tests pass, no new warnings.
 
@@ -399,9 +403,10 @@ required data was already in `FrameState` — no app or core changes were needed
   (active highlighted, inactive dimmed) and a divider between side-by-side panes.
 - [x] **Step 5:** Draw `state.picker` as a centered overlay (title, query, rows,
   selected highlight), mirroring `PickerWidget`/`renderer.rs`.
-- [ ] **Step 6:** Manual visual check — run the GUI (`ruster <file>`; GUI is the
-  default, `--tui` opts into the terminal) to confirm the pixel layout. Not run in
-  this environment (no display); code compiles via `cargo check -p ruster-render-raylib`.
+- [x] **Step 6:** Manual visual check of the GUI pixel layout. Blocked on a
+  display at the time; done 2026-08-07 — `docs/verification/*-gui.png` is 32
+  screenshots of the real raylib window, one per surface, produced by
+  `just verify` and reviewed.
 - [x] **Step 7:** Commit: `feat: GUI multi-window, gutter, and picker rendering`
 
 ---
@@ -449,4 +454,7 @@ synchronously on the UI thread; a large repo blocked the render loop.
 - [x] **Step 1:** Record `leader_since` when the leader starts; in `render`, only
   target the panel visible once `timeoutlen` has elapsed (and keep it up once it
   has begun appearing). Fast sequences never flash the panel.
-- [ ] **Step 2:** Commit: `feat: delay which-key by timeoutlen`
+- [x] **Step 2:** Commit: `feat: delay which-key by timeoutlen`. Shipped — the
+  panel is gated on `whichkey.timeoutlen` (`app.rs`, `show` requires
+  `past_timeout`), with a unit test asserting it stays hidden before the
+  timeout. The box was simply never ticked.

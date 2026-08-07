@@ -23,8 +23,15 @@ mod tests {
     #[test]
     fn test_backend_kind_all_contains_all() {
         let kinds = BackendKind::all();
-        assert!(kinds.contains(&BackendKind::Mini));
-        assert!(kinds.contains(&BackendKind::Notify));
-        assert!(kinds.contains(&BackendKind::Split));
+        for k in [
+            BackendKind::Mini,
+            BackendKind::Notify,
+            BackendKind::Split,
+            BackendKind::CmdlinePopup,
+            BackendKind::Popup,
+            BackendKind::Confirm,
+        ] {
+            assert!(kinds.contains(&k), "{k:?} missing from all()");
+        }
     }
 }

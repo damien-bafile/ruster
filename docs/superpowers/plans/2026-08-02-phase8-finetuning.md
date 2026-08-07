@@ -1,6 +1,7 @@
 # Phase 8 — Finetuning
 
-**Status:** planning, 2026-08-02.
+**Status:** complete. All tasks delivered; the `:hover` GUI capture, the last
+open bullet, landed 2026-08-03 (Phase 9 Task 3).
 
 Phases 0–7 built features. This one pays down what building them left behind:
 things that work but are wrong in a way a user can see, or that are quietly
@@ -108,10 +109,14 @@ the gutter renders `+` magenta and `~` cyan.
 - [x] **Verified against a live rust-analyzer**, which is the first time a float
       has been seen on screen with its border: hovering `add` renders the
       signature and its doc comment inside the box.
-- [ ] Still unverified in the **GUI**. The screenshot fires a couple of frames
-      in, long before the LSP replies, and `init.lua` has no way to delay it —
-      every queued command is applied before the first render. Stage 5's
-      `ruster.defer` is what unblocks this; capture it then.
+- [x] **Verified in the GUI**, 2026-08-03: `docs/verification/hover-gui.png`.
+      `ruster.defer` was indeed what unblocked it — the shot is queued inside a
+      timer so it fires after the LSP round-trip rather than a couple of frames
+      in. Two caveats worth carrying: the float was unbounded and filled the
+      window until Phase 9 clamped and wrapped it (`d6ef1e4`), and the capture
+      is timing-sensitive against a cold rust-analyzer, so an empty hover
+      capture means "asked too early", not "broken" — see
+      `docs/verification/README.md`.
 
 ### Task 8: Two stale things in the render path ✅
 

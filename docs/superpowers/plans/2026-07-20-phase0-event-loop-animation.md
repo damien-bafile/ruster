@@ -1,5 +1,17 @@
 # Phase 0 — Async Event Loop & Animation System
 
+> **Status:** delivered; boxes resolved 2026-08-07.
+>
+> This plan was executed but never ticked as it went, leaving 20 boxes
+> that read as outstanding work. They are **plain bullets now, not back-ticked**:
+> a box ticked long after the fact asserts a verification that did not happen,
+> and this tree has already been bitten by exactly that. The bullets stand as a
+> record of what was built.
+>
+> Evidence it shipped: all 21 identifiers this plan names in backticks exist in
+> the tree, and `crates/ruster-lua/tests/timers.rs` exercises the real frame drain, and the whole verification harness depends on `ruster.defer` working.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the blocking crossterm event loop with a tokio-based 60fps async loop and integrate tachyonfx for cursor blinking.
@@ -29,7 +41,7 @@
 - Consumes: `EditorState` struct from `ruster-render`
 - Produces: `EditorState` with new `cursor_visible: bool` field
 
-- [ ] **Step 1: Add tokio and tachyonfx to ruster-tui Cargo.toml**
+- **Step 1: Add tokio and tachyonfx to ruster-tui Cargo.toml**
 
 ```toml
 [dependencies]
@@ -42,7 +54,7 @@ tokio = { version = "1", features = ["rt", "time"] }
 tachyonfx = "0.25"
 ```
 
-- [ ] **Step 2: Add `cursor_visible` to `EditorState`**
+- **Step 2: Add `cursor_visible` to `EditorState`**
 
 In `crates/ruster-render/src/lib.rs`, add the field after `cursor_kind`:
 
@@ -60,7 +72,7 @@ pub struct EditorState<'a> {
 }
 ```
 
-- [ ] **Step 3: Update the test in ruster-render**
+- **Step 3: Update the test in ruster-render**
 
 In `crates/ruster-render/src/lib.rs`, the `renderer_trait_is_object_safe` test:
 
@@ -78,14 +90,14 @@ let state = EditorState {
 };
 ```
 
-- [ ] **Step 4: Build check**
+- **Step 4: Build check**
 
 ```bash
 cargo build -p ruster-render -p ruster-tui 2>&1
 ```
 Expected: builds with no errors. Warning about `Highlighter.language` is pre-existing.
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add -A && git commit -m "feat: add tokio/tachyonfx deps, EditorState.cursor_visible field"
@@ -103,7 +115,7 @@ git add -A && git commit -m "feat: add tokio/tachyonfx deps, EditorState.cursor_
 - Consumes: `EditorState.cursor_visible: bool`
 - Produces: `AnimationState` struct, `BufferWidget::with_cursor_visible()`
 
-- [ ] **Step 1: Add AnimationState to app.rs**
+- **Step 1: Add AnimationState to app.rs**
 
 ```rust
 use tachyonfx::EffectTimer;
@@ -136,7 +148,7 @@ impl AnimationState {
 
 Note: `tachyonfx` re-exports a deprecated `Duration` type alongside `std::time::Duration`. Use the fully qualified `tachyonfx::Duration::from_secs_f64()` for the timer's `process()` call.
 
-- [ ] **Step 2: Write test for AnimationState**
+- **Step 2: Write test for AnimationState**
 
 In `crates/ruster-tui/src/app.rs` tests module:
 
@@ -155,7 +167,7 @@ fn animation_state_cursor_toggles() {
 }
 ```
 
-- [ ] **Step 3: Add `cursor_visible` to BufferWidget**
+- **Step 3: Add `cursor_visible` to BufferWidget**
 
 In `crates/ruster-tui/src/widgets.rs`:
 
@@ -193,7 +205,7 @@ if is_cursor_line && j as u16 == self.cursor.1 && self.cursor_visible {
 }
 ```
 
-- [ ] **Step 4: Build and test**
+- **Step 4: Build and test**
 
 ```bash
 cargo test -p ruster-tui animation_state_cursor_toggles -- --nocapture 2>&1
@@ -205,7 +217,7 @@ cargo test -p ruster-tui -p ruster-render 2>&1
 ```
 Expected: all tests pass (15 in ruster-tui, 1 in ruster-render)
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add -A && git commit -m "feat: AnimationState with cursor blink, BufferWidget.cursor_visible"
@@ -218,7 +230,7 @@ git add -A && git commit -m "feat: AnimationState with cursor blink, BufferWidge
 **Files:**
 - Modify: `crates/ruster-tui/src/app.rs`
 
-- [ ] **Step 1: Extract `handle_key` method**
+- **Step 1: Extract `handle_key` method**
 
 Current `run()` loop processes key events inline. Extract the body into a method:
 
@@ -284,7 +296,7 @@ pub fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-- [ ] **Step 2: Add `AppEvent` enum and `anim` field**
+- **Step 2: Add `AppEvent` enum and `anim` field**
 
 After the `CmdAction` enum:
 
@@ -316,7 +328,7 @@ let anim = AnimationState::new();
 App { editor, vim, renderer, file_path, should_quit: false, message: None, syntax, anim }
 ```
 
-- [ ] **Step 3: Write `run_async` and `async_run`**
+- **Step 3: Write `run_async` and `async_run`**
 
 ```rust
 use std::time::{Duration, Instant};
@@ -394,7 +406,7 @@ impl App {
 }
 ```
 
-- [ ] **Step 4: Update `render()` to pass `cursor_visible`**
+- **Step 4: Update `render()` to pass `cursor_visible`**
 
 In `App::render()`:
 
@@ -413,7 +425,7 @@ let state = EditorState {
 self.renderer.render_frame(&state);
 ```
 
-- [ ] **Step 5: Wire cursor_visible through BufferWidget in renderer**
+- **Step 5: Wire cursor_visible through BufferWidget in renderer**
 
 In `crates/ruster-tui/src/renderer.rs`:
 
@@ -426,7 +438,7 @@ let buf_widget = crate::widgets::BufferWidget::new(
 .with_cursor_visible(state.cursor_visible);
 ```
 
-- [ ] **Step 6: Build and test**
+- **Step 6: Build and test**
 
 ```bash
 cargo test -p ruster-tui -p ruster-render 2>&1
@@ -438,7 +450,7 @@ cargo build -p ruster-tui 2>&1
 ```
 Expected: clean build
 
-- [ ] **Step 7: Commit**
+- **Step 7: Commit**
 
 ```bash
 git add -A && git commit -m "feat: async event loop with tokio, handle_key extraction"
@@ -451,7 +463,7 @@ git add -A && git commit -m "feat: async event loop with tokio, handle_key extra
 **Files:**
 - Modify: `crates/ruster-bin/src/main.rs`
 
-- [ ] **Step 1: Change `app.run()` to `app.run_async()`**
+- **Step 1: Change `app.run()` to `app.run_async()`**
 
 ```rust
 fn main() {
@@ -484,7 +496,7 @@ fn main() {
 }
 ```
 
-- [ ] **Step 2: Full workspace build and test**
+- **Step 2: Full workspace build and test**
 
 ```bash
 cargo build --workspace 2>&1
@@ -496,7 +508,7 @@ cargo test --workspace 2>&1 | tail -20
 ```
 Expected: all 84+ tests pass
 
-- [ ] **Step 3: Commit**
+- **Step 3: Commit**
 
 ```bash
 git add -A && git commit -m "feat: switch binary to run_async event loop"

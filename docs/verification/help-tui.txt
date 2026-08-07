@@ -1,0 +1,40 @@
+─ *help* ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
+# ruster help
+#
+# `:help <topic>` jumps to a section, a `:command`, or a `setting.key`.
+# `/` searches, `q` closes.
+
+# Commands & Keybindings
+
+The complete reference of keybindings and `:` commands ruster implements today.
+All keys and commands work identically in the TUI and GUI backends.
+
+> Notation: `C-x` = Ctrl+x, `SPC` = the Space leader, `<CR>` = Enter.
+
+## Modes
+
+| Key | From | Action |
+|-----|------|--------|
+| `i` | Normal | Insert mode (before cursor) |
+| `v` | Normal | Visual (character-wise) |
+| `V` | Normal | Visual (line-wise) |
+| `C-v` | Normal | Visual (block-wise / column) |
+| `:` | Normal | Command-line |
+| `/` `?` | Normal | Search prompt (forwards / backwards) |
+| `Esc` | Insert / Visual / Cmdline | Back to Normal (also clears extra cursors) |
+
+## Normal mode — motions
+
+Most motions accept a count prefix (e.g. `5j`, `3w`).
+
+| Key | Motion |
+|-----|--------|
+| `h` `l` | Left / right one character |
+| `j` `k` | Down / up one line |
+| `0` | Start of line |
+| `$` | End of line |
+| `w` `b` `e` | Next word start / previous word start / word end |
+| `f{char}` / `F{char}` | Jump to next / previous occurrence of `{char}` on the line |
+| `t{char}` / `T{char}` | Jump just before / after `{char}` on the line |
+| `;` / `,` | Repeat the last find forwards / backwards |
+ -- NORMAL -- │*help*                                                                                           0%  1,1

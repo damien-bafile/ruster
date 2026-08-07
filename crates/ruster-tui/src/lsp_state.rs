@@ -18,7 +18,7 @@
 //! would drag the whole response `match` with it.
 
 use ruster_core::document::BufferId;
-use ruster_lsp::{Diagnostic, LspManager, RoutedMessage};
+use ruster_lsp::{Diagnostic, LspManager, RoutedMessage, ServerKey};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -26,7 +26,10 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone)]
 pub struct LspDoc {
     pub uri: String,
-    pub lang: String,
+    /// Which server owns this document. Held rather than re-derived so later
+    /// requests reach the same process the `didOpen` went to, even after the
+    /// active buffer has moved to a different project.
+    pub key: ServerKey,
     pub version: i64,
     /// The text last sent. Compared to decide whether a `didChange` is due at
     /// all — without it every frame would send the whole document.
@@ -49,9 +52,9 @@ pub struct LspState<A> {
     manager: LspManager,
     docs: HashMap<BufferId, LspDoc>,
     diagnostics: HashMap<BufferId, Vec<Diagnostic>>,
-    /// In-flight requests, keyed by `(language, request id)` — ids are only
-    /// unique per server, so the language has to be part of the key.
-    pending: HashMap<(String, i64), A>,
+    /// In-flight requests, keyed by `(server, request id)` — ids are only
+    /// unique per server, so the server has to be part of the key.
+    pending: HashMap<(ServerKey, i64), A>,
 }
 
 impl<A> Default for LspState<A> {
@@ -96,21 +99,20 @@ impl<A> LspState<A> {
             }
         });
         let uri = ruster_lsp::protocol::uri_from_path(&abs);
+        let key = ServerKey::new(lang, root);
         match self.docs.get_mut(&buffer) {
             None => {
                 let language_id = ruster_lsp::registry::language_id(lang).to_string();
-                self.manager.did_open(lang, &uri, &language_id, 0, text);
-                self.docs.insert(
-                    buffer,
-                    LspDoc { uri, lang: lang.to_string(), version: 0, synced: text.to_string() },
-                );
+                self.manager.did_open(&key, &uri, &language_id, 0, text);
+                self.docs
+                    .insert(buffer, LspDoc { uri, key, version: 0, synced: text.to_string() });
                 Sync::Opened
             }
             Some(doc) if doc.synced != text => {
                 doc.version += 1;
-                let (version, uri, lang) = (doc.version, doc.uri.clone(), doc.lang.clone());
+                let (version, uri, key) = (doc.version, doc.uri.clone(), doc.key.clone());
                 doc.synced = text.to_string();
-                self.manager.did_change(&lang, &uri, version, text);
+                self.manager.did_change(&key, &uri, version, text);
                 Sync::Changed
             }
             Some(_) => Sync::Unchanged,
@@ -123,14 +125,14 @@ impl<A> LspState<A> {
     /// request, and the caller should not wait for an answer.
     pub fn request(
         &mut self,
-        lang: &str,
+        key: &ServerKey,
         method: &str,
         params: serde_json::Value,
         action: A,
     ) -> bool {
-        match self.manager.request(lang, method, params) {
+        match self.manager.request(key, method, params) {
             Some(id) => {
-                self.pending.insert((lang.to_string(), id), action);
+                self.pending.insert((key.clone(), id), action);
                 true
             }
             None => false,
@@ -138,8 +140,8 @@ impl<A> LspState<A> {
     }
 
     /// Take the action recorded for a reply, if this was a request we sent.
-    pub fn take_pending(&mut self, lang: &str, id: i64) -> Option<A> {
-        self.pending.remove(&(lang.to_string(), id))
+    pub fn take_pending(&mut self, key: &ServerKey, id: i64) -> Option<A> {
+        self.pending.remove(&(key.clone(), id))
     }
 
     /// Override the command used for a language, from `ruster.lsp.servers`.
@@ -189,9 +191,24 @@ impl<A> LspState<A> {
         self.diagnostics.remove(&buffer);
     }
 
-    /// The workspace root a server should be started in.
-    pub fn root() -> PathBuf {
-        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    /// The workspace root a server should be started in: the root of the
+    /// project `path` belongs to, falling back to the process cwd.
+    ///
+    /// This has to follow the *file*, not the process. A server initialised
+    /// against a directory the file does not live under loads a workspace the
+    /// file is not part of, and then answers every request with `null` — so
+    /// the editor reports "No hover info" and looks like it lacks the feature
+    /// rather than like it is pointed at the wrong tree. Editing anything
+    /// outside the directory ruster was launched from used to hit exactly
+    /// that.
+    ///
+    /// Servers are still keyed by language alone, so the first project opened
+    /// in a session owns the server for its language; a file from a second
+    /// project reuses it.
+    pub fn root_for(path: &Path) -> PathBuf {
+        ruster_project::project_root(path)
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."))
     }
 }
 
@@ -208,6 +225,34 @@ mod tests {
 
     fn state() -> LspState<TestAction> {
         LspState::new()
+    }
+
+    /// The root used to be `current_dir()`, so opening a file from anywhere
+    /// other than the launch directory initialised the server against a tree
+    /// the file was not in. rust-analyzer then answered every request with
+    /// `null` and the only symptom was "No hover info".
+    #[test]
+    fn the_server_root_follows_the_file_not_the_cwd() {
+        let tmp = std::env::temp_dir().join(format!("ruster_lsproot_{}", std::process::id()));
+        let src = tmp.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(tmp.join("Cargo.toml"), "[package]\nname = \"x\"\n").unwrap();
+        let file = src.join("main.rs");
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+
+        let root = LspState::<TestAction>::root_for(&file);
+        assert_eq!(root.canonicalize().unwrap(), tmp.canonicalize().unwrap());
+        // The cwd during tests is the crate root, which is *not* this project.
+        assert_ne!(root.canonicalize().unwrap(), std::env::current_dir().unwrap());
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// A file belonging to no project still has to produce a usable root.
+    #[test]
+    fn a_file_outside_any_project_falls_back_to_the_cwd() {
+        let root = LspState::<TestAction>::root_for(Path::new("/nonexistent-xyz/stray.rs"));
+        assert_eq!(root, std::env::current_dir().unwrap());
     }
 
     #[test]
@@ -230,7 +275,7 @@ mod tests {
             buf,
             LspDoc {
                 uri: "file:///x".into(),
-                lang: "rust".into(),
+                key: ServerKey::new("rust", Path::new("/proj")),
                 version: 0,
                 synced: String::new(),
             },
@@ -241,29 +286,47 @@ mod tests {
     }
 
     #[test]
-    fn a_pending_action_is_keyed_by_language_as_well_as_id() {
+    fn a_pending_action_is_keyed_by_server_as_well_as_id() {
         // Request ids are only unique per server. Two servers will both issue
         // id 1, and keying on the id alone would hand rust-analyzer's reply to
         // whatever pyright asked for.
         let mut s = state();
-        s.pending.insert(("rust".into(), 1), TestAction::Hover);
-        s.pending.insert(("python".into(), 1), TestAction::Rename);
-        assert_eq!(s.take_pending("rust", 1), Some(TestAction::Hover));
-        assert_eq!(s.take_pending("python", 1), Some(TestAction::Rename));
+        let rust = ServerKey::new("rust", Path::new("/proj"));
+        let python = ServerKey::new("python", Path::new("/proj"));
+        s.pending.insert((rust.clone(), 1), TestAction::Hover);
+        s.pending.insert((python.clone(), 1), TestAction::Rename);
+        assert_eq!(s.take_pending(&rust, 1), Some(TestAction::Hover));
+        assert_eq!(s.take_pending(&python, 1), Some(TestAction::Rename));
+    }
+
+    /// Same language, two projects: two servers, each numbering from 1. The
+    /// root has to be part of the key or one project's reply is applied to the
+    /// other's request.
+    #[test]
+    fn two_projects_in_one_language_do_not_share_a_reply_slot() {
+        let mut s = state();
+        let a = ServerKey::new("rust", Path::new("/a"));
+        let b = ServerKey::new("rust", Path::new("/b"));
+        assert_ne!(a, b);
+        s.pending.insert((a.clone(), 1), TestAction::Hover);
+        s.pending.insert((b.clone(), 1), TestAction::Rename);
+        assert_eq!(s.take_pending(&a, 1), Some(TestAction::Hover));
+        assert_eq!(s.take_pending(&b, 1), Some(TestAction::Rename));
     }
 
     #[test]
     fn taking_a_pending_action_consumes_it() {
         let mut s = state();
-        s.pending.insert(("rust".into(), 1), TestAction::Hover);
-        assert_eq!(s.take_pending("rust", 1), Some(TestAction::Hover));
-        assert_eq!(s.take_pending("rust", 1), None, "a reply must not fire twice");
+        let rust = ServerKey::new("rust", Path::new("/proj"));
+        s.pending.insert((rust.clone(), 1), TestAction::Hover);
+        assert_eq!(s.take_pending(&rust, 1), Some(TestAction::Hover));
+        assert_eq!(s.take_pending(&rust, 1), None, "a reply must not fire twice");
     }
 
     #[test]
     fn an_unknown_reply_is_ignored_rather_than_guessed() {
         let mut s = state();
-        assert_eq!(s.take_pending("rust", 99), None);
+        assert_eq!(s.take_pending(&ServerKey::new("rust", Path::new("/proj")), 99), None);
     }
 
     #[test]

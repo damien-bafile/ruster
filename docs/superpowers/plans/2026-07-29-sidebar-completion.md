@@ -1,5 +1,17 @@
 # Sidebar Completion Implementation Plan
 
+> **Status:** delivered; boxes resolved 2026-08-07.
+>
+> This plan was executed but never ticked as it went, leaving 31 boxes
+> that read as outstanding work. They are **plain bullets now, not back-ticked**:
+> a box ticked long after the fact asserts a verification that did not happen,
+> and this tree has already been bitten by exactly that. The bullets stand as a
+> record of what was built.
+>
+> Evidence it shipped: all 30 identifiers this plan names in backticks exist in
+> the tree, and `docs/verification/sidebar-{tui.txt,gui.png}`.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Finish the File Explorer Sidebar — hidden-files toggle, refresh, jump-to-first/last, `:Sidebar resize N` command, auto-open config, and auto-refresh after file operations.
@@ -27,7 +39,7 @@
 - Produces: `pub fn set_show_hidden(&mut self, v: bool)` on `SidebarTree`
 - Produces: `pub fn refresh(&mut self)` on `SidebarTree`
 
-- [ ] Add `set_show_hidden`, `show_hidden` getter, and `refresh` methods after line 74 (`reveal`):
+- Add `set_show_hidden`, `show_hidden` getter, and `refresh` methods after line 74 (`reveal`):
 
 ```rust
 pub fn set_show_hidden(&mut self, v: bool) {
@@ -47,7 +59,7 @@ pub fn refresh(&mut self) {
 }
 ```
 
-- [ ] Build and test:
+- Build and test:
 
 ```bash
 cargo test -p ruster-core -- sidebar 2>&1 | tee
@@ -55,7 +67,7 @@ cargo test -p ruster-core -- sidebar 2>&1 | tee
 
 Expected: all sidebar tests pass.
 
-- [ ] Commit:
+- Commit:
 
 ```bash
 git add crates/ruster-core/src/sidebar.rs
@@ -70,50 +82,50 @@ git commit -m "feat(sidebar): add set_show_hidden() and refresh() methods"
 - Modify: `crates/ruster-lua/src/schema.rs`
 - Modify: `crates/ruster-lua/src/config.rs`
 
-- [ ] In `crates/ruster-lua/src/schema.rs`, add `sidebar` group to `GROUPS` (line 192, after `dired`):
+- In `crates/ruster-lua/src/schema.rs`, add `sidebar` group to `GROUPS` (line 192, after `dired`):
 
 ```rust
 ("sidebar", "File-explorer sidebar"),
 ```
 
-- [ ] In `crates/ruster-lua/src/schema.rs`, add the setting in the `schema()` function (after the `dired` block, before `colors`):
+- In `crates/ruster-lua/src/schema.rs`, add the setting in the `schema()` function (after the `dired` block, before `colors`):
 
 ```rust
 // --- sidebar ---
 add("sidebar", "auto_open", "Auto-open sidebar", Bool, b(false), "Open sidebar at startup when a project root is detected");
 ```
 
-- [ ] In `crates/ruster-lua/src/config.rs`, add field to the `Config` struct (after `dired_show_hidden`):
+- In `crates/ruster-lua/src/config.rs`, add field to the `Config` struct (after `dired_show_hidden`):
 
 ```rust
 pub sidebar_auto_open: bool,
 ```
 
-- [ ] In `crates/ruster-lua/src/config.rs`, add default in `Default` impl (after `dired_show_hidden`):
+- In `crates/ruster-lua/src/config.rs`, add default in `Default` impl (after `dired_show_hidden`):
 
 ```rust
 sidebar_auto_open: false,
 ```
 
-- [ ] In `crates/ruster-lua/src/config.rs`, add entry in `to_settings()` (after the `dired` entry):
+- In `crates/ruster-lua/src/config.rs`, add entry in `to_settings()` (after the `dired` entry):
 
 ```rust
 (("sidebar", "auto_open"), Bool(self.sidebar_auto_open)),
 ```
 
-- [ ] In `crates/ruster-lua/src/config.rs`, add entry in `from_settings()` (after `dired_show_hidden`):
+- In `crates/ruster-lua/src/config.rs`, add entry in `from_settings()` (after `dired_show_hidden`):
 
 ```rust
 sidebar_auto_open: bl("sidebar", "auto_open", d.sidebar_auto_open),
 ```
 
-- [ ] Build:
+- Build:
 
 ```bash
 cargo build -p ruster-lua 2>&1 | tail -10
 ```
 
-- [ ] Commit:
+- Commit:
 
 ```bash
 git add crates/ruster-lua/src/schema.rs crates/ruster-lua/src/config.rs
@@ -127,7 +139,7 @@ git commit -m "feat(sidebar): add sidebar.auto_open Lua config option"
 **Files:**
 - Modify: `crates/ruster-tui/src/app.rs` (`handle_sidebar_key`, around lines 4639-4666)
 
-- [ ] Add a `pending_g` field to the `App` struct (near `sidebar_prompt_dir`, line 1407):
+- Add a `pending_g` field to the `App` struct (near `sidebar_prompt_dir`, line 1407):
 
 ```rust
 sidebar_pending_g: bool,
@@ -139,7 +151,7 @@ Initialize to `false` in the constructor (line 1406):
 sidebar_pending_g: false,
 ```
 
-- [ ] In `handle_sidebar_key` after the Delete block (line 4664), add key cases before `_ => false`:
+- In `handle_sidebar_key` after the Delete block (line 4664), add key cases before `_ => false`:
 
 ```rust
 KeyCode::Char('g') if ck.modifiers.is_empty() => {
@@ -166,7 +178,7 @@ KeyCode::Char('R') if ck.modifiers.is_empty() => {
 }
 ```
 
-- [ ] Add reset of `sidebar_pending_g` on any non-g key — insert after the `match` block ends (after `handled` variable assignment) and before the clamp:
+- Add reset of `sidebar_pending_g` on any non-g key — insert after the `match` block ends (after `handled` variable assignment) and before the clamp:
 
 ```rust
 KeyCode::Char('.') if ck.modifiers.is_empty() => {
@@ -175,7 +187,7 @@ KeyCode::Char('.') if ck.modifiers.is_empty() => {
 }
 ```
 
-- [ ] Add `R` refresh:
+- Add `R` refresh:
 
 ```rust
 KeyCode::Char('R') if ck.modifiers.is_empty() => {
@@ -184,7 +196,7 @@ KeyCode::Char('R') if ck.modifiers.is_empty() => {
 }
 ```
 
-- [ ] Clear `sidebar_pending_g` on any other key (add after `handled` block, before clamping):
+- Clear `sidebar_pending_g` on any other key (add after `handled` block, before clamping):
 
 In the `_ => false` arm is fine — that's the fallthrough. But `sidebar_pending_g` should reset on any non-g key motion. Add right before the clamp:
 
@@ -195,13 +207,13 @@ if !matches!(ck.code, KeyCode::Char('g')) {
 }
 ```
 
-- [ ] Build:
+- Build:
 
 ```bash
 cargo build -p ruster-tui 2>&1 | tail -10
 ```
 
-- [ ] Commit:
+- Commit:
 
 ```bash
 git add crates/ruster-tui/src/app.rs
@@ -215,7 +227,7 @@ git commit -m "feat(sidebar): gg/G jump, . toggle hidden, R refresh keys"
 **Files:**
 - Modify: `crates/ruster-tui/src/app.rs`
 
-- [ ] Add `SidebarResize(u16)` variant to `CmdAction` enum (find it near the top of `app.rs`, after existing sidebar entries):
+- Add `SidebarResize(u16)` variant to `CmdAction` enum (find it near the top of `app.rs`, after existing sidebar entries):
 
 Search for `CmdAction::Sidebar` to find the enum. Add:
 
@@ -223,13 +235,13 @@ Search for `CmdAction::Sidebar` to find the enum. Add:
 SidebarResize(u16),
 ```
 
-- [ ] Add parser in `parse_cmdline` (find the `sidebar` match and add after it):
+- Add parser in `parse_cmdline` (find the `sidebar` match and add after it):
 
 ```rust
 _ if let Some(n) = trimmed.strip_prefix("sidebar resize ").and_then(|s| s.trim().parse::<u16>().ok()) => Ok(CmdAction::SidebarResize(n)),
 ```
 
-- [ ] Add match arm in `apply_cmd` (find `CmdAction::Sidebar` match):
+- Add match arm in `apply_cmd` (find `CmdAction::Sidebar` match):
 
 ```rust
 CmdAction::SidebarResize(n) => {
@@ -237,13 +249,13 @@ CmdAction::SidebarResize(n) => {
 }
 ```
 
-- [ ] Build:
+- Build:
 
 ```bash
 cargo build -p ruster-tui 2>&1 | tail -10
 ```
 
-- [ ] Commit:
+- Commit:
 
 ```bash
 git add crates/ruster-tui/src/app.rs
@@ -259,7 +271,7 @@ git commit -m "feat(sidebar): add :Sidebar resize N command"
 
 The sidebar tree currently clamps selection after a create/rename/delete but does NOT call `refresh()`. This means new files don't appear and deleted ones still show until the sidebar is toggled off/on.
 
-- [ ] In `dired_execute_prompt` at line 4262, replace the `if is_sidebar` block:
+- In `dired_execute_prompt` at line 4262, replace the `if is_sidebar` block:
 
 Old code:
 ```rust
@@ -282,13 +294,13 @@ if is_sidebar {
 }
 ```
 
-- [ ] Build:
+- Build:
 
 ```bash
 cargo build -p ruster-tui 2>&1 | tail -10
 ```
 
-- [ ] Commit:
+- Commit:
 
 ```bash
 git add crates/ruster-tui/src/app.rs
@@ -302,7 +314,7 @@ git commit -m "fix(sidebar): auto-refresh tree after file create/rename/delete"
 **Files:**
 - Modify: `crates/ruster-tui/src/app.rs` (App constructor)
 
-- [ ] In the App constructor, after `ensure_dashboard_buffer()` and `ensure_messages_buffer()` (line 1414), add:
+- In the App constructor, after `ensure_dashboard_buffer()` and `ensure_messages_buffer()` (line 1414), add:
 
 ```rust
 // Auto-open sidebar if configured and a project root is detected.
@@ -311,13 +323,13 @@ if app.config.sidebar_auto_open && app.project_root.is_some() {
 }
 ```
 
-- [ ] Build:
+- Build:
 
 ```bash
 cargo build -p ruster-tui 2>&1 | tail -10
 ```
 
-- [ ] Commit:
+- Commit:
 
 ```bash
 git add crates/ruster-tui/src/app.rs
@@ -331,7 +343,7 @@ git commit -m "feat(sidebar): auto-open at startup when sidebar.auto_open is tru
 **Files:**
 - Modify: `docs/keybindings.md`
 
-- [ ] Read existing sidebar section in `docs/keybindings.md` and add the missing key entries (`gg`, `G`, `.`, `R`).
+- Read existing sidebar section in `docs/keybindings.md` and add the missing key entries (`gg`, `G`, `.`, `R`).
 
 ```markdown
 | `gg` / `G` | Jump to first / last row |
@@ -339,7 +351,7 @@ git commit -m "feat(sidebar): auto-open at startup when sidebar.auto_open is tru
 | `R` | Refresh the tree from disk |
 ```
 
-- [ ] Commit:
+- Commit:
 
 ```bash
 git add docs/keybindings.md

@@ -1,0 +1,40 @@
+─ main.rs ──────────────────────────────────────────────────────────────────[Debug: PAUSED] F5:Continue F10:Next F11:Ste
+   7 //! feature failing rather than the fixture drifting. The two that mattCall stack
+   8 //!                                                                     0  demo_project::main  /private/var/folders
+   9 //!   line 20 — `pub fn origin`, three `w` motions from column 1 to the 1  …  14 runtime frames hidden
+  10 //!             which is the hover target                              14  main  /var/folders/br/7b_4tlhn30j4dp_ttk
+  11 //!   line 31 — the first statement of `main`, the breakpoint target
+  12                                                                        Locals
+  13 /// A point in the plane. `:hover` over this name is the hover capture.
+  14 #[derive(Debug, Clone, Copy)]                                          Globals
+  15 pub struct Point {
+  16     pub x: i32,                                                        Registers
+  17     pub y: i32,                                                          General Purpose Registers =
+  18 }                                                                        Floating Point Registers =
+  19                                                                          Exception State Registers =
+  20 impl Point {
+  21     pub fn origin() -> Point {
+  22         Point { x: 0, y: 0 }
+  23     }
+  24
+  25     // TODO: translate by a vector rather than a scalar
+  26     pub fn shifted(self, by: i32) -> Point {
+  27         Point { x: self.x + by, y: self.y + by }
+  28     }
+  29 }
+  30
+  31 /// The hover target.
+  32 ///
+  33 /// `p` sits deliberately in **column 1**: `:N` lands the cursor there and
+  34 /// nowhere else, so a hover capture driven by a line number alone needs a
+  35 /// symbol in that column. Every alternative — counting `w` motions, or setting
+  36 /// the cursor from Lua — depends on something that drifts when this file is
+  37 /// edited, and drifts into a capture that says "No hover info" and looks like
+  38 /// the feature is broken.
+  39 pub fn identity(p: Point) -> Point {
+  40 p
+  41 }
+  42
+  43 fn main() {
+● 44     let start = Point::origin();
+ -- NORMAL --  [proj] │main.rs                                                                                91%  44,1

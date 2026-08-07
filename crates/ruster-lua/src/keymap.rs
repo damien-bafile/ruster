@@ -47,10 +47,13 @@ pub fn parse_lua_key(s: &str) -> Option<LuaKey> {
         "Right" => Some(LuaKey::Right),
         "Up" => Some(LuaKey::Up),
         "Down" => Some(LuaKey::Down),
+        // Any printable ASCII may follow `C-`, not just letters and digits.
+        // `<C-\>` is the terminal's escape key and `<C-]>` is a common leader;
+        // restricting this to `[a-z0-9]` made both inexpressible.
         _ if inner.len() == 3 && inner.starts_with('C') && inner.as_bytes()[1] == b'-' => {
             let c = inner.as_bytes()[2] as char;
-            if c.is_ascii_lowercase() || c.is_ascii_digit() {
-                Some(LuaKey::Ctrl(c))
+            if c.is_ascii_graphic() {
+                Some(LuaKey::Ctrl(c.to_ascii_lowercase()))
             } else {
                 None
             }
@@ -99,6 +102,24 @@ mod tests {
     fn parse_ctrl_key() {
         assert_eq!(parse_lua_key("<C-s>"), Some(LuaKey::Ctrl('s')));
         assert_eq!(parse_lua_key("<C-a>"), Some(LuaKey::Ctrl('a')));
+    }
+
+    /// `<C-\>` names the embedded terminal's escape key and `<C-]>` is a common
+    /// leader; while this accepted only `[a-z0-9]` neither could be written at
+    /// all, in a keymap or in `terminal.escape`.
+    #[test]
+    fn ctrl_accepts_punctuation_not_just_letters_and_digits() {
+        assert_eq!(parse_lua_key("<C-\\>"), Some(LuaKey::Ctrl('\\')));
+        assert_eq!(parse_lua_key("<C-]>"), Some(LuaKey::Ctrl(']')));
+        assert_eq!(parse_lua_key("<C-/>"), Some(LuaKey::Ctrl('/')));
+        assert_eq!(parse_lua_key("<C-4>"), Some(LuaKey::Ctrl('4')));
+    }
+
+    /// Case is normalised so `<C-S>` and `<C-s>` are one binding — a terminal
+    /// cannot distinguish them anyway.
+    #[test]
+    fn ctrl_letters_are_case_insensitive() {
+        assert_eq!(parse_lua_key("<C-S>"), Some(LuaKey::Ctrl('s')));
     }
 
     #[test]

@@ -95,7 +95,7 @@ impl LspClient {
     }
 
     #[cfg(test)]
-    fn from_parts(writer: Box<dyn Write + Send>, rx: Receiver<ServerMessage>) -> Self {
+    pub(crate) fn from_parts(writer: Box<dyn Write + Send>, rx: Receiver<ServerMessage>) -> Self {
         LspClient { child: None, writer, rx, next_id: 0 }
     }
 }

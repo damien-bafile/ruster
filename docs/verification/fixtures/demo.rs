@@ -1,0 +1,62 @@
+//! The fixture every capture opens.
+//!
+//! Small on purpose, but chosen so one file exercises most of what a frame is
+//! supposed to show: keywords, strings, numbers and comments for the
+//! highlighter; a TODO and a FIXME for the marker scanner and `:TodoList`; a
+//! repeated identifier for multi-cursor; a two-character-prefix word for flash
+//! jump; and enough lines that the gutter and the scroll offset are non-trivial.
+//!
+//! Capturing the same file every time is what makes two runs comparable.
+
+use std::collections::HashMap;
+use std::fmt;
+
+/// A point in the plane.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Point {
+    pub x: i32,
+    pub y: i32,
+}
+
+impl Point {
+    pub fn origin() -> Self {
+        Point { x: 0, y: 0 }
+    }
+
+    // TODO: support translation by a vector rather than a scalar
+    pub fn shifted(&self, by: i32) -> Self {
+        Point { x: self.x + by, y: self.y + by }
+    }
+}
+
+impl fmt::Display for Point {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "({}, {})", self.x, self.y)
+    }
+}
+
+/// Count how many times each point appears.
+///
+/// FIXME: this allocates a fresh map on every call
+pub fn tally(points: &[Point]) -> HashMap<String, usize> {
+    let mut counts = HashMap::new();
+    for point in points {
+        let key = point.to_string();
+        let entry = counts.entry(key).or_insert(0);
+        *entry += 1;
+    }
+    counts
+}
+
+fn main() {
+    let total = 3;
+    let total_shifted = total + 1;
+    let points = vec![Point::origin(), Point::origin().shifted(total_shifted)];
+
+    for point in &points {
+        println!("point {point} at distance {}", point.x.abs() + point.y.abs());
+    }
+
+    let counts = tally(&points);
+    println!("{} distinct points, {} total", counts.len(), points.len());
+}

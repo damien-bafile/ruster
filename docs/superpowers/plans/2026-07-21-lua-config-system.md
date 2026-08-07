@@ -1,5 +1,17 @@
 # Lua Config System Implementation Plan
 
+> **Status:** delivered; boxes resolved 2026-08-07.
+>
+> This plan was executed but never ticked as it went, leaving 10 boxes
+> that read as outstanding work. They are **plain bullets now, not back-ticked**:
+> a box ticked long after the fact asserts a verification that did not happen,
+> and this tree has already been bitten by exactly that. The bullets stand as a
+> record of what was built.
+>
+> Evidence it shipped: all 14 identifiers this plan names in backticks exist in
+> the tree, and every capture in `docs/verification/` is driven by a generated `config.lua`, and `settings-{tui.txt,gui.png}` shows the schema rendered.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Replace TOML config with pure-Lua `ruster.config` table loaded from `init.lua`.
@@ -28,7 +40,7 @@
 - Consumes: `LuaRuntime` with its `lua: Lua` field and `ruster.config` table
 - Produces: `Config { tabstop, softtabstop, expandtab, number, relativenumber, theme }`
 
-- [ ] **Step 1: Create config.rs**
+- **Step 1: Create config.rs**
 
 ```rust
 pub struct Config {
@@ -54,7 +66,7 @@ impl Default for Config {
 }
 ```
 
-- [ ] **Step 2: Add `config()` method to `LuaRuntime`**
+- **Step 2: Add `config()` method to `LuaRuntime`**
 
 In `crates/ruster-lua/src/runtime.rs`, add:
 
@@ -81,11 +93,11 @@ pub fn config(&self) -> Config {
 }
 ```
 
-- [ ] **Step 3: Register module in lib.rs**
+- **Step 3: Register module in lib.rs**
 
 Add `pub mod config;` to `crates/ruster-lua/src/lib.rs`.
 
-- [ ] **Step 4: Wire config loading in App::new()**
+- **Step 4: Wire config loading in App::new()**
 
 In `crates/ruster-tui/src/app.rs`, after `lua.fire_event("VimEnter", &[])`, verify config is accessible.
 Read config via `lua.config()` and make it available (store as field or pass values through).
@@ -96,7 +108,7 @@ Add `config: Config` field to App struct, populate in constructor:
 let config = lua.config();
 ```
 
-- [ ] **Step 5: Build and test**
+- **Step 5: Build and test**
 
 ```bash
 cargo build --workspace && cargo test --workspace
@@ -104,7 +116,7 @@ cargo build --workspace && cargo test --workspace
 
 Expect: all 100 tests pass.
 
-- [ ] **Step 6: Commit**
+- **Step 6: Commit**
 
 ```bash
 git add crates/ruster-lua/src/config.rs crates/ruster-lua/src/runtime.rs crates/ruster-lua/src/lib.rs crates/ruster-tui/src/app.rs
@@ -124,7 +136,7 @@ git commit -m "feat: Lua-based config system (ruster.config table)"
 - Consumes: Config struct + Lua API surface (existing code)
 - Produces: Reference docs for developers and users
 
-- [ ] **Step 1: Create config-reference.md**
+- **Step 1: Create config-reference.md**
 
 ```markdown
 # Config Reference
@@ -155,7 +167,7 @@ ruster.config = {
 | `theme` | string | "default" | Color theme name |
 ```
 
-- [ ] **Step 2: Create lua-api.md**
+- **Step 2: Create lua-api.md**
 
 ```markdown
 # Lua Scripting API
@@ -263,7 +275,7 @@ ruster.config.number = true
 ```
 ```
 
-- [ ] **Step 3: Update AGENTS.md**
+- **Step 3: Update AGENTS.md**
 
 Append a section at the end of AGENTS.md:
 
@@ -283,7 +295,7 @@ When you implement a new feature, change an existing setting, or modify the Lua 
 - Changing default values or behavior
 ```
 
-- [ ] **Step 4: Commit**
+- **Step 4: Commit**
 
 ```bash
 git add docs/config-reference.md docs/lua-api.md AGENTS.md
