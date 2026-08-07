@@ -110,10 +110,10 @@ the statusline are exercised identically every time.
 | 28 | Multi-cursor | `Ctrl+D` on a repeated token | ✅ | ✅ | 5 |
 | 29 | Ibuffer | `:Ibuffer` | ✅ | ✅ | 2 |
 | 30 | `:16` / goto line | `:16` | ✅ | ✅ | 8 |
-| 31 | `:Browse` (P9 T6) | `:Browse <url>` `*` needs network | ✅ | ✅ | 9 |
-| 32 | `:Music` (P9 T5, if built) | `:Music` `*` needs mpd | ✅ | ✅ | 9 |
+| 31 | ~~`:Browse`~~ | **declined** (Phase 9) — no row | — | — | — |
+| 32 | ~~`:Music`~~ | **declined** (Phase 9) — no row | — | — | — |
 
-Rows 17, 12, 25, 31, 32 depend on a live service. For each, attempt the
+Rows 17, 12 and 25 depend on a live service (31 and 32 were declined). For each, attempt the
 defer-driven capture first (guarded: skip silently if the service isn't
 reachable, mark the row). If no service is available, capture the surrounding
 surface (the float, the overlay, the error toast) and mark the row `manual` in

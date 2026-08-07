@@ -142,4 +142,5 @@ capture against a throwaway project path is unreliable anyway, and I could not
 pin down why (a doubled slash in the temp path was ruled out). Verify it by
 hand; do not read an empty hover capture as a broken feature.
 
-`:Browse` and `:Music` (Phase 9 tasks 6 and 5) have no rows: neither is built.
+`:Browse` and `:Music` have no rows: both were declined in Phase 9, so there is
+nothing to capture.

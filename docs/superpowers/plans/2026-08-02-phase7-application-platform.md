@@ -102,13 +102,16 @@ in that plan ticked, including hunk unstaging via the `:GitStaged` view.
 - [x] Tests: status parsing from captured `git status --porcelain=v2` output —
       no test may require a real repository, matching `ruster-git`'s existing rule.
 
-### Task 4: Music player
+### Task 4: Music player — **declined 2026-08-07**
 
-- [ ] `:Music` — control an already-running `mpd` over its plain-text protocol
-      on `localhost:6600`. No bundled player, no audio decoding in the editor.
-- [ ] Degrade silently when mpd is absent: this is a convenience, and an editor
-      that complains about a missing music daemon on startup is broken.
-- [ ] Tests: protocol response parsing from captured output.
+Not built. The honest note below was right, and the *decide at execution* gate
+Phase 9 carried for it resolved to skip. Plugin territory if ever wanted; see
+Phase 9 Tasks 5–7.
+
+- ~~`:Music` — control an already-running `mpd` over its plain-text protocol
+  on `localhost:6600`.~~
+- ~~Degrade silently when mpd is absent.~~
+- ~~Tests: protocol response parsing from captured output.~~
 
 **Honest note:** this is the least defensible feature in the phase. It is cheap
 because mpd's protocol is trivial, but nobody chooses an editor for it. Build it
@@ -129,9 +132,11 @@ browser engine's attack surface and build burden to a text editor.
 
 **Instead**, if the underlying want is "read a URL without leaving the editor":
 
-- [ ] `:Browse <url>` fetching over HTTP and rendering as markup in a buffer,
-      reusing the markdown path that already exists for `:help` and hover docs.
-      Text-mode only, both backends, no engine.
+- ~~`:Browse <url>` fetching over HTTP and rendering as markup in a buffer,
+  reusing the markdown path that already exists for `:help` and hover docs.~~
+  **Declined 2026-08-07** — the fetch, the HTML-to-text pass and the failure
+  modes around both are a real dependency for something a browser beside the
+  editor already does well. See Phase 9 Tasks 5–7.
 
 ### Task 6: Email client — **defer, and reconsider the scope**
 
@@ -142,9 +147,9 @@ none of it shares code with anything else here.
 
 If it is wanted, the defensible version is much smaller:
 
-- [ ] Compose-only: open an editor buffer, hand the result to the system's
-      configured MUA (`mailto:` / `sendmail`). No credentials, no IMAP, no
-      inbox.
+- ~~Compose-only: open an editor buffer, hand the result to the system's
+  configured MUA (`mailto:` / `sendmail`).~~ **Declined 2026-08-07** — a
+  `mailto:` handoff is what the OS already provides. See Phase 9 Tasks 5–7.
 
 Full IMAP should be a plugin against the Lua API, not core.
 

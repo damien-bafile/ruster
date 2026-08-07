@@ -1,8 +1,7 @@
 # Phase 9 — Cleanup
 
-**Status:** in progress. Tasks 1–4 and 8 are done, plus Task 4b (the defects the
-Phase 10 sweep found, and the three it only appeared to). Tasks 5 (`:Music`),
-6 (`:Browse`) and 7 (email compose) are open.
+**Status:** complete, 2026-08-07. Tasks 1–4, 4b and 8 delivered; Tasks 5–7
+(`:Music`, `:Browse`, email compose) declined and recorded below.
 
 Phases 6–8 deferred or parked a small set of items. None is a new capability —
 each is either work that could not be finished when the phase shipped (a
@@ -11,14 +10,12 @@ or a feature a phase plan deliberately left for "later" that later has now
 arrived.
 
 The ordering rule is the same as Phase 8: what a user can see first. Tasks 1–4
-are visible the moment they land; 5–7 are whole small features; 8 is
-housekeeping so the plan tree stops lying about what shipped.
+are visible the moment they land; 8 is housekeeping so the plan tree stops lying
+about what shipped.
 
-**The one genuinely open decision:** Task 5 (`:Music`). Phase 7's own plan
-calls it "the least defensible feature in the phase". Keep the *decide at
-execution* gate: if it feels wrong when the time comes, skip it and record the
-decision in the plan — a deliberate non-feature is a decision, an unchecked box
-is an accident.
+Tasks 5–7 were three small features carried over from Phase 7. All three were
+declined; the reasoning is recorded below rather than deleted, because a
+deliberate non-feature is a decision and an unchecked box is an accident.
 
 ---
 
@@ -432,63 +429,34 @@ all", before believing a picture.
 
 ---
 
-## Task 5: `:Music` (mpd) — **decide at execution**
+## Tasks 5–7: declined, 2026-08-07
 
-Phase 7 Task 4. Control an already-running `mpd` on `localhost:6600` over its
-plain-text protocol. No bundled player, no audio decoding. Degrade silently
-when mpd is absent. Tests parse captured protocol responses — no test may
-require a running daemon.
+`:Music`, `:Browse` and email compose are **not being built**. Recorded rather
+than deleted, because this plan's own rule is that a deliberate non-feature is a
+decision and an unchecked box is an accident — and because all three are
+specified in Phase 7, where a future reader would otherwise find them still
+looking like pending work.
 
-**Gate:** if this feels wrong when implementing — if it is pure busy-work that
-nobody would use — skip it and record the decision in this plan. Do not
-half-build it.
+- **Task 5 — `:Music` (mpd).** The *decide at execution* gate this task carried
+  resolves to skip. Phase 7's own plan calls it "the least defensible feature in
+  the phase … nobody chooses an editor for it", and it is a remote control for a
+  daemon you would already have a better client for. The only testable surface
+  is protocol string parsing, which proves nothing about the feature.
 
-**Files (if built):**
-- Create: `crates/ruster-mpd/` (or a module) for the protocol client
-- Modify: `crates/ruster-tui/src/app.rs` — `:Music` command
-- Test: protocol parsing from captured output
+- **Task 6 — `:Browse <url>`.** The most defensible of the three: it reuses the
+  markdown path that already serves `:help` and hover. Declined anyway — HTTP
+  fetching, HTML-to-text and the failure modes around both are a real
+  dependency and a real maintenance surface for something a browser beside the
+  editor already does well.
 
-- [ ] **Step 1: Decide.** Re-read Phase 7's "Honest note" and this gate. Record
-      the decision.
-- [ ] **Step 2 (if building): protocol client + tests**
-- [ ] **Step 3 (if building): `:Music` command, docs, both-backend verify**
+- **Task 7 — Email compose.** Small and self-contained, but a `mailto:` handoff
+  is what the operating system already provides; the editor adds a buffer you
+  could have opened anyway.
 
----
-
-## Task 6: `:Browse <url>`
-
-Phase 7 Task 5's recommended alternative to an embedded browser: fetch a URL
-over HTTP and render it as markup in a buffer, reusing the markdown path that
-already serves `:help` and hover docs. Text-mode only, both backends, no engine.
-
-**Files:**
-- Create: `crates/ruster-browse/` (HTTP fetch, HTML→text/markdown)
-- Modify: `crates/ruster-tui/src/app.rs` — `:Browse` command + buffer
-- Modify: `docs/keybindings.md`
-- Test: fetch + render from a stubbed HTTP response
-
-- [ ] **Step 1: HTTP fetch with graceful failure** (no network in CI tests —
-      stub the client; missing/refusing server degrades to a notification)
-- [ ] **Step 2: Render fetched HTML as markup in a buffer** (reuse the
-      `:help` markup path)
-- [ ] **Step 3: `:Browse <url>` command, docs, tests, verify both backends**
-
----
-
-## Task 7: Email — compose only
-
-Phase 7 Task 6's defensible slice: open an editor buffer, hand the result to
-the system's configured MUA (`mailto:`/`sendmail`). No credentials, no IMAP,
-no inbox. Full IMAP stays a plugin concern.
-
-**Files:**
-- Modify: `crates/ruster-tui/src/app.rs` — `:Email` / `:Mail` compose command
-- Modify: `docs/keybindings.md`
-- Test: compose buffer content → the correct `mailto:`/`sendmail` invocation
-
-- [ ] **Step 1: Compose buffer + `:w` sends** (shell out to the MUA, degrade
-      gracefully when none is configured)
-- [ ] **Step 2: Docs, tests, verify**
+**If any is wanted later, it should be a plugin against the Lua API, not core.**
+`ruster.cmd`, `ruster.api.nvim_buf_set_lines` and the notification surface are
+enough to write all three outside the editor — which is the argument Phase 7
+already made for full IMAP.
 
 ---
 
@@ -536,4 +504,6 @@ headers. None of this changes code; all of it makes the plans honest.
   still the right call.
 - **Full IMAP** (Phase 7 Task 6) — a plugin concern, not core.
 - **Embedded browser** (Phase 7 Task 5) — parity constraint forbids it.
+- **`:Music`, `:Browse`, email compose** — declined 2026-08-07; see Tasks 5–7
+  above. Plugin territory if ever wanted.
 - **Threading `Rc<RefCell<Workspace>>`** — Phase 8's out-of-scope note stands.
