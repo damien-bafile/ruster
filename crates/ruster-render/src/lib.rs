@@ -82,6 +82,11 @@ pub struct Theme {
     pub cmdline_bg: Color,
     /// Cmdline / mini-buffer text.
     pub cmdline_fg: Color,
+    /// The cmdline's leading prompt sigil — `:`, `/` or `?` (defaults to
+    /// `accent`). Tinting it is what distinguishes "the editor is waiting for a
+    /// command" from "the editor is showing you a message", which otherwise
+    /// share a row and a colour.
+    pub cmdline_accent: Color,
 }
 
 impl Default for Theme {
@@ -115,6 +120,7 @@ impl Default for Theme {
             whichkey_key: Color::Rgb(243, 139, 168),
             cmdline_bg: Color::Rgb(30, 30, 30),
             cmdline_fg: Color::Rgb(205, 214, 244),
+            cmdline_accent: Color::Rgb(243, 139, 168),
         }
     }
 }
@@ -1511,6 +1517,23 @@ mod tests {
         assert_eq!(
             t.whichkey_key, t.accent,
             "the key accent defaults to the theme accent"
+        );
+    }
+
+    /// The cmdline prompt sigil and the cmdline text share a row and a
+    /// background; if they also shared a colour there would be nothing to
+    /// distinguish "the editor is asking you something" from "the editor is
+    /// telling you something".
+    #[test]
+    fn cmdline_accent_is_distinct_from_cmdline_text() {
+        let t = crate::Theme::default();
+        assert_ne!(
+            t.cmdline_accent, t.cmdline_fg,
+            "the prompt sigil must stand out from the text after it"
+        );
+        assert_eq!(
+            t.cmdline_accent, t.accent,
+            "the prompt accent defaults to the theme accent"
         );
     }
 

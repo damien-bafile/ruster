@@ -619,6 +619,15 @@ impl<'a> CmdlineWidget<'a> {
     }
 }
 
+/// Whether cmdline text opens with a prompt sigil the compositor should tint.
+///
+/// `:` is a command, `/` and `?` are forward and backward search. Anything else
+/// on this row is output rather than a prompt — an echoed message, an error —
+/// and gets no accent, which is the distinction the accent exists to draw.
+pub fn is_prompt_sigil(text: &str) -> bool {
+    matches!(text.chars().next(), Some(':') | Some('/') | Some('?'))
+}
+
 impl Widget for CmdlineWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let fg = if self.is_message {
@@ -635,6 +644,16 @@ impl Widget for CmdlineWidget<'_> {
                 cell.set_bg(self.bg);
             }
         }
+        // The leading sigil is tinted so a prompt reads differently from a
+        // message at a glance — the two share this row, and until now shared a
+        // colour too. Messages have no sigil and are left alone.
+        let accent = self
+            .theme
+            .as_ref()
+            .filter(|_| !self.is_message)
+            .filter(|_| is_prompt_sigil(self.text))
+            .map(|t| ruster_render_color_to_tui(&t.cmdline_accent));
+
         for (i, ch) in self.text.chars().enumerate() {
             let x = area.x + i as u16;
             if x >= area.right() {
@@ -642,7 +661,7 @@ impl Widget for CmdlineWidget<'_> {
             }
             if let Some(cell) = buf.cell_mut((x, area.y)) {
                 cell.set_char(ch);
-                cell.set_fg(fg);
+                cell.set_fg(if i == 0 { accent.unwrap_or(fg) } else { fg });
                 cell.set_bg(self.bg);
             }
         }
@@ -1416,6 +1435,49 @@ mod tests {
     use ratatui::widgets::Widget;
     use ruster_core::vim::VimMode;
     use ruster_render::{Color as RColor, StyledLine, TermCellView, TermGridView};
+
+    #[test]
+    fn the_cmdline_sigil_is_accented_and_the_rest_is_not() {
+        use super::Widget as _;
+        let theme = ruster_render::Theme::default();
+        let mut buf = super::Buffer::empty(super::Rect::new(0, 0, 8, 1));
+        super::CmdlineWidget::new(":write")
+            .with_theme(&theme)
+            .render(super::Rect::new(0, 0, 8, 1), &mut buf);
+
+        let accent = super::ruster_render_color_to_tui(&theme.cmdline_accent);
+        let text = super::ruster_render_color_to_tui(&theme.cmdline_fg);
+        assert_eq!(buf.cell((0, 0)).unwrap().fg, accent, "the `:` is accented");
+        assert_eq!(buf.cell((1, 0)).unwrap().fg, text, "the command is not");
+    }
+
+    #[test]
+    fn a_message_gets_no_sigil_accent() {
+        use super::Widget as _;
+        // Messages share this row with prompts. Accenting their first character
+        // would be actively misleading — it would read as a prompt awaiting
+        // input when the editor is not waiting for anything.
+        let theme = ruster_render::Theme::default();
+        let mut buf = super::Buffer::empty(super::Rect::new(0, 0, 12, 1));
+        super::CmdlineWidget::new("written")
+            .with_theme(&theme)
+            .with_message_style()
+            .render(super::Rect::new(0, 0, 12, 1), &mut buf);
+
+        // Not "the first cell is some other colour" — a message is already
+        // drawn in the theme accent, and cmdline_accent defaults to the same
+        // value, so that assertion would be vacuously true or false depending
+        // on the theme. The property is that a message is drawn in *one*
+        // colour: no character is singled out the way a prompt sigil is.
+        let first = buf.cell((0, 0)).unwrap().fg;
+        for (i, ch) in "written".chars().enumerate() {
+            assert_eq!(
+                buf.cell((i as u16, 0)).unwrap().fg,
+                first,
+                "message character {ch:?} at {i} should match the rest"
+            );
+        }
+    }
 
     #[test]
     fn terminal_widget_draws_cells_colors_and_cursor() {
