@@ -31,9 +31,16 @@ pub struct Mods {
 }
 
 impl Mods {
-    pub const NONE: Mods = Mods { ctrl: false, alt: false, shift: false };
+    pub const NONE: Mods = Mods {
+        ctrl: false,
+        alt: false,
+        shift: false,
+    };
     pub fn ctrl() -> Mods {
-        Mods { ctrl: true, ..Mods::NONE }
+        Mods {
+            ctrl: true,
+            ..Mods::NONE
+        }
     }
 }
 
@@ -114,7 +121,10 @@ mod tests {
 
     #[test]
     fn alt_prefixes_escape() {
-        let m = Mods { alt: true, ..Mods::NONE };
+        let m = Mods {
+            alt: true,
+            ..Mods::NONE
+        };
         assert_eq!(encode_key(Key::Char('b'), m), vec![0x1b, b'b']);
     }
 }

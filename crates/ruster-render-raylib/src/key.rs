@@ -1,4 +1,4 @@
-use crossterm::event::{KeyEvent, KeyCode, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 pub fn map_raylib_key(key: raylib::consts::KeyboardKey) -> Option<KeyEvent> {
     use raylib::consts::KeyboardKey::*;
@@ -40,11 +40,29 @@ pub fn modified_char_for_key(key: raylib::consts::KeyboardKey, shift: bool) -> O
     }
     let c = match key {
         KEY_SPACE => ' ',
-        KEY_COMMA => if shift { '<' } else { ',' },
-        KEY_PERIOD => if shift { '>' } else { '.' },
+        KEY_COMMA => {
+            if shift {
+                '<'
+            } else {
+                ','
+            }
+        }
+        KEY_PERIOD => {
+            if shift {
+                '>'
+            } else {
+                '.'
+            }
+        }
         KEY_SLASH => '/',
         KEY_SEMICOLON => ';',
-        KEY_MINUS => if shift { '_' } else { '-' },
+        KEY_MINUS => {
+            if shift {
+                '_'
+            } else {
+                '-'
+            }
+        }
         KEY_APOSTROPHE => '\'',
         _ => return None,
     };
@@ -92,7 +110,10 @@ mod tests {
             (raylib::consts::KeyboardKey::KEY_HOME, KeyCode::Home),
             (raylib::consts::KeyboardKey::KEY_END, KeyCode::End),
             (raylib::consts::KeyboardKey::KEY_PAGE_UP, KeyCode::PageUp),
-            (raylib::consts::KeyboardKey::KEY_PAGE_DOWN, KeyCode::PageDown),
+            (
+                raylib::consts::KeyboardKey::KEY_PAGE_DOWN,
+                KeyCode::PageDown,
+            ),
             (raylib::consts::KeyboardKey::KEY_DELETE, KeyCode::Delete),
             (raylib::consts::KeyboardKey::KEY_BACK, KeyCode::Esc),
         ] {
@@ -141,7 +162,13 @@ mod tests {
     fn modified_returns_none_for_special_keys() {
         // Enter/arrows have no base character; the caller falls back to
         // map_raylib_key for those.
-        assert_eq!(modified_char_for_key(raylib::consts::KeyboardKey::KEY_ENTER, false), None);
-        assert_eq!(modified_char_for_key(raylib::consts::KeyboardKey::KEY_LEFT, false), None);
+        assert_eq!(
+            modified_char_for_key(raylib::consts::KeyboardKey::KEY_ENTER, false),
+            None
+        );
+        assert_eq!(
+            modified_char_for_key(raylib::consts::KeyboardKey::KEY_LEFT, false),
+            None
+        );
     }
 }

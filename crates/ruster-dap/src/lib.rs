@@ -1,4 +1,4 @@
-pub mod transport;
 pub mod client;
-pub mod session;
 pub mod config;
+pub mod session;
+pub mod transport;

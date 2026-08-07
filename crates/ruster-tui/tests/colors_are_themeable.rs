@@ -84,11 +84,18 @@ fn test_module_start(src: &str) -> usize {
 /// `Rgb(` followed by three numeric arguments. Deliberately narrow: `Rgb(r, g,
 /// b)` forwarding a parsed value is not a hardcoded colour.
 fn has_rgb_literal(line: &str) -> bool {
-    let Some(at) = line.find("Rgb(") else { return false };
+    let Some(at) = line.find("Rgb(") else {
+        return false;
+    };
     let rest = &line[at + 4..];
-    let Some(close) = rest.find(')') else { return false };
+    let Some(close) = rest.find(')') else {
+        return false;
+    };
     let args: Vec<&str> = rest[..close].split(',').map(str::trim).collect();
-    args.len() == 3 && args.iter().all(|a| !a.is_empty() && a.chars().all(|c| c.is_ascii_digit()))
+    args.len() == 3
+        && args
+            .iter()
+            .all(|a| !a.is_empty() && a.chars().all(|c| c.is_ascii_digit()))
 }
 
 fn sources() -> Vec<(&'static str, &'static str)> {
@@ -100,15 +107,24 @@ fn sources() -> Vec<(&'static str, &'static str)> {
         ("sidebar.rs", include_str!("../src/sidebar.rs")),
         ("settings.rs", include_str!("../src/settings.rs")),
         ("widgets/mod.rs", include_str!("../src/widgets/mod.rs")),
-        ("widgets/debug_overlay.rs", include_str!("../src/widgets/debug_overlay.rs")),
-        ("widgets/noice_toast.rs", include_str!("../src/widgets/noice_toast.rs")),
+        (
+            "widgets/debug_overlay.rs",
+            include_str!("../src/widgets/debug_overlay.rs"),
+        ),
+        (
+            "widgets/noice_toast.rs",
+            include_str!("../src/widgets/noice_toast.rs"),
+        ),
     ]
 }
 
 #[test]
 fn no_drawing_code_picks_a_colour_a_theme_cannot_reach() {
-    let allowed: Vec<&str> =
-        FALLBACK_ONLY.iter().chain(ALLOWED.iter()).map(|(f, _)| *f).collect();
+    let allowed: Vec<&str> = FALLBACK_ONLY
+        .iter()
+        .chain(ALLOWED.iter())
+        .map(|(f, _)| *f)
+        .collect();
     let offending: Vec<String> = literals()
         .into_iter()
         .filter(|(file, _, _)| !allowed.contains(&file.as_str()))
@@ -162,7 +178,10 @@ fn the_allow_list_has_no_stale_entries() {
 #[test]
 fn every_allow_list_entry_explains_itself() {
     for (file, why) in FALLBACK_ONLY.iter().chain(ALLOWED.iter()) {
-        assert!(why.len() > 20, "{file} is allow-listed without a real reason");
+        assert!(
+            why.len() > 20,
+            "{file} is allow-listed without a real reason"
+        );
     }
 }
 
@@ -172,17 +191,33 @@ fn every_allow_list_entry_explains_itself() {
 fn the_scrape_reaches_past_a_test_only_item() {
     // The failure that made this guard vacuous once: a `#[cfg(test)]` item in
     // the middle of a file truncating the scrape before the drawing code.
-    let src = "#[cfg(test)]\npub fn probe() {}\nlet c = Rgb(1, 2, 3);\n#[cfg(test)]\nmod tests {}\n";
+    let src =
+        "#[cfg(test)]\npub fn probe() {}\nlet c = Rgb(1, 2, 3);\n#[cfg(test)]\nmod tests {}\n";
     let body = &src[..test_module_start(src)];
-    assert!(body.contains("Rgb(1, 2, 3)"), "the scrape stopped at the wrong #[cfg(test)]");
-    assert!(!body.contains("mod tests"), "the scrape did not stop at the test module");
+    assert!(
+        body.contains("Rgb(1, 2, 3)"),
+        "the scrape stopped at the wrong #[cfg(test)]"
+    );
+    assert!(
+        !body.contains("mod tests"),
+        "the scrape did not stop at the test module"
+    );
 }
 
 #[test]
 fn the_matcher_tells_a_literal_from_a_forwarded_value() {
-    assert!(has_rgb_literal("let x = Color::Rgb(30, 30, 46);"), "a plain literal");
+    assert!(
+        has_rgb_literal("let x = Color::Rgb(30, 30, 46);"),
+        "a plain literal"
+    );
     assert!(has_rgb_literal("Rgb(1,2,3)"), "no spaces");
-    assert!(!has_rgb_literal("Color::Rgb(r, g, b) => ..."), "forwarding a parsed value");
-    assert!(!has_rgb_literal("Color::Rgb(rgb.r, rgb.g, rgb.b)"), "forwarding fields");
+    assert!(
+        !has_rgb_literal("Color::Rgb(r, g, b) => ..."),
+        "forwarding a parsed value"
+    );
+    assert!(
+        !has_rgb_literal("Color::Rgb(rgb.r, rgb.g, rgb.b)"),
+        "forwarding fields"
+    );
     assert!(!has_rgb_literal("let x = 5;"), "no colour at all");
 }

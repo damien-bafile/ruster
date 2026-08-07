@@ -102,7 +102,12 @@ impl<A> LspState<A> {
                 self.manager.did_open(lang, &uri, &language_id, 0, text);
                 self.docs.insert(
                     buffer,
-                    LspDoc { uri, lang: lang.to_string(), version: 0, synced: text.to_string() },
+                    LspDoc {
+                        uri,
+                        lang: lang.to_string(),
+                        version: 0,
+                        synced: text.to_string(),
+                    },
                 );
                 Sync::Opened
             }
@@ -167,7 +172,10 @@ impl<A> LspState<A> {
     }
 
     pub fn diagnostics(&self, buffer: BufferId) -> &[Diagnostic] {
-        self.diagnostics.get(&buffer).map(Vec::as_slice).unwrap_or_default()
+        self.diagnostics
+            .get(&buffer)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
     }
 
     pub fn set_diagnostics(&mut self, buffer: BufferId, diags: Vec<Diagnostic>) {
@@ -257,7 +265,11 @@ mod tests {
         let mut s = state();
         s.pending.insert(("rust".into(), 1), TestAction::Hover);
         assert_eq!(s.take_pending("rust", 1), Some(TestAction::Hover));
-        assert_eq!(s.take_pending("rust", 1), None, "a reply must not fire twice");
+        assert_eq!(
+            s.take_pending("rust", 1),
+            None,
+            "a reply must not fire twice"
+        );
     }
 
     #[test]
@@ -288,8 +300,14 @@ mod tests {
 
     fn diag(severity: u8) -> Diagnostic {
         Diagnostic {
-            start: ruster_lsp::results::LspPositionEq { line: 0, character: 0 },
-            end: ruster_lsp::results::LspPositionEq { line: 0, character: 1 },
+            start: ruster_lsp::results::LspPositionEq {
+                line: 0,
+                character: 0,
+            },
+            end: ruster_lsp::results::LspPositionEq {
+                line: 0,
+                character: 1,
+            },
             severity,
             message: "x".into(),
         }

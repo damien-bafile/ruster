@@ -19,7 +19,12 @@ const TUI: &str = include_str!("../src/renderer.rs");
 const GUI: &str = include_str!("../../ruster-render-raylib/src/lib.rs");
 
 /// Where a backend draws its floats, and where it draws its dialog.
+///
+/// Whitespace is collapsed first: the test is about draw *order*, and a
+/// rustfmt pass that wraps either call would otherwise break the scrape and
+/// report it as the code no longer drawing that surface at all.
 fn draw_positions(src: &str, what: &str) -> (usize, usize) {
+    let src = &src.split_whitespace().collect::<Vec<_>>().join(" ");
     let floats = src
         .find("floats_in_draw_order(&state.floats)")
         .unwrap_or_else(|| panic!("{what} no longer draws floats — the scrape has broken"));

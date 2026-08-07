@@ -37,7 +37,11 @@ fn main() {
 
     let lang = match ruster_syntax::grammar::load_grammar(&dir, "json") {
         Ok(lang) => {
-            println!("loaded: abi={} node_kinds={}", lang.abi_version(), lang.node_kind_count());
+            println!(
+                "loaded: abi={} node_kinds={}",
+                lang.abi_version(),
+                lang.node_kind_count()
+            );
             lang
         }
         Err(e) => {

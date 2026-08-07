@@ -13,13 +13,29 @@ fn maps_real_git_output_onto_the_right_working_file_lines() {
         h,
         [
             // "TWO" is 0-based line 1.
-            Hunk { kind: HunkKind::Modified, start: 1, count: 1 },
+            Hunk {
+                kind: HunkKind::Modified,
+                start: 1,
+                count: 1
+            },
             // "AAA"/"BBB" are 0-based lines 4 and 5.
-            Hunk { kind: HunkKind::Added, start: 4, count: 2 },
+            Hunk {
+                kind: HunkKind::Added,
+                start: 4,
+                count: 2
+            },
             // "six" was deleted at end-of-file; the sign sits on the last
             // remaining line, 0-based 6 ("five"), not one past it.
-            Hunk { kind: HunkKind::Removed, start: 6, count: 0 },
+            Hunk {
+                kind: HunkKind::Removed,
+                start: 6,
+                count: 0
+            },
         ]
     );
-    assert_eq!(h[1].lines().collect::<Vec<_>>(), vec![4, 5], "the inserted lines");
+    assert_eq!(
+        h[1].lines().collect::<Vec<_>>(),
+        vec![4, 5],
+        "the inserted lines"
+    );
 }

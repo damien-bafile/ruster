@@ -79,7 +79,10 @@ impl DebugState {
 
     /// Breakpoint lines for one file, empty if none.
     pub fn breakpoints_in(&self, path: &Path) -> &[u16] {
-        self.breakpoints.get(path).map(Vec::as_slice).unwrap_or_default()
+        self.breakpoints
+            .get(path)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
     }
 
     /// Add or remove a breakpoint, and tell a running session about it.
@@ -123,7 +126,10 @@ impl DebugState {
     /// Split out because the send itself needs a live adapter subprocess and so
     /// cannot be unit-tested, whereas *what would be sent* can be.
     pub fn breakpoint_payload(&self) -> Vec<(PathBuf, Vec<u16>)> {
-        self.breakpoints.iter().map(|(p, ls)| (p.clone(), ls.clone())).collect()
+        self.breakpoints
+            .iter()
+            .map(|(p, ls)| (p.clone(), ls.clone()))
+            .collect()
     }
 }
 
@@ -180,7 +186,11 @@ mod tests {
         assert_eq!(d.breakpoints_in(&b), &[7]);
         d.toggle_breakpoint(&a, 5);
         assert!(d.breakpoints_in(&a).is_empty());
-        assert_eq!(d.breakpoints_in(&b), &[7], "clearing one file cleared another");
+        assert_eq!(
+            d.breakpoints_in(&b),
+            &[7],
+            "clearing one file cleared another"
+        );
     }
 
     #[test]
@@ -212,7 +222,10 @@ mod tests {
         payload.sort();
         assert_eq!(
             payload,
-            vec![(path("/src/a.rs"), vec![1, 3]), (path("/src/b.rs"), vec![2])],
+            vec![
+                (path("/src/a.rs"), vec![1, 3]),
+                (path("/src/b.rs"), vec![2])
+            ],
             "the payload must describe the whole table"
         );
     }

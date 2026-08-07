@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use mlua::{Function, Lua, MultiValue, RegistryKey};
+use std::collections::HashMap;
 
 pub struct EventBus {
     handlers: HashMap<String, Vec<RegistryKey>>,
@@ -13,12 +13,17 @@ impl Default for EventBus {
 
 impl EventBus {
     pub fn new() -> Self {
-        EventBus { handlers: HashMap::new() }
+        EventBus {
+            handlers: HashMap::new(),
+        }
     }
 
     pub fn on(&mut self, lua: &Lua, event: &str, func: Function) -> mlua::Result<()> {
         let key = lua.create_registry_value(func)?;
-        self.handlers.entry(event.to_string()).or_default().push(key);
+        self.handlers
+            .entry(event.to_string())
+            .or_default()
+            .push(key);
         Ok(())
     }
 
@@ -61,10 +66,12 @@ mod tests {
         let mut bus = EventBus::new();
         let called = Rc::new(RefCell::new(false));
         let c = called.clone();
-        let func = lua.create_function(move |_, ()| {
-            *c.borrow_mut() = true;
-            Ok(())
-        }).unwrap();
+        let func = lua
+            .create_function(move |_, ()| {
+                *c.borrow_mut() = true;
+                Ok(())
+            })
+            .unwrap();
         bus.on(&lua, "TestEvent", func).unwrap();
         bus.emit(&lua, "TestEvent", &[]);
         assert!(*called.borrow());
@@ -84,14 +91,18 @@ mod tests {
         let count = Rc::new(RefCell::new(0));
         let c1 = count.clone();
         let c2 = count.clone();
-        let f1 = lua.create_function(move |_, ()| {
-            *c1.borrow_mut() += 1;
-            Ok(())
-        }).unwrap();
-        let f2 = lua.create_function(move |_, ()| {
-            *c2.borrow_mut() += 1;
-            Ok(())
-        }).unwrap();
+        let f1 = lua
+            .create_function(move |_, ()| {
+                *c1.borrow_mut() += 1;
+                Ok(())
+            })
+            .unwrap();
+        let f2 = lua
+            .create_function(move |_, ()| {
+                *c2.borrow_mut() += 1;
+                Ok(())
+            })
+            .unwrap();
         bus.on(&lua, "Multi", f1).unwrap();
         bus.on(&lua, "Multi", f2).unwrap();
         bus.emit(&lua, "Multi", &[]);

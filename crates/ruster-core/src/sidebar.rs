@@ -29,7 +29,11 @@ pub struct SidebarTree {
 
 impl SidebarTree {
     pub fn new(root: PathBuf, show_hidden: bool) -> Self {
-        SidebarTree { root, expanded: BTreeSet::new(), show_hidden }
+        SidebarTree {
+            root,
+            expanded: BTreeSet::new(),
+            show_hidden,
+        }
     }
 
     pub fn is_expanded(&self, path: &Path) -> bool {
@@ -125,7 +129,11 @@ impl SidebarTree {
             .iter()
             .map(|r| {
                 let marker = if r.is_dir {
-                    if r.expanded { "▾ " } else { "▸ " }
+                    if r.expanded {
+                        "▾ "
+                    } else {
+                        "▸ "
+                    }
                 } else {
                     "  "
                 };
@@ -203,7 +211,10 @@ mod tests {
         tree.expand(&root.join("a"));
         let text = tree.render();
         assert!(text.contains("▾ a"));
-        assert!(text.contains("    x.txt"), "child indented under a: {text:?}");
+        assert!(
+            text.contains("    x.txt"),
+            "child indented under a: {text:?}"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 }

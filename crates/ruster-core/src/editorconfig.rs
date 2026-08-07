@@ -27,18 +27,25 @@ pub fn parse(file_path: &Path) -> HashMap<String, String> {
 }
 
 fn has_root_marker(content: &str) -> bool {
-    content.lines().any(|l| l.trim().eq_ignore_ascii_case("root = true"))
+    content
+        .lines()
+        .any(|l| l.trim().eq_ignore_ascii_case("root = true"))
 }
 
 fn match_glob<'a>(content: &'a str, file_path: &Path) -> Option<HashMap<&'a str, &'a str>> {
     let file_name = file_path.file_name()?.to_str()?;
     let mut best: Option<(usize, HashMap<&'a str, &'a str>)> = None;
-    let mut lines = content.lines().map(|l| l.trim()).filter(|l| !l.is_empty() && !l.starts_with(';') && !l.starts_with('#'));
+    let mut lines = content
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with(';') && !l.starts_with('#'));
     while let Some(line) = lines.next() {
         if line.starts_with('[') {
             if let Some(end) = line.find(']') {
                 let pattern = &line[1..end];
-                if matches_glob_pattern(pattern, file_name) || matches_glob_pattern(pattern, file_path.to_str().unwrap_or("")) {
+                if matches_glob_pattern(pattern, file_name)
+                    || matches_glob_pattern(pattern, file_path.to_str().unwrap_or(""))
+                {
                     let mut props = HashMap::new();
                     for val_line in lines.by_ref() {
                         if val_line.starts_with('[') {
@@ -46,7 +53,7 @@ fn match_glob<'a>(content: &'a str, file_path: &Path) -> Option<HashMap<&'a str,
                         }
                         if let Some(eq) = val_line.find('=') {
                             let key = val_line[..eq].trim();
-                            let val = val_line[eq+1..].trim();
+                            let val = val_line[eq + 1..].trim();
                             props.insert(key, val);
                         }
                     }
@@ -72,7 +79,7 @@ fn matches_glob_pattern(pattern: &str, name: &str) -> bool {
     }
     // Single * at start and end
     if pattern.starts_with("*") && pattern.ends_with("*") {
-        let inner = &pattern[1..pattern.len()-1];
+        let inner = &pattern[1..pattern.len() - 1];
         return name.contains(inner);
     }
     if let Some(suffix) = pattern.strip_prefix("*") {
@@ -112,7 +119,11 @@ mod tests {
         let tmp = std::env::temp_dir().join("ruster_ec_test");
         let _ = std::fs::create_dir_all(&tmp);
         let mut f = std::fs::File::create(tmp.join(".editorconfig")).unwrap();
-        write!(f, "root = true\n\n[*]\nindent_style = space\nindent_size = 2\n").unwrap();
+        write!(
+            f,
+            "root = true\n\n[*]\nindent_style = space\nindent_size = 2\n"
+        )
+        .unwrap();
         let file = tmp.join("test.rs");
         std::fs::File::create(&file).unwrap();
         let props = parse(&file);

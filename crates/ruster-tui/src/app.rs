@@ -8,6 +8,10 @@ use crate::renderer::TuiRenderer;
 use crate::settings::{SettingsState, SyntaxSeed};
 use crate::sidebar::{SidebarResponse, SidebarState};
 use crate::trouble::{Source as TroubleSource, TroubleItem, TroubleState};
+use crossterm::event::{
+    DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEventKind, KeyModifiers, MouseButton,
+    MouseEvent, MouseEventKind,
+};
 use ruster_core::action::{Action, EditOp, Motion};
 use ruster_core::buffer::Buffer;
 use ruster_core::cursor::CursorSet;
@@ -18,18 +22,18 @@ use ruster_core::vim::VimMode;
 use ruster_core::vim::VimState;
 use ruster_core::windows::{FocusDir, Rect as CoreRect, SplitDir};
 use ruster_core::workspace::Workspace;
-use crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEventKind, KeyModifiers, MouseButton,
-    MouseEvent, MouseEventKind,
+use ruster_lsp::{LspPosition, ServerMessage};
+use ruster_lua::{
+    config::Config,
+    schema::{SettingKind, SettingValue},
+    LuaAction, LuaRuntime,
 };
-use ruster_lua::{config::Config, schema::{SettingKind, SettingValue}, LuaAction, LuaRuntime};
 use ruster_notify::{BackendKind, Notification, NotificationManager};
 use ruster_render::{
     CursorKind, FlashLabelRender, FrameState, Rect as RRect, Renderer, SelectionView,
     StatuslineView, StyledLine, SyntaxStyle, WelcomeView, WhichKeyView, WindowView,
 };
 use ruster_syntax::SyntaxEngine;
-use ruster_lsp::{LspPosition, ServerMessage};
 use ruster_terminal::{encode_key, Key as TKey, Mods as TMods, TerminalSession};
 use std::cell::RefCell;
 use std::io::IsTerminal;
@@ -69,9 +73,8 @@ pub struct WindowLayout {
 /// Infinite iterator over adaptive labels: a-z, aa-az, ba-bz, …
 fn label_pool_iter() -> impl Iterator<Item = String> {
     let single = ('a'..='z').map(|c| c.to_string());
-    let multi = ('a'..='z').flat_map(|first| {
-        ('a'..='z').map(move |second| format!("{}{}", first, second))
-    });
+    let multi =
+        ('a'..='z').flat_map(|first| ('a'..='z').map(move |second| format!("{}{}", first, second)));
     single.chain(multi)
 }
 
@@ -128,7 +131,11 @@ fn build_hover_lines(markdown: &str) -> Vec<StyledLine> {
                 in_code = false;
             } else {
                 in_code = true;
-                code_lang = line.trim_start().trim_start_matches("```").trim().to_string();
+                code_lang = line
+                    .trim_start()
+                    .trim_start_matches("```")
+                    .trim()
+                    .to_string();
             }
             continue;
         }
@@ -137,14 +144,21 @@ fn build_hover_lines(markdown: &str) -> Vec<StyledLine> {
         } else if line.trim() == "---" {
             continue; // drop markdown separators
         } else {
-            out.push(StyledLine { text: line.to_string(), highlights: vec![] });
+            out.push(StyledLine {
+                text: line.to_string(),
+                highlights: vec![],
+            });
         }
     }
     if in_code && !code_buf.is_empty() {
         out.extend(highlight_code_block(&code_buf.join("\n"), &code_lang));
     }
     // Trim trailing blank lines and cap the height.
-    while out.last().map(|l| l.text.trim().is_empty()).unwrap_or(false) {
+    while out
+        .last()
+        .map(|l| l.text.trim().is_empty())
+        .unwrap_or(false)
+    {
         out.pop();
     }
     out.truncate(24);
@@ -181,7 +195,6 @@ fn ruster_config_dir() -> Option<PathBuf> {
         dirs::home_dir().map(|h| h.join(".config").join("ruster"))
     }
 }
-
 
 /// Resolve a theme's UI colors: the theme's role colors (user `themes/<name>.lua`
 /// first, then a built-in, then default) with the per-element overrides layered on.
@@ -379,7 +392,7 @@ fn push_query_warning(notify: &mut NotificationManager, text: String) {
         ruster_core::message::MessageSource::System,
         text,
     ));
-    }
+}
 
 /// The first `ruster-NNN.png` in `dir` that does not exist yet, so repeated
 /// `:screenshot` calls accumulate instead of overwriting one file.
@@ -407,7 +420,11 @@ fn screenshot_path(arg: Option<&str>, cwd: &std::path::Path) -> PathBuf {
         return next_screenshot_path(&p);
     }
     if p.extension().is_none_or(|e| !e.eq_ignore_ascii_case("png")) {
-        let name = p.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let name = p
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
         p.set_file_name(format!("{name}.png"));
     }
     p
@@ -467,7 +484,10 @@ fn find_in_path(name: &str) -> Option<String> {
 fn plain_lines(content: &str) -> Vec<StyledLine> {
     content
         .split('\n')
-        .map(|s| StyledLine { text: s.to_string(), highlights: vec![] })
+        .map(|s| StyledLine {
+            text: s.to_string(),
+            highlights: vec![],
+        })
         .collect()
 }
 
@@ -520,7 +540,12 @@ fn to_term_grid_view(grid: &ruster_terminal::TermGrid) -> ruster_render::TermGri
             inverse: c.attrs.inverse,
         })
         .collect();
-    ruster_render::TermGridView { cols: grid.cols, rows: grid.rows, cells, cursor: grid.cursor }
+    ruster_render::TermGridView {
+        cols: grid.cols,
+        rows: grid.rows,
+        cells,
+        cursor: grid.cursor,
+    }
 }
 
 struct FrameTimer {
@@ -529,7 +554,9 @@ struct FrameTimer {
 
 impl FrameTimer {
     fn new() -> Self {
-        Self { last: std::time::Instant::now() }
+        Self {
+            last: std::time::Instant::now(),
+        }
     }
 
     fn tick(&mut self) -> Duration {
@@ -547,10 +574,20 @@ struct CursorAnim {
 
 impl CursorAnim {
     fn new() -> Self {
-        Self { cell_x: 0.0, cell_y: 0.0 }
+        Self {
+            cell_x: 0.0,
+            cell_y: 0.0,
+        }
     }
 
-    fn update(&mut self, dt: Duration, target_col: u16, target_line: u16, enabled: bool, speed: f32) {
+    fn update(
+        &mut self,
+        dt: Duration,
+        target_col: u16,
+        target_line: u16,
+        enabled: bool,
+        speed: f32,
+    ) {
         let dt = dt.as_secs_f32();
         let tx = target_col as f32;
         let ty = target_line as f32;
@@ -714,8 +751,7 @@ fn parse_set_general(arg: &str) -> Result<CmdAction, String> {
         if k.is_empty() {
             return Err("Usage: :set key? — display a setting value".to_string());
         }
-        let _ = ruster_lua::schema::spec_by_key(k)
-            .ok_or_else(|| format!("Unknown option: {k}"))?;
+        let _ = ruster_lua::schema::spec_by_key(k).ok_or_else(|| format!("Unknown option: {k}"))?;
         return Ok(CmdAction::ShowSetting(k.to_string()));
     }
 
@@ -724,40 +760,40 @@ fn parse_set_general(arg: &str) -> Result<CmdAction, String> {
         if k.is_empty() {
             return Err("Usage: :set key& — reset a setting to default".to_string());
         }
-        let _ = ruster_lua::schema::spec_by_key(k)
-            .ok_or_else(|| format!("Unknown option: {k}"))?;
+        let _ = ruster_lua::schema::spec_by_key(k).ok_or_else(|| format!("Unknown option: {k}"))?;
         return Ok(CmdAction::ResetSetting(k.to_string()));
     }
 
     let (key, named_val) = if let Some(rest) = tok.strip_suffix('!') {
         let k = rest.trim();
-        let spec = ruster_lua::schema::spec_by_key(k)
-            .ok_or_else(|| format!("Unknown option: {k}"))?;
+        let spec =
+            ruster_lua::schema::spec_by_key(k).ok_or_else(|| format!("Unknown option: {k}"))?;
         if !matches!(spec.kind, SettingKind::Bool) {
             return Err(format!("{k}: only boolean options support toggle (!)"));
         }
         (k.to_string(), SetNamedVal::Toggle)
     } else if let Some(rest) = tok.strip_prefix("no") {
         let k = rest.trim();
-        let spec = ruster_lua::schema::spec_by_key(k)
-            .ok_or_else(|| format!("Unknown option: {k}"))?;
+        let spec =
+            ruster_lua::schema::spec_by_key(k).ok_or_else(|| format!("Unknown option: {k}"))?;
         if !matches!(spec.kind, SettingKind::Bool) {
             return Err(format!("{k}: only boolean options support the 'no' prefix"));
         }
         (k.to_string(), SetNamedVal::Exact(SettingValue::Bool(false)))
     } else if let Some((k, v)) = tok.split_once('=') {
         let k = k.trim();
-        let spec = ruster_lua::schema::spec_by_key(k)
-            .ok_or_else(|| format!("Unknown option: {k}"))?;
+        let spec =
+            ruster_lua::schema::spec_by_key(k).ok_or_else(|| format!("Unknown option: {k}"))?;
         let parsed = spec.kind.parse_value(v)?;
         (k.to_string(), SetNamedVal::Exact(parsed))
     } else {
-        let spec = ruster_lua::schema::spec_by_key(tok)
-            .ok_or_else(|| format!("Unknown option: {tok}"))?;
+        let spec =
+            ruster_lua::schema::spec_by_key(tok).ok_or_else(|| format!("Unknown option: {tok}"))?;
         match spec.kind {
-            SettingKind::Bool => {
-                (tok.to_string(), SetNamedVal::Exact(SettingValue::Bool(true)))
-            }
+            SettingKind::Bool => (
+                tok.to_string(),
+                SetNamedVal::Exact(SettingValue::Bool(true)),
+            ),
             _ => return Ok(CmdAction::ShowSetting(tok.to_string())),
         }
     };
@@ -771,7 +807,9 @@ fn parse_substitute(trimmed: &str) -> Option<CmdAction> {
         Some(r) => (true, r),
         None => (false, trimmed),
     };
-    let rest = rest.strip_prefix('s').or_else(|| rest.strip_prefix("substitute"))?;
+    let rest = rest
+        .strip_prefix('s')
+        .or_else(|| rest.strip_prefix("substitute"))?;
     let delim = rest.chars().next()?;
     if delim.is_alphanumeric() {
         return None; // e.g. ":set" must not parse as a substitution
@@ -889,66 +927,144 @@ enum LeaderNode {
 }
 
 static WINDOW_GROUP: &[(char, LeaderNode)] = &[
-    ('h', LeaderNode::Action("focus left", LeaderAction::Focus(FocusDir::Left))),
-    ('j', LeaderNode::Action("focus down", LeaderAction::Focus(FocusDir::Down))),
-    ('k', LeaderNode::Action("focus up", LeaderAction::Focus(FocusDir::Up))),
-    ('l', LeaderNode::Action("focus right", LeaderAction::Focus(FocusDir::Right))),
-    ('s', LeaderNode::Action("split below", LeaderAction::Split(SplitDir::Horizontal))),
-    ('v', LeaderNode::Action("split right", LeaderAction::Split(SplitDir::Vertical))),
-    ('c', LeaderNode::Action("close window", LeaderAction::CloseWindow)),
-    ('q', LeaderNode::Action("close window", LeaderAction::CloseWindow)),
-    ('o', LeaderNode::Action("only (close others)", LeaderAction::Only)),
-    ('z', LeaderNode::Action("fullscreen", LeaderAction::Fullscreen)),
+    (
+        'h',
+        LeaderNode::Action("focus left", LeaderAction::Focus(FocusDir::Left)),
+    ),
+    (
+        'j',
+        LeaderNode::Action("focus down", LeaderAction::Focus(FocusDir::Down)),
+    ),
+    (
+        'k',
+        LeaderNode::Action("focus up", LeaderAction::Focus(FocusDir::Up)),
+    ),
+    (
+        'l',
+        LeaderNode::Action("focus right", LeaderAction::Focus(FocusDir::Right)),
+    ),
+    (
+        's',
+        LeaderNode::Action("split below", LeaderAction::Split(SplitDir::Horizontal)),
+    ),
+    (
+        'v',
+        LeaderNode::Action("split right", LeaderAction::Split(SplitDir::Vertical)),
+    ),
+    (
+        'c',
+        LeaderNode::Action("close window", LeaderAction::CloseWindow),
+    ),
+    (
+        'q',
+        LeaderNode::Action("close window", LeaderAction::CloseWindow),
+    ),
+    (
+        'o',
+        LeaderNode::Action("only (close others)", LeaderAction::Only),
+    ),
+    (
+        'z',
+        LeaderNode::Action("fullscreen", LeaderAction::Fullscreen),
+    ),
 ];
 
 static FIND_GROUP: &[(char, LeaderNode)] = &[
     ('f', LeaderNode::Action("files", LeaderAction::Files)),
     ('b', LeaderNode::Action("buffers", LeaderAction::Buffers)),
-    ('e', LeaderNode::Action("explorer (dired)", LeaderAction::Explorer)),
+    (
+        'e',
+        LeaderNode::Action("explorer (dired)", LeaderAction::Explorer),
+    ),
 ];
 
 static QUIT_GROUP: &[(char, LeaderNode)] = &[
     ('q', LeaderNode::Action("quit", LeaderAction::Quit)),
-    ('w', LeaderNode::Action("save and quit", LeaderAction::SaveAndQuit)),
+    (
+        'w',
+        LeaderNode::Action("save and quit", LeaderAction::SaveAndQuit),
+    ),
 ];
 
 static CODE_GROUP: &[(char, LeaderNode)] = &[
     ('b', LeaderNode::Action("build", LeaderAction::Build)),
     ('t', LeaderNode::Action("test", LeaderAction::Test)),
     ('k', LeaderNode::Action("hover", LeaderAction::Hover)),
-    ('g', LeaderNode::Action("go to definition", LeaderAction::Definition)),
-    ('r', LeaderNode::Action("references", LeaderAction::References)),
+    (
+        'g',
+        LeaderNode::Action("go to definition", LeaderAction::Definition),
+    ),
+    (
+        'r',
+        LeaderNode::Action("references", LeaderAction::References),
+    ),
     ('f', LeaderNode::Action("format", LeaderAction::Format)),
     ('n', LeaderNode::Action("rename", LeaderAction::Rename)),
-    ('o', LeaderNode::Action("document symbols", LeaderAction::DocumentSymbol)),
-    ('d', LeaderNode::Action("diagnostics", LeaderAction::Diagnostics)),
-    ('i', LeaderNode::Action("incoming calls", LeaderAction::IncomingCalls)),
-    ('y', LeaderNode::Action("outgoing calls", LeaderAction::OutgoingCalls)),
+    (
+        'o',
+        LeaderNode::Action("document symbols", LeaderAction::DocumentSymbol),
+    ),
+    (
+        'd',
+        LeaderNode::Action("diagnostics", LeaderAction::Diagnostics),
+    ),
+    (
+        'i',
+        LeaderNode::Action("incoming calls", LeaderAction::IncomingCalls),
+    ),
+    (
+        'y',
+        LeaderNode::Action("outgoing calls", LeaderAction::OutgoingCalls),
+    ),
 ];
 
 static BUFFER_GROUP: &[(char, LeaderNode)] = &[
     ('b', LeaderNode::Action("buffers", LeaderAction::Buffers)),
-    ('d', LeaderNode::Action("delete buffer", LeaderAction::BufferDelete)),
+    (
+        'd',
+        LeaderNode::Action("delete buffer", LeaderAction::BufferDelete),
+    ),
 ];
 
 static SEARCH_GROUP: &[(char, LeaderNode)] = &[
     ('f', LeaderNode::Action("files", LeaderAction::Files)),
-    ('g', LeaderNode::Action("grep (ripgrep)", LeaderAction::Grep)),
-    ('s', LeaderNode::Action("document symbols", LeaderAction::DocumentSymbol)),
-    ('d', LeaderNode::Action("diagnostics", LeaderAction::Diagnostics)),
+    (
+        'g',
+        LeaderNode::Action("grep (ripgrep)", LeaderAction::Grep),
+    ),
+    (
+        's',
+        LeaderNode::Action("document symbols", LeaderAction::DocumentSymbol),
+    ),
+    (
+        'd',
+        LeaderNode::Action("diagnostics", LeaderAction::Diagnostics),
+    ),
 ];
 
 static OPEN_GROUP: &[(char, LeaderNode)] = &[
-    ('d', LeaderNode::Action("dashboard", LeaderAction::Dashboard)),
+    (
+        'd',
+        LeaderNode::Action("dashboard", LeaderAction::Dashboard),
+    ),
     ('t', LeaderNode::Action("terminal", LeaderAction::Terminal)),
     ('s', LeaderNode::Action("settings", LeaderAction::Settings)),
-    ('e', LeaderNode::Action("explorer (dired)", LeaderAction::Explorer)),
+    (
+        'e',
+        LeaderNode::Action("explorer (dired)", LeaderAction::Explorer),
+    ),
     ('m', LeaderNode::Action("messages", LeaderAction::Messages)),
     ('r', LeaderNode::Action("run task", LeaderAction::Tasks)),
     ('h', LeaderNode::Action("help", LeaderAction::Help)),
-    ('M', LeaderNode::Action("mason (tools)", LeaderAction::Mason)),
+    (
+        'M',
+        LeaderNode::Action("mason (tools)", LeaderAction::Mason),
+    ),
     ('T', LeaderNode::Action("themes", LeaderAction::Themes)),
-    ('n', LeaderNode::Action("notifications", LeaderAction::NoicePanel)),
+    (
+        'n',
+        LeaderNode::Action("notifications", LeaderAction::NoicePanel),
+    ),
 ];
 
 /// Git. Phase 7 built a porcelain reachable only by typing its commands; this
@@ -956,47 +1072,102 @@ static OPEN_GROUP: &[(char, LeaderNode)] = &[
 static GIT_GROUP: &[(char, LeaderNode)] = &[
     ('g', LeaderNode::Action("status", LeaderAction::GitStatus)),
     ('c', LeaderNode::Action("commit", LeaderAction::GitCommit)),
-    ('d', LeaderNode::Action("diff vs HEAD", LeaderAction::Diffview)),
-    ('S', LeaderNode::Action("staged diff", LeaderAction::GitStaged)),
-    ('s', LeaderNode::Action("stage hunk", LeaderAction::GitStageHunk)),
+    (
+        'd',
+        LeaderNode::Action("diff vs HEAD", LeaderAction::Diffview),
+    ),
+    (
+        'S',
+        LeaderNode::Action("staged diff", LeaderAction::GitStaged),
+    ),
+    (
+        's',
+        LeaderNode::Action("stage hunk", LeaderAction::GitStageHunk),
+    ),
     ('p', LeaderNode::Action("push", LeaderAction::GitPush)),
     ('F', LeaderNode::Action("pull", LeaderAction::GitPull)),
-    ('t', LeaderNode::Action("toggle signs", LeaderAction::GitsignsToggle)),
+    (
+        't',
+        LeaderNode::Action("toggle signs", LeaderAction::GitsignsToggle),
+    ),
 ];
 
 /// Sessions: save and restore what was open.
 static SESSION_GROUP: &[(char, LeaderNode)] = &[
-    ('s', LeaderNode::Action("save session", LeaderAction::SessionSave)),
-    ('r', LeaderNode::Action("restore session", LeaderAction::SessionRestore)),
+    (
+        's',
+        LeaderNode::Action("save session", LeaderAction::SessionSave),
+    ),
+    (
+        'r',
+        LeaderNode::Action("restore session", LeaderAction::SessionRestore),
+    ),
 ];
 
-static PROJECT_GROUP: &[(char, LeaderNode)] = &[
-    ('p', LeaderNode::Action("switch project", LeaderAction::Projects)),
-];
+static PROJECT_GROUP: &[(char, LeaderNode)] = &[(
+    'p',
+    LeaderNode::Action("switch project", LeaderAction::Projects),
+)];
 
 static TROUBLE_GROUP: &[(char, LeaderNode)] = &[
-    ('x', LeaderNode::Action("problem list", LeaderAction::Trouble)),
-    ('t', LeaderNode::Action("todo markers", LeaderAction::TodoList)),
+    (
+        'x',
+        LeaderNode::Action("problem list", LeaderAction::Trouble),
+    ),
+    (
+        't',
+        LeaderNode::Action("todo markers", LeaderAction::TodoList),
+    ),
 ];
 
 static DEBUG_GROUP: &[(char, LeaderNode)] = &[
-    ('d', LeaderNode::Action("start debugging", LeaderAction::DebugStart)),
-    ('b', LeaderNode::Action("toggle breakpoint", LeaderAction::DebugToggleBreakpoint)),
-    ('c', LeaderNode::Action("continue", LeaderAction::DebugContinue)),
-    ('n', LeaderNode::Action("step over", LeaderAction::DebugStepOver)),
-    ('i', LeaderNode::Action("step into", LeaderAction::DebugStepIn)),
-    ('o', LeaderNode::Action("step out", LeaderAction::DebugStepOut)),
-    ('q', LeaderNode::Action("stop debugging", LeaderAction::DebugStop)),
+    (
+        'd',
+        LeaderNode::Action("start debugging", LeaderAction::DebugStart),
+    ),
+    (
+        'b',
+        LeaderNode::Action("toggle breakpoint", LeaderAction::DebugToggleBreakpoint),
+    ),
+    (
+        'c',
+        LeaderNode::Action("continue", LeaderAction::DebugContinue),
+    ),
+    (
+        'n',
+        LeaderNode::Action("step over", LeaderAction::DebugStepOver),
+    ),
+    (
+        'i',
+        LeaderNode::Action("step into", LeaderAction::DebugStepIn),
+    ),
+    (
+        'o',
+        LeaderNode::Action("step out", LeaderAction::DebugStepOut),
+    ),
+    (
+        'q',
+        LeaderNode::Action("stop debugging", LeaderAction::DebugStop),
+    ),
 ];
 
 static UI_GROUP: &[(char, LeaderNode)] = &[
-    ('n', LeaderNode::Action("toggle line numbers", LeaderAction::ToggleNumber)),
-    ('r', LeaderNode::Action("toggle relative numbers", LeaderAction::ToggleRelative)),
+    (
+        'n',
+        LeaderNode::Action("toggle line numbers", LeaderAction::ToggleNumber),
+    ),
+    (
+        'r',
+        LeaderNode::Action("toggle relative numbers", LeaderAction::ToggleRelative),
+    ),
 ];
 
 static LEADER_ROOT: &[(char, LeaderNode)] = &[
     (',', LeaderNode::Action("settings", LeaderAction::Settings)),
-    ('e', LeaderNode::Action("toggle sidebar", LeaderAction::Sidebar)),
+    (
+        'e',
+        LeaderNode::Action("toggle sidebar", LeaderAction::Sidebar),
+    ),
     ('w', LeaderNode::Group("windows", WINDOW_GROUP)),
     ('f', LeaderNode::Group("find", FIND_GROUP)),
     ('b', LeaderNode::Group("buffers", BUFFER_GROUP)),
@@ -1034,7 +1205,6 @@ enum LspAction {
     /// Step 2 returned the calls; `true` = incoming.
     CallHierarchy(bool),
 }
-
 
 /// Resolve a full leader sequence: is it a group prefix, a complete action, or
 /// an unknown/invalid path?
@@ -1350,7 +1520,10 @@ impl App {
         let ws = if file_path.as_os_str().is_empty() {
             Rc::new(RefCell::new(Workspace::scratch()))
         } else {
-            Rc::new(RefCell::new(Workspace::from_file(file_path.clone(), content.clone())))
+            Rc::new(RefCell::new(Workspace::from_file(
+                file_path.clone(),
+                content.clone(),
+            )))
         };
         ws.borrow_mut().execute(Action::Move(Motion::To(0)));
         let initial_buffer = ws.borrow().active_buffer();
@@ -1386,28 +1559,28 @@ impl App {
         // Skip all config-dir file IO under test so the suite never touches the
         // user's real ~/.config/ruster.
         if !cfg!(test) {
-        if let Some(dir) = ruster_config_dir() {
-            let config_path = dir.join("config.lua");
-            let init_path = dir.join("init.lua");
-            if !config_path.exists() {
-                let _ = std::fs::create_dir_all(&dir);
-                if let Err(e) =
-                    std::fs::write(&config_path, ruster_lua::schema::generate_default_config())
-                {
-                    eprintln!("ruster: could not write {}: {}", config_path.display(), e);
+            if let Some(dir) = ruster_config_dir() {
+                let config_path = dir.join("config.lua");
+                let init_path = dir.join("init.lua");
+                if !config_path.exists() {
+                    let _ = std::fs::create_dir_all(&dir);
+                    if let Err(e) =
+                        std::fs::write(&config_path, ruster_lua::schema::generate_default_config())
+                    {
+                        eprintln!("ruster: could not write {}: {}", config_path.display(), e);
+                    }
+                }
+                if config_path.exists() {
+                    if let Err(e) = lua.load_init(&config_path) {
+                        config_errors.push(e);
+                    }
+                }
+                if init_path.exists() {
+                    if let Err(e) = lua.load_init(&init_path) {
+                        config_errors.push(e);
+                    }
                 }
             }
-            if config_path.exists() {
-                if let Err(e) = lua.load_init(&config_path) {
-                    config_errors.push(e);
-                }
-            }
-            if init_path.exists() {
-                if let Err(e) = lua.load_init(&init_path) {
-                    config_errors.push(e);
-                }
-            }
-        }
         }
 
         // Wire buffer callbacks to the active window/document.
@@ -1422,7 +1595,9 @@ impl App {
                 let count = buf.line_count() as i32;
                 let end = end_opt.unwrap_or_else(|| start + 1);
                 let end = if end == -1 { count } else { end.min(count) };
-                (start..end).map(|i| buf.line_to_string(i as usize)).collect()
+                (start..end)
+                    .map(|i| buf.line_to_string(i as usize))
+                    .collect()
             }),
             Box::new(move |start, end, lines_vec| {
                 let line_count = {
@@ -1434,8 +1609,11 @@ impl App {
                     let w = ws_set.borrow();
                     let buf = w.buffer();
                     let cs = buf.line_start_char(start as usize);
-                    let ce = if end + 1 >= line_count { buf.len_chars() }
-                             else { buf.line_start_char(end + 1) };
+                    let ce = if end + 1 >= line_count {
+                        buf.len_chars()
+                    } else {
+                        buf.line_start_char(end + 1)
+                    };
                     (cs, ce)
                 };
                 let mut w = ws_set.borrow_mut();
@@ -1460,7 +1638,9 @@ impl App {
                     let w = ws_set_cursor.borrow();
                     w.buffer().line_start_char(row as usize) + col as usize
                 };
-                ws_set_cursor.borrow_mut().execute(Action::Move(Motion::To(pos)));
+                ws_set_cursor
+                    .borrow_mut()
+                    .execute(Action::Move(Motion::To(pos)));
             }),
         );
 
@@ -1492,7 +1672,13 @@ impl App {
             });
             lua.set_window_callbacks(ruster_lua::WindowCallbacks {
                 list_bufs: Box::new(move || {
-                    ws_lb.borrow().buffers.ids().iter().map(|id| id.0 as i32).collect()
+                    ws_lb
+                        .borrow()
+                        .buffers
+                        .ids()
+                        .iter()
+                        .map(|id| id.0 as i32)
+                        .collect()
                 }),
                 list_wins: Box::new(move || {
                     let w = ws_lw.borrow();
@@ -1516,14 +1702,24 @@ impl App {
                 }),
                 win_set_buf: Box::new(move |win, buf| {
                     let mut w = ws_wsb.borrow_mut();
-                    if w.buffers.get(ruster_core::document::BufferId(buf as u32)).is_some() {
-                        if let Some(win) = w.windows.window_mut(ruster_core::windows::WindowId(win as u32)) {
+                    if w.buffers
+                        .get(ruster_core::document::BufferId(buf as u32))
+                        .is_some()
+                    {
+                        if let Some(win) = w
+                            .windows
+                            .window_mut(ruster_core::windows::WindowId(win as u32))
+                        {
                             win.buffer = ruster_core::document::BufferId(buf as u32);
                         }
                     }
                 }),
                 open_win: Box::new(move |vertical| {
-                    let dir = if vertical { SplitDir::Vertical } else { SplitDir::Horizontal };
+                    let dir = if vertical {
+                        SplitDir::Vertical
+                    } else {
+                        SplitDir::Horizontal
+                    };
                     ws_ow.borrow_mut().windows.split(dir).0 as i32
                 }),
                 close_win: Box::new(move |_id| {
@@ -1546,27 +1742,29 @@ impl App {
         // Generate built-in themes on first run, then apply the selected palette
         // (`general.theme`) from themes/<name>.lua, falling back to a built-in.
         if !cfg!(test) {
-        if let Some(dir) = ruster_config_dir() {
-            let themes_dir = dir.join("themes");
-            let _ = std::fs::create_dir_all(&themes_dir);
-            for (name, theme) in ruster_lua::config::builtin_themes() {
-                let path = themes_dir.join(format!("{name}.lua"));
-                if !path.exists() {
-                    let _ = std::fs::write(&path, theme.to_lua());
+            if let Some(dir) = ruster_config_dir() {
+                let themes_dir = dir.join("themes");
+                let _ = std::fs::create_dir_all(&themes_dir);
+                for (name, theme) in ruster_lua::config::builtin_themes() {
+                    let path = themes_dir.join(format!("{name}.lua"));
+                    if !path.exists() {
+                        let _ = std::fs::write(&path, theme.to_lua());
+                    }
                 }
+                // Warn on an unknown theme name (resolve falls back to default).
+                let known = ruster_lua::config::builtin_themes()
+                    .iter()
+                    .any(|(n, _)| *n == config.theme)
+                    || themes_dir.join(format!("{}.lua", config.theme)).exists();
+                if !known && !config.theme.is_empty() && config.theme != "default" {
+                    config_errors.push(format!(
+                        "general.theme: unknown theme {:?} → using default",
+                        config.theme
+                    ));
+                }
+                // Resolve the theme roles and layer per-element color overrides.
+                config.colors = resolve_theme_colors(&lua, &config.theme, &config.color_overrides);
             }
-            // Warn on an unknown theme name (resolve falls back to default).
-            let known = ruster_lua::config::builtin_themes().iter().any(|(n, _)| *n == config.theme)
-                || themes_dir.join(format!("{}.lua", config.theme)).exists();
-            if !known && !config.theme.is_empty() && config.theme != "default" {
-                config_errors.push(format!(
-                    "general.theme: unknown theme {:?} → using default",
-                    config.theme
-                ));
-            }
-            // Resolve the theme roles and layer per-element color overrides.
-            config.colors = resolve_theme_colors(&lua, &config.theme, &config.color_overrides);
-        }
         }
         // Apply EditorConfig overrides (unless disabled via general.editorconfig).
         if config.editorconfig {
@@ -1617,7 +1815,10 @@ impl App {
         // Fall back to the most recent project if no root found.
         let project_root = project_root.or_else(|| {
             ruster_config_dir().and_then(|d| {
-                ruster_project::recent_projects(&d).into_iter().next().filter(|p| p.exists())
+                ruster_project::recent_projects(&d)
+                    .into_iter()
+                    .next()
+                    .filter(|p| p.exists())
             })
         });
         if let Some(ref state_dir) = ruster_config_dir() {
@@ -1643,12 +1844,16 @@ impl App {
                     "config: {} problem(s) — {} (:config-errors for all)",
                     config_errors.len(),
                     config_errors[0]
-                )
+                ),
             ));
         }
         let mut app = App {
-            ws, vim, renderer,
-            should_quit: false, syntax, syntax_tried,
+            ws,
+            vim,
+            renderer,
+            should_quit: false,
+            syntax,
+            syntax_tried,
             syntax_revision: std::collections::HashMap::new(),
             syntax_reparses: 0,
             watched: WatchedState::default(),
@@ -1656,8 +1861,15 @@ impl App {
             git_status_rx: git_status_rx_init,
             git_status_tx: git_status_tx_init,
             git_status_polled: None,
-            git_status_in_flight: false, lua, config, timer, notify,
-            has_smooth_cursor: false, cursor_anim, pending_ctrl_w: false, picker: None,
+            git_status_in_flight: false,
+            lua,
+            config,
+            timer,
+            notify,
+            has_smooth_cursor: false,
+            cursor_anim,
+            pending_ctrl_w: false,
+            picker: None,
             leader_pending: None,
             pending_results: None,
             preview_cache: None,
@@ -1894,7 +2106,11 @@ impl App {
             // replays the native bracket motion into the vim layer.
             if let Some(open) = self.bracket_pending.take() {
                 if matches!(ck.code, KeyCode::Char('q')) {
-                    if open == ']' { self.quickfix_next() } else { self.quickfix_prev() }
+                    if open == ']' {
+                        self.quickfix_next()
+                    } else {
+                        self.quickfix_prev()
+                    }
                 } else if matches!(ck.code, KeyCode::Char('h')) {
                     self.jump_hunk(open == ']');
                 } else {
@@ -1918,7 +2134,10 @@ impl App {
             if self.terminal_focused {
                 self.handle_terminal_key(ck, bid);
                 return;
-            } else if matches!(ck.code, KeyCode::Char('i') | KeyCode::Char('a') | KeyCode::Enter) {
+            } else if matches!(
+                ck.code,
+                KeyCode::Char('i') | KeyCode::Char('a') | KeyCode::Enter
+            ) {
                 self.terminal_focused = true;
                 return;
             }
@@ -2042,7 +2261,9 @@ impl App {
             let chars: Vec<char> = text.chars().collect();
             if pos < chars.len() {
                 let start = (0..pos).rev().find(|&i| is_word(chars[i])).unwrap_or(0);
-                let end = (pos..chars.len()).find(|&i| !is_word(chars[i])).unwrap_or(chars.len());
+                let end = (pos..chars.len())
+                    .find(|&i| !is_word(chars[i]))
+                    .unwrap_or(chars.len());
                 if start < end {
                     let word: String = chars[start..end].iter().collect();
                     let word_len = word.chars().count();
@@ -2051,7 +2272,13 @@ impl App {
                         let text_rest: String = chars[search_from..].iter().collect();
                         if let Some(found) = text_rest.find(&word) {
                             let offset = search_from + found;
-                            self.ws.borrow_mut().windows.window_mut(win_id).unwrap().cursors.add_cursor(offset);
+                            self.ws
+                                .borrow_mut()
+                                .windows
+                                .window_mut(win_id)
+                                .unwrap()
+                                .cursors
+                                .add_cursor(offset);
                         }
                     }
                 }
@@ -2158,7 +2385,8 @@ impl App {
         // Esc in cmdline cancels path completion and restores original input.
         if self.vim.mode == VimMode::Cmdline && key == KeyEvent::Esc {
             if let Some(comp) = self.cmdline_completion.take() {
-                self.vim.set_cmdline(&format!("{}{}", comp.prefix, comp.original));
+                self.vim
+                    .set_cmdline(&format!("{}{}", comp.prefix, comp.original));
                 return;
             }
         }
@@ -2196,13 +2424,15 @@ impl App {
                     });
                     if let Some(ref comp) = self.cmdline_completion {
                         let candidate = comp.candidates[0].clone();
-                        self.vim.set_cmdline(&format!("{}{}", comp.prefix, candidate));
+                        self.vim
+                            .set_cmdline(&format!("{}{}", comp.prefix, candidate));
                     }
                 } else if let Some(ref mut comp) = self.cmdline_completion {
                     // Subsequent Tab press: cycle to next candidate
                     comp.index = (comp.index + 1) % comp.candidates.len();
                     let candidate = comp.candidates[comp.index].clone();
-                    self.vim.set_cmdline(&format!("{}{}", comp.prefix, candidate));
+                    self.vim
+                        .set_cmdline(&format!("{}{}", comp.prefix, candidate));
                 }
                 return;
             }
@@ -2241,8 +2471,7 @@ impl App {
                             )
                         })
                         .collect();
-                    self.picker =
-                        Some(crate::picker::PickerState::new("path completion", items));
+                    self.picker = Some(crate::picker::PickerState::new("path completion", items));
                 }
             }
             return;
@@ -2273,9 +2502,7 @@ impl App {
         self.snippet_stops.clear();
 
         // Digit keys on the dashboard open recent projects by index.
-        if self.is_dashboard_active()
-            && self.vim.is_normal_idle()
-        {
+        if self.is_dashboard_active() && self.vim.is_normal_idle() {
             if let KeyEvent::Char(c) = key {
                 if let Some(d) = c.to_digit(10) {
                     if (1..=9).contains(&d) {
@@ -2319,14 +2546,18 @@ impl App {
                     let mut fs = self.flash.take().unwrap();
                     match fs.pending {
                         None => {
-                            let matching: Vec<FlashLabel> = fs.labels.into_iter()
+                            let matching: Vec<FlashLabel> = fs
+                                .labels
+                                .into_iter()
                                 .filter(|l| l.label.starts_with(c))
                                 .collect();
                             if matching.is_empty() {
                                 return;
                             }
                             if matching.len() == 1 {
-                                self.ws.borrow_mut().execute(Action::Move(Motion::To(matching[0].offset)));
+                                self.ws
+                                    .borrow_mut()
+                                    .execute(Action::Move(Motion::To(matching[0].offset)));
                                 return;
                             }
                             // Ambiguous — keep the candidates and wait for the
@@ -2338,7 +2569,9 @@ impl App {
                         Some(first) => {
                             let target = format!("{}{}", first, c);
                             if let Some(label) = fs.labels.iter().find(|l| l.label == target) {
-                                self.ws.borrow_mut().execute(Action::Move(Motion::To(label.offset)));
+                                self.ws
+                                    .borrow_mut()
+                                    .execute(Action::Move(Motion::To(label.offset)));
                             }
                         }
                     }
@@ -2354,23 +2587,31 @@ impl App {
         let actions = self.vim.handle(key, &*self.ws.borrow());
         for action in actions {
             match action {
-                Action::Textobject { op, kind, target, count: _ } => {
+                Action::Textobject {
+                    op,
+                    kind,
+                    target,
+                    count: _,
+                } => {
                     let (cursor, active) = {
                         let w = self.ws.borrow();
                         (w.primary_head(), w.active_buffer())
                     };
-                    if let Some((start, end)) = self.syntax.get(&active)
+                    if let Some((start, end)) = self
+                        .syntax
+                        .get(&active)
                         .and_then(|s| s.ts_textobject(kind, target, cursor))
                     {
                         self.exec_operator(op, start, end);
                     }
                 }
                 Action::CmdlineResult(cmd) => {
-
                     self.cmdline_completion = None;
                     match self.parse_cmdline(&cmd) {
                         Ok(a) => self.apply_cmd(a),
-                        Err(e) => { self.echo(e); },
+                        Err(e) => {
+                            self.echo(e);
+                        }
                     }
                 }
                 other => self.ws.borrow_mut().execute(other),
@@ -2411,7 +2652,9 @@ impl App {
 
         for line_idx in 0..visible_lines {
             let buf_line = scroll + line_idx;
-            if buf_line >= buf.line_count() { break; }
+            if buf_line >= buf.line_count() {
+                break;
+            }
             let line_start = buf.line_start_char(buf_line);
             let line_end = buf.line_end_char(buf_line);
             let text = buf.slice_string(line_start, line_end);
@@ -2466,7 +2709,8 @@ impl App {
             Some(s) => s,
             None => {
                 self.notify.push(Notification::new(
-                    ruster_core::message::MessageLevel::Error, ruster_core::message::MessageSource::Echo,
+                    ruster_core::message::MessageLevel::Error,
+                    ruster_core::message::MessageSource::Echo,
                     format!("E518: Unknown option: {key}"),
                 ));
                 return;
@@ -2477,7 +2721,10 @@ impl App {
         let value = match val {
             SetNamedVal::Exact(v) => v,
             SetNamedVal::Toggle => {
-                let cur = self.config.to_settings().into_iter()
+                let cur = self
+                    .config
+                    .to_settings()
+                    .into_iter()
                     .find(|((_g, k), _)| *k == key)
                     .map(|(_, v)| v)
                     .unwrap_or_else(|| spec.default.clone());
@@ -2485,7 +2732,8 @@ impl App {
                     SettingValue::Bool(b) => SettingValue::Bool(!b),
                     _ => {
                         self.notify.push(Notification::new(
-                            ruster_core::message::MessageLevel::Error, ruster_core::message::MessageSource::Echo,
+                            ruster_core::message::MessageLevel::Error,
+                            ruster_core::message::MessageSource::Echo,
                             format!("E548: {key} cannot be toggled"),
                         ));
                         return;
@@ -2497,7 +2745,8 @@ impl App {
         // Validate.
         if let Err(e) = spec.kind.check(&value) {
             self.notify.push(Notification::new(
-                ruster_core::message::MessageLevel::Error, ruster_core::message::MessageSource::Echo,
+                ruster_core::message::MessageLevel::Error,
+                ruster_core::message::MessageSource::Echo,
                 format!("E474: {key}: {e}"),
             ));
             return;
@@ -2510,7 +2759,8 @@ impl App {
         }
         let old_editmode = self.config.editmode.clone();
         self.config = Config::from_settings(&vals);
-        self.config.colors = resolve_theme_colors(&self.lua, &self.config.theme, &self.config.color_overrides);
+        self.config.colors =
+            resolve_theme_colors(&self.lua, &self.config.theme, &self.config.color_overrides);
 
         // If editmode changed, apply the switch.
         if key == "editmode" && self.config.editmode != old_editmode {
@@ -2522,7 +2772,8 @@ impl App {
         }
 
         self.notify.push(Notification::new(
-            ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Echo,
+            ruster_core::message::MessageLevel::Info,
+            ruster_core::message::MessageSource::Echo,
             format!("{} = {}", key, value.display()),
         ));
     }
@@ -2559,7 +2810,9 @@ impl App {
                 KeyCode::Char('1') => self.ws.borrow_mut().windows.only(),
                 KeyCode::Char('2') => self.ws.borrow_mut().split(SplitDir::Horizontal),
                 KeyCode::Char('3') => self.ws.borrow_mut().split(SplitDir::Vertical),
-                _ => { self.echo_warn("C-x undefined".to_string()); },
+                _ => {
+                    self.echo_warn("C-x undefined".to_string());
+                }
             }
             return;
         }
@@ -2595,7 +2848,6 @@ impl App {
         for action in actions {
             self.ws.borrow_mut().execute(action);
         }
-
     }
 
     fn handle_mouse_event(&mut self, me: MouseEvent) {
@@ -2653,26 +2905,36 @@ impl App {
         let (mut query, mut forward) = self.emacs_isearch.take().unwrap();
         match ck.code {
             KeyCode::Enter | KeyCode::Esc => {
-
                 return;
             }
             KeyCode::Backspace => {
                 query.pop();
             }
-            KeyCode::Char('s') if ck.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+            KeyCode::Char('s')
+                if ck
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
                 forward = true;
                 self.isearch_step(&query, true, true);
                 self.emacs_isearch = Some((query, forward));
                 return;
             }
-            KeyCode::Char('r') if ck.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+            KeyCode::Char('r')
+                if ck
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
                 forward = false;
                 self.isearch_step(&query, false, true);
                 self.emacs_isearch = Some((query, forward));
                 return;
             }
-            KeyCode::Char('g') if ck.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
-
+            KeyCode::Char('g')
+                if ck
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+            {
                 return;
             }
             KeyCode::Char(c) => {
@@ -2702,10 +2964,13 @@ impl App {
         let pat: Vec<char> = query.chars().collect();
         let found = if forward {
             let from = if advance { head + 1 } else { head };
-            (from..=chars.len().saturating_sub(pat.len()))
-                .find(|&i| chars[i..].starts_with(&pat))
+            (from..=chars.len().saturating_sub(pat.len())).find(|&i| chars[i..].starts_with(&pat))
         } else {
-            let start = if advance { head.saturating_sub(1) } else { head };
+            let start = if advance {
+                head.saturating_sub(1)
+            } else {
+                head
+            };
             (0..=start.min(chars.len().saturating_sub(pat.len())))
                 .rev()
                 .find(|&i| chars[i..].starts_with(&pat))
@@ -2784,11 +3049,19 @@ impl App {
             self.lua.set_frame_dt(secs);
 
             let (line, col) = self.cursor_line_col();
-            self.cursor_anim.update(dt, col, line, self.config.cursor_anim_enabled, self.config.cursor_anim_speed);
+            self.cursor_anim.update(
+                dt,
+                col,
+                line,
+                self.config.cursor_anim_enabled,
+                self.config.cursor_anim_speed,
+            );
 
             self.sync_diff_scroll();
             self.render();
-            if self.should_quit { break; }
+            if self.should_quit {
+                break;
+            }
         }
 
         Ok(())
@@ -2890,7 +3163,11 @@ impl App {
             let status = self.git_status.status();
             snap.branch = status.branch.clone().unwrap_or_default();
             snap.staged = status.entries.iter().filter(|e| e.staged.is_some()).count();
-            snap.unstaged = status.entries.iter().filter(|e| e.unstaged.is_some()).count();
+            snap.unstaged = status
+                .entries
+                .iter()
+                .filter(|e| e.unstaged.is_some())
+                .count();
         }
 
         let prev = std::mem::replace(&mut self.watched, now.clone());
@@ -2918,7 +3195,8 @@ impl App {
             // 1-based line, 0-based column: the same convention
             // `nvim_win_get_cursor` already uses, so a handler can pass one
             // straight to the other.
-            self.lua.fire_event_nums("CursorMoved", &[line as i64 + 1, col as i64]);
+            self.lua
+                .fire_event_nums("CursorMoved", &[line as i64 + 1, col as i64]);
         }
     }
 
@@ -2977,7 +3255,8 @@ impl App {
                         3 => MessageLevel::Error,
                         _ => MessageLevel::Info,
                     };
-                    self.notify.push(Notification::new(notif_level, MessageSource::Echo, text));
+                    self.notify
+                        .push(Notification::new(notif_level, MessageSource::Echo, text));
                 }
             }
         }
@@ -2995,7 +3274,13 @@ impl App {
             self.lua.set_frame_dt(secs);
 
             let (line, col) = self.cursor_line_col();
-            self.cursor_anim.update(dt, col, line, self.config.cursor_anim_enabled, self.config.cursor_anim_speed);
+            self.cursor_anim.update(
+                dt,
+                col,
+                line,
+                self.config.cursor_anim_enabled,
+                self.config.cursor_anim_speed,
+            );
             self.sync_diff_scroll();
             self.render();
             // Reported here rather than at the command, so the message reflects
@@ -3004,7 +3289,10 @@ impl App {
             if let Some(result) = self.renderer.poll_screenshot() {
                 use ruster_core::message::MessageLevel;
                 let (level, text) = match result {
-                    Ok(p) => (MessageLevel::Success, format!("Screenshot saved to {}", p.display())),
+                    Ok(p) => (
+                        MessageLevel::Success,
+                        format!("Screenshot saved to {}", p.display()),
+                    ),
                     Err(e) => (MessageLevel::Error, format!("Screenshot failed: {e}")),
                 };
                 self.notify.push(Notification::new(
@@ -3013,7 +3301,9 @@ impl App {
                     text,
                 ));
             }
-            if self.renderer.should_close() || self.should_quit { break; }
+            if self.renderer.should_close() || self.should_quit {
+                break;
+            }
             // No sleep here: raylib paces the loop from `gui.target_fps`
             // (see RaylibRenderer::set_gui_config). A fixed sleep on top of
             // that pinned the GUI to ~60fps whatever the setting said.
@@ -3044,9 +3334,9 @@ impl App {
                     None => return Vec::new(),
                 }
             }
-            PickerAction::RunCmd(_)
-            | PickerAction::RunTask(_)
-            | PickerAction::SetTheme(_) => return Vec::new(),
+            PickerAction::RunCmd(_) | PickerAction::RunTask(_) | PickerAction::SetTheme(_) => {
+                return Vec::new()
+            }
         };
 
         // Load + highlight the file, reusing the cache when the path is unchanged.
@@ -3059,7 +3349,9 @@ impl App {
                 Ok(m) if m.len() as usize <= PREVIEW_MAX_BYTES => {
                     // Normalize CRLF like Document::from_file does, so a stray
                     // `\r` doesn't render as a tofu glyph in the GUI backend.
-                    std::fs::read_to_string(&path).unwrap_or_default().replace("\r\n", "\n")
+                    std::fs::read_to_string(&path)
+                        .unwrap_or_default()
+                        .replace("\r\n", "\n")
                 }
                 _ => String::new(),
             };
@@ -3151,7 +3443,12 @@ impl App {
         // so without the guard a 10k-line file re-parsed every frame: 107 ms
         // against a 16.7 ms budget, or about 7 fps, for a buffer nobody had
         // touched.
-        let revision = self.ws.borrow().buffers.get(active).map(|d| d.buffer.revision());
+        let revision = self
+            .ws
+            .borrow()
+            .buffers
+            .get(active)
+            .map(|d| d.buffer.revision());
         let stale = revision.is_some_and(|r| self.syntax_revision.get(&active) != Some(&r));
         if stale {
             // Take the edits *with* the text, so the two describe the same
@@ -3319,7 +3616,9 @@ impl App {
         let mut stops: Vec<usize> = exp.stops.iter().map(|s| start + s.start).collect();
         if !stops.is_empty() {
             let first = stops.remove(0);
-            self.ws.borrow_mut().execute(Action::Move(Motion::To(first)));
+            self.ws
+                .borrow_mut()
+                .execute(Action::Move(Motion::To(first)));
             self.snippet_stops = stops;
         }
         true
@@ -3379,14 +3678,22 @@ impl App {
         let lang = match self.active_lsp_target() {
             Some((lang, _, _)) => lang,
             None => {
-                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Lsp, "No language server for this buffer".to_string()));
+                self.notify.push(Notification::new(
+                    ruster_core::message::MessageLevel::Warning,
+                    ruster_core::message::MessageSource::Lsp,
+                    "No language server for this buffer".to_string(),
+                ));
                 return false;
             }
         };
         if self.lsp.request(&lang, method, params, action) {
             true
         } else {
-            self.notify.push(Notification::new(ruster_core::message::MessageLevel::Warning, ruster_core::message::MessageSource::Lsp, "Language server still starting…".to_string()));
+            self.notify.push(Notification::new(
+                ruster_core::message::MessageLevel::Warning,
+                ruster_core::message::MessageSource::Lsp,
+                "Language server still starting…".to_string(),
+            ));
             false
         }
     }
@@ -3431,7 +3738,11 @@ impl App {
     fn lsp_document_symbols(&mut self) {
         if let Some((_, uri, _)) = self.active_lsp_target() {
             let params = ruster_lsp::protocol::document_symbol_params(&uri);
-            self.lsp_request("textDocument/documentSymbol", params, LspAction::DocumentSymbol);
+            self.lsp_request(
+                "textDocument/documentSymbol",
+                params,
+                LspAction::DocumentSymbol,
+            );
         }
     }
 
@@ -3468,7 +3779,11 @@ impl App {
                 if let Some(text) = ruster_lsp::parse_hover(&result) {
                     self.hover = Some(build_hover_lines(&text));
                 } else {
-                    self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Lsp, "No hover info".to_string()));
+                    self.notify.push(Notification::new(
+                        ruster_core::message::MessageLevel::Info,
+                        ruster_core::message::MessageSource::Lsp,
+                        "No hover info".to_string(),
+                    ));
                 }
             }
             LspAction::Definition => {
@@ -3476,16 +3791,27 @@ impl App {
                 if let Some(loc) = locs.first() {
                     self.open_path(
                         std::path::Path::new(&loc.uri),
-                        Some((loc.start.line as usize + 1, loc.start.character as usize + 1)),
+                        Some((
+                            loc.start.line as usize + 1,
+                            loc.start.character as usize + 1,
+                        )),
                     );
                 } else {
-                    self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Lsp, "No definition found".to_string()));
+                    self.notify.push(Notification::new(
+                        ruster_core::message::MessageLevel::Info,
+                        ruster_core::message::MessageSource::Lsp,
+                        "No definition found".to_string(),
+                    ));
                 }
             }
             LspAction::References => {
                 let locs = ruster_lsp::parse_locations(&result);
                 if locs.is_empty() {
-                    self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Lsp, "No references".to_string()));
+                    self.notify.push(Notification::new(
+                        ruster_core::message::MessageLevel::Info,
+                        ruster_core::message::MessageSource::Lsp,
+                        "No references".to_string(),
+                    ));
                     return;
                 }
                 let items = locs
@@ -3525,10 +3851,9 @@ impl App {
                     .into_iter()
                     .map(|s| {
                         let indent = "  ".repeat(s.depth as usize);
-                        let path = s
-                            .uri
-                            .clone()
-                            .unwrap_or_else(|| active_uri.trim_start_matches("file://").to_string());
+                        let path = s.uri.clone().unwrap_or_else(|| {
+                            active_uri.trim_start_matches("file://").to_string()
+                        });
                         PickerItem::new(
                             format!("{}{}", indent, s.name),
                             PickerAction::OpenLocation(
@@ -3572,13 +3897,23 @@ impl App {
                         let params = ruster_lsp::protocol::call_hierarchy_calls_params(&item);
                         self.lsp_request(method, params, LspAction::CallHierarchy(incoming));
                     }
-                    None => { self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Lsp, "No call hierarchy for symbol".to_string())); },
+                    None => {
+                        self.notify.push(Notification::new(
+                            ruster_core::message::MessageLevel::Info,
+                            ruster_core::message::MessageSource::Lsp,
+                            "No call hierarchy for symbol".to_string(),
+                        ));
+                    }
                 }
             }
             LspAction::CallHierarchy(incoming) => {
                 let calls = ruster_lsp::parse_call_hierarchy_calls(&result, incoming);
                 if calls.is_empty() {
-                    self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Lsp, if incoming { "No callers" } else { "No callees" }.to_string(),));
+                    self.notify.push(Notification::new(
+                        ruster_core::message::MessageLevel::Info,
+                        ruster_core::message::MessageSource::Lsp,
+                        if incoming { "No callers" } else { "No callees" }.to_string(),
+                    ));
                     return;
                 }
                 let title = if incoming { "Callers" } else { "Callees" };
@@ -3620,12 +3955,7 @@ impl App {
         }
         // Only apply to the active buffer for now (multi-file rename opens each
         // affected file is a follow-up); apply if the path matches the active doc.
-        let active_path = self
-            .ws
-            .borrow()
-            .active_doc()
-            .file_path
-            .clone();
+        let active_path = self.ws.borrow().active_doc().file_path.clone();
         let matches = active_path
             .map(|p| std::fs::canonicalize(&p).ok() == std::fs::canonicalize(path).ok())
             .unwrap_or(false);
@@ -3715,8 +4045,9 @@ impl App {
         let (cols, rows) = self.renderer.viewport_cells();
         // Reserve a bottom row for the cmdline/message only while one is shown,
         // so the statusline sits flush at the very bottom otherwise.
-        let has_cmdline =
-            self.vim.mode == VimMode::Cmdline || self.emacs_isearch.is_some() || self.file_prompt.is_some();
+        let has_cmdline = self.vim.mode == VimMode::Cmdline
+            || self.emacs_isearch.is_some()
+            || self.file_prompt.is_some();
         let reserved = if has_cmdline { 1 } else { 0 };
         let mut buf_area = CoreRect::new(0, 0, cols, rows.saturating_sub(reserved));
 
@@ -3779,14 +4110,17 @@ impl App {
                     // rendering (the active window only).
                     let extra_heads: Vec<usize> = if is_active && win.cursors.count() > 1 {
                         let p = primary.head;
-                        win.cursors
-                            .iter_heads()
-                            .filter(|&h| h != p)
-                            .collect()
+                        win.cursors.iter_heads().filter(|&h| h != p).collect()
                     } else {
                         Vec::new()
                     };
-                    (win.buffer, primary.head, primary.anchor, win.scroll_top, extra_heads)
+                    (
+                        win.buffer,
+                        primary.head,
+                        primary.anchor,
+                        win.scroll_top,
+                        extra_heads,
+                    )
                 };
                 let (content, cline, ccol, name, line_count, selection, extra_cursors) = {
                     let doc = w.buffers.get(buf_id).expect("buffer exists");
@@ -3797,8 +4131,7 @@ impl App {
                         && matches!(
                             mode,
                             VimMode::VisualChar | VimMode::VisualLine | VimMode::VisualBlock
-                        )
-                    {
+                        ) {
                         let (lo, hi) = (anchor.min(head), anchor.max(head));
                         let sl = doc.buffer.char_to_line(lo);
                         let el = doc.buffer.char_to_line(hi);
@@ -3922,7 +4255,11 @@ impl App {
                 let mut right = format!("{}%  {},{}", pct, cline + 1, ccol + 1);
                 if is_active {
                     if !lua_left.is_empty() {
-                        left = if left.is_empty() { lua_left.clone() } else { format!("{}  {}", left, lua_left) };
+                        left = if left.is_empty() {
+                            lua_left.clone()
+                        } else {
+                            format!("{}  {}", left, lua_left)
+                        };
                     }
                     if !lua_center.is_empty() {
                         center = format!("{}  {}", center, lua_center);
@@ -3931,7 +4268,13 @@ impl App {
                         right = format!("{}  {}", lua_right, right);
                     }
                 }
-                let statusline = StatuslineView { left, center, right, active: is_active, mode: vim_mode_to_ui_mode(mode) };
+                let statusline = StatuslineView {
+                    left,
+                    center,
+                    right,
+                    active: is_active,
+                    mode: vim_mode_to_ui_mode(mode),
+                };
                 let cursor_smooth = if is_active && smooth {
                     Some((anim_x - ccol as f32, anim_y - cline as f32))
                 } else {
@@ -3968,8 +4311,9 @@ impl App {
                     // breakpoint on the same line matters more, and later signs
                     // win, so these go in first.
                     let mut s = self.git_signs_for(buf_id);
-                    if let Some(diag) =
-                        Some(self.lsp.diagnostics(buf_id)).filter(|d| !d.is_empty()).map(diagnostics_to_signs)
+                    if let Some(diag) = Some(self.lsp.diagnostics(buf_id))
+                        .filter(|d| !d.is_empty())
+                        .map(diagnostics_to_signs)
                     {
                         s.width = s.width.max(diag.width);
                         s.signs.extend(diag.signs);
@@ -3981,9 +4325,7 @@ impl App {
                         // branch and the breakpoint one below did exactly that
                         // — silently, because each is behind a guard that is
                         // false until a test has been run or a breakpoint set.
-                        if let Some(p) =
-                            w.buffers.get(buf_id).and_then(|d| d.file_path.clone())
-                        {
+                        if let Some(p) = w.buffers.get(buf_id).and_then(|d| d.file_path.clone()) {
                             let key = p.canonicalize().unwrap_or(p);
                             if let Some(rs) = self.result_signs.get(&key) {
                                 s.width = s.width.max(rs.width);
@@ -3992,9 +4334,7 @@ impl App {
                         }
                     }
                     if self.debug.any_breakpoints() {
-                        if let Some(p) =
-                            w.buffers.get(buf_id).and_then(|d| d.file_path.clone())
-                        {
+                        if let Some(p) = w.buffers.get(buf_id).and_then(|d| d.file_path.clone()) {
                             let key = p.canonicalize().unwrap_or(p);
                             {
                                 let bps = self.debug.breakpoints_in(&key);
@@ -4020,7 +4360,9 @@ impl App {
                                 let line_start = doc.buffer.line_start_char(line_no);
                                 let col = offset.saturating_sub(line_start);
                                 let screen_row = line_no.saturating_sub(scroll);
-                                if screen_row >= buf_h { continue; }
+                                if screen_row >= buf_h {
+                                    continue;
+                                }
                                 let (display_text, color) = if pending.is_some() {
                                     let sub = if fl.label.len() > 1 {
                                         fl.label[1..].to_string()
@@ -4080,7 +4422,11 @@ impl App {
         if let Some(srect) = sidebar_rect {
             views.insert(
                 0,
-                self.sidebar.view(srect, vim_mode_to_ui_mode(self.vim.mode), &self.theme_palette()),
+                self.sidebar.view(
+                    srect,
+                    vim_mode_to_ui_mode(self.vim.mode),
+                    &self.theme_palette(),
+                ),
             );
         }
 
@@ -4089,7 +4435,17 @@ impl App {
         } else {
             match mode {
                 VimMode::Cmdline => Some(crate::widgets::cmdline_label(self.vim.cmdline_buffer())),
-                _ => self.emacs_isearch.as_ref().map(|(q,f)| format!("{}: {}", if *f { "I-search" } else { "I-search backward" }, q)).or_else(|| self.current_line_diagnostic()),
+                _ => self
+                    .emacs_isearch
+                    .as_ref()
+                    .map(|(q, f)| {
+                        format!(
+                            "{}: {}",
+                            if *f { "I-search" } else { "I-search backward" },
+                            q
+                        )
+                    })
+                    .or_else(|| self.current_line_diagnostic()),
             }
         };
         let picker_view = self.picker.as_mut().map(|p| p.view()).map(|mut v| {
@@ -4126,11 +4482,13 @@ impl App {
             self.whichkey_anim = 0.0;
         }
         let whichkey = if self.whichkey_anim > 0.0 {
-            self.whichkey_cache.as_ref().map(|(title, rows)| WhichKeyView {
-                title: title.clone(),
-                rows: rows.clone(),
-                anim: self.whichkey_anim,
-            })
+            self.whichkey_cache
+                .as_ref()
+                .map(|(title, rows)| WhichKeyView {
+                    title: title.clone(),
+                    rows: rows.clone(),
+                    anim: self.whichkey_anim,
+                })
         } else {
             None
         };
@@ -4181,7 +4539,9 @@ impl App {
                 ruster_core::message::MessageLevel::Error => "✗",
             }
         };
-        let noice_mini: Vec<String> = self.notify.active(BackendKind::Mini)
+        let noice_mini: Vec<String> = self
+            .notify
+            .active(BackendKind::Mini)
             .into_iter()
             .map(|n| format!("{} {}", level_icon(n.level), n.text))
             .collect();
@@ -4190,16 +4550,27 @@ impl App {
             if stack.is_empty() {
                 None
             } else {
-                Some(stack.into_iter().map(|n| {
-                    let style = match n.level {
-                        ruster_core::message::MessageLevel::Error => SyntaxStyle::error(),
-                        ruster_core::message::MessageLevel::Warning => SyntaxStyle::warning(),
-                        _ => SyntaxStyle::info(),
-                    };
-                    let text = format!("{} {}: {}", level_icon(n.level), n.source.label(), n.text);
-                    let len = text.len();
-                    StyledLine { text, highlights: vec![(0, len, style)] }
-                }).collect())
+                Some(
+                    stack
+                        .into_iter()
+                        .map(|n| {
+                            let style = match n.level {
+                                ruster_core::message::MessageLevel::Error => SyntaxStyle::error(),
+                                ruster_core::message::MessageLevel::Warning => {
+                                    SyntaxStyle::warning()
+                                }
+                                _ => SyntaxStyle::info(),
+                            };
+                            let text =
+                                format!("{} {}: {}", level_icon(n.level), n.source.label(), n.text);
+                            let len = text.len();
+                            StyledLine {
+                                text,
+                                highlights: vec![(0, len, style)],
+                            }
+                        })
+                        .collect(),
+                )
             }
         } else {
             None
@@ -4281,7 +4652,12 @@ impl App {
             "callers" | "incomingcalls" => Ok(CmdAction::CallHierarchy(true)),
             "callees" | "outgoingcalls" => Ok(CmdAction::CallHierarchy(false)),
             _ if trimmed.starts_with("w ") || trimmed.starts_with("write ") => {
-                let path = trimmed.split_once(' ').map(|x| x.1).unwrap_or("").trim().to_string();
+                let path = trimmed
+                    .split_once(' ')
+                    .map(|x| x.1)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
                 if path.is_empty() {
                     Err("No path given".to_string())
                 } else {
@@ -4289,11 +4665,21 @@ impl App {
                 }
             }
             _ if trimmed.starts_with("Dired ") || trimmed.starts_with("dired ") => {
-                let path = trimmed.split_once(' ').map(|x| x.1).unwrap_or("").trim().to_string();
+                let path = trimmed
+                    .split_once(' ')
+                    .map(|x| x.1)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
                 Ok(CmdAction::Dired(Some(path)))
             }
             _ if trimmed.starts_with("Rg ") || trimmed.starts_with("rg ") => {
-                let pat = trimmed.split_once(' ').map(|x| x.1).unwrap_or("").trim().to_string();
+                let pat = trimmed
+                    .split_once(' ')
+                    .map(|x| x.1)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
                 if pat.is_empty() {
                     Err("No pattern given".to_string())
                 } else {
@@ -4301,7 +4687,12 @@ impl App {
                 }
             }
             _ if trimmed.starts_with("rename ") => {
-                let name = trimmed.split_once(' ').map(|x| x.1).unwrap_or("").trim().to_string();
+                let name = trimmed
+                    .split_once(' ')
+                    .map(|x| x.1)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
                 if name.is_empty() {
                     Err("No name given".to_string())
                 } else {
@@ -4309,18 +4700,33 @@ impl App {
                 }
             }
             _ if trimmed.starts_with("sym ") => {
-                let q = trimmed.split_once(' ').map(|x| x.1).unwrap_or("").trim().to_string();
+                let q = trimmed
+                    .split_once(' ')
+                    .map(|x| x.1)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
                 Ok(CmdAction::WorkspaceSymbol(q))
             }
             _ if trimmed == "messages" || trimmed == "message" || trimmed == "msgs" => {
                 Ok(CmdAction::Messages)
             }
             _ if trimmed.starts_with("messages ") || trimmed.starts_with("msgs ") => {
-                let filter = trimmed.split_once(' ').map(|x| x.1).unwrap_or("").trim().to_string();
+                let filter = trimmed
+                    .split_once(' ')
+                    .map(|x| x.1)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
                 Ok(CmdAction::MessagesFilter(filter))
             }
             _ if trimmed.starts_with("messages/") || trimmed.starts_with("msgs/") => {
-                let filter = trimmed.split_once('/').map(|x| x.1).unwrap_or("").trim().to_string();
+                let filter = trimmed
+                    .split_once('/')
+                    .map(|x| x.1)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
                 Ok(CmdAction::MessagesFilter(filter))
             }
             "e" | "edit" => Ok(CmdAction::Files),
@@ -4358,14 +4764,22 @@ impl App {
             "GitPush" | "gitpush" | "push" => Ok(CmdAction::GitPush),
             "GitPull" | "gitpull" | "pull" => Ok(CmdAction::GitPull),
             "help" | "h" | "Help" => Ok(CmdAction::Help(None)),
-            _ if let Some(t) = trimmed.strip_prefix("help ").or_else(|| trimmed.strip_prefix("h ")) => {
+            _ if let Some(t) = trimmed
+                .strip_prefix("help ")
+                .or_else(|| trimmed.strip_prefix("h ")) =>
+            {
                 Ok(CmdAction::Help(Some(t.trim().to_string())))
             }
             "SessionSave" | "sessionsave" | "mksession" => Ok(CmdAction::SessionSave),
             "SessionRestore" | "sessionrestore" | "loadsession" => Ok(CmdAction::SessionRestore),
             "SyntaxReload" | "syntaxreload" | "syntax reload" => Ok(CmdAction::SyntaxReload),
             "Diffview" | "diffview" | "Diff" | "diff" => Ok(CmdAction::Diffview),
-            _ if let Some(n) = trimmed.strip_prefix("sidebar resize ").and_then(|s| s.trim().parse::<u16>().ok()) => Ok(CmdAction::SidebarResize(n)),
+            _ if let Some(n) = trimmed
+                .strip_prefix("sidebar resize ")
+                .and_then(|s| s.trim().parse::<u16>().ok()) =>
+            {
+                Ok(CmdAction::SidebarResize(n))
+            }
             "screenshot" | "Screenshot" => Ok(CmdAction::Screenshot(None)),
             _ if let Some(rest) = trimmed
                 .strip_prefix("screenshot ")
@@ -4375,7 +4789,12 @@ impl App {
             }
             "Noice" | "noice" => Ok(CmdAction::NoicePanel),
             _ if trimmed.starts_with("Noice ") || trimmed.starts_with("noice ") => {
-                let sub = trimmed.split_once(' ').map(|x| x.1).unwrap_or("").trim().to_string();
+                let sub = trimmed
+                    .split_once(' ')
+                    .map(|x| x.1)
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
                 match sub.as_str() {
                     "split" | "history" => Ok(CmdAction::NoiceSplit),
                     _ => Err(format!(":Noice subcommand '{}' unknown. Use :Noice (toggle panel) or :Noice split|history", sub)),
@@ -4396,15 +4815,24 @@ impl App {
             }
             _ if trimmed.starts_with("echo ") => {
                 let text = trimmed.strip_prefix("echo ").unwrap_or("").to_string();
-                Ok(CmdAction::Echo(text, ruster_core::message::MessageLevel::Info))
+                Ok(CmdAction::Echo(
+                    text,
+                    ruster_core::message::MessageLevel::Info,
+                ))
             }
             _ if trimmed.starts_with("echom ") => {
                 let text = trimmed.strip_prefix("echom ").unwrap_or("").to_string();
-                Ok(CmdAction::Echo(text, ruster_core::message::MessageLevel::Warning))
+                Ok(CmdAction::Echo(
+                    text,
+                    ruster_core::message::MessageLevel::Warning,
+                ))
             }
             _ if trimmed.starts_with("echoe ") => {
                 let text = trimmed.strip_prefix("echoe ").unwrap_or("").to_string();
-                Ok(CmdAction::Echo(text, ruster_core::message::MessageLevel::Error))
+                Ok(CmdAction::Echo(
+                    text,
+                    ruster_core::message::MessageLevel::Error,
+                ))
             }
             // `:16` and `:$`. Vim users type these constantly, and until now the
             // cmdline answered "Unknown command: 16" — which reads as a bug in
@@ -4415,7 +4843,9 @@ impl App {
             _ if !trimmed.is_empty() && trimmed.bytes().all(|b| b.is_ascii_digit()) => {
                 // Saturating: `:99999999999999999999` is a typo, not an error
                 // worth a message. Clamped to the buffer when it is applied.
-                Ok(CmdAction::GotoLine(Some(trimmed.parse().unwrap_or(usize::MAX))))
+                Ok(CmdAction::GotoLine(Some(
+                    trimmed.parse().unwrap_or(usize::MAX),
+                )))
             }
             _ => Err(format!("Unknown command: {}", cmdline)),
         }
@@ -4511,9 +4941,12 @@ impl App {
             CmdAction::CallHierarchy(incoming) => self.lsp_call_hierarchy(incoming),
             CmdAction::SetEditMode(mode) => self.set_editmode(mode),
             CmdAction::SetNamed(key, named_val) => self.set_named_option(&key, named_val),
-            CmdAction::Substitute { pattern, replacement, all, whole_buffer } => {
-                self.substitute(&pattern, &replacement, all, whole_buffer)
-            }
+            CmdAction::Substitute {
+                pattern,
+                replacement,
+                all,
+                whole_buffer,
+            } => self.substitute(&pattern, &replacement, all, whole_buffer),
             CmdAction::Messages => self.open_messages(),
             CmdAction::MessagesFilter(filter) => self.apply_messages_filter(&filter),
             CmdAction::Projects => self.open_projects(),
@@ -4587,7 +5020,10 @@ impl App {
             CmdAction::DebugStop => self.debug_stop(),
             CmdAction::DebugToggleBreakpoint => self.debug_toggle_breakpoint(),
             CmdAction::ShowSetting(key) => {
-                let value = self.config.to_settings().into_iter()
+                let value = self
+                    .config
+                    .to_settings()
+                    .into_iter()
                     .find(|((_g, k), _)| *k == key)
                     .map(|(_, v)| v.display())
                     .unwrap_or_default();
@@ -4607,7 +5043,8 @@ impl App {
                     Some(s) => s,
                     None => {
                         self.notify.push(Notification::new(
-                            ruster_core::message::MessageLevel::Error, ruster_core::message::MessageSource::Echo,
+                            ruster_core::message::MessageLevel::Error,
+                            ruster_core::message::MessageSource::Echo,
                             format!("E518: Unknown option: {key}"),
                         ));
                         return;
@@ -4620,7 +5057,11 @@ impl App {
                 }
                 let old_editmode = self.config.editmode.clone();
                 self.config = Config::from_settings(&vals);
-                self.config.colors = resolve_theme_colors(&self.lua, &self.config.theme, &self.config.color_overrides);
+                self.config.colors = resolve_theme_colors(
+                    &self.lua,
+                    &self.config.theme,
+                    &self.config.color_overrides,
+                );
                 if key == "editmode" && self.config.editmode != old_editmode {
                     let mode = match self.config.editmode.as_str() {
                         "emacs" => EditMode::Emacs,
@@ -4635,12 +5076,18 @@ impl App {
                 ));
             }
             CmdAction::Echo(text, level) => {
-                self.notify.push(Notification::new(level, ruster_core::message::MessageSource::Echo, text));
+                self.notify.push(Notification::new(
+                    level,
+                    ruster_core::message::MessageSource::Echo,
+                    text,
+                ));
             }
             CmdAction::NoicePanel => self.show_noice_panel = !self.show_noice_panel,
             CmdAction::NoiceSplit => self.open_noice_split(),
             CmdAction::OpenFile(path) => {
-                let base = self.ws.borrow()
+                let base = self
+                    .ws
+                    .borrow()
                     .active_doc()
                     .file_path
                     .as_ref()
@@ -4656,7 +5103,9 @@ impl App {
     /// runs on a background thread, streaming paths into the picker each frame so
     /// the render loop never blocks on a large repo.
     fn open_files_picker(&mut self) {
-        let root = self.project_root.clone()
+        let root = self
+            .project_root
+            .clone()
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
         let (tx, rx) = std::sync::mpsc::channel();
@@ -4674,7 +5123,10 @@ impl App {
                         .unwrap_or(&path)
                         .to_string_lossy()
                         .into_owned();
-                    if tx.send(PickerItem::new(label, PickerAction::OpenPath(path))).is_err() {
+                    if tx
+                        .send(PickerItem::new(label, PickerAction::OpenPath(path)))
+                        .is_err()
+                    {
                         break; // picker closed
                     }
                 }
@@ -4687,7 +5139,9 @@ impl App {
     /// Run `rg --vimgrep <pattern>`, streaming matches into a picker from a
     /// background thread. Reports a clear message when ripgrep is not installed.
     fn run_rg(&mut self, pattern: &str) {
-        let cwd = self.project_root.clone()
+        let cwd = self
+            .project_root
+            .clone()
             .or_else(|| std::env::current_dir().ok())
             .unwrap_or_else(|| PathBuf::from("."));
         let mut child = match std::process::Command::new("rg")
@@ -4764,10 +5218,15 @@ impl App {
         let mut changed = false;
         let mut close = false;
         {
-            let Some(s) = self.settings.as_mut() else { return };
+            let Some(s) = self.settings.as_mut() else {
+                return;
+            };
             if s.is_editing() {
                 match ck.code {
-                    KeyCode::Enter => { s.edit_commit(); changed = true; }
+                    KeyCode::Enter => {
+                        s.edit_commit();
+                        changed = true;
+                    }
                     KeyCode::Esc => s.edit_cancel(),
                     KeyCode::Backspace => s.edit_backspace(),
                     KeyCode::Char(c) => s.edit_push(c),
@@ -4775,7 +5234,10 @@ impl App {
                 }
             } else if s.filter.is_some() {
                 match ck.code {
-                    KeyCode::Esc | KeyCode::Enter => { s.filter = None; s.rebuild_rows(); }
+                    KeyCode::Esc | KeyCode::Enter => {
+                        s.filter = None;
+                        s.rebuild_rows();
+                    }
                     KeyCode::Backspace => {
                         let f = s.filter.as_mut().unwrap();
                         f.pop();
@@ -4788,20 +5250,37 @@ impl App {
                     _ => {}
                 }
             } else {
-                if !matches!(ck.code, KeyCode::Char('d')) { s.cancel_d(); }
-                if !matches!(ck.code, KeyCode::Char('g')) { s.cancel_g(); }
+                if !matches!(ck.code, KeyCode::Char('d')) {
+                    s.cancel_d();
+                }
+                if !matches!(ck.code, KeyCode::Char('g')) {
+                    s.cancel_g();
+                }
                 match ck.code {
                     KeyCode::Esc | KeyCode::Char('q') => close = true,
                     KeyCode::Char('j') | KeyCode::Down => s.move_down(),
                     KeyCode::Char('k') | KeyCode::Up => s.move_up(),
-                    KeyCode::Char('g') => { s.press_g(); }
+                    KeyCode::Char('g') => {
+                        s.press_g();
+                    }
                     KeyCode::Char('G') => s.move_to_bottom(),
                     KeyCode::Tab | KeyCode::Char(']') => s.next_group(),
                     KeyCode::BackTab | KeyCode::Char('[') => s.prev_group(),
-                    KeyCode::Char('/') => { s.filter = Some(String::new()); }
-                    KeyCode::Char(' ') | KeyCode::Enter => { s.activate(); changed = true; }
-                    KeyCode::Char('l') | KeyCode::Right => { s.adjust(1); changed = true; }
-                    KeyCode::Char('h') | KeyCode::Left => { s.adjust(-1); changed = true; }
+                    KeyCode::Char('/') => {
+                        s.filter = Some(String::new());
+                    }
+                    KeyCode::Char(' ') | KeyCode::Enter => {
+                        s.activate();
+                        changed = true;
+                    }
+                    KeyCode::Char('l') | KeyCode::Right => {
+                        s.adjust(1);
+                        changed = true;
+                    }
+                    KeyCode::Char('h') | KeyCode::Left => {
+                        s.adjust(-1);
+                        changed = true;
+                    }
                     KeyCode::Char('d') => changed = s.press_d(),
                     KeyCode::Delete => changed = s.reset_selected(),
                     _ => {}
@@ -4818,7 +5297,9 @@ impl App {
     /// Serialize the settings page's values to `config.lua` and apply the ones
     /// that can take effect live (GUI font/size/colors still need a restart).
     fn save_settings(&mut self) {
-        let Some(s) = self.settings.as_ref() else { return };
+        let Some(s) = self.settings.as_ref() else {
+            return;
+        };
         let values = s.values();
         // The syntax editor's overrides are carried outside the flat schema.
         let syntax = s.syntax_overrides();
@@ -4849,7 +5330,9 @@ impl App {
     /// Push the config's per-language syntax colours into the highlighter and
     /// recompute every open buffer's cached highlights (no reparse).
     fn install_and_recolor_syntax(&mut self) {
-        ruster_syntax::set_syntax_overrides(syntax_overrides_to_colors(&self.config.syntax_overrides));
+        ruster_syntax::set_syntax_overrides(syntax_overrides_to_colors(
+            &self.config.syntax_overrides,
+        ));
         let ws = self.ws.clone();
         for (id, engine) in self.syntax.iter_mut() {
             let text = ws.borrow().buffers.get(*id).map(|d| d.buffer.to_string());
@@ -4870,7 +5353,9 @@ impl App {
         self.config = ruster_lua::config::Config::from_settings(&values);
         self.config.colors =
             resolve_theme_colors(&self.lua, &self.config.theme, &self.config.color_overrides);
-        self.ws.borrow_mut().set_active_indent_width(self.config.tabstop);
+        self.ws
+            .borrow_mut()
+            .set_active_indent_width(self.config.tabstop);
         let gui = self.gui_config();
         let font = self.gui_font();
         self.renderer.set_gui_config(&gui, font.as_deref());
@@ -4878,8 +5363,10 @@ impl App {
 
     /// Theme names available in the picker: built-ins plus any `themes/*.lua`.
     fn available_themes(&self) -> Vec<String> {
-        let mut names: Vec<String> =
-            ruster_lua::config::builtin_themes().iter().map(|(n, _)| n.to_string()).collect();
+        let mut names: Vec<String> = ruster_lua::config::builtin_themes()
+            .iter()
+            .map(|(n, _)| n.to_string())
+            .collect();
         if let Some(dir) = ruster_config_dir() {
             if let Ok(rd) = std::fs::read_dir(dir.join("themes")) {
                 for entry in rd.flatten() {
@@ -4901,16 +5388,25 @@ impl App {
     /// A theme's named palette as `(color_name, "#hex")` pairs — built-in themes
     /// carry theirs directly; user themes are read from their `.lua` file.
     fn theme_palette_for(&self, name: &str) -> Vec<(String, String)> {
-        if let Some((_, theme)) =
-            ruster_lua::config::builtin_themes().into_iter().find(|(n, _)| *n == name)
+        if let Some((_, theme)) = ruster_lua::config::builtin_themes()
+            .into_iter()
+            .find(|(n, _)| *n == name)
         {
-            return theme.palette.iter().map(|(n, c)| (n.clone(), c.to_hex())).collect();
+            return theme
+                .palette
+                .iter()
+                .map(|(n, c)| (n.clone(), c.to_hex()))
+                .collect();
         }
         if let Some(dir) = ruster_config_dir() {
             let path = dir.join("themes").join(format!("{name}.lua"));
             if let Ok(code) = std::fs::read_to_string(&path) {
                 if let Some(theme) = self.lua.load_theme(&code) {
-                    return theme.palette.iter().map(|(n, c)| (n.clone(), c.to_hex())).collect();
+                    return theme
+                        .palette
+                        .iter()
+                        .map(|(n, c)| (n.clone(), c.to_hex()))
+                        .collect();
                 }
             }
         }
@@ -5020,7 +5516,9 @@ impl App {
                 s.push_str(e);
                 s.push('\n');
             }
-            s.push_str("\nInvalid values fall back to their defaults; edit config.lua or use :settings.");
+            s.push_str(
+                "\nInvalid values fall back to their defaults; edit config.lua or use :settings.",
+            );
             s
         };
         let id = self
@@ -5057,9 +5555,19 @@ impl App {
                 self.terminals.insert(id, session);
                 // Honor terminal.default_mode ("insert" focuses the shell).
                 self.terminal_focused = self.config.terminal_default_mode != "normal";
-                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::System, "terminal: Ctrl-\\ to leave, i to re-enter".to_string()));
+                self.notify.push(Notification::new(
+                    ruster_core::message::MessageLevel::Info,
+                    ruster_core::message::MessageSource::System,
+                    "terminal: Ctrl-\\ to leave, i to re-enter".to_string(),
+                ));
             }
-            Err(e) => { self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::System, format!("terminal: {e}"))); },
+            Err(e) => {
+                self.notify.push(Notification::new(
+                    ruster_core::message::MessageLevel::Info,
+                    ruster_core::message::MessageSource::System,
+                    format!("terminal: {e}"),
+                ));
+            }
         }
     }
 
@@ -5086,8 +5594,9 @@ impl App {
     fn enter_terminal_normal(&mut self, bid: BufferId) {
         if let Some(session) = self.terminals.get(&bid) {
             let grid = session.snapshot();
-            let mut lines: Vec<String> =
-                (0..grid.rows).map(|r| grid.row_text(r).trim_end().to_string()).collect();
+            let mut lines: Vec<String> = (0..grid.rows)
+                .map(|r| grid.row_text(r).trim_end().to_string())
+                .collect();
             while lines.last().map(|l| l.is_empty()).unwrap_or(false) {
                 lines.pop();
             }
@@ -5104,7 +5613,11 @@ impl App {
         }
         self.terminal_focused = false;
         self.vim = VimState::new();
-        self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::System, "terminal: NORMAL — motions/visual/y to yank, i to resume".to_string()));
+        self.notify.push(Notification::new(
+            ruster_core::message::MessageLevel::Info,
+            ruster_core::message::MessageSource::System,
+            "terminal: NORMAL — motions/visual/y to yank, i to resume".to_string(),
+        ));
     }
 
     /// Handle a key in a dired buffer. Returns true if the key was consumed
@@ -5139,7 +5652,9 @@ impl App {
 
     /// Handle a key while a dired file-operation prompt is active.
     fn handle_dialog_key(&mut self, ck: crossterm::event::KeyEvent) {
-        let Some(d) = self.dialog.as_mut() else { return };
+        let Some(d) = self.dialog.as_mut() else {
+            return;
+        };
         match d.handle_key(ck) {
             DialogResponse::Pending => {}
             DialogResponse::Cancelled => {
@@ -5168,7 +5683,9 @@ impl App {
     /// that opened it is the one updated — including for delete, which used to
     /// return early and refresh nothing.
     fn handle_file_prompt_key(&mut self, ck: crossterm::event::KeyEvent) {
-        let Some(p) = self.file_prompt.as_mut() else { return };
+        let Some(p) = self.file_prompt.as_mut() else {
+            return;
+        };
         match p.press(ck) {
             PromptStep::Pending => {}
             PromptStep::Cancelled => self.file_prompt = None,
@@ -5224,10 +5741,20 @@ impl App {
     fn ensure_dashboard_buffer(&mut self) {
         let mut w = self.ws.borrow_mut();
         let existing = w.buffers.ids().iter().copied().any(|id| {
-            w.buffers.get(id).is_some_and(|d| d.pinned && matches!(d.kind, ruster_core::document::DocKind::Special(ruster_core::document::SpecialKind::Dashboard)))
+            w.buffers.get(id).is_some_and(|d| {
+                d.pinned
+                    && matches!(
+                        d.kind,
+                        ruster_core::document::DocKind::Special(
+                            ruster_core::document::SpecialKind::Dashboard
+                        )
+                    )
+            })
         });
         if !existing {
-            let id = w.buffers.create_special(ruster_core::document::SpecialKind::Dashboard, "Dashboard");
+            let id = w
+                .buffers
+                .create_special(ruster_core::document::SpecialKind::Dashboard, "Dashboard");
             if let Some(doc) = w.buffers.get_mut(id) {
                 doc.pinned = true;
             }
@@ -5245,12 +5772,22 @@ impl App {
     fn open_dashboard(&mut self) {
         let mut w = self.ws.borrow_mut();
         let existing = w.buffers.ids().iter().copied().find(|&id| {
-            w.buffers.get(id).is_some_and(|d| d.pinned && matches!(d.kind, ruster_core::document::DocKind::Special(ruster_core::document::SpecialKind::Dashboard)))
+            w.buffers.get(id).is_some_and(|d| {
+                d.pinned
+                    && matches!(
+                        d.kind,
+                        ruster_core::document::DocKind::Special(
+                            ruster_core::document::SpecialKind::Dashboard
+                        )
+                    )
+            })
         });
         match existing {
             Some(id) => w.set_active_buffer(id),
             None => {
-                let id = w.buffers.create_special(ruster_core::document::SpecialKind::Dashboard, "Dashboard");
+                let id = w
+                    .buffers
+                    .create_special(ruster_core::document::SpecialKind::Dashboard, "Dashboard");
                 if let Some(doc) = w.buffers.get_mut(id) {
                     doc.pinned = true;
                 }
@@ -5260,7 +5797,12 @@ impl App {
     }
 
     /// Push a message to the log and optionally show it in the status line.
-    fn push_message(&mut self, level: ruster_core::message::MessageLevel, source: ruster_core::message::MessageSource, text: String) {
+    fn push_message(
+        &mut self,
+        level: ruster_core::message::MessageLevel,
+        source: ruster_core::message::MessageSource,
+        text: String,
+    ) {
         self.messages.push(level, source, text.clone());
     }
 
@@ -5271,10 +5813,11 @@ impl App {
                 return id;
             }
         }
-        let id = self.ws.borrow_mut().buffers.create_special(
-            ruster_core::document::SpecialKind::Message,
-            "*messages*",
-        );
+        let id = self
+            .ws
+            .borrow_mut()
+            .buffers
+            .create_special(ruster_core::document::SpecialKind::Message, "*messages*");
         if let Some(doc) = self.ws.borrow_mut().buffers.get_mut(id) {
             doc.pinned = true;
         }
@@ -5285,7 +5828,9 @@ impl App {
     /// Rebuild the messages buffer text from the message log with current filters.
     fn refresh_messages_buffer(&mut self, id: BufferId) {
         use ruster_core::message::MessageLevel;
-        let entries = self.messages.filtered(self.messages_filter_source, self.messages_filter_level);
+        let entries = self
+            .messages
+            .filtered(self.messages_filter_source, self.messages_filter_level);
         let mut text = String::new();
         for entry in &entries {
             let level_tag = match entry.level {
@@ -5326,7 +5871,11 @@ impl App {
         }
         let buf_name = "*noice*";
         let existing = self.ws.borrow().buffers.ids().iter().copied().find(|&id| {
-            self.ws.borrow().buffers.get(id).is_some_and(|d| d.name == buf_name)
+            self.ws
+                .borrow()
+                .buffers
+                .get(id)
+                .is_some_and(|d| d.name == buf_name)
         });
         if let Some(id) = existing {
             self.ws.borrow_mut().set_active_buffer(id);
@@ -5341,14 +5890,16 @@ impl App {
                 ruster_core::message::MessageLevel::Error => "✗",
             }
         };
-        let text: String = history.iter()
+        let text: String = history
+            .iter()
             .map(|n| format!("[{}] {} {}", level_icon(n.level), n.source.label(), n.text))
             .collect::<Vec<_>>()
             .join("\n");
-        let id = self.ws.borrow_mut().buffers.create_special(
-            ruster_core::document::SpecialKind::Message,
-            buf_name,
-        );
+        let id = self
+            .ws
+            .borrow_mut()
+            .buffers
+            .create_special(ruster_core::document::SpecialKind::Message, buf_name);
         if let Some(doc) = self.ws.borrow_mut().buffers.get_mut(id) {
             doc.pinned = true;
             doc.buffer = ruster_core::buffer::Buffer::from_str(&text);
@@ -5400,7 +5951,11 @@ impl App {
         }
         let rows = ruster_git::align(&hunks, old_lines.len() as u32, new_lines.len() as u32);
 
-        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let name = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
         self.close_diffview();
         let left = self.make_diff_pane(
             &format!("*diff HEAD: {name}*"),
@@ -5421,13 +5976,18 @@ impl App {
         }
         drop(w);
         let n = hunks.len();
-        self.echo(format!("{n} hunk{} in {name}", if n == 1 { "" } else { "s" }));
+        self.echo(format!(
+            "{n} hunk{} in {name}",
+            if n == 1 { "" } else { "s" }
+        ));
     }
 
     /// Create one read-only pane buffer for [`open_diffview`](Self::open_diffview).
     fn make_diff_pane(&mut self, name: &str, text: &str) -> BufferId {
         let mut w = self.ws.borrow_mut();
-        let id = w.buffers.create_special(ruster_core::document::SpecialKind::Diff, name);
+        let id = w
+            .buffers
+            .create_special(ruster_core::document::SpecialKind::Diff, name);
         if let Some(doc) = w.buffers.get_mut(id) {
             doc.buffer = ruster_core::buffer::Buffer::from_str(text);
         }
@@ -5503,12 +6063,16 @@ impl App {
         // The line the leader's cursor sits on, in display rows.
         let Some(line) = w.windows.window(active).and_then(|win| {
             let head = win.cursors.primary().head;
-            w.buffers.get(win.buffer).map(|d| d.buffer.char_to_line(head))
+            w.buffers
+                .get(win.buffer)
+                .map(|d| d.buffer.char_to_line(head))
         }) else {
             return;
         };
         for id in diff_wins.into_iter().filter(|&id| id != active) {
-            let Some(buf) = w.windows.window(id).map(|win| win.buffer) else { continue };
+            let Some(buf) = w.windows.window(id).map(|win| win.buffer) else {
+                continue;
+            };
             // Clamp: the panes are the same height, but a buffer can be empty.
             let Some(off) = w.buffers.get(buf).map(|d| {
                 let last = d.buffer.line_count().saturating_sub(1);
@@ -5562,7 +6126,11 @@ impl App {
         let items: Vec<PickerItem> = recent
             .iter()
             .map(|p| {
-                let name = p.file_name().map(|n| n.to_string_lossy()).unwrap_or_default().to_string();
+                let name = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy())
+                    .unwrap_or_default()
+                    .to_string();
                 PickerItem::new(name, PickerAction::OpenPath(p.clone()))
             })
             .collect();
@@ -5571,7 +6139,8 @@ impl App {
 
     /// Record the current project root in the recent-projects list.
     fn record_current_project(&self) {
-        if let (Some(ref state_dir), Some(root)) = (ruster_config_dir(), self.project_root.as_ref()) {
+        if let (Some(ref state_dir), Some(root)) = (ruster_config_dir(), self.project_root.as_ref())
+        {
             ruster_project::record_recent(state_dir, root, 30);
         }
     }
@@ -5705,7 +6274,12 @@ impl App {
         if !self.git.enabled() {
             return;
         }
-        let Some(path) = self.ws.borrow().buffers.get(buf_id).and_then(|d| d.file_path.clone())
+        let Some(path) = self
+            .ws
+            .borrow()
+            .buffers
+            .get(buf_id)
+            .and_then(|d| d.file_path.clone())
         else {
             return;
         };
@@ -5890,9 +6464,7 @@ impl App {
         let items: Vec<PickerItem> = self
             .available_themes()
             .into_iter()
-            .map(|name| {
-                PickerItem::new(name.clone(), PickerAction::SetTheme(name))
-            })
+            .map(|name| PickerItem::new(name.clone(), PickerAction::SetTheme(name)))
             .collect();
         self.theme_before_preview = Some(self.config.theme.clone());
         self.picker = Some(PickerState::new("Themes", items));
@@ -5902,10 +6474,13 @@ impl App {
 
     /// Apply the theme under the picker's cursor without committing it.
     fn preview_selected_theme(&mut self) {
-        let name = self.picker.as_mut().and_then(|p| match p.selected_action() {
-            Some(PickerAction::SetTheme(n)) => Some(n),
-            _ => None,
-        });
+        let name = self
+            .picker
+            .as_mut()
+            .and_then(|p| match p.selected_action() {
+                Some(PickerAction::SetTheme(n)) => Some(n),
+                _ => None,
+            });
         if let Some(name) = name {
             self.apply_theme(&name);
         }
@@ -5936,7 +6511,9 @@ impl App {
             }
             PickerAction::RunCmd(cmd) => match self.parse_cmdline(&cmd) {
                 Ok(a) => self.apply_cmd(a),
-                Err(e) => { self.echo(e); },
+                Err(e) => {
+                    self.echo(e);
+                }
             },
             PickerAction::RunTask(name) => self.run_task(&name),
         }
@@ -5945,8 +6522,7 @@ impl App {
     /// Generate path completion candidates for the given path prefix.
     fn generate_completion_candidates(&self, path_prefix: &str) -> Vec<String> {
         let (dir, file_prefix) = if path_prefix.contains('/') {
-            let (dir_part, prefix_part) =
-                path_prefix.rsplit_once('/').unwrap_or((path_prefix, ""));
+            let (dir_part, prefix_part) = path_prefix.rsplit_once('/').unwrap_or((path_prefix, ""));
             let base = resolve_path(dir_part, &std::env::current_dir().unwrap_or_default());
             (base, prefix_part.to_string())
         } else {
@@ -5966,14 +6542,9 @@ impl App {
                 let name = entry.file_name().to_string_lossy().to_string();
                 if name.starts_with(&file_prefix) || file_prefix.is_empty() {
                     let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
-                    let display = if is_dir {
-                        format!("{}/", name)
-                    } else {
-                        name
-                    };
+                    let display = if is_dir { format!("{}/", name) } else { name };
                     if path_prefix.contains('/') {
-                        let dir_part =
-                            path_prefix.rsplit_once('/').map(|x| x.0).unwrap_or("");
+                        let dir_part = path_prefix.rsplit_once('/').map(|x| x.0).unwrap_or("");
                         candidates.push(format!("{}/{}", dir_part, display));
                     } else {
                         candidates.push(display);
@@ -5994,7 +6565,11 @@ impl App {
     /// move the cursor to that 1-indexed (line, col).
     fn open_path(&mut self, path: &std::path::Path, at: Option<(usize, usize)>) {
         let content = std::fs::read_to_string(path).unwrap_or_default();
-        let id = self.ws.borrow_mut().buffers.open_file(path.to_path_buf(), content);
+        let id = self
+            .ws
+            .borrow_mut()
+            .buffers
+            .open_file(path.to_path_buf(), content);
         self.ws.borrow_mut().set_active_buffer(id);
         self.refresh_git_hunks(id);
         // Detect the project root for this file and update the cached root.
@@ -6011,7 +6586,9 @@ impl App {
             let pos = {
                 let w = self.ws.borrow();
                 let buf = w.buffer();
-                let l = line.saturating_sub(1).min(buf.line_count().saturating_sub(1));
+                let l = line
+                    .saturating_sub(1)
+                    .min(buf.line_count().saturating_sub(1));
                 buf.line_start_char(l) + col.saturating_sub(1)
             };
             self.ws.borrow_mut().execute(Action::Move(Motion::To(pos)));
@@ -6276,7 +6853,10 @@ impl App {
             }
         }
         items.sort_by(|a, b| {
-            a.path.cmp(&b.path).then(a.line.cmp(&b.line)).then(a.col.cmp(&b.col))
+            a.path
+                .cmp(&b.path)
+                .then(a.line.cmp(&b.line))
+                .then(a.col.cmp(&b.col))
         });
         self.quickfix = QuickfixList::new(items);
     }
@@ -6384,7 +6964,8 @@ impl App {
                 .copied()
                 .find(|&id| w.buffers.get(id).is_some_and(|d| d.name == "*mason*"));
             let id = existing.unwrap_or_else(|| {
-                w.buffers.create_special(ruster_core::document::SpecialKind::Mason, "*mason*")
+                w.buffers
+                    .create_special(ruster_core::document::SpecialKind::Mason, "*mason*")
             });
             if let Some(doc) = w.buffers.get_mut(id) {
                 doc.buffer = Buffer::from_str(&text);
@@ -6411,7 +6992,8 @@ impl App {
                 .copied()
                 .find(|&id| w.buffers.get(id).is_some_and(|d| d.name == "*help*"));
             let id = existing.unwrap_or_else(|| {
-                w.buffers.create_special(ruster_core::document::SpecialKind::Help, "*help*")
+                w.buffers
+                    .create_special(ruster_core::document::SpecialKind::Help, "*help*")
             });
             if let Some(d) = w.buffers.get_mut(id) {
                 d.buffer = Buffer::from_str(&doc);
@@ -6423,7 +7005,9 @@ impl App {
         // Put the cursor on the topic's line and scroll it into view.
         let offset = {
             let w = self.ws.borrow();
-            w.buffers.get(id).map(|d| d.buffer.line_start_char(line.unwrap_or(0)))
+            w.buffers
+                .get(id)
+                .map(|d| d.buffer.line_start_char(line.unwrap_or(0)))
         };
         if let Some(off) = offset {
             let mut w = self.ws.borrow_mut();
@@ -6473,7 +7057,8 @@ impl App {
                 .copied()
                 .find(|&id| w.buffers.get(id).is_some_and(|d| d.name == "*git*"));
             let id = existing.unwrap_or_else(|| {
-                w.buffers.create_special(ruster_core::document::SpecialKind::Git, "*git*")
+                w.buffers
+                    .create_special(ruster_core::document::SpecialKind::Git, "*git*")
             });
             if let Some(doc) = w.buffers.get_mut(id) {
                 doc.buffer = Buffer::from_str(&text);
@@ -6504,17 +7089,27 @@ impl App {
     /// Keys while the status view is focused. Unclaimed keys fall through, so
     /// `:`, `/` and the motions still work.
     fn handle_git_status_key(&mut self, ck: crossterm::event::KeyEvent) -> bool {
-        if !ck.modifiers.difference(crossterm::event::KeyModifiers::SHIFT).is_empty() {
+        if !ck
+            .modifiers
+            .difference(crossterm::event::KeyModifiers::SHIFT)
+            .is_empty()
+        {
             return false;
         }
         match ck.code {
             KeyCode::Enter => {
-                let Some(path) = self.git_status_row().and_then(|r| self.git_status.path_at(r))
+                let Some(path) = self
+                    .git_status_row()
+                    .and_then(|r| self.git_status.path_at(r))
                 else {
                     return true; // a heading: claimed, but nothing to open
                 };
                 let root = self.project_root.clone().unwrap_or_default();
-                let full = if path.is_absolute() { path } else { root.join(path) };
+                let full = if path.is_absolute() {
+                    path
+                } else {
+                    root.join(path)
+                };
                 if full.is_file() {
                     self.open_path(&full, None);
                 } else {
@@ -6610,8 +7205,10 @@ impl App {
                 .copied()
                 .find(|&id| w.buffers.get(id).is_some_and(|d| d.name == "*git-commit*"));
             let id = existing.unwrap_or_else(|| {
-                w.buffers
-                    .create_special(ruster_core::document::SpecialKind::GitCommit, "*git-commit*")
+                w.buffers.create_special(
+                    ruster_core::document::SpecialKind::GitCommit,
+                    "*git-commit*",
+                )
             });
             if let Some(doc) = w.buffers.get_mut(id) {
                 doc.buffer = Buffer::from_str(&text);
@@ -6713,8 +7310,10 @@ impl App {
                 .copied()
                 .find(|&id| w.buffers.get(id).is_some_and(|d| d.name == "*git-staged*"));
             let id = existing.unwrap_or_else(|| {
-                w.buffers
-                    .create_special(ruster_core::document::SpecialKind::GitStaged, "*git-staged*")
+                w.buffers.create_special(
+                    ruster_core::document::SpecialKind::GitStaged,
+                    "*git-staged*",
+                )
             });
             if let Some(doc) = w.buffers.get_mut(id) {
                 doc.buffer = Buffer::from_str(&text);
@@ -6761,7 +7360,10 @@ impl App {
         let Some(root) = self.git_root() else { return };
         let (diff, line) = {
             let w = self.ws.borrow();
-            (w.active_doc().buffer.to_string(), w.active_doc().buffer.char_to_line(w.primary_head()))
+            (
+                w.active_doc().buffer.to_string(),
+                w.active_doc().buffer.char_to_line(w.primary_head()),
+            )
         };
         let Some(index) = ruster_git::hunk_of_line(&diff).get(line).copied().flatten() else {
             self.echo_warn("No hunk under the cursor".to_string());
@@ -6807,9 +7409,15 @@ impl App {
         let target = {
             let w = self.ws.borrow();
             let id = w.active_buffer();
-            w.buffers.get(id).and_then(|d| d.file_path.clone()).map(|p| {
-                (p, w.active_doc().buffer.char_to_line(w.primary_head()) as u32)
-            })
+            w.buffers
+                .get(id)
+                .and_then(|d| d.file_path.clone())
+                .map(|p| {
+                    (
+                        p,
+                        w.active_doc().buffer.char_to_line(w.primary_head()) as u32,
+                    )
+                })
         };
         let Some((path, line)) = target else {
             self.echo_warn("No file in this window".to_string());
@@ -6854,7 +7462,11 @@ impl App {
             self.echo_warn("Put the cursor on a file".to_string());
             return;
         };
-        let full = if path.is_absolute() { path.clone() } else { root.join(&path) };
+        let full = if path.is_absolute() {
+            path.clone()
+        } else {
+            root.join(&path)
+        };
 
         let result = if stage {
             ruster_git::stage(&root, &full)
@@ -6869,7 +7481,10 @@ impl App {
                 // The list just changed shape, so hold the cursor near where it
                 // was rather than flinging it to the top on every keypress.
                 self.restore_git_cursor(line);
-                self.echo(format!("{} {name}", if stage { "Staged" } else { "Unstaged" }));
+                self.echo(format!(
+                    "{} {name}",
+                    if stage { "Staged" } else { "Unstaged" }
+                ));
             }
             Err(e) => self.echo_error(format!(
                 "Could not {} {name}: {e}",
@@ -6959,7 +7574,10 @@ impl App {
         let (line, text) = {
             let w = self.ws.borrow();
             let doc = w.active_doc();
-            (doc.buffer.char_to_line(w.primary_head()), doc.buffer.to_string())
+            (
+                doc.buffer.char_to_line(w.primary_head()),
+                doc.buffer.to_string(),
+            )
         };
         let tools = crate::mason::builtin_tools();
         let Some(tool) = crate::mason::tool_at_row(&tools, &text, line) else {
@@ -6982,13 +7600,7 @@ impl App {
     ///
     /// `verb` names the confirming button and the message if it is declined, so
     /// the dialog reads as the thing it will do rather than a generic "OK".
-    fn confirm_command(
-        &mut self,
-        title: String,
-        verb: &str,
-        cmd: String,
-        kind: RunnerKind,
-    ) {
+    fn confirm_command(&mut self, title: String, verb: &str, cmd: String, kind: RunnerKind) {
         self.dialog = Some(crate::dialog::DialogState::new(
             title,
             vec![
@@ -6997,13 +7609,18 @@ impl App {
                 crate::dialog::Field::button("Cancel"),
             ],
         ));
-        self.pending_confirm =
-            Some(PendingConfirm { cmd, kind, verb: verb.to_string() });
+        self.pending_confirm = Some(PendingConfirm {
+            cmd,
+            kind,
+            verb: verb.to_string(),
+        });
     }
 
     /// Run a confirmed command, streamed through the runner like a build.
     fn run_pending_confirm(&mut self, button: Option<&str>) {
-        let Some(p) = self.pending_confirm.take() else { return };
+        let Some(p) = self.pending_confirm.take() else {
+            return;
+        };
         if button != Some(p.verb.as_str()) {
             self.echo(format!("{} cancelled", p.verb));
             return;
@@ -7028,13 +7645,13 @@ impl App {
             None => (MessageLevel::Error, "git failed to run".to_string()),
         };
         self.push_message(level, MessageSource::System, text);
-        let open = self
-            .ws
-            .borrow()
-            .buffers
-            .ids()
-            .iter()
-            .any(|&id| self.ws.borrow().buffers.get(id).is_some_and(|d| d.name == "*git*"));
+        let open = self.ws.borrow().buffers.ids().iter().any(|&id| {
+            self.ws
+                .borrow()
+                .buffers
+                .get(id)
+                .is_some_and(|d| d.name == "*git*")
+        });
         if open {
             self.open_git_status();
         }
@@ -7052,7 +7669,11 @@ impl App {
         self.push_message(level, MessageSource::System, text);
         // Only refresh the listing if it is still open.
         let open = self.ws.borrow().buffers.ids().iter().any(|&id| {
-            self.ws.borrow().buffers.get(id).is_some_and(|d| d.name == "*mason*")
+            self.ws
+                .borrow()
+                .buffers
+                .get(id)
+                .is_some_and(|d| d.name == "*mason*")
         });
         if open {
             self.open_mason();
@@ -7070,16 +7691,22 @@ impl App {
         let mut index: std::collections::HashMap<BufferId, usize> =
             std::collections::HashMap::new();
         for &id in w.buffers.ids().iter() {
-            let Some(doc) = w.buffers.get(id) else { continue };
+            let Some(doc) = w.buffers.get(id) else {
+                continue;
+            };
             if matches!(doc.kind, DocKind::Special(_)) {
                 continue;
             }
-            let Some(path) = doc.file_path.clone() else { continue };
+            let Some(path) = doc.file_path.clone() else {
+                continue;
+            };
             // Absolute, or the session only restores from the directory the
             // editor happened to be started in. Canonicalising also collapses
             // `..` so the same file saved two ways is one entry.
             let path = std::fs::canonicalize(&path).unwrap_or_else(|_| {
-                std::env::current_dir().map(|d| d.join(&path)).unwrap_or(path)
+                std::env::current_dir()
+                    .map(|d| d.join(&path))
+                    .unwrap_or(path)
             });
             index.insert(id, files.len());
             files.push(path);
@@ -7152,15 +7779,17 @@ impl App {
                 continue;
             }
             let content = std::fs::read_to_string(path).unwrap_or_default();
-            let id = self.ws.borrow_mut().buffers.open_file(path.clone(), content);
+            let id = self
+                .ws
+                .borrow_mut()
+                .buffers
+                .open_file(path.clone(), content);
             opened.push(Some(id));
         }
 
-        let Some(tree) =
-            ruster_core::windows::WindowTree::restore(&session.layout, |i| {
-                opened.get(i).copied().flatten()
-            })
-        else {
+        let Some(tree) = ruster_core::windows::WindowTree::restore(&session.layout, |i| {
+            opened.get(i).copied().flatten()
+        }) else {
             self.echo_warn("Session restored no files (all missing)".to_string());
             return;
         };
@@ -7168,7 +7797,11 @@ impl App {
         self.update_syntax();
 
         let n = opened.iter().filter(|o| o.is_some()).count();
-        let note = if missing > 0 { format!(", {missing} missing") } else { String::new() };
+        let note = if missing > 0 {
+            format!(", {missing} missing")
+        } else {
+            String::new()
+        };
         self.echo(format!("Session restored ({n} files{note})"));
     }
 
@@ -7323,7 +7956,11 @@ impl App {
                 return id;
             }
         }
-        let id = self.ws.borrow_mut().buffers.create_special(SpecialKind::Build, name);
+        let id = self
+            .ws
+            .borrow_mut()
+            .buffers
+            .create_special(SpecialKind::Build, name);
         self.runner_buf = Some(id);
         id
     }
@@ -7356,7 +7993,10 @@ impl App {
             .tasks
             .iter()
             .map(|(name, task)| {
-                PickerItem::new(format!("{name:<16} {}", task.cmd), PickerAction::RunTask(name.clone()))
+                PickerItem::new(
+                    format!("{name:<16} {}", task.cmd),
+                    PickerAction::RunTask(name.clone()),
+                )
             })
             .collect();
         self.picker = Some(PickerState::new("Tasks", items));
@@ -7402,9 +8042,18 @@ impl App {
     fn open_terminal_running(&mut self, cmd: &str, cwd: &std::path::Path, name: &str) {
         let cwd = cwd.to_string_lossy();
         let (shell, args) = if cfg!(windows) {
-            ("cmd".to_string(), vec!["/K".to_string(), format!("cd /d {cwd} && {cmd}")])
+            (
+                "cmd".to_string(),
+                vec!["/K".to_string(), format!("cd /d {cwd} && {cmd}")],
+            )
         } else {
-            ("sh".to_string(), vec!["-c".to_string(), format!("cd {cwd} && {cmd}; exec ${{SHELL:-sh}}")])
+            (
+                "sh".to_string(),
+                vec![
+                    "-c".to_string(),
+                    format!("cd {cwd} && {cmd}; exec ${{SHELL:-sh}}"),
+                ],
+            )
         };
         let scrollback = self.config.terminal_scrollback as usize;
         match TerminalSession::spawn(&shell, &args, 80, 24, scrollback) {
@@ -7417,9 +8066,19 @@ impl App {
                 self.ws.borrow_mut().set_active_buffer(id);
                 self.terminals.insert(id, session);
                 self.terminal_focused = self.config.terminal_default_mode != "normal";
-                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::System, format!("task {name}: Ctrl-\\ to leave, i to re-enter")));
+                self.notify.push(Notification::new(
+                    ruster_core::message::MessageLevel::Info,
+                    ruster_core::message::MessageSource::System,
+                    format!("task {name}: Ctrl-\\ to leave, i to re-enter"),
+                ));
             }
-            Err(e) => { self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Task, format!("task {name}: {e}"))); },
+            Err(e) => {
+                self.notify.push(Notification::new(
+                    ruster_core::message::MessageLevel::Info,
+                    ruster_core::message::MessageSource::Task,
+                    format!("task {name}: {e}"),
+                ));
+            }
         }
     }
 
@@ -7450,7 +8109,9 @@ impl App {
             return;
         }
         if cmd.is_empty() {
-            self.echo(format!("No {label} command for this project (set it in ruster.toml)"));
+            self.echo(format!(
+                "No {label} command for this project (set it in ruster.toml)"
+            ));
             return;
         }
         self.runner_kind = kind;
@@ -7470,10 +8131,15 @@ impl App {
 
     /// Poll the active debug session (if any) for DAP events, updating state.
     fn drain_debug_events(&mut self) {
-        let Some(session) = self.debug.session_mut() else { return };
+        let Some(session) = self.debug.session_mut() else {
+            return;
+        };
         for ev in session.poll_events() {
             match ev {
-                ruster_dap::session::DapEvent::Stopped { reason: _, thread_id } => {
+                ruster_dap::session::DapEvent::Stopped {
+                    reason: _,
+                    thread_id,
+                } => {
                     session.get_stack(thread_id).ok();
                     session.state = ruster_dap::session::SessionState::Paused;
                 }
@@ -7500,14 +8166,18 @@ impl App {
         let vars: Vec<(String, Vec<(String, String)>)> = {
             let scopes = &session.scopes;
             let cache = &session.variable_cache;
-            scopes.iter().filter(|s| s.variables_reference > 0).map(|scope| {
-                let pairs = cache
-                    .iter()
-                    .filter(|(&k, _)| k == scope.variables_reference as u64)
-                    .map(|(_, v)| (v.name.clone(), v.value.clone()))
-                    .collect();
-                (scope.name.clone(), pairs)
-            }).collect()
+            scopes
+                .iter()
+                .filter(|s| s.variables_reference > 0)
+                .map(|scope| {
+                    let pairs = cache
+                        .iter()
+                        .filter(|(&k, _)| k == scope.variables_reference as u64)
+                        .map(|(_, v)| (v.name.clone(), v.value.clone()))
+                        .collect();
+                    (scope.name.clone(), pairs)
+                })
+                .collect()
         };
         session.variables = vars;
     }
@@ -7519,7 +8189,9 @@ impl App {
         use crate::runner::RunnerMsg;
         use ruster_core::message::{MessageLevel, MessageSource};
         use std::sync::mpsc::TryRecvError;
-        let Some(rx) = self.runner_rx.take() else { return };
+        let Some(rx) = self.runner_rx.take() else {
+            return;
+        };
         let msg_source = match self.runner_kind {
             RunnerKind::Build => MessageSource::Build,
             RunnerKind::Test => MessageSource::Test,
@@ -7570,11 +8242,19 @@ impl App {
                         None => "failed to run".to_string(),
                     };
                     self.push_message(
-                        if code == Some(0) { ruster_core::message::MessageLevel::Success } else { ruster_core::message::MessageLevel::Error },
+                        if code == Some(0) {
+                            ruster_core::message::MessageLevel::Success
+                        } else {
+                            ruster_core::message::MessageLevel::Error
+                        },
                         ruster_core::message::MessageSource::Task,
                         status_text.clone(),
                     );
-                    self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::Task, format!("task {status_text}")));
+                    self.notify.push(Notification::new(
+                        ruster_core::message::MessageLevel::Info,
+                        ruster_core::message::MessageSource::Task,
+                        format!("task {status_text}"),
+                    ));
                 }
             }
         }
@@ -7595,7 +8275,11 @@ impl App {
         let hint = if n > 0 { "  (:copen)" } else { "" };
         let msg = format!("build {status} — {n} problem(s){hint}");
         self.push_message(
-            if code == Some(0) { ruster_core::message::MessageLevel::Success } else { ruster_core::message::MessageLevel::Error },
+            if code == Some(0) {
+                ruster_core::message::MessageLevel::Success
+            } else {
+                ruster_core::message::MessageLevel::Error
+            },
             ruster_core::message::MessageSource::Build,
             msg.clone(),
         );
@@ -7611,7 +8295,9 @@ impl App {
             if t.outcome != crate::runner::TestOutcome::Fail {
                 continue;
             }
-            let Some((path, line, col)) = t.location.clone() else { continue };
+            let Some((path, line, col)) = t.location.clone() else {
+                continue;
+            };
             items.push(QuickfixItem {
                 path: path.clone(),
                 line,
@@ -7630,11 +8316,22 @@ impl App {
             ));
         }
         self.quickfix = QuickfixList::new(items);
-        let status = if run.failed == 0 && code == Some(0) { "ok" } else { "FAILED" };
+        let status = if run.failed == 0 && code == Some(0) {
+            "ok"
+        } else {
+            "FAILED"
+        };
         let hint = if run.failed > 0 { "  (:copen)" } else { "" };
-        let msg = format!("test {status} — {} passed, {} failed{hint}", run.passed, run.failed);
+        let msg = format!(
+            "test {status} — {} passed, {} failed{hint}",
+            run.passed, run.failed
+        );
         self.push_message(
-            if run.failed == 0 && code == Some(0) { ruster_core::message::MessageLevel::Success } else { ruster_core::message::MessageLevel::Error },
+            if run.failed == 0 && code == Some(0) {
+                ruster_core::message::MessageLevel::Success
+            } else {
+                ruster_core::message::MessageLevel::Error
+            },
             ruster_core::message::MessageSource::Test,
             msg.clone(),
         );
@@ -7645,9 +8342,15 @@ impl App {
     fn handle_window_command(&mut self, ck: crossterm::event::KeyEvent) {
         let mut w = self.ws.borrow_mut();
         match ck.code {
-            KeyCode::Char('s') => { w.windows.split(SplitDir::Horizontal); }
-            KeyCode::Char('v') => { w.windows.split(SplitDir::Vertical); }
-            KeyCode::Char('c') => { w.windows.close_active(); }
+            KeyCode::Char('s') => {
+                w.windows.split(SplitDir::Horizontal);
+            }
+            KeyCode::Char('v') => {
+                w.windows.split(SplitDir::Vertical);
+            }
+            KeyCode::Char('c') => {
+                w.windows.close_active();
+            }
             KeyCode::Char('o') => w.windows.only(),
             KeyCode::Char('h') => w.windows.focus(FocusDir::Left),
             KeyCode::Char('j') => w.windows.focus(FocusDir::Down),
@@ -7694,7 +8397,8 @@ impl App {
                 return;
             }
         };
-        self.lua.fire_event_str("BufWritePre", &[path.to_str().unwrap_or("")]);
+        self.lua
+            .fire_event_str("BufWritePre", &[path.to_str().unwrap_or("")]);
         match std::fs::write(&path, &content) {
             Ok(()) => {
                 self.ws.borrow_mut().active_doc_mut().modified = false;
@@ -7705,11 +8409,14 @@ impl App {
                 self.ws.borrow_mut().active_doc_mut().modified = false;
                 self.echo_success(format!("Saved (forced): {}", path.display()));
             }
-            Err(e) => { self.echo_error(format!("Error: {}", e)); },
+            Err(e) => {
+                self.echo_error(format!("Error: {}", e));
+            }
         }
         // The file on disk changed, so the diff against the index has too.
         self.refresh_git_hunks_active();
-        self.lua.fire_event_str("BufWritePost", &[path.to_str().unwrap_or("")]);
+        self.lua
+            .fire_event_str("BufWritePost", &[path.to_str().unwrap_or("")]);
     }
 
     fn exec_operator(&mut self, op: char, start: usize, end: usize) {
@@ -7749,20 +8456,33 @@ impl App {
                 }
                 self.echo_success(format!("Saved: {}", path));
             }
-            Err(e) => { self.echo_error(format!("Error: {}", e)); },
+            Err(e) => {
+                self.echo_error(format!("Error: {}", e));
+            }
         }
     }
 
     fn build_debug_overlay(&self) -> Option<ruster_render::DebugOverlayView> {
         let session = self.debug.session()?;
-        let status = if session.stopped() { "PAUSED" } else { "RUNNING" };
-        let toolbar = format!("[Debug: {}] F5:Continue F10:Next F11:StepIn S-F5:Stop", status);
+        let status = if session.stopped() {
+            "PAUSED"
+        } else {
+            "RUNNING"
+        };
+        let toolbar = format!(
+            "[Debug: {}] F5:Continue F10:Next F11:StepIn S-F5:Stop",
+            status
+        );
         let stack: Vec<(u16, String, String)> = session
             .stack_frames
             .iter()
             .enumerate()
             .map(|(i, f)| {
-                let loc = f.source.as_ref().and_then(|s| s.path.as_deref()).unwrap_or("?");
+                let loc = f
+                    .source
+                    .as_ref()
+                    .and_then(|s| s.path.as_deref())
+                    .unwrap_or("?");
                 (i as u16, f.name.clone(), format!("{}:{}", loc, f.line))
             })
             .collect();
@@ -7770,19 +8490,31 @@ impl App {
             .variables
             .iter()
             .map(|(scope_name, vars)| {
-                let vars: Vec<(String, String)> = vars.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                let vars: Vec<(String, String)> =
+                    vars.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
                 (scope_name.clone(), vars)
             })
             .collect();
-        Some(ruster_render::DebugOverlayView { toolbar, stack, scopes })
+        Some(ruster_render::DebugOverlayView {
+            toolbar,
+            stack,
+            scopes,
+        })
     }
 
     fn debug_start(&mut self) {
         if self.debug.is_running() {
-            self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::System, "Debug session already active"));
+            self.notify.push(Notification::new(
+                ruster_core::message::MessageLevel::Info,
+                ruster_core::message::MessageSource::System,
+                "Debug session already active",
+            ));
             return;
         }
-        let root = self.project_root.as_deref().unwrap_or(std::path::Path::new("."));
+        let root = self
+            .project_root
+            .as_deref()
+            .unwrap_or(std::path::Path::new("."));
         // Pick the adapter from the file being edited, not a fixed language.
         let lang = {
             let w = self.ws.borrow();
@@ -7794,7 +8526,11 @@ impl App {
                     // (`go` has no syntax key but is a valid adapter language).
                     let ext = ruster_syntax::lang_ext_for_path(p);
                     let key = ruster_syntax::lang_key(&ext);
-                    if key.is_empty() { ext } else { key.to_string() }
+                    if key.is_empty() {
+                        ext
+                    } else {
+                        key.to_string()
+                    }
                 }
                 None => String::new(),
             }
@@ -7813,9 +8549,10 @@ impl App {
         };
         // A configured adapter overrides the detected program.
         let cfg = match self.config.dap_adapter.as_deref() {
-            Some(prog) if !prog.is_empty() => {
-                ruster_dap::config::AdapterConfig { command: prog.to_string(), ..cfg }
-            }
+            Some(prog) if !prog.is_empty() => ruster_dap::config::AdapterConfig {
+                command: prog.to_string(),
+                ..cfg
+            },
             _ => cfg,
         };
         match ruster_dap::session::DebugSession::start(&cfg, root) {
@@ -7828,9 +8565,19 @@ impl App {
                 // before `:DebugStart`, which is the normal order, were never
                 // sent and the debugger ran straight past them.
                 self.debug.start(session);
-                self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::System, format!("Debug started: {}", cfg.name)));
+                self.notify.push(Notification::new(
+                    ruster_core::message::MessageLevel::Info,
+                    ruster_core::message::MessageSource::System,
+                    format!("Debug started: {}", cfg.name),
+                ));
             }
-            Err(e) => { self.notify.push(Notification::new(ruster_core::message::MessageLevel::Info, ruster_core::message::MessageSource::System, format!("Debug start failed: {}", e))); },
+            Err(e) => {
+                self.notify.push(Notification::new(
+                    ruster_core::message::MessageLevel::Info,
+                    ruster_core::message::MessageSource::System,
+                    format!("Debug start failed: {}", e),
+                ));
+            }
         }
     }
 
@@ -7921,7 +8668,10 @@ mod tests {
     #[test]
     fn cmd_w_path_saves_as() {
         let a = App::new("content".into(), PathBuf::from("f.txt"));
-        assert_eq!(a.parse_cmdline(":w /tmp/out.txt"), Ok(CmdAction::SaveAs("/tmp/out.txt".into())));
+        assert_eq!(
+            a.parse_cmdline(":w /tmp/out.txt"),
+            Ok(CmdAction::SaveAs("/tmp/out.txt".into()))
+        );
     }
 
     #[test]
@@ -7932,14 +8682,32 @@ mod tests {
 
     #[test]
     fn release_key_events_are_ignored() {
-        use crossterm::event::{KeyCode as CtCode, KeyEvent as CtKey, KeyEventKind, KeyModifiers as CtMods};
+        use crossterm::event::{
+            KeyCode as CtCode, KeyEvent as CtKey, KeyEventKind, KeyModifiers as CtMods,
+        };
         let mut a = App::new("ab".into(), PathBuf::from("f.txt"));
         // Windows emits a press *and* a release for each keystroke; only the
         // press should act, otherwise every key is processed twice.
-        a.handle_key(CtKey::new_with_kind(CtCode::Char('x'), CtMods::NONE, KeyEventKind::Release));
-        assert_eq!(a.ws.borrow().buffer().to_string(), "ab", "release must be a no-op");
-        a.handle_key(CtKey::new_with_kind(CtCode::Char('x'), CtMods::NONE, KeyEventKind::Press));
-        assert_eq!(a.ws.borrow().buffer().to_string(), "b", "press deletes one char");
+        a.handle_key(CtKey::new_with_kind(
+            CtCode::Char('x'),
+            CtMods::NONE,
+            KeyEventKind::Release,
+        ));
+        assert_eq!(
+            a.ws.borrow().buffer().to_string(),
+            "ab",
+            "release must be a no-op"
+        );
+        a.handle_key(CtKey::new_with_kind(
+            CtCode::Char('x'),
+            CtMods::NONE,
+            KeyEventKind::Press,
+        ));
+        assert_eq!(
+            a.ws.borrow().buffer().to_string(),
+            "b",
+            "press deletes one char"
+        );
     }
 
     #[test]
@@ -8013,7 +8781,10 @@ mod tests {
     fn per_buffer_syntax_engines_created_lazily() {
         let mut a = App::new("fn main() {}".into(), PathBuf::from("main.rs"));
         let rust_buf = a.ws.borrow().active_buffer();
-        assert!(a.syntax.contains_key(&rust_buf), "initial rust buffer has an engine");
+        assert!(
+            a.syntax.contains_key(&rust_buf),
+            "initial rust buffer has an engine"
+        );
 
         // Open a Python file into a new active buffer.
         let tmp = std::env::temp_dir().join("ruster_syn_test.py");
@@ -8022,7 +8793,10 @@ mod tests {
         let py_buf = a.ws.borrow().active_buffer();
         assert_ne!(rust_buf, py_buf);
         a.update_syntax();
-        assert!(a.syntax.contains_key(&py_buf), "python buffer gets its own engine");
+        assert!(
+            a.syntax.contains_key(&py_buf),
+            "python buffer gets its own engine"
+        );
         let _ = std::fs::remove_file(&tmp);
     }
 
@@ -8048,7 +8822,11 @@ mod tests {
     fn substitute_reports_when_pattern_is_missing() {
         let mut a = App::new("hello\n".into(), PathBuf::from("f.txt"));
         a.apply_cmd(a.parse_cmdline(":s/zzz/x/").unwrap());
-        assert!(a.notify.history().iter().any(|n| n.text.contains("not found")));
+        assert!(a
+            .notify
+            .history()
+            .iter()
+            .any(|n| n.text.contains("not found")));
         assert_eq!(a.ws.borrow().buffer().to_string(), "hello\n");
     }
 
@@ -8056,15 +8834,27 @@ mod tests {
     fn substitute_parsing_does_not_swallow_other_commands() {
         let a = App::new("x".into(), PathBuf::from("f.txt"));
         // ":sp" is a split, not a substitution.
-        assert_eq!(a.parse_cmdline(":sp"), Ok(CmdAction::Split(SplitDir::Horizontal)));
-        assert_eq!(a.parse_cmdline(":sym foo"), Ok(CmdAction::WorkspaceSymbol("foo".into())));
+        assert_eq!(
+            a.parse_cmdline(":sp"),
+            Ok(CmdAction::Split(SplitDir::Horizontal))
+        );
+        assert_eq!(
+            a.parse_cmdline(":sym foo"),
+            Ok(CmdAction::WorkspaceSymbol("foo".into()))
+        );
     }
 
     #[test]
     fn call_hierarchy_commands_parse() {
         let a = App::new("x".into(), PathBuf::from("f.txt"));
-        assert_eq!(a.parse_cmdline(":callers"), Ok(CmdAction::CallHierarchy(true)));
-        assert_eq!(a.parse_cmdline(":callees"), Ok(CmdAction::CallHierarchy(false)));
+        assert_eq!(
+            a.parse_cmdline(":callers"),
+            Ok(CmdAction::CallHierarchy(true))
+        );
+        assert_eq!(
+            a.parse_cmdline(":callees"),
+            Ok(CmdAction::CallHierarchy(false))
+        );
     }
 
     #[test]
@@ -8199,8 +8989,14 @@ mod tests {
     #[test]
     fn parse_split_commands() {
         let a = App::new("x".into(), PathBuf::from("f.txt"));
-        assert_eq!(a.parse_cmdline(":vsplit"), Ok(CmdAction::Split(SplitDir::Vertical)));
-        assert_eq!(a.parse_cmdline(":sp"), Ok(CmdAction::Split(SplitDir::Horizontal)));
+        assert_eq!(
+            a.parse_cmdline(":vsplit"),
+            Ok(CmdAction::Split(SplitDir::Vertical))
+        );
+        assert_eq!(
+            a.parse_cmdline(":sp"),
+            Ok(CmdAction::Split(SplitDir::Horizontal))
+        );
         assert_eq!(a.parse_cmdline(":only"), Ok(CmdAction::Only));
         assert_eq!(a.parse_cmdline(":close"), Ok(CmdAction::CloseWindow));
         assert_eq!(a.parse_cmdline(":fullscreen"), Ok(CmdAction::Fullscreen));
@@ -8212,11 +9008,17 @@ mod tests {
         let a = App::new("x".into(), PathBuf::from("f.txt"));
         assert_eq!(
             a.parse_cmdline(":set number"),
-            Ok(CmdAction::SetNamed("number".into(), SetNamedVal::Exact(SV::Bool(true))))
+            Ok(CmdAction::SetNamed(
+                "number".into(),
+                SetNamedVal::Exact(SV::Bool(true))
+            ))
         );
         assert_eq!(
             a.parse_cmdline(":set nonumber"),
-            Ok(CmdAction::SetNamed("number".into(), SetNamedVal::Exact(SV::Bool(false))))
+            Ok(CmdAction::SetNamed(
+                "number".into(),
+                SetNamedVal::Exact(SV::Bool(false))
+            ))
         );
         assert_eq!(
             a.parse_cmdline(":set number!"),
@@ -8224,19 +9026,31 @@ mod tests {
         );
         assert_eq!(
             a.parse_cmdline(":set relativenumber"),
-            Ok(CmdAction::SetNamed("relativenumber".into(), SetNamedVal::Exact(SV::Bool(true))))
+            Ok(CmdAction::SetNamed(
+                "relativenumber".into(),
+                SetNamedVal::Exact(SV::Bool(true))
+            ))
         );
         assert_eq!(
             a.parse_cmdline(":set expandtab"),
-            Ok(CmdAction::SetNamed("expandtab".into(), SetNamedVal::Exact(SV::Bool(true))))
+            Ok(CmdAction::SetNamed(
+                "expandtab".into(),
+                SetNamedVal::Exact(SV::Bool(true))
+            ))
         );
         assert_eq!(
             a.parse_cmdline(":set tabstop=8"),
-            Ok(CmdAction::SetNamed("tabstop".into(), SetNamedVal::Exact(SV::Int(8))))
+            Ok(CmdAction::SetNamed(
+                "tabstop".into(),
+                SetNamedVal::Exact(SV::Int(8))
+            ))
         );
         assert_eq!(
             a.parse_cmdline(":set editmode=emacs"),
-            Ok(CmdAction::SetNamed("editmode".into(), SetNamedVal::Exact(SV::Enum("emacs".into()))))
+            Ok(CmdAction::SetNamed(
+                "editmode".into(),
+                SetNamedVal::Exact(SV::Enum("emacs".into()))
+            ))
         );
         // Bare non-bool key shows current value (like Vim).
         assert_eq!(
@@ -8263,9 +9077,9 @@ mod tests {
         );
         assert!(a.parse_cmdline(":set bogus").is_err());
         assert!(a.parse_cmdline(":set tabstop=bogus").is_err());
-        assert!(a.parse_cmdline(":set no").is_err());  // "no" prefix with empty key
-        assert!(a.parse_cmdline(":set ?").is_err());   // ? with empty key
-        assert!(a.parse_cmdline(":set &").is_err());   // & with empty key
+        assert!(a.parse_cmdline(":set no").is_err()); // "no" prefix with empty key
+        assert!(a.parse_cmdline(":set ?").is_err()); // ? with empty key
+        assert!(a.parse_cmdline(":set &").is_err()); // & with empty key
     }
 
     #[test]
@@ -8273,7 +9087,10 @@ mod tests {
         use ruster_lua::schema::SettingValue as SV;
         let mut a = App::new("x".into(), PathBuf::from("f.txt"));
         assert!(!a.config.number);
-        a.apply_cmd(CmdAction::SetNamed("number".into(), SetNamedVal::Exact(SV::Bool(true))));
+        a.apply_cmd(CmdAction::SetNamed(
+            "number".into(),
+            SetNamedVal::Exact(SV::Bool(true)),
+        ));
         assert!(a.config.number);
         a.apply_cmd(CmdAction::SetNamed("number".into(), SetNamedVal::Toggle));
         assert!(!a.config.number);
@@ -8347,7 +9164,10 @@ mod tests {
     fn setting_a_breakpoint_does_not_panic_on_the_next_render() {
         let mut a = App::new("one\ntwo\nthree\n".into(), PathBuf::from("f.rs"));
         a.debug.toggle_breakpoint(std::path::Path::new("f.rs"), 1);
-        assert!(a.debug.any_breakpoints(), "precondition: the branch is now live");
+        assert!(
+            a.debug.any_breakpoints(),
+            "precondition: the branch is now live"
+        );
         a.render();
     }
 
@@ -8364,7 +9184,10 @@ mod tests {
                 signs: vec![(0, '\u{2717}', ruster_render::Color::Default)],
             },
         );
-        assert!(!a.result_signs.is_empty(), "precondition: the branch is now live");
+        assert!(
+            !a.result_signs.is_empty(),
+            "precondition: the branch is now live"
+        );
         a.render();
     }
 
@@ -8375,15 +9198,25 @@ mod tests {
         a.git.set_enabled(true);
         a.git.set_hunks(
             id,
-            vec![ruster_git::Hunk { kind: ruster_git::HunkKind::Modified, start: 1, count: 1 }],
+            vec![ruster_git::Hunk {
+                kind: ruster_git::HunkKind::Modified,
+                start: 1,
+                count: 1,
+            }],
         );
 
         // Line 1 is changed *and* has an error.
         let signs = a.git_signs_for(id);
-        assert_eq!(signs.at(1).map(|(g, _)| g), Some('~'), "git sign alone shows");
+        assert_eq!(
+            signs.at(1).map(|(g, _)| g),
+            Some('~'),
+            "git sign alone shows"
+        );
 
         let mut merged = signs;
-        merged.signs.push((1, 'E', ruster_render::Color::Rgb(243, 139, 168)));
+        merged
+            .signs
+            .push((1, 'E', ruster_render::Color::Rgb(243, 139, 168)));
         assert_eq!(
             merged.at(1).map(|(g, _)| g),
             Some('E'),
@@ -8399,9 +9232,21 @@ mod tests {
         a.git.set_hunks(
             id,
             vec![
-                ruster_git::Hunk { kind: ruster_git::HunkKind::Added, start: 0, count: 2 },
-                ruster_git::Hunk { kind: ruster_git::HunkKind::Modified, start: 3, count: 1 },
-                ruster_git::Hunk { kind: ruster_git::HunkKind::Removed, start: 4, count: 0 },
+                ruster_git::Hunk {
+                    kind: ruster_git::HunkKind::Added,
+                    start: 0,
+                    count: 2,
+                },
+                ruster_git::Hunk {
+                    kind: ruster_git::HunkKind::Modified,
+                    start: 3,
+                    count: 1,
+                },
+                ruster_git::Hunk {
+                    kind: ruster_git::HunkKind::Removed,
+                    start: 4,
+                    count: 0,
+                },
             ],
         );
         let s = a.git_signs_for(id);
@@ -8409,7 +9254,11 @@ mod tests {
         assert_eq!(s.at(1).map(|(g, _)| g), Some('+'));
         assert_eq!(s.at(2), None, "unchanged line has no sign");
         assert_eq!(s.at(3).map(|(g, _)| g), Some('~'));
-        assert_eq!(s.at(4).map(|(g, _)| g), Some('_'), "a deletion marks its boundary line");
+        assert_eq!(
+            s.at(4).map(|(g, _)| g),
+            Some('_'),
+            "a deletion marks its boundary line"
+        );
     }
 
     #[test]
@@ -8418,10 +9267,17 @@ mod tests {
         let id = a.ws.borrow().active_buffer();
         a.git.set_hunks(
             id,
-            vec![ruster_git::Hunk { kind: ruster_git::HunkKind::Added, start: 0, count: 1 }],
+            vec![ruster_git::Hunk {
+                kind: ruster_git::HunkKind::Added,
+                start: 0,
+                count: 1,
+            }],
         );
         a.git.set_enabled(false);
-        assert!(a.git_signs_for(id).signs.is_empty(), "git.signs = false draws nothing");
+        assert!(
+            a.git_signs_for(id).signs.is_empty(),
+            "git.signs = false draws nothing"
+        );
     }
 
     #[test]
@@ -8430,7 +9286,11 @@ mod tests {
         let id = a.ws.borrow().active_buffer();
         a.git.set_hunks(
             id,
-            vec![ruster_git::Hunk { kind: ruster_git::HunkKind::Added, start: 0, count: 1 }],
+            vec![ruster_git::Hunk {
+                kind: ruster_git::HunkKind::Added,
+                start: 0,
+                count: 1,
+            }],
         );
         assert_eq!(a.parse_cmdline(":Gitsigns"), Ok(CmdAction::GitsignsToggle));
         assert!(a.git.enabled(), "on by default");
@@ -8450,8 +9310,16 @@ mod tests {
         a.git.set_hunks(
             id,
             vec![
-                ruster_git::Hunk { kind: ruster_git::HunkKind::Modified, start: 1, count: 1 },
-                ruster_git::Hunk { kind: ruster_git::HunkKind::Added, start: 4, count: 1 },
+                ruster_git::Hunk {
+                    kind: ruster_git::HunkKind::Modified,
+                    start: 1,
+                    count: 1,
+                },
+                ruster_git::Hunk {
+                    kind: ruster_git::HunkKind::Added,
+                    start: 4,
+                    count: 1,
+                },
             ],
         );
         let line_of = |a: &App| {
@@ -8523,7 +9391,10 @@ mod tests {
         assert!(a.picker.is_none());
         assert_ne!(previewed, before_name, "moved off the starting theme");
         assert_eq!(a.config.theme, previewed, "accept keeps what was previewed");
-        assert!(a.theme_before_preview.is_none(), "nothing to restore after accept");
+        assert!(
+            a.theme_before_preview.is_none(),
+            "nothing to restore after accept"
+        );
     }
 
     /// The picker lists the built-ins, including all four Catppuccin variants.
@@ -8537,7 +9408,10 @@ mod tests {
             "catppuccin-frappe",
             "catppuccin-macchiato",
         ] {
-            assert!(names.iter().any(|n| n == want), "{want} missing from {names:?}");
+            assert!(
+                names.iter().any(|n| n == want),
+                "{want} missing from {names:?}"
+            );
         }
     }
 
@@ -8551,7 +9425,10 @@ mod tests {
         let mut a = App::new("x".into(), PathBuf::from("f.txt"));
         a.apply_cmd(CmdAction::Dired(Some(tmp.to_string_lossy().into_owned())));
         let dired_id = a.ws.borrow().active_buffer();
-        assert!(a.dired.styled_lines(dired_id).is_some(), "dired cached its listing");
+        assert!(
+            a.dired.styled_lines(dired_id).is_some(),
+            "dired cached its listing"
+        );
 
         // Give it a diagnostics entry too, so the sweep is covered beyond dired.
         // A *non-empty* one: the accessor reports absent and empty alike, so an
@@ -8560,18 +9437,33 @@ mod tests {
         a.lsp.set_diagnostics(
             dired_id,
             vec![ruster_lsp::Diagnostic {
-                start: ruster_lsp::results::LspPositionEq { line: 0, character: 0 },
-                end: ruster_lsp::results::LspPositionEq { line: 0, character: 1 },
+                start: ruster_lsp::results::LspPositionEq {
+                    line: 0,
+                    character: 0,
+                },
+                end: ruster_lsp::results::LspPositionEq {
+                    line: 0,
+                    character: 1,
+                },
                 severity: 1,
                 message: "x".into(),
             }],
         );
 
         a.apply_cmd(CmdAction::BufferDelete);
-        assert!(a.ws.borrow().buffers.get(dired_id).is_none(), "buffer closed");
-        assert!(a.dired.styled_lines(dired_id).is_none(), "dired caches dropped");
+        assert!(
+            a.ws.borrow().buffers.get(dired_id).is_none(),
+            "buffer closed"
+        );
+        assert!(
+            a.dired.styled_lines(dired_id).is_none(),
+            "dired caches dropped"
+        );
         assert!(a.dired.dir_of(dired_id).is_none());
-        assert!(a.lsp.diagnostics(dired_id).is_empty(), "diagnostics dropped");
+        assert!(
+            a.lsp.diagnostics(dired_id).is_empty(),
+            "diagnostics dropped"
+        );
         assert!(!a.syntax.contains_key(&dired_id));
         assert!(!a.lsp.is_tracked(dired_id));
         assert!(!a.terminals.contains_key(&dired_id));
@@ -8588,7 +9480,12 @@ mod tests {
         assert_eq!(a.ws.borrow().buffers.len(), 2);
         assert!(a.ws.borrow().buffers.get(orig).is_none());
         // active buffer switched to a pinned one (dashboard or messages)
-        assert!(a.ws.borrow().buffers.get(a.ws.borrow().active_buffer()).is_some_and(|d| d.pinned));
+        assert!(a
+            .ws
+            .borrow()
+            .buffers
+            .get(a.ws.borrow().active_buffer())
+            .is_some_and(|d| d.pinned));
     }
 
     /// Open dired on a fresh temp dir containing the given subdirectories.
@@ -8611,7 +9508,11 @@ mod tests {
         use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
         let (mut a, tmp) = dired_on_temp("ruster_dired_colon", &[]);
         a.handle_key(CtKey::new(KeyCode::Char(':'), KeyModifiers::NONE));
-        assert_eq!(a.vim.mode, VimMode::Cmdline, ": reaches the command line in dired");
+        assert_eq!(
+            a.vim.mode,
+            VimMode::Cmdline,
+            ": reaches the command line in dired"
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -8620,7 +9521,11 @@ mod tests {
         use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
         let (mut a, tmp) = dired_on_temp("ruster_dired_slash", &[]);
         a.handle_key(CtKey::new(KeyCode::Char('/'), KeyModifiers::NONE));
-        assert_eq!(a.vim.mode, VimMode::Cmdline, "/ opens a search prompt in dired");
+        assert_eq!(
+            a.vim.mode,
+            VimMode::Cmdline,
+            "/ opens a search prompt in dired"
+        );
         assert!(a.vim.cmdline_buffer().starts_with('/'));
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -8635,12 +9540,18 @@ mod tests {
             a.handle_key(CtKey::new(KeyCode::Char(c), none));
         }
         a.handle_key(CtKey::new(KeyCode::Enter, none)); // run the search → Move
-        // The cursor is now on the "zebra/" line; a search key like 'd' in the
-        // term must not have been hijacked by dired.
-        assert!(a.file_prompt.is_none(), "search term did not trigger dired keys");
+                                                        // The cursor is now on the "zebra/" line; a search key like 'd' in the
+                                                        // term must not have been hijacked by dired.
+        assert!(
+            a.file_prompt.is_none(),
+            "search term did not trigger dired keys"
+        );
         a.handle_key(CtKey::new(KeyCode::Enter, none)); // dired open at cursor
         let name = a.ws.borrow().active_doc().name.clone();
-        assert!(name.ends_with("zebra"), "search then Enter opened zebra, got {name}");
+        assert!(
+            name.ends_with("zebra"),
+            "search then Enter opened zebra, got {name}"
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -8655,7 +9566,11 @@ mod tests {
         a.handle_key(CtKey::new(KeyCode::Char('i'), none));
         a.handle_key(CtKey::new(KeyCode::Char('Z'), none));
         a.handle_key(CtKey::new(KeyCode::Esc, none));
-        assert_eq!(a.ws.borrow().buffer().to_string(), before, "listing is read-only");
+        assert_eq!(
+            a.ws.borrow().buffer().to_string(),
+            before,
+            "listing is read-only"
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -8671,7 +9586,10 @@ mod tests {
         a.handle_key(CtKey::new(KeyCode::Char('+'), none));
         assert!(matches!(
             a.file_prompt,
-            Some(FilePrompt { kind: FilePromptKind::Create, .. })
+            Some(FilePrompt {
+                kind: FilePromptKind::Create,
+                ..
+            })
         ));
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -8714,7 +9632,8 @@ mod tests {
             let w = a.ws.borrow();
             w.buffer().line_start_char(1)
         };
-        a.ws.borrow_mut().execute(Action::Move(Motion::To(sub_line_start)));
+        a.ws.borrow_mut()
+            .execute(Action::Move(Motion::To(sub_line_start)));
         a.handle_key(CtKey::new(KeyCode::Enter, KeyModifiers::NONE));
         let name = a.ws.borrow().active_doc().name.clone();
         assert!(name.ends_with("sub"), "descended into sub, got {name}");
@@ -8731,10 +9650,15 @@ mod tests {
         // Ascend above the drive root: land in the drives view.
         a.handle_key(CtKey::new(KeyCode::Char('h'), KeyModifiers::NONE));
         let id = a.ws.borrow().active_buffer();
-        assert!(ruster_core::dired::is_drives_view(a.dired.dir_of(id).unwrap()));
+        assert!(ruster_core::dired::is_drives_view(
+            a.dired.dir_of(id).unwrap()
+        ));
         assert_eq!(a.ws.borrow().active_doc().name, "Drives");
         let content = a.ws.borrow().buffer().to_string();
-        assert!(content.contains("C:"), "drives view lists C:, got {content:?}");
+        assert!(
+            content.contains("C:"),
+            "drives view lists C:, got {content:?}"
+        );
 
         // Selecting the C: entry descends back into that drive.
         let c_line = content.lines().position(|l| l.starts_with("C:")).unwrap();
@@ -8742,7 +9666,9 @@ mod tests {
         a.ws.borrow_mut().execute(Action::Move(Motion::To(start)));
         a.handle_key(CtKey::new(KeyCode::Enter, KeyModifiers::NONE));
         let id2 = a.ws.borrow().active_buffer();
-        assert!(!ruster_core::dired::is_drives_view(a.dired.dir_of(id2).unwrap()));
+        assert!(!ruster_core::dired::is_drives_view(
+            a.dired.dir_of(id2).unwrap()
+        ));
     }
 
     #[test]
@@ -8797,14 +9723,28 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         a.picker = Some(PickerState::new("Files", Vec::new()));
         a.pending_results = Some(rx);
-        tx.send(PickerItem::new("a.rs", PickerAction::OpenPath(PathBuf::from("a.rs")))).unwrap();
-        tx.send(PickerItem::new("b.rs", PickerAction::OpenPath(PathBuf::from("b.rs")))).unwrap();
+        tx.send(PickerItem::new(
+            "a.rs",
+            PickerAction::OpenPath(PathBuf::from("a.rs")),
+        ))
+        .unwrap();
+        tx.send(PickerItem::new(
+            "b.rs",
+            PickerAction::OpenPath(PathBuf::from("b.rs")),
+        ))
+        .unwrap();
         a.drain_pending_results();
         assert_eq!(a.picker.as_ref().unwrap().len(), 2);
-        assert!(a.pending_results.is_some(), "still streaming while sender is alive");
+        assert!(
+            a.pending_results.is_some(),
+            "still streaming while sender is alive"
+        );
         drop(tx);
         a.drain_pending_results();
-        assert!(a.pending_results.is_none(), "cleared once the sender disconnects");
+        assert!(
+            a.pending_results.is_none(),
+            "cleared once the sender disconnects"
+        );
     }
 
     #[test]
@@ -8898,8 +9838,14 @@ mod tests {
         }
         a.handle_key(CtKey::new(KeyCode::Enter, none));
 
-        assert!(dired_dir.join("fresh.txt").exists(), "created in the dired directory");
-        assert!(!side.join("fresh.txt").exists(), "not in the stale sidebar directory");
+        assert!(
+            dired_dir.join("fresh.txt").exists(),
+            "created in the dired directory"
+        );
+        assert!(
+            !side.join("fresh.txt").exists(),
+            "not in the stale sidebar directory"
+        );
 
         let _ = std::fs::remove_dir_all(&side);
         let _ = std::fs::remove_dir_all(&dired_dir);
@@ -8922,7 +9868,10 @@ mod tests {
             a.handle_key(CtKey::new(KeyCode::Char(c), none));
         }
         a.handle_key(CtKey::new(KeyCode::Enter, none));
-        assert!(tmp.join("sub").is_dir(), "trailing slash creates a directory");
+        assert!(
+            tmp.join("sub").is_dir(),
+            "trailing slash creates a directory"
+        );
 
         // Creating it again reports that it exists.
         a.handle_key(CtKey::new(KeyCode::Char('+'), none));
@@ -8930,7 +9879,11 @@ mod tests {
             a.handle_key(CtKey::new(KeyCode::Char(c), none));
         }
         a.handle_key(CtKey::new(KeyCode::Enter, none));
-        assert!(a.notify.history().iter().any(|n| n.text.contains("already exists")));
+        assert!(a
+            .notify
+            .history()
+            .iter()
+            .any(|n| n.text.contains("already exists")));
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -9029,9 +9982,13 @@ mod tests {
 
         // Descend into sub/ and paste.
         let dired_buf = a.ws.borrow().active_buffer();
-        a.dired.refresh(&mut a.ws.borrow_mut(), dired_buf, tmp.join("sub"));
+        a.dired
+            .refresh(&mut a.ws.borrow_mut(), dired_buf, tmp.join("sub"));
         a.handle_key(CtKey::new(KeyCode::Char('p'), none));
-        assert!(tmp.join("sub").join("a.txt").exists(), "file pasted into sub/");
+        assert!(
+            tmp.join("sub").join("a.txt").exists(),
+            "file pasted into sub/"
+        );
         assert!(tmp.join("a.txt").exists(), "copy leaves the original");
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -9055,19 +10012,22 @@ mod tests {
         assert_eq!(a.dired.clipboard().map(|(_, cut)| *cut), Some(true));
 
         let dired_buf = a.ws.borrow().active_buffer();
-        a.dired.refresh(&mut a.ws.borrow_mut(), dired_buf, tmp.join("sub"));
+        a.dired
+            .refresh(&mut a.ws.borrow_mut(), dired_buf, tmp.join("sub"));
         a.handle_key(CtKey::new(KeyCode::Char('p'), none));
         assert!(tmp.join("sub").join("b.txt").exists(), "moved into sub/");
         assert!(!tmp.join("b.txt").exists(), "cut removes the original");
-        assert!(a.dired.clipboard().is_none(), "cut is consumed by the paste");
+        assert!(
+            a.dired.clipboard().is_none(),
+            "cut is consumed by the paste"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn parse_rg_vimgrep_line() {
-        let (path, line, col, body) =
-            parse_rg_line("src/main.rs:12:5:let x = 1").expect("parses");
+        let (path, line, col, body) = parse_rg_line("src/main.rs:12:5:let x = 1").expect("parses");
         assert_eq!(path, PathBuf::from("src/main.rs"));
         assert_eq!(line, 12);
         assert_eq!(col, 5);
@@ -9091,7 +10051,10 @@ mod tests {
     fn parse_rg_and_files_commands() {
         let a = App::new("x".into(), PathBuf::from("f.txt"));
         assert_eq!(a.parse_cmdline(":Files"), Ok(CmdAction::Files));
-        assert_eq!(a.parse_cmdline(":Rg todo"), Ok(CmdAction::Rg("todo".into())));
+        assert_eq!(
+            a.parse_cmdline(":Rg todo"),
+            Ok(CmdAction::Rg("todo".into()))
+        );
         assert!(a.parse_cmdline(":Rg").is_err());
     }
 
@@ -9137,7 +10100,10 @@ mod tests {
     fn parse_lsp_commands() {
         let a = App::new("x".into(), PathBuf::from("f.rs"));
         assert_eq!(a.parse_cmdline(":fmt"), Ok(CmdAction::Format));
-        assert_eq!(a.parse_cmdline(":rename Foo"), Ok(CmdAction::Rename("Foo".into())));
+        assert_eq!(
+            a.parse_cmdline(":rename Foo"),
+            Ok(CmdAction::Rename("Foo".into()))
+        );
         assert!(a.parse_cmdline(":rename").is_err());
     }
 
@@ -9164,8 +10130,14 @@ mod tests {
         a.lsp.set_diagnostics(
             buf,
             vec![ruster_lsp::Diagnostic {
-                start: ruster_lsp::results::LspPositionEq { line: 0, character: 4 },
-                end: ruster_lsp::results::LspPositionEq { line: 0, character: 5 },
+                start: ruster_lsp::results::LspPositionEq {
+                    line: 0,
+                    character: 4,
+                },
+                end: ruster_lsp::results::LspPositionEq {
+                    line: 0,
+                    character: 5,
+                },
                 severity: 1,
                 message: "unused".into(),
             }],
@@ -9177,7 +10149,10 @@ mod tests {
 
         // The lsp.diagnostics toggle suppresses the inline message.
         a.config.lsp_diagnostics = false;
-        assert!(a.current_line_diagnostic().is_none(), "diagnostics off → no message");
+        assert!(
+            a.current_line_diagnostic().is_none(),
+            "diagnostics off → no message"
+        );
     }
 
     #[test]
@@ -9186,7 +10161,10 @@ mod tests {
         a.open_command_picker("wq");
         let p = a.picker.as_mut().expect("palette open");
         assert_eq!(p.filter, "wq");
-        assert!(!p.filtered().is_empty(), "seed matches at least one command");
+        assert!(
+            !p.filtered().is_empty(),
+            "seed matches at least one command"
+        );
     }
 
     #[test]
@@ -9198,7 +10176,10 @@ mod tests {
             LeaderResolve::Action(LeaderAction::Focus(FocusDir::Left))
         ));
         assert!(matches!(leader_resolve(&['z']), LeaderResolve::Unknown));
-        assert!(matches!(leader_resolve(&['w', 'x']), LeaderResolve::Unknown));
+        assert!(matches!(
+            leader_resolve(&['w', 'x']),
+            LeaderResolve::Unknown
+        ));
         // Expanded groups.
         assert!(matches!(
             leader_resolve(&['o', 't']),
@@ -9227,8 +10208,14 @@ mod tests {
             LeaderResolve::Action(LeaderAction::DebugStepOut)
         ));
         // Settings: top-level `SPC ,` and the `SPC o s` group entry.
-        assert!(matches!(leader_resolve(&[',']), LeaderResolve::Action(LeaderAction::Settings)));
-        assert!(matches!(leader_resolve(&['o', 's']), LeaderResolve::Action(LeaderAction::Settings)));
+        assert!(matches!(
+            leader_resolve(&[',']),
+            LeaderResolve::Action(LeaderAction::Settings)
+        ));
+        assert!(matches!(
+            leader_resolve(&['o', 's']),
+            LeaderResolve::Action(LeaderAction::Settings)
+        ));
     }
 
     #[test]
@@ -9301,12 +10288,23 @@ mod tests {
         let mut a = App::new("x".into(), PathBuf::from("f.txt"));
 
         a.handle_key(CtKey::new(KeyCode::Char(' '), none));
-        assert_eq!(a.leader_pending.as_deref(), Some(&[][..]), "SPC arms the leader");
+        assert_eq!(
+            a.leader_pending.as_deref(),
+            Some(&[][..]),
+            "SPC arms the leader"
+        );
         a.handle_key(CtKey::new(KeyCode::Char('c'), none));
-        assert_eq!(a.leader_pending.as_deref(), Some(&['c'][..]), "c opens the code group");
+        assert_eq!(
+            a.leader_pending.as_deref(),
+            Some(&['c'][..]),
+            "c opens the code group"
+        );
 
         a.handle_key(CtKey::new(KeyCode::Backspace, none));
-        assert!(a.leader_pending.is_none(), "popping the last key leaves the leader");
+        assert!(
+            a.leader_pending.is_none(),
+            "popping the last key leaves the leader"
+        );
 
         // Backspace straight after SPC also leaves cleanly.
         a.handle_key(CtKey::new(KeyCode::Char(' '), none));
@@ -9336,7 +10334,10 @@ mod tests {
         assert!(a.leader_since.is_some());
         // First frame is within timeoutlen (default 300ms), so the panel stays hidden.
         a.render();
-        assert_eq!(a.whichkey_anim, 0.0, "panel should not appear before timeoutlen");
+        assert_eq!(
+            a.whichkey_anim, 0.0,
+            "panel should not appear before timeoutlen"
+        );
     }
 
     #[test]
@@ -9397,7 +10398,7 @@ mod tests {
     #[test]
     fn cursor_anim_converges_to_target() {
         let mut anim = CursorAnim::new();
-        let dt = std::time::Duration::from_secs_f64(1.0/60.0);
+        let dt = std::time::Duration::from_secs_f64(1.0 / 60.0);
         // After many frames at 60fps, should be very close to target
         for _ in 0..60 {
             anim.update(dt, 10, 5, true, 12.0);
@@ -9431,7 +10432,11 @@ mod tests {
         let before = a.ws.borrow().buffer().to_string();
         a.handle_key(CtKey::new(KeyCode::Char('j'), none));
         a.handle_key(CtKey::new(KeyCode::Char('k'), none));
-        assert_eq!(a.ws.borrow().buffer().to_string(), before, "keys don't reach the buffer");
+        assert_eq!(
+            a.ws.borrow().buffer().to_string(),
+            before,
+            "keys don't reach the buffer"
+        );
 
         // q closes it.
         a.handle_key(CtKey::new(KeyCode::Char('q'), none));
@@ -9444,7 +10449,10 @@ mod tests {
         assert_eq!(a.parse_cmdline(":term"), Ok(CmdAction::Terminal));
         assert_eq!(a.parse_cmdline(":terminal"), Ok(CmdAction::Terminal));
         a.apply_cmd(CmdAction::Terminal);
-        assert!(a.active_terminal_buffer().is_some(), "active buffer is a terminal");
+        assert!(
+            a.active_terminal_buffer().is_some(),
+            "active buffer is a terminal"
+        );
         assert!(a.terminal_focused, "a fresh terminal is focused");
     }
 
@@ -9457,7 +10465,10 @@ mod tests {
         let mut a = App::new("x".into(), PathBuf::from("f.txt"));
 
         // Open a terminal backed by `cat`, which echoes what we type.
-        let id = a.ws.borrow_mut().buffers.create_special(SpecialKind::Terminal, "*terminal*");
+        let id =
+            a.ws.borrow_mut()
+                .buffers
+                .create_special(SpecialKind::Terminal, "*terminal*");
         a.ws.borrow_mut().set_active_buffer(id);
         let session = TerminalSession::spawn("cat", &[], 40, 6, 1000).expect("spawn cat");
         a.terminals.insert(id, session);
@@ -9486,9 +10497,15 @@ mod tests {
         use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
         let none = KeyModifiers::NONE;
         let mut a = App::new("x".into(), PathBuf::from("f.txt"));
-        let id = a.ws.borrow_mut().buffers.create_special(SpecialKind::Terminal, "*terminal*");
+        let id =
+            a.ws.borrow_mut()
+                .buffers
+                .create_special(SpecialKind::Terminal, "*terminal*");
         a.ws.borrow_mut().set_active_buffer(id);
-        a.terminals.insert(id, TerminalSession::spawn("cat", &[], 40, 6, 1000).expect("spawn"));
+        a.terminals.insert(
+            id,
+            TerminalSession::spawn("cat", &[], 40, 6, 1000).expect("spawn"),
+        );
         a.terminal_focused = true;
 
         for c in "hello".chars() {
@@ -9496,7 +10513,13 @@ mod tests {
         }
         a.handle_key(CtKey::new(KeyCode::Enter, none));
         for _ in 0..200 {
-            if a.terminals.get(&id).unwrap().snapshot().row_text(0).contains("hello") {
+            if a.terminals
+                .get(&id)
+                .unwrap()
+                .snapshot()
+                .row_text(0)
+                .contains("hello")
+            {
                 break;
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -9506,7 +10529,10 @@ mod tests {
         a.handle_key(CtKey::new(KeyCode::Char('\\'), KeyModifiers::CONTROL));
         assert!(!a.terminal_focused, "Ctrl-\\ leaves insert");
         let buf = a.ws.borrow().buffers.get(id).unwrap().buffer.to_string();
-        assert!(buf.contains("hello"), "buffer mirrors terminal output: {buf:?}");
+        assert!(
+            buf.contains("hello"),
+            "buffer mirrors terminal output: {buf:?}"
+        );
 
         // Vim motions work over the mirror; `i` resumes insert.
         a.handle_key(CtKey::new(KeyCode::Char('G'), none));
@@ -9519,9 +10545,15 @@ mod tests {
     fn ctrl_backslash_defocuses_the_terminal() {
         use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
         let mut a = App::new("x".into(), PathBuf::from("f.txt"));
-        let id = a.ws.borrow_mut().buffers.create_special(SpecialKind::Terminal, "*terminal*");
+        let id =
+            a.ws.borrow_mut()
+                .buffers
+                .create_special(SpecialKind::Terminal, "*terminal*");
         a.ws.borrow_mut().set_active_buffer(id);
-        a.terminals.insert(id, TerminalSession::spawn("cat", &[], 40, 6, 1000).expect("spawn"));
+        a.terminals.insert(
+            id,
+            TerminalSession::spawn("cat", &[], 40, 6, 1000).expect("spawn"),
+        );
         a.terminal_focused = true;
 
         a.handle_key(CtKey::new(KeyCode::Char('\\'), KeyModifiers::CONTROL));
@@ -9551,26 +10583,57 @@ mod tests {
     #[test]
     fn quickfix_commands_parse() {
         let a = App::new("x".into(), PathBuf::from("f.txt"));
-        assert!(matches!(a.parse_cmdline("copen"), Ok(CmdAction::QuickfixOpen)));
-        assert!(matches!(a.parse_cmdline("cnext"), Ok(CmdAction::QuickfixNext)));
+        assert!(matches!(
+            a.parse_cmdline("copen"),
+            Ok(CmdAction::QuickfixOpen)
+        ));
+        assert!(matches!(
+            a.parse_cmdline("cnext"),
+            Ok(CmdAction::QuickfixNext)
+        ));
         assert!(matches!(a.parse_cmdline("cn"), Ok(CmdAction::QuickfixNext)));
-        assert!(matches!(a.parse_cmdline("cprev"), Ok(CmdAction::QuickfixPrev)));
+        assert!(matches!(
+            a.parse_cmdline("cprev"),
+            Ok(CmdAction::QuickfixPrev)
+        ));
         assert!(matches!(a.parse_cmdline("cp"), Ok(CmdAction::QuickfixPrev)));
     }
 
     #[test]
     fn diagnostics_build_a_sign_column() {
         use ruster_lsp::results::{Diagnostic, LspPositionEq};
-        let pos = |l: u32| LspPositionEq { line: l, character: 0 };
+        let pos = |l: u32| LspPositionEq {
+            line: l,
+            character: 0,
+        };
         let diags = vec![
-            Diagnostic { start: pos(2), end: pos(2), severity: 2, message: "warn".into() },
+            Diagnostic {
+                start: pos(2),
+                end: pos(2),
+                severity: 2,
+                message: "warn".into(),
+            },
             // A second, more severe diagnostic on the same line wins.
-            Diagnostic { start: pos(2), end: pos(2), severity: 1, message: "err".into() },
-            Diagnostic { start: pos(5), end: pos(5), severity: 3, message: "info".into() },
+            Diagnostic {
+                start: pos(2),
+                end: pos(2),
+                severity: 1,
+                message: "err".into(),
+            },
+            Diagnostic {
+                start: pos(5),
+                end: pos(5),
+                severity: 3,
+                message: "info".into(),
+            },
         ];
         let signs = diagnostics_to_signs(&diags);
         assert_eq!(signs.width, 1);
-        assert_eq!(signs.at(2).map(|(g, _)| g), Some('E'), "error outranks warning on line 2");
+        assert_eq!(
+            signs.at(2).map(|(g, _)| g),
+            Some('E'),
+            "error outranks warning on line 2"
+        );
         assert_eq!(signs.at(5).map(|(g, _)| g), Some('I'));
         assert_eq!(signs.at(9), None);
         // No diagnostics → no sign column.
@@ -9588,7 +10651,9 @@ mod tests {
     fn flash_label_pool_wraps_to_aa_after_z() {
         let mut pool = super::label_pool_iter();
         // Skip a-z
-        for _ in 0..26 { pool.next(); }
+        for _ in 0..26 {
+            pool.next();
+        }
         assert_eq!(pool.next(), Some("aa".to_string()));
         assert_eq!(pool.next(), Some("ab".to_string()));
     }
@@ -9597,7 +10662,9 @@ mod tests {
     fn flash_label_pool_ba_follows_az() {
         let mut pool = super::label_pool_iter();
         // Skip a-z, aa-az (26 + 26 = 52)
-        for _ in 0..52 { pool.next(); }
+        for _ in 0..52 {
+            pool.next();
+        }
         assert_eq!(pool.next(), Some("ba".to_string()));
     }
 
@@ -9609,8 +10676,11 @@ mod tests {
         a.handle_key(CtKey::new(KeyCode::Char('f'), KeyModifiers::NONE));
         let fs = a.flash.as_ref().expect("flash mode active after f");
         assert_eq!(fs.pending, None);
-        let labels: Vec<(&str, usize)> =
-            fs.labels.iter().map(|l| (l.label.as_str(), l.offset)).collect();
+        let labels: Vec<(&str, usize)> = fs
+            .labels
+            .iter()
+            .map(|l| (l.label.as_str(), l.offset))
+            .collect();
         assert_eq!(labels, vec![("a", 0), ("b", 6), ("c", 11)]);
     }
 
@@ -9623,8 +10693,11 @@ mod tests {
         let mut a = App::new("é beta\n".into(), PathBuf::from("f.txt"));
         a.handle_key(CtKey::new(KeyCode::Char('f'), KeyModifiers::NONE));
         let fs = a.flash.as_ref().expect("flash mode active after f");
-        let labels: Vec<(&str, usize)> =
-            fs.labels.iter().map(|l| (l.label.as_str(), l.offset)).collect();
+        let labels: Vec<(&str, usize)> = fs
+            .labels
+            .iter()
+            .map(|l| (l.label.as_str(), l.offset))
+            .collect();
         assert_eq!(labels, vec![("a", 0), ("b", 2)]);
     }
 
@@ -9655,7 +10728,10 @@ mod tests {
 
         // Labels: a..z for words 0..25, then aa, ab, ac, ad for words 26..29.
         a.handle_key(CtKey::new(KeyCode::Char('a'), none));
-        let fs = a.flash.as_ref().expect("still active, waiting for second char");
+        let fs = a
+            .flash
+            .as_ref()
+            .expect("still active, waiting for second char");
         assert_eq!(fs.pending, Some('a'));
         assert_eq!(fs.labels.len(), 5, "a, aa, ab, ac, ad");
 
@@ -9716,7 +10792,10 @@ mod tests {
         // Top-left text cell is the first char of the buffer.
         assert_eq!(a.buffer_offset_at(text.x, text.y).map(|(_, o)| o), Some(0));
         // Second row, third column: 'a' of "bravo", which starts at offset 6.
-        assert_eq!(a.buffer_offset_at(text.x + 2, text.y + 1).map(|(_, o)| o), Some(8));
+        assert_eq!(
+            a.buffer_offset_at(text.x + 2, text.y + 1).map(|(_, o)| o),
+            Some(8)
+        );
     }
 
     /// The header row and the number gutter are not buffer text. Getting this
@@ -9729,7 +10808,11 @@ mod tests {
         assert!(text.x > 0, "the number gutter reserves columns");
         assert!(text.y > 0, "the header row sits above the text");
         assert_eq!(a.buffer_offset_at(text.x, text.y - 1), None, "header row");
-        assert_eq!(a.buffer_offset_at(text.x - 1, text.y), None, "gutter column");
+        assert_eq!(
+            a.buffer_offset_at(text.x - 1, text.y),
+            None,
+            "gutter column"
+        );
     }
 
     /// Clicking the blank space below a short buffer used to index the rope past
@@ -9747,7 +10830,10 @@ mod tests {
         let mut a = App::new("ab\nlonger line\n".into(), PathBuf::from("f.txt"));
         let text = rendered_text_area(&mut a);
         // Column 9 is past the end of "ab", so it lands on 'b'.
-        assert_eq!(a.buffer_offset_at(text.x + 9, text.y).map(|(_, o)| o), Some(1));
+        assert_eq!(
+            a.buffer_offset_at(text.x + 9, text.y).map(|(_, o)| o),
+            Some(1)
+        );
     }
 
     /// With the sidebar open every window shifts right; the hit-test reads the
@@ -9759,7 +10845,10 @@ mod tests {
         a.toggle_sidebar();
         let after = rendered_text_area(&mut a);
         assert!(after.x > before, "sidebar pushes the text area right");
-        assert_eq!(a.buffer_offset_at(after.x, after.y).map(|(_, o)| o), Some(0));
+        assert_eq!(
+            a.buffer_offset_at(after.x, after.y).map(|(_, o)| o),
+            Some(0)
+        );
         // A click in the sidebar column is not buffer text.
         assert_eq!(a.buffer_offset_at(before, after.y), None);
     }
@@ -9820,7 +10909,11 @@ mod tests {
         a.apply_cmd(CmdAction::GitCommit);
         assert!(!a.active_is_git_commit(), "no message buffer opened");
         let last = a.notify.history().last().expect("a message");
-        assert!(last.text.contains("repository") || last.text.contains("staged"), "{:?}", last.text);
+        assert!(
+            last.text.contains("repository") || last.text.contains("staged"),
+            "{:?}",
+            last.text
+        );
     }
 
     /// Regression: with the settings page open, every command that was not
@@ -9906,7 +10999,10 @@ index 1..2 100644
     #[test]
     fn git_stage_hunk_parses() {
         let a = App::new("x".into(), PathBuf::from("f.rs"));
-        assert_eq!(a.parse_cmdline(":GitStageHunk"), Ok(CmdAction::GitStageHunk));
+        assert_eq!(
+            a.parse_cmdline(":GitStageHunk"),
+            Ok(CmdAction::GitStageHunk)
+        );
         assert_eq!(a.parse_cmdline(":stagehunk"), Ok(CmdAction::GitStageHunk));
     }
 
@@ -9973,7 +11069,10 @@ index 1..2 100644
         ));
         let before = a.git_status.rows().len();
         a.git_status.toggle_at(0);
-        assert!(a.git_status.rows().len() < before, "folded from state alone");
+        assert!(
+            a.git_status.rows().len() < before,
+            "folded from state alone"
+        );
     }
 
     /// Regression: the view puts a blank line before every section after the
@@ -10002,9 +11101,16 @@ index 1..2 100644
         // A heading resolves to its own row, so folding works with the cursor
         // on it — but that row is not a file, so `Enter` still does nothing.
         let heading = text.lines().position(|l| l.contains("Untracked")).unwrap();
-        let hrow = a.git_status.row_at_line(heading).expect("a heading has a row");
+        let hrow = a
+            .git_status
+            .row_at_line(heading)
+            .expect("a heading has a row");
         assert_eq!(a.git_status.path_at(hrow), None, "a heading is not a file");
-        assert_eq!(a.git_status.row_at_line(0), None, "the branch header is not a row");
+        assert_eq!(
+            a.git_status.row_at_line(0),
+            None,
+            "the branch header is not a row"
+        );
         assert_eq!(a.git_status.row_at_line(9999), None);
     }
 
@@ -10017,7 +11123,10 @@ index 1..2 100644
             a.parse_cmdline(":help Mason"),
             Ok(CmdAction::Help(Some("Mason".to_string())))
         );
-        assert_eq!(a.parse_cmdline(":h :w"), Ok(CmdAction::Help(Some(":w".to_string()))));
+        assert_eq!(
+            a.parse_cmdline(":h :w"),
+            Ok(CmdAction::Help(Some(":w".to_string())))
+        );
     }
 
     #[test]
@@ -10027,7 +11136,11 @@ index 1..2 100644
         assert!(a.active_is_help());
         let w = a.ws.borrow();
         let text = w.active_doc().buffer.to_string();
-        assert!(text.starts_with("# ruster help"), "{}", &text[..40.min(text.len())]);
+        assert!(
+            text.starts_with("# ruster help"),
+            "{}",
+            &text[..40.min(text.len())]
+        );
         assert_eq!(w.primary_head(), 0, "at the top");
     }
 
@@ -10087,8 +11200,14 @@ index 1..2 100644
         let a = App::new("x".into(), PathBuf::from("f.rs"));
         assert_eq!(a.parse_cmdline(":SessionSave"), Ok(CmdAction::SessionSave));
         assert_eq!(a.parse_cmdline(":mksession"), Ok(CmdAction::SessionSave));
-        assert_eq!(a.parse_cmdline(":SessionRestore"), Ok(CmdAction::SessionRestore));
-        assert_eq!(a.parse_cmdline(":loadsession"), Ok(CmdAction::SessionRestore));
+        assert_eq!(
+            a.parse_cmdline(":SessionRestore"),
+            Ok(CmdAction::SessionRestore)
+        );
+        assert_eq!(
+            a.parse_cmdline(":loadsession"),
+            Ok(CmdAction::SessionRestore)
+        );
     }
 
     /// Special buffers have nothing durable to point at, so a session must not
@@ -10101,7 +11220,10 @@ index 1..2 100644
         let mut a = App::new("fn main() {}".into(), real.clone());
         // Add a special buffer alongside the real one.
         a.apply_cmd(CmdAction::Mason);
-        assert!(a.ws.borrow().buffers.ids().len() >= 2, "mason buffer exists");
+        assert!(
+            a.ws.borrow().buffers.ids().len() >= 2,
+            "mason buffer exists"
+        );
 
         let s = a.capture_session().expect("something to save");
         // Canonicalised on capture, so compare canonically — on macOS /var is
@@ -10112,7 +11234,10 @@ index 1..2 100644
             "only the file-backed buffer"
         );
         assert!(
-            matches!(s.layout, ruster_core::windows::LayoutSnapshot::Leaf { buffer: 0, .. }),
+            matches!(
+                s.layout,
+                ruster_core::windows::LayoutSnapshot::Leaf { buffer: 0, .. }
+            ),
             "{:?}",
             s.layout
         );
@@ -10140,7 +11265,10 @@ index 1..2 100644
 
         let mut app = App::new("fn a() {}\nline two\n".into(), a_rs.clone());
         app.open_path(&b_rs, None);
-        app.ws.borrow_mut().windows.split(ruster_core::windows::SplitDir::Vertical);
+        app.ws
+            .borrow_mut()
+            .windows
+            .split(ruster_core::windows::SplitDir::Vertical);
         let saved = app.capture_session().expect("a session");
         assert_eq!(saved.files.len(), 2);
 
@@ -10177,7 +11305,11 @@ index 1..2 100644
             },
         };
         let restored = ruster_core::windows::WindowTree::restore(&session.layout, |i| {
-            session.files.get(i).filter(|p| p.is_file()).map(|_| BufferId(i as u32 + 1))
+            session
+                .files
+                .get(i)
+                .filter(|p| p.is_file())
+                .map(|_| BufferId(i as u32 + 1))
         })
         .expect("the surviving file still opens");
         assert_eq!(restored.len(), 1, "the missing file's window collapsed out");
@@ -10220,13 +11352,31 @@ index 1..2 100644
 
         a.handle_mason_key(CtKey::new(KeyCode::Enter, KeyModifiers::NONE));
 
-        assert!(a.runner_rx.is_none(), "nothing was spawned merely by pressing Enter");
+        assert!(
+            a.runner_rx.is_none(),
+            "nothing was spawned merely by pressing Enter"
+        );
         let d = a.dialog.as_ref().expect("a confirmation dialog is open");
-        assert!(d.view().title.contains(&name), "names the tool: {:?}", d.view().title);
+        assert!(
+            d.view().title.contains(&name),
+            "names the tool: {:?}",
+            d.view().title
+        );
         // The exact command is armed and on screen before anyone agrees to it.
-        let pending = a.pending_confirm.as_ref().expect("a command is pending").cmd.clone();
-        assert!(text.contains(&pending), "the listing already showed it: {pending}");
-        assert!(format!("{:?}", d.view()).contains(&pending), "and so does the dialog");
+        let pending = a
+            .pending_confirm
+            .as_ref()
+            .expect("a command is pending")
+            .cmd
+            .clone();
+        assert!(
+            text.contains(&pending),
+            "the listing already showed it: {pending}"
+        );
+        assert!(
+            format!("{:?}", d.view()).contains(&pending),
+            "and so does the dialog"
+        );
     }
 
     /// An already-installed tool is a no-op, not a re-install.
@@ -10244,7 +11394,10 @@ index 1..2 100644
             ruster_core::cursor::CursorSet::single(off);
 
         a.handle_mason_key(CtKey::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(a.dialog.is_none(), "no dialog for something already present");
+        assert!(
+            a.dialog.is_none(),
+            "no dialog for something already present"
+        );
         assert!(a.pending_confirm.is_none());
         assert!(a.runner_rx.is_none());
     }
@@ -10260,7 +11413,10 @@ index 1..2 100644
         });
         a.run_pending_confirm(Some("Cancel"));
         assert!(a.runner_rx.is_none(), "nothing spawned");
-        assert!(a.pending_confirm.is_none(), "the command is forgotten, not left armed");
+        assert!(
+            a.pending_confirm.is_none(),
+            "the command is forgotten, not left armed"
+        );
 
         // Dismissing without a button (Esc) is also a refusal.
         a.pending_confirm = Some(PendingConfirm {
@@ -10286,8 +11442,15 @@ index 1..2 100644
         });
         a.run_pending_confirm(Some("Install"));
         assert!(a.runner_rx.is_some(), "the confirmed command was spawned");
-        assert!(a.pending_confirm.is_none(), "and consumed, so it cannot re-run");
-        assert!(a.runner_output.starts_with("$ echo installed"), "{}", a.runner_output);
+        assert!(
+            a.pending_confirm.is_none(),
+            "and consumed, so it cannot re-run"
+        );
+        assert!(
+            a.runner_output.starts_with("$ echo installed"),
+            "{}",
+            a.runner_output
+        );
     }
 
     /// A plugin's dialog and ruster's confirmation share one widget, so the
@@ -10329,7 +11492,12 @@ index 1..2 100644
     /// either is scrolled.
     #[test]
     fn diff_panes_are_the_same_height() {
-        let h = ruster_git::DiffHunk { old_start: 1, old_count: 1, new_start: 1, new_count: 4 };
+        let h = ruster_git::DiffHunk {
+            old_start: 1,
+            old_count: 1,
+            new_start: 1,
+            new_count: 4,
+        };
         let rows = ruster_git::align(&[h], 3, 6);
         let old: Vec<&str> = vec!["a", "b", "c"];
         let new: Vec<&str> = vec!["a", "B1", "B2", "B3", "B4", "c"];
@@ -10344,10 +11512,18 @@ index 1..2 100644
     /// hunk that adds lines, the left pane's numbering must skip nothing.
     #[test]
     fn diff_pane_numbers_lines_from_the_file_not_the_screen() {
-        let h = ruster_git::DiffHunk { old_start: 1, old_count: 1, new_start: 1, new_count: 4 };
+        let h = ruster_git::DiffHunk {
+            old_start: 1,
+            old_count: 1,
+            new_start: 1,
+            new_count: 4,
+        };
         let rows = ruster_git::align(&[h], 3, 6);
         let old: Vec<&str> = vec!["a", "b", "c"];
-        let left: Vec<String> = diff_pane_text(&rows, &old, false).lines().map(str::to_string).collect();
+        let left: Vec<String> = diff_pane_text(&rows, &old, false)
+            .lines()
+            .map(str::to_string)
+            .collect();
 
         assert!(left[0].ends_with("│ a"), "{:?}", left[0]);
         assert!(left[0].trim_start().starts_with('1'));
@@ -10356,17 +11532,32 @@ index 1..2 100644
         assert!(left[2].ends_with('~') && left[3].ends_with('~') && left[4].ends_with('~'));
         // And `c` is still line 3 of the old file, not line 6 of the display.
         assert!(left[5].ends_with("│ c"), "{:?}", left[5]);
-        assert_eq!(left[5].trim_start().split(' ').next(), Some("3"), "{:?}", left[5]);
+        assert_eq!(
+            left[5].trim_start().split(' ').next(),
+            Some("3"),
+            "{:?}",
+            left[5]
+        );
     }
 
     #[test]
     fn diff_pane_right_side_shows_the_working_tree_lines() {
-        let h = ruster_git::DiffHunk { old_start: 1, old_count: 1, new_start: 1, new_count: 2 };
+        let h = ruster_git::DiffHunk {
+            old_start: 1,
+            old_count: 1,
+            new_start: 1,
+            new_count: 2,
+        };
         let rows = ruster_git::align(&[h], 2, 3);
         let new: Vec<&str> = vec!["a", "B1", "B2"];
-        let right: Vec<String> =
-            diff_pane_text(&rows, &new, true).lines().map(str::to_string).collect();
-        assert!(right.iter().all(|l| !l.ends_with('~')), "the longer side never pads");
+        let right: Vec<String> = diff_pane_text(&rows, &new, true)
+            .lines()
+            .map(str::to_string)
+            .collect();
+        assert!(
+            right.iter().all(|l| !l.ends_with('~')),
+            "the longer side never pads"
+        );
         assert!(right[1].ends_with("│ B1") && right[2].ends_with("│ B2"));
     }
 
@@ -10377,7 +11568,10 @@ index 1..2 100644
         let rows = ruster_git::align(&[], 0, 2);
         let left = diff_pane_text(&rows, &[], false);
         assert_eq!(left.lines().count(), 2);
-        assert!(left.lines().all(|l| l.trim_start().starts_with("│ ~")), "{left:?}");
+        assert!(
+            left.lines().all(|l| l.trim_start().starts_with("│ ~")),
+            "{left:?}"
+        );
     }
 
     /// Regression: the first version synced `scroll_top`, which `render`
@@ -10387,7 +11581,10 @@ index 1..2 100644
     #[test]
     fn diff_panes_follow_each_other_by_cursor_line() {
         let mut a = App::new("x".into(), PathBuf::from("f.rs"));
-        let text = (1..=20).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let text = (1..=20)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let left = a.make_diff_pane("*diff HEAD: t*", &text);
         let right = a.make_diff_pane("*diff working: t*", &text);
         {
@@ -10453,7 +11650,12 @@ index 1..2 100644
         // Either "not in a project" or "not a git repository" — both are the
         // refusal path, and neither may leave a diff buffer behind.
         let w = a.ws.borrow();
-        let diffs = w.buffers.ids().iter().filter(|&&id| a.is_diff_buffer(&w, id)).count();
+        let diffs = w
+            .buffers
+            .ids()
+            .iter()
+            .filter(|&&id| a.is_diff_buffer(&w, id))
+            .count();
         assert_eq!(diffs, 0, "no panes opened");
     }
 
@@ -10473,7 +11675,10 @@ index 1..2 100644
         // Nothing changed: no work.
         a.update_syntax();
         a.update_syntax();
-        assert_eq!(a.syntax_reparses, after_first, "an untouched buffer is not reparsed");
+        assert_eq!(
+            a.syntax_reparses, after_first,
+            "an untouched buffer is not reparsed"
+        );
 
         // An edit earns exactly one reparse, however many passes follow.
         let buf = a.ws.borrow().active_buffer();
@@ -10492,22 +11697,43 @@ index 1..2 100644
         let mut a = App::new("fn a() {}\n".into(), PathBuf::from("f.rs"));
         a.update_syntax();
         let buf = a.ws.borrow().active_buffer();
-        let before = a.syntax.get(&buf).map(|e| e.styled_lines().len()).unwrap_or(0);
+        let before = a
+            .syntax
+            .get(&buf)
+            .map(|e| e.styled_lines().len())
+            .unwrap_or(0);
 
         {
             let mut w = a.ws.borrow_mut();
-            w.buffers.get_mut(buf).unwrap().buffer.insert(0, "fn b() {}\n");
+            w.buffers
+                .get_mut(buf)
+                .unwrap()
+                .buffer
+                .insert(0, "fn b() {}\n");
         }
         a.update_syntax();
-        let after = a.syntax.get(&buf).map(|e| e.styled_lines().len()).unwrap_or(0);
-        assert!(after > before, "the new line is highlighted too ({before} -> {after})");
+        let after = a
+            .syntax
+            .get(&buf)
+            .map(|e| e.styled_lines().len())
+            .unwrap_or(0);
+        assert!(
+            after > before,
+            "the new line is highlighted too ({before} -> {after})"
+        );
     }
 
     #[test]
     fn syntax_reload_parses() {
         let a = App::new("fn main() {}".into(), PathBuf::from("f.rs"));
-        assert_eq!(a.parse_cmdline(":SyntaxReload"), Ok(CmdAction::SyntaxReload));
-        assert_eq!(a.parse_cmdline(":syntaxreload"), Ok(CmdAction::SyntaxReload));
+        assert_eq!(
+            a.parse_cmdline(":SyntaxReload"),
+            Ok(CmdAction::SyntaxReload)
+        );
+        assert_eq!(
+            a.parse_cmdline(":syntaxreload"),
+            Ok(CmdAction::SyntaxReload)
+        );
     }
 
     /// Queries are read when an engine is built, so a reload has to discard the
@@ -10520,10 +11746,17 @@ index 1..2 100644
 
         a.apply_cmd(CmdAction::SyntaxReload);
         assert_eq!(a.syntax.len(), 1, "and is highlighted again afterwards");
-        assert!(!a.syntax_tried.is_empty(), "the rebuild re-marked it as tried");
+        assert!(
+            !a.syntax_tried.is_empty(),
+            "the rebuild re-marked it as tried"
+        );
 
         let last = a.notify.history().last().expect("a message was pushed");
-        assert!(last.text.contains("Reloaded grammars and queries"), "{:?}", last.text);
+        assert!(
+            last.text.contains("Reloaded grammars and queries"),
+            "{:?}",
+            last.text
+        );
     }
 
     /// A buffer whose engine failed to build must be retried after a reload —
@@ -10534,7 +11767,10 @@ index 1..2 100644
         // No grammar for this extension, so no engine — but it was attempted.
         assert!(a.syntax.is_empty());
         a.update_syntax();
-        assert!(!a.syntax_tried.is_empty(), "marked so it is not retried every frame");
+        assert!(
+            !a.syntax_tried.is_empty(),
+            "marked so it is not retried every frame"
+        );
 
         a.apply_cmd(CmdAction::SyntaxReload);
         // The retry happened (the set was cleared and repopulated) even though
@@ -10558,7 +11794,10 @@ index 1..2 100644
         let dir = shot_dir();
         assert_eq!(screenshot_path(None, &dir), dir.join("ruster-001.png"));
         // Blank and whitespace-only arguments mean the same as none at all.
-        assert_eq!(screenshot_path(Some("   "), &dir), dir.join("ruster-001.png"));
+        assert_eq!(
+            screenshot_path(Some("   "), &dir),
+            dir.join("ruster-001.png")
+        );
     }
 
     /// Two screenshots in a row must not silently overwrite the first.
@@ -10573,8 +11812,14 @@ index 1..2 100644
     #[test]
     fn a_relative_argument_resolves_against_the_working_directory() {
         let dir = shot_dir();
-        assert_eq!(screenshot_path(Some("shot.png"), &dir), dir.join("shot.png"));
-        assert_eq!(screenshot_path(Some("sub/shot.png"), &dir), dir.join("sub/shot.png"));
+        assert_eq!(
+            screenshot_path(Some("shot.png"), &dir),
+            dir.join("shot.png")
+        );
+        assert_eq!(
+            screenshot_path(Some("sub/shot.png"), &dir),
+            dir.join("sub/shot.png")
+        );
     }
 
     #[test]
@@ -10582,7 +11827,10 @@ index 1..2 100644
         let dir = shot_dir();
         let abs = dir.join("elsewhere.png");
         assert_eq!(
-            screenshot_path(Some(abs.to_str().unwrap()), std::path::Path::new("/nowhere")),
+            screenshot_path(
+                Some(abs.to_str().unwrap()),
+                std::path::Path::new("/nowhere")
+            ),
             abs
         );
     }
@@ -10593,9 +11841,15 @@ index 1..2 100644
     fn a_non_png_argument_gains_the_extension() {
         let dir = shot_dir();
         assert_eq!(screenshot_path(Some("shot"), &dir), dir.join("shot.png"));
-        assert_eq!(screenshot_path(Some("shot.jpg"), &dir), dir.join("shot.jpg.png"));
+        assert_eq!(
+            screenshot_path(Some("shot.jpg"), &dir),
+            dir.join("shot.jpg.png")
+        );
         // Already a PNG, in any case: left exactly as typed.
-        assert_eq!(screenshot_path(Some("shot.PNG"), &dir), dir.join("shot.PNG"));
+        assert_eq!(
+            screenshot_path(Some("shot.PNG"), &dir),
+            dir.join("shot.PNG")
+        );
     }
 
     /// `:screenshot ~/Pictures` names a folder, not a file to be clobbered.
@@ -10604,7 +11858,10 @@ index 1..2 100644
         let dir = shot_dir();
         let sub = dir.join("pics");
         std::fs::create_dir_all(&sub).unwrap();
-        assert_eq!(screenshot_path(Some("pics"), &dir), sub.join("ruster-001.png"));
+        assert_eq!(
+            screenshot_path(Some("pics"), &dir),
+            sub.join("ruster-001.png")
+        );
     }
 
     /// Load `src` into the app's Lua and run one frame of the event pass.
@@ -10740,7 +11997,11 @@ index 1..2 100644
             .load("p = ruster.api.buf_path(); ft = ruster.api.filetype()")
             .exec()
             .unwrap();
-        assert!(lua_str(&a, "p").ends_with("f.rs"), "got {:?}", lua_str(&a, "p"));
+        assert!(
+            lua_str(&a, "p").ends_with("f.rs"),
+            "got {:?}",
+            lua_str(&a, "p")
+        );
         assert_eq!(lua_str(&a, "ft"), "rs");
     }
 
@@ -10751,8 +12012,14 @@ index 1..2 100644
         a.lsp.set_diagnostics(
             buf,
             vec![ruster_lsp::Diagnostic {
-                start: ruster_lsp::results::LspPositionEq { line: 3, character: 7 },
-                end: ruster_lsp::results::LspPositionEq { line: 3, character: 9 },
+                start: ruster_lsp::results::LspPositionEq {
+                    line: 3,
+                    character: 7,
+                },
+                end: ruster_lsp::results::LspPositionEq {
+                    line: 3,
+                    character: 9,
+                },
                 severity: 1,
                 message: "something is wrong".to_string(),
             }],
@@ -10811,15 +12078,31 @@ index 1..2 100644
         // The arm is `all digits`, not `starts with a digit`, or `:2vsplit`
         // and `:w2` would become jumps.
         let a = App::new("content".into(), PathBuf::from("f.txt"));
-        assert!(a.parse_cmdline(":16x").is_err(), ":16x is not a line number");
-        assert!(a.parse_cmdline(":x16").is_err(), ":x16 is not a line number");
-        assert!(a.parse_cmdline(":-4").is_err(), "negatives are not supported");
-        assert_eq!(a.parse_cmdline(":w"), Ok(CmdAction::Save(false)), "still a save");
+        assert!(
+            a.parse_cmdline(":16x").is_err(),
+            ":16x is not a line number"
+        );
+        assert!(
+            a.parse_cmdline(":x16").is_err(),
+            ":x16 is not a line number"
+        );
+        assert!(
+            a.parse_cmdline(":-4").is_err(),
+            "negatives are not supported"
+        );
+        assert_eq!(
+            a.parse_cmdline(":w"),
+            Ok(CmdAction::Save(false)),
+            "still a save"
+        );
     }
 
     #[test]
     fn a_line_jump_moves_the_cursor_and_clamps_to_the_buffer() {
-        let text = (1..=20).map(|i| format!("line {i}")).collect::<Vec<_>>().join("\n");
+        let text = (1..=20)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let mut a = App::new(text, PathBuf::from("f.txt"));
 
         let line_of = |a: &App| {
@@ -10854,14 +12137,24 @@ index 1..2 100644
         a.apply_cmd(CmdAction::GotoLine(Some(2)));
         let w = a.ws.borrow();
         let head = w.cursors().primary().head;
-        assert_eq!(head, w.buffer().line_start_char(1), "cursor is at the line start");
+        assert_eq!(
+            head,
+            w.buffer().line_start_char(1),
+            "cursor is at the line start"
+        );
     }
 
     #[test]
     fn screenshot_parses_with_and_without_a_path() {
         let a = App::new("content".into(), PathBuf::from("f.txt"));
-        assert_eq!(a.parse_cmdline(":screenshot"), Ok(CmdAction::Screenshot(None)));
-        assert_eq!(a.parse_cmdline(":Screenshot"), Ok(CmdAction::Screenshot(None)));
+        assert_eq!(
+            a.parse_cmdline(":screenshot"),
+            Ok(CmdAction::Screenshot(None))
+        );
+        assert_eq!(
+            a.parse_cmdline(":Screenshot"),
+            Ok(CmdAction::Screenshot(None))
+        );
         assert_eq!(
             a.parse_cmdline(":screenshot ~/x.png"),
             Ok(CmdAction::Screenshot(Some("~/x.png".to_string())))
@@ -10874,7 +12167,9 @@ index 1..2 100644
     fn screenshot_on_a_backend_without_support_warns() {
         let target = shot_dir().join("unsupported.png");
         let mut a = App::new("content".into(), PathBuf::from("f.txt"));
-        a.apply_cmd(CmdAction::Screenshot(Some(target.to_string_lossy().into_owned())));
+        a.apply_cmd(CmdAction::Screenshot(Some(
+            target.to_string_lossy().into_owned(),
+        )));
         let last = a.notify.history().last().expect("a message was pushed");
         assert_eq!(last.level, ruster_core::message::MessageLevel::Warning);
         assert!(last.text.contains("GUI backend"), "{:?}", last.text);

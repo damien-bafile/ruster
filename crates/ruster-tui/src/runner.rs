@@ -27,7 +27,11 @@ pub fn spawn_shell_command(cmd: &str, cwd: &Path) -> Receiver<RunnerMsg> {
     let cmd = cmd.to_string();
     let cwd = cwd.to_path_buf();
     thread::spawn(move || {
-        let (program, first_arg) = if cfg!(windows) { ("cmd", "/C") } else { ("sh", "-c") };
+        let (program, first_arg) = if cfg!(windows) {
+            ("cmd", "/C")
+        } else {
+            ("sh", "-c")
+        };
         let child = Command::new(program)
             .arg(first_arg)
             .arg(&cmd)
@@ -45,7 +49,10 @@ pub fn spawn_shell_command(cmd: &str, cwd: &Path) -> Receiver<RunnerMsg> {
         };
         // Read stdout and stderr concurrently into the same channel.
         let mut handles = Vec::new();
-        let pipes = [child.stdout.take().map(Pipe::Out), child.stderr.take().map(Pipe::Err)];
+        let pipes = [
+            child.stdout.take().map(Pipe::Out),
+            child.stderr.take().map(Pipe::Err),
+        ];
         for pipe in pipes.into_iter().flatten() {
             let tx = tx.clone();
             handles.push(thread::spawn(move || pipe.forward_lines(&tx)));
@@ -120,10 +127,27 @@ pub fn parse_build_diagnostics(output: &str, root: &Path) -> Vec<QuickfixItem> {
     items
 }
 
-fn make_item(root: &Path, path: &str, line: usize, col: usize, message: String, severity: u8) -> QuickfixItem {
+fn make_item(
+    root: &Path,
+    path: &str,
+    line: usize,
+    col: usize,
+    message: String,
+    severity: u8,
+) -> QuickfixItem {
     let p = Path::new(path);
-    let path = if p.is_absolute() { p.to_path_buf() } else { root.join(p) };
-    QuickfixItem { path, line, col, message, severity }
+    let path = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        root.join(p)
+    };
+    QuickfixItem {
+        path,
+        line,
+        col,
+        message,
+        severity,
+    }
 }
 
 /// `error[E0433]: msg` / `error: msg` → (1, msg); `warning: msg` → (2, msg).
@@ -231,7 +255,11 @@ pub fn parse_test_results(output: &str, root: &Path) -> TestRun {
                     _ => None,
                 };
                 if let Some(o) = outcome {
-                    results.push(TestResult { name: name.trim().to_string(), outcome: o, location: None });
+                    results.push(TestResult {
+                        name: name.trim().to_string(),
+                        outcome: o,
+                        location: None,
+                    });
                     continue;
                 }
             }
@@ -239,7 +267,11 @@ pub fn parse_test_results(output: &str, root: &Path) -> TestRun {
         // `thread 'NAME' panicked at file:line:col` → failure location.
         if let Some((name, path, l, c)) = parse_panic(line) {
             let p = Path::new(path);
-            let path = if p.is_absolute() { p.to_path_buf() } else { root.join(p) };
+            let path = if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                root.join(p)
+            };
             locs.insert(name, (path, l, c));
         }
     }
@@ -249,9 +281,19 @@ pub fn parse_test_results(output: &str, root: &Path) -> TestRun {
             r.location = locs.get(&r.name).cloned();
         }
     }
-    let passed = results.iter().filter(|r| r.outcome == TestOutcome::Pass).count();
-    let failed = results.iter().filter(|r| r.outcome == TestOutcome::Fail).count();
-    TestRun { results, passed, failed }
+    let passed = results
+        .iter()
+        .filter(|r| r.outcome == TestOutcome::Pass)
+        .count();
+    let failed = results
+        .iter()
+        .filter(|r| r.outcome == TestOutcome::Fail)
+        .count();
+    TestRun {
+        results,
+        passed,
+        failed,
+    }
 }
 
 /// Parse a libtest panic line into `(test name, path, line, col)`. Handles the
@@ -342,10 +384,21 @@ test result: FAILED. 1 passed; 1 failed; 1 ignored; 0 measured; 0 filtered out;"
         let run = parse_test_results(out, Path::new("/proj"));
         assert_eq!((run.passed, run.failed), (1, 1));
         assert_eq!(run.results.len(), 3);
-        let beta = run.results.iter().find(|r| r.name == "tests::beta").unwrap();
+        let beta = run
+            .results
+            .iter()
+            .find(|r| r.name == "tests::beta")
+            .unwrap();
         assert_eq!(beta.outcome, TestOutcome::Fail);
-        assert_eq!(beta.location, Some((PathBuf::from("/proj/src/lib.rs"), 42, 9)));
-        let alpha = run.results.iter().find(|r| r.name == "tests::alpha").unwrap();
+        assert_eq!(
+            beta.location,
+            Some((PathBuf::from("/proj/src/lib.rs"), 42, 9))
+        );
+        let alpha = run
+            .results
+            .iter()
+            .find(|r| r.name == "tests::alpha")
+            .unwrap();
         assert_eq!(alpha.outcome, TestOutcome::Pass);
         assert!(alpha.location.is_none());
     }
@@ -371,7 +424,9 @@ thread 't::x' panicked at 'boom', src/x.rs:7:1";
     fn echo_streams_a_line_then_done() {
         let rx = spawn_shell_command("echo hello-runner", Path::new("."));
         let msgs: Vec<RunnerMsg> = rx.iter().collect();
-        assert!(msgs.iter().any(|m| matches!(m, RunnerMsg::Line(l) if l.contains("hello-runner"))));
+        assert!(msgs
+            .iter()
+            .any(|m| matches!(m, RunnerMsg::Line(l) if l.contains("hello-runner"))));
         assert!(matches!(msgs.last(), Some(RunnerMsg::Done(Some(0)))));
     }
 }

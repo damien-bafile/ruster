@@ -1,0 +1,9 @@
+# Revisions to skip when running `git blame`.
+#
+# Enable locally with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# Only mechanical, no-behaviour-change commits belong here.
+
+# style: format the workspace with rustfmt
+5b0e7eb77051dc7db76848a4978de72ced17f6d6

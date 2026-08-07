@@ -18,7 +18,10 @@ fn parse_cmdline_body() -> &'static str {
     let start = SRC.find("fn parse_cmdline").expect("parse_cmdline exists");
     let rest = &SRC[start..];
     // Ends at the next method on the same impl.
-    let end = rest[200..].find("\n    fn ").map(|i| i + 200).unwrap_or(rest.len());
+    let end = rest[200..]
+        .find("\n    fn ")
+        .map(|i| i + 200)
+        .unwrap_or(rest.len());
     &rest[..end]
 }
 
@@ -28,13 +31,17 @@ fn command_literals(body: &str) -> Vec<String> {
     let mut out = Vec::new();
     for (i, _) in body.match_indices('"') {
         let rest = &body[i + 1..];
-        let Some(close) = rest.find('"') else { continue };
+        let Some(close) = rest.find('"') else {
+            continue;
+        };
         let lit = &rest[..close];
         // A command literal is alphanumeric plus the few separators commands
         // use; anything else is a message, a format string or a path.
         if lit.len() < 2
             || !lit.starts_with(|c: char| c.is_ascii_alphabetic())
-            || !lit.chars().all(|c| c.is_ascii_alphanumeric() || " /!-_".contains(c))
+            || !lit
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || " /!-_".contains(c))
         {
             continue;
         }
@@ -53,7 +60,9 @@ fn command_literals(body: &str) -> Vec<String> {
 }
 
 fn doc(name: &str) -> String {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs").join(name);
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs")
+        .join(name);
     std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
         .to_lowercase()
@@ -63,16 +72,27 @@ fn doc(name: &str) -> String {
 fn every_command_the_parser_accepts_is_documented() {
     let body = parse_cmdline_body();
     let literals = command_literals(body);
-    assert!(literals.len() > 50, "the scrape found only {} — it has broken", literals.len());
+    assert!(
+        literals.len() > 50,
+        "the scrape found only {} — it has broken",
+        literals.len()
+    );
 
     let docs = doc("keybindings.md");
-    let missing: Vec<&String> = literals.iter().filter(|l| !docs.contains(&l.to_lowercase())).collect();
+    let missing: Vec<&String> = literals
+        .iter()
+        .filter(|l| !docs.contains(&l.to_lowercase()))
+        .collect();
     assert!(
         missing.is_empty(),
         "{} command(s) are accepted by :parse_cmdline but absent from docs/keybindings.md:\n{}\n\
          Add a row for each, or drop the command. See the doc-sync rule in AGENTS.md.",
         missing.len(),
-        missing.iter().map(|m| format!("  :{m}")).collect::<Vec<_>>().join("\n")
+        missing
+            .iter()
+            .map(|m| format!("  :{m}"))
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 }
 
@@ -96,7 +116,11 @@ fn every_setting_in_the_schema_is_documented() {
         missing.is_empty(),
         "{} setting(s) in the schema are absent from docs/config-reference.md:\n{}",
         missing.len(),
-        missing.iter().map(|m| format!("  {m}")).collect::<Vec<_>>().join("\n")
+        missing
+            .iter()
+            .map(|m| format!("  {m}"))
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 }
 
@@ -105,6 +129,12 @@ fn every_setting_in_the_schema_is_documented() {
 #[test]
 fn the_schema_and_the_config_reader_declare_the_same_keys() {
     const CFG: &str = include_str!("../../ruster-lua/src/config.rs");
+    // Collapse whitespace before matching. The property under test is that
+    // `config.rs` reads the key, which has nothing to do with how the call is
+    // laid out — but rustfmt wraps long argument lists, and a raw substring
+    // search then stops finding `"group", "key"` on separate lines and reports
+    // a perfectly well-read setting as unread.
+    let cfg: String = CFG.split_whitespace().collect::<Vec<_>>().join(" ");
     let schema: std::collections::BTreeSet<String> = ruster_lua::schema::schema()
         .iter()
         .map(|s| format!("{}.{}", s.group, s.key))
@@ -113,7 +143,7 @@ fn the_schema_and_the_config_reader_declare_the_same_keys() {
         .iter()
         .filter(|key| {
             let (g, k) = key.split_once('.').unwrap();
-            !CFG.contains(&format!("\"{g}\", \"{k}\""))
+            !cfg.contains(&format!("\"{g}\", \"{k}\""))
         })
         .collect();
     assert!(
@@ -121,6 +151,10 @@ fn the_schema_and_the_config_reader_declare_the_same_keys() {
         "{} setting(s) are declared in the schema but never read by config.rs, so \
          setting them in config.lua does nothing:\n{}",
         unread.len(),
-        unread.iter().map(|m| format!("  {m}")).collect::<Vec<_>>().join("\n")
+        unread
+            .iter()
+            .map(|m| format!("  {m}"))
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 }

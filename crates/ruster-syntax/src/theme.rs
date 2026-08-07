@@ -4,7 +4,9 @@ use std::sync::{OnceLock, RwLock};
 
 use ruster_render::{Color, SyntaxStyle};
 
-fn rgb(r: u8, g: u8, b: u8) -> Color { Color::Rgb(r, g, b) }
+fn rgb(r: u8, g: u8, b: u8) -> Color {
+    Color::Rgb(r, g, b)
+}
 
 /// Per-language syntax color overrides: `lang key -> (group -> fg)`. Only the
 /// foreground is overridable; bold/italic stay at the group's default.
@@ -68,16 +70,23 @@ pub fn base_group(name: &str) -> &str {
 /// The syntax groups a language exposes in the Settings editor, in display order.
 pub fn groups_for_lang(key: &str) -> &'static [&'static str] {
     const CODE: &[&str] = &[
-        "keyword", "string", "comment", "function", "type", "variable", "constant",
-        "number", "operator", "builtin",
+        "keyword", "string", "comment", "function", "type", "variable", "constant", "number",
+        "operator", "builtin",
     ];
     const MARKUP: &[&str] = &[
-        "heading", "strong", "emphasis", "code", "link", "url", "marker", "quote",
-        "keyword", "block", "todo", "done",
+        "heading", "strong", "emphasis", "code", "link", "url", "marker", "quote", "keyword",
+        "block", "todo", "done",
     ];
     const DIFF: &[&str] = &["added", "removed", "hunk", "header"];
     const SIGNS: &[&str] = &[
-        "added", "modified", "removed", "breakpoint", "error", "warning", "info", "hint",
+        "added",
+        "modified",
+        "removed",
+        "breakpoint",
+        "error",
+        "warning",
+        "info",
+        "hint",
         "todo",
     ];
     const DIRED: &[&str] = &["directory", "executable", "symlink"];
@@ -95,17 +104,67 @@ pub fn groups_for_lang(key: &str) -> &'static [&'static str] {
 /// The built-in default style for a base code group (no overrides applied).
 pub fn default_code_style(group: &str) -> SyntaxStyle {
     match group {
-        "keyword"   => SyntaxStyle { fg: rgb(203, 166, 247), bg: Color::Default, bold: true,  italic: false },
-        "string"    => SyntaxStyle { fg: rgb(166, 227, 161), bg: Color::Default, bold: false, italic: false },
-        "comment"   => SyntaxStyle { fg: rgb(108, 112, 134), bg: Color::Default, bold: false, italic: true  },
-        "function"  => SyntaxStyle { fg: rgb(137, 180, 250), bg: Color::Default, bold: false, italic: false },
-        "type"      => SyntaxStyle { fg: rgb(249, 226, 175), bg: Color::Default, bold: false, italic: false },
-        "variable"  => SyntaxStyle { fg: rgb(205, 214, 244), bg: Color::Default, bold: false, italic: false },
-        "constant"  => SyntaxStyle { fg: rgb(250, 179, 135), bg: Color::Default, bold: false, italic: false },
-        "number"    => SyntaxStyle { fg: rgb(250, 179, 135), bg: Color::Default, bold: false, italic: false },
-        "operator"  => SyntaxStyle { fg: rgb(137, 220, 235), bg: Color::Default, bold: false, italic: false },
-        "builtin"   => SyntaxStyle { fg: rgb(243, 139, 168), bg: Color::Default, bold: false, italic: false },
-        _           => SyntaxStyle::default(),
+        "keyword" => SyntaxStyle {
+            fg: rgb(203, 166, 247),
+            bg: Color::Default,
+            bold: true,
+            italic: false,
+        },
+        "string" => SyntaxStyle {
+            fg: rgb(166, 227, 161),
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        },
+        "comment" => SyntaxStyle {
+            fg: rgb(108, 112, 134),
+            bg: Color::Default,
+            bold: false,
+            italic: true,
+        },
+        "function" => SyntaxStyle {
+            fg: rgb(137, 180, 250),
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        },
+        "type" => SyntaxStyle {
+            fg: rgb(249, 226, 175),
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        },
+        "variable" => SyntaxStyle {
+            fg: rgb(205, 214, 244),
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        },
+        "constant" => SyntaxStyle {
+            fg: rgb(250, 179, 135),
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        },
+        "number" => SyntaxStyle {
+            fg: rgb(250, 179, 135),
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        },
+        "operator" => SyntaxStyle {
+            fg: rgb(137, 220, 235),
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        },
+        "builtin" => SyntaxStyle {
+            fg: rgb(243, 139, 168),
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        },
+        _ => SyntaxStyle::default(),
     }
 }
 
@@ -153,20 +212,65 @@ pub fn sign_style(kind: &str) -> SyntaxStyle {
 /// The built-in default sign style for `kind` (no overrides applied).
 pub fn default_sign_style(kind: &str) -> SyntaxStyle {
     match kind {
-        "added"      => SyntaxStyle { fg: rgb(166, 227, 161), bg: Color::Default, bold: false, italic: false },
-        "modified"   => SyntaxStyle { fg: rgb(249, 226, 175), bg: Color::Default, bold: false, italic: false },
-        "removed"    => SyntaxStyle { fg: rgb(243, 139, 168), bg: Color::Default, bold: false, italic: false },
-        "breakpoint" => SyntaxStyle { fg: rgb(255,  50,  50), bg: Color::Default, bold: false, italic: false },
+        "added" => SyntaxStyle {
+            fg: rgb(166, 227, 161),
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        },
+        "modified" => SyntaxStyle {
+            fg: rgb(249, 226, 175),
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        },
+        "removed" => SyntaxStyle {
+            fg: rgb(243, 139, 168),
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        },
+        "breakpoint" => SyntaxStyle {
+            fg: rgb(255, 50, 50),
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        },
         // Diagnostic severities 1-4. `error` doubles as the failing-test sign:
         // both mean "this line is broken", and a theme that wanted them apart
         // would be picking two reds.
-        "error"      => SyntaxStyle { fg: rgb(243, 139, 168), bg: Color::Default, bold: false, italic: false },
-        "warning"    => SyntaxStyle { fg: rgb(249, 226, 175), bg: Color::Default, bold: false, italic: false },
-        "info"       => SyntaxStyle { fg: rgb(137, 180, 250), bg: Color::Default, bold: false, italic: false },
-        "hint"       => SyntaxStyle { fg: rgb(148, 226, 213), bg: Color::Default, bold: false, italic: false },
+        "error" => SyntaxStyle {
+            fg: rgb(243, 139, 168),
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        },
+        "warning" => SyntaxStyle {
+            fg: rgb(249, 226, 175),
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        },
+        "info" => SyntaxStyle {
+            fg: rgb(137, 180, 250),
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        },
+        "hint" => SyntaxStyle {
+            fg: rgb(148, 226, 213),
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        },
         // Bold: a TODO marker is drawn over the comment colour and has to win.
-        "todo"       => SyntaxStyle { fg: rgb(249, 226, 175), bg: Color::Default, bold: true,  italic: false },
-        _            => SyntaxStyle::default(),
+        "todo" => SyntaxStyle {
+            fg: rgb(249, 226, 175),
+            bg: Color::Default,
+            bold: true,
+            italic: false,
+        },
+        _ => SyntaxStyle::default(),
     }
 }
 
@@ -178,10 +282,25 @@ pub fn dired_style(kind: &str) -> SyntaxStyle {
 /// The built-in default dired style for `kind` (no overrides applied).
 pub fn default_dired_style(kind: &str) -> SyntaxStyle {
     match kind {
-        "directory"  => SyntaxStyle { fg: rgb(137, 180, 250), bg: Color::Default, bold: true,  italic: false },
-        "executable" => SyntaxStyle { fg: rgb(166, 227, 161), bg: Color::Default, bold: false, italic: false },
-        "symlink"    => SyntaxStyle { fg: rgb(137, 220, 235), bg: Color::Default, bold: false, italic: false },
-        _            => SyntaxStyle::default(),
+        "directory" => SyntaxStyle {
+            fg: rgb(137, 180, 250),
+            bg: Color::Default,
+            bold: true,
+            italic: false,
+        },
+        "executable" => SyntaxStyle {
+            fg: rgb(166, 227, 161),
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        },
+        "symlink" => SyntaxStyle {
+            fg: rgb(137, 220, 235),
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        },
+        _ => SyntaxStyle::default(),
     }
 }
 
@@ -198,21 +317,56 @@ pub fn flash_style(kind: &str) -> SyntaxStyle {
 pub fn default_flash_style(kind: &str) -> SyntaxStyle {
     match kind {
         // The first key has been typed; this is the remainder still to type.
-        "pending" => SyntaxStyle { fg: rgb(255, 255,   0), bg: Color::Default, bold: false, italic: false },
-        "label"   => SyntaxStyle { fg: rgb(  0, 200, 255), bg: Color::Default, bold: false, italic: false },
-        _         => SyntaxStyle::default(),
+        "pending" => SyntaxStyle {
+            fg: rgb(255, 255, 0),
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        },
+        "label" => SyntaxStyle {
+            fg: rgb(0, 200, 255),
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        },
+        _ => SyntaxStyle::default(),
     }
 }
 
 /// The built-in default diff style for `kind` (no overrides applied).
 pub fn default_diff_style(kind: &str) -> SyntaxStyle {
     match kind {
-        "added"   => SyntaxStyle { fg: rgb(166, 227, 161), bg: Color::Default, bold: false, italic: false },
-        "removed" => SyntaxStyle { fg: rgb(243, 139, 168), bg: Color::Default, bold: false, italic: false },
-        "hunk"    => SyntaxStyle { fg: rgb(137, 180, 250), bg: Color::Default, bold: true,  italic: false },
+        "added" => SyntaxStyle {
+            fg: rgb(166, 227, 161),
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        },
+        "removed" => SyntaxStyle {
+            fg: rgb(243, 139, 168),
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        },
+        "hunk" => SyntaxStyle {
+            fg: rgb(137, 180, 250),
+            bg: Color::Default,
+            bold: true,
+            italic: false,
+        },
         // File headers and `index` lines: present but not the point.
-        "header"  => SyntaxStyle { fg: rgb(108, 112, 134), bg: Color::Default, bold: false, italic: false },
-        _         => SyntaxStyle { fg: Color::Default, bg: Color::Default, bold: false, italic: false },
+        "header" => SyntaxStyle {
+            fg: rgb(108, 112, 134),
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        },
+        _ => SyntaxStyle {
+            fg: Color::Default,
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        },
     }
 }
 
@@ -239,27 +393,87 @@ pub fn markup_style(kind: &str) -> SyntaxStyle {
 /// The built-in default markup style for `kind` (no overrides applied).
 pub fn default_markup_style(kind: &str) -> SyntaxStyle {
     match kind {
-        "heading"  => SyntaxStyle { fg: rgb(137, 180, 250), bg: Color::Default, bold: true,  italic: false },
-        "strong"   => SyntaxStyle { fg: rgb(250, 179, 135), bg: Color::Default, bold: true,  italic: false },
-        "emphasis" => SyntaxStyle { fg: rgb(203, 166, 247), bg: Color::Default, bold: false, italic: true  },
-        "code"     => SyntaxStyle { fg: rgb(166, 227, 161), bg: Color::Default, bold: false, italic: false },
-        "link"     => SyntaxStyle { fg: rgb(137, 220, 235), bg: Color::Default, bold: false, italic: false },
-        "url"      => SyntaxStyle { fg: rgb(108, 112, 134), bg: Color::Default, bold: false, italic: true  },
-        "marker"   => SyntaxStyle { fg: rgb(243, 139, 168), bg: Color::Default, bold: false, italic: false },
-        "quote"    => SyntaxStyle { fg: rgb(108, 112, 134), bg: Color::Default, bold: false, italic: true  },
-        "keyword"  => SyntaxStyle { fg: rgb(203, 166, 247), bg: Color::Default, bold: true,  italic: false },
-        "block"    => SyntaxStyle { fg: rgb(166, 227, 161), bg: Color::Default, bold: false, italic: false },
-        "todo"     => SyntaxStyle { fg: rgb(243, 139, 168), bg: Color::Default, bold: true,  italic: false },
-        "done"     => SyntaxStyle { fg: rgb(166, 227, 161), bg: Color::Default, bold: true,  italic: false },
-        _          => SyntaxStyle::default(),
+        "heading" => SyntaxStyle {
+            fg: rgb(137, 180, 250),
+            bg: Color::Default,
+            bold: true,
+            italic: false,
+        },
+        "strong" => SyntaxStyle {
+            fg: rgb(250, 179, 135),
+            bg: Color::Default,
+            bold: true,
+            italic: false,
+        },
+        "emphasis" => SyntaxStyle {
+            fg: rgb(203, 166, 247),
+            bg: Color::Default,
+            bold: false,
+            italic: true,
+        },
+        "code" => SyntaxStyle {
+            fg: rgb(166, 227, 161),
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        },
+        "link" => SyntaxStyle {
+            fg: rgb(137, 220, 235),
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        },
+        "url" => SyntaxStyle {
+            fg: rgb(108, 112, 134),
+            bg: Color::Default,
+            bold: false,
+            italic: true,
+        },
+        "marker" => SyntaxStyle {
+            fg: rgb(243, 139, 168),
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        },
+        "quote" => SyntaxStyle {
+            fg: rgb(108, 112, 134),
+            bg: Color::Default,
+            bold: false,
+            italic: true,
+        },
+        "keyword" => SyntaxStyle {
+            fg: rgb(203, 166, 247),
+            bg: Color::Default,
+            bold: true,
+            italic: false,
+        },
+        "block" => SyntaxStyle {
+            fg: rgb(166, 227, 161),
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        },
+        "todo" => SyntaxStyle {
+            fg: rgb(243, 139, 168),
+            bg: Color::Default,
+            bold: true,
+            italic: false,
+        },
+        "done" => SyntaxStyle {
+            fg: rgb(166, 227, 161),
+            bg: Color::Default,
+            bold: true,
+            italic: false,
+        },
+        _ => SyntaxStyle::default(),
     }
 }
 
 pub const RAINBOW_PALETTE: [Color; 6] = [
-    Color::Rgb(243, 139, 168),  // red
-    Color::Rgb(250, 179, 135),  // peach
-    Color::Rgb(249, 226, 175),  // yellow
-    Color::Rgb(166, 227, 161),  // green
-    Color::Rgb(137, 190, 180),  // teal
-    Color::Rgb(137, 180, 250),  // blue
+    Color::Rgb(243, 139, 168), // red
+    Color::Rgb(250, 179, 135), // peach
+    Color::Rgb(249, 226, 175), // yellow
+    Color::Rgb(166, 227, 161), // green
+    Color::Rgb(137, 190, 180), // teal
+    Color::Rgb(137, 180, 250), // blue
 ];
