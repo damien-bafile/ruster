@@ -14,11 +14,11 @@ pub mod transport;
 
 pub use client::LspClient;
 pub use manager::{LspManager, RoutedMessage, ServerKey};
+pub use position::{offset_to_position, position_to_offset, LspPosition};
+pub use registry::{default_server, language_id, ServerConfig};
 pub use results::{
     apply_edits, parse_call_hierarchy_calls, parse_call_hierarchy_prepare, parse_diagnostics,
     parse_document_symbols, parse_hover, parse_locations, parse_text_edits, parse_workspace_edit,
     parse_workspace_symbols, CallEntry, Diagnostic, Location, SymbolEntry, TextEdit,
 };
-pub use position::{offset_to_position, position_to_offset, LspPosition};
-pub use registry::{default_server, language_id, ServerConfig};
 pub use transport::{classify, read_message, write_message, ServerMessage};

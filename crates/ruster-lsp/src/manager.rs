@@ -27,13 +27,18 @@ pub struct ServerKey {
 
 impl ServerKey {
     pub fn new(lang: &str, root: &Path) -> Self {
-        ServerKey { lang: lang.to_string(), root: root.to_path_buf() }
+        ServerKey {
+            lang: lang.to_string(),
+            root: root.to_path_buf(),
+        }
     }
 }
 
 enum State {
     /// Waiting for the response to the `initialize` request with this id.
-    Initializing { init_id: i64 },
+    Initializing {
+        init_id: i64,
+    },
     Ready,
 }
 
@@ -96,7 +101,11 @@ impl LspManager {
                 let init_id = client.request("initialize", protocol::initialize_params(root));
                 self.clients.insert(
                     key,
-                    Managed { client, state: State::Initializing { init_id }, queued: Vec::new() },
+                    Managed {
+                        client,
+                        state: State::Initializing { init_id },
+                        queued: Vec::new(),
+                    },
                 );
                 true
             }
@@ -138,7 +147,11 @@ impl LspManager {
     }
 
     pub fn did_close(&mut self, key: &ServerKey, uri: &str) {
-        self.notify_or_queue(key, "textDocument/didClose", protocol::did_close_params(uri));
+        self.notify_or_queue(
+            key,
+            "textDocument/didClose",
+            protocol::did_close_params(uri),
+        );
     }
 
     /// Send a request to that server if ready; returns the request id.
@@ -159,8 +172,7 @@ impl LspManager {
         for (key, m) in self.clients.iter_mut() {
             for msg in m.client.poll() {
                 match msg {
-                    ServerMessage::Response { id, .. }
-                        if matches!(m.state, State::Initializing { init_id } if init_id == id) =>
+                    ServerMessage::Response { id, .. } if matches!(m.state, State::Initializing { init_id } if init_id == id) =>
                     {
                         // Handshake complete: announce initialized, flush queue.
                         m.client.notify("initialized", serde_json::json!({}));
@@ -175,7 +187,10 @@ impl LspManager {
                         }
                         // Not surfaced to the app.
                     }
-                    other => out.push(RoutedMessage { key: key.clone(), message: other }),
+                    other => out.push(RoutedMessage {
+                        key: key.clone(),
+                        message: other,
+                    }),
                 }
             }
         }
@@ -198,7 +213,13 @@ mod tests {
     fn override_takes_precedence_over_default() {
         let mut mgr = LspManager::new();
         assert_eq!(mgr.server_for("rust").unwrap().cmd, "rust-analyzer");
-        mgr.set_server("rust", ServerConfig { cmd: "my-ra".into(), args: vec![] });
+        mgr.set_server(
+            "rust",
+            ServerConfig {
+                cmd: "my-ra".into(),
+                args: vec![],
+            },
+        );
         assert_eq!(mgr.server_for("rust").unwrap().cmd, "my-ra");
     }
 
@@ -237,7 +258,10 @@ mod tests {
             },
         );
         assert!(mgr.has_client(&a));
-        assert!(!mgr.has_client(&b), "the second project must not reuse the first's server");
+        assert!(
+            !mgr.has_client(&b),
+            "the second project must not reuse the first's server"
+        );
         assert!(
             !mgr.has_client(&ServerKey::new("python", Path::new("/a"))),
             "nor may another language in the same root"

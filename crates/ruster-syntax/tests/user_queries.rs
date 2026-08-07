@@ -25,7 +25,11 @@ fn write_query(root: &std::path::Path, body: &str) {
 /// The number of highlight spans across the buffer — how much of the query
 /// actually matched.
 fn span_count(engine: &SyntaxEngine) -> usize {
-    engine.styled_lines().iter().map(|l| l.highlights.len()).sum()
+    engine
+        .styled_lines()
+        .iter()
+        .map(|l| l.highlights.len())
+        .sum()
 }
 
 #[test]
@@ -45,8 +49,15 @@ fn user_queries_are_discovered_read_and_degraded_from_the_config_dir() {
     // which proves the file was found and used rather than silently ignored.
     write_query(&root, "");
     let empty = SyntaxEngine::new(SRC, "rs").expect("an empty query still builds");
-    assert_eq!(span_count(&empty), 0, "the user query replaced the built-in");
-    assert!(empty.warnings().is_empty(), "an empty query is legal, not an error");
+    assert_eq!(
+        span_count(&empty),
+        0,
+        "the user query replaced the built-in"
+    );
+    assert!(
+        empty.warnings().is_empty(),
+        "an empty query is legal, not an error"
+    );
 
     // A query tree-sitter rejects must not take the editor down: it falls back
     // to the built-in and says so.
@@ -59,7 +70,11 @@ fn user_queries_are_discovered_read_and_degraded_from_the_config_dir() {
     );
     let warnings = broken.warnings();
     assert_eq!(warnings.len(), 1, "exactly one complaint: {warnings:?}");
-    assert!(warnings[0].contains("built-in"), "says what it did: {:?}", warnings[0]);
+    assert!(
+        warnings[0].contains("built-in"),
+        "says what it did: {:?}",
+        warnings[0]
+    );
 
     // The engine keeps the query it is *using* for later re-queries, not the
     // text it was handed. TODO markers re-run it against the tree, so storing
@@ -88,7 +103,11 @@ fn user_queries_are_discovered_read_and_degraded_from_the_config_dir() {
     let warns = degraded.warnings();
     assert_eq!(warns.len(), 1, "one complaint about the grammar: {warns:?}");
     assert!(warns[0].contains("grammar rust"), "{:?}", warns[0]);
-    assert!(warns[0].contains("built-in grammar"), "says it fell back: {:?}", warns[0]);
+    assert!(
+        warns[0].contains("built-in grammar"),
+        "says it fell back: {:?}",
+        warns[0]
+    );
     std::fs::remove_file(gdir.join(&libname)).unwrap();
 
     // A working custom query takes effect and stays quiet.

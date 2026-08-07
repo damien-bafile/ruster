@@ -138,12 +138,22 @@ impl NotificationManager {
         id
     }
 
-    fn enqueue(&mut self, kind: BackendKind, notif: Notification, timeout: Option<Duration>, now: Instant) {
+    fn enqueue(
+        &mut self,
+        kind: BackendKind,
+        notif: Notification,
+        timeout: Option<Duration>,
+        now: Instant,
+    ) {
         if !self.backend_enabled(kind) {
             return;
         }
         if let Some(list) = self.active.get_mut(&kind) {
-            list.push(ActiveEntry { notif, pushed_at: now, timeout });
+            list.push(ActiveEntry {
+                notif,
+                pushed_at: now,
+                timeout,
+            });
         }
     }
 
@@ -279,7 +289,11 @@ mod tests {
             ..Default::default()
         });
         m.push(info_notif("info"));
-        m.push(Notification::new(MessageLevel::Warning, MessageSource::Echo, "warn"));
+        m.push(Notification::new(
+            MessageLevel::Warning,
+            MessageSource::Echo,
+            "warn",
+        ));
         m.tick();
         // Info used the zero timeout and expired; the warning's 60s has not.
         assert_eq!(m.active(BackendKind::Mini).len(), 1);
@@ -300,7 +314,11 @@ mod tests {
     #[test]
     fn errors_are_persistent_by_default() {
         let mut m = instant_mgr();
-        m.push(Notification::new(MessageLevel::Error, MessageSource::System, "boom"));
+        m.push(Notification::new(
+            MessageLevel::Error,
+            MessageSource::System,
+            "boom",
+        ));
         m.tick();
         // Error routes to Notify and has no default timeout, so it survives.
         assert_eq!(m.active(BackendKind::Notify).len(), 1);
@@ -344,7 +362,10 @@ mod tests {
 
     #[test]
     fn test_history_respects_max() {
-        let mut m = NotificationManager::new(NoiceSettings { max_history: 3, ..Default::default() });
+        let mut m = NotificationManager::new(NoiceSettings {
+            max_history: 3,
+            ..Default::default()
+        });
         m.push(info_notif("1"));
         m.push(info_notif("2"));
         m.push(info_notif("3"));
@@ -360,7 +381,11 @@ mod tests {
         let mut m = mgr();
         m.push_to(info_notif("pop").with_persistent(), BackendKind::Popup);
         assert_eq!(m.active(BackendKind::Popup).len(), 1);
-        assert_eq!(m.active(BackendKind::Mini).len(), 0, "no level-based routing");
+        assert_eq!(
+            m.active(BackendKind::Mini).len(),
+            0,
+            "no level-based routing"
+        );
         assert_eq!(m.history().len(), 1, "still recorded in history");
     }
 

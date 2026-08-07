@@ -83,7 +83,9 @@ pub fn parse_registry(text: &str) -> Vec<Tool> {
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .filter_map(|line| {
             let f: Vec<&str> = line.split('|').map(str::trim).collect();
-            let [kind, name, binary, platform, install] = f[..] else { return None };
+            let [kind, name, binary, platform, install] = f[..] else {
+                return None;
+            };
             if name.is_empty() || binary.is_empty() || install.is_empty() {
                 return None;
             }
@@ -133,10 +135,16 @@ pub fn on_path(binary: &str, path: &str, exists: impl Fn(&Path) -> bool) -> bool
         return false;
     }
     let sep = if cfg!(windows) { ';' } else { ':' };
-    let suffixes: &[&str] = if cfg!(windows) { &["", ".exe", ".cmd", ".bat"] } else { &[""] };
-    path.split(sep)
-        .filter(|d| !d.is_empty())
-        .any(|dir| suffixes.iter().any(|sfx| exists(&PathBuf::from(dir).join(format!("{binary}{sfx}")))))
+    let suffixes: &[&str] = if cfg!(windows) {
+        &["", ".exe", ".cmd", ".bat"]
+    } else {
+        &[""]
+    };
+    path.split(sep).filter(|d| !d.is_empty()).any(|dir| {
+        suffixes
+            .iter()
+            .any(|sfx| exists(&PathBuf::from(dir).join(format!("{binary}{sfx}"))))
+    })
 }
 
 /// [`on_path`] against the real `PATH`, counting a candidate as present only if
@@ -148,7 +156,12 @@ pub fn is_installed(binary: &str) -> bool {
 
 /// One line of the `:Mason` listing.
 pub fn render_row(tool: &Tool, installed: bool) -> String {
-    format!("  {} {:<32} {}", if installed { '✓' } else { '·' }, tool.name, tool.install)
+    format!(
+        "  {} {:<32} {}",
+        if installed { '✓' } else { '·' },
+        tool.name,
+        tool.install
+    )
 }
 
 /// The whole listing, grouped by kind.
@@ -172,7 +185,9 @@ pub fn render(tools: &[Tool], installed: impl Fn(&str) -> bool) -> String {
         return "No tools known for this platform.".to_string();
     }
     out.push(String::new());
-    out.push(format!("{have} of {total} installed. Press Enter on a row to install it."));
+    out.push(format!(
+        "{have} of {total} installed. Press Enter on a row to install it."
+    ));
     out.join("\n")
 }
 
@@ -181,7 +196,10 @@ pub fn tool_at_row(tools: &[Tool], rendered: &str, row: usize) -> Option<Tool> {
     let line = rendered.lines().nth(row)?;
     // Rows are the indented ones; headings and the summary are not selectable.
     let name = line.strip_prefix("  ")?.get(2..)?.trim_start();
-    tools.iter().find(|t| name.starts_with(t.name.as_str())).cloned()
+    tools
+        .iter()
+        .find(|t| name.starts_with(t.name.as_str()))
+        .cloned()
 }
 
 #[cfg(test)]
@@ -206,18 +224,27 @@ dap | nokind-x | x | any |
         assert_eq!(rows[0].name, "rust-analyzer");
         assert_eq!(rows[0].kind, ToolKind::Lsp);
         assert_eq!(rows[0].install, "rustup component add rust-analyzer");
-        assert!(rows.iter().all(|r| !r.install.is_empty()), "no row installs nothing");
+        assert!(
+            rows.iter().all(|r| !r.install.is_empty()),
+            "no row installs nothing"
+        );
     }
 
     /// The point of the platform column: the same tool installs differently.
     #[test]
     fn a_platform_row_wins_over_the_any_fallback() {
         let mac = tools_for(SAMPLE, "macos");
-        let clangd = mac.iter().find(|t| t.name == "clangd").expect("offered on macos");
+        let clangd = mac
+            .iter()
+            .find(|t| t.name == "clangd")
+            .expect("offered on macos");
         assert_eq!(clangd.install, "brew install llvm");
 
         let linux = tools_for(SAMPLE, "linux");
-        let clangd = linux.iter().find(|t| t.name == "clangd").expect("offered on linux");
+        let clangd = linux
+            .iter()
+            .find(|t| t.name == "clangd")
+            .expect("offered on linux");
         assert_eq!(clangd.install, "apt-get install -y clangd");
     }
 
@@ -226,8 +253,14 @@ dap | nokind-x | x | any |
     #[test]
     fn a_tool_with_no_row_for_this_platform_is_dropped() {
         let win = tools_for(SAMPLE, "windows");
-        assert!(win.iter().all(|t| t.name != "clangd"), "clangd has no windows row");
-        assert!(win.iter().any(|t| t.name == "rust-analyzer"), "but `any` rows still apply");
+        assert!(
+            win.iter().all(|t| t.name != "clangd"),
+            "clangd has no windows row"
+        );
+        assert!(
+            win.iter().any(|t| t.name == "rust-analyzer"),
+            "but `any` rows still apply"
+        );
     }
 
     #[test]
@@ -252,7 +285,11 @@ dap | nokind-x | x | any |
             .map(str::trim)
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
             .count();
-        assert_eq!(parse_registry(SRC).len(), meaningful, "some row failed to parse");
+        assert_eq!(
+            parse_registry(SRC).len(),
+            meaningful,
+            "some row failed to parse"
+        );
         assert!(meaningful > 10, "the registry should not be nearly empty");
     }
 
@@ -268,7 +305,11 @@ dap | nokind-x | x | any |
                 t.name,
                 t.install
             );
-            assert!(!t.install.contains("curl "), "{}: no piping installers", t.name);
+            assert!(
+                !t.install.contains("curl "),
+                "{}: no piping installers",
+                t.name
+            );
         }
     }
 
@@ -284,7 +325,10 @@ dap | nokind-x | x | any |
     #[test]
     fn path_probing_handles_empty_input() {
         assert!(!on_path("x", "", |_| true), "an empty PATH finds nothing");
-        assert!(!on_path("", "/a", |_| true), "an empty binary name is not a tool");
+        assert!(
+            !on_path("", "/a", |_| true),
+            "an empty binary name is not a tool"
+        );
     }
 
     #[test]
@@ -293,7 +337,9 @@ dap | nokind-x | x | any |
         let out = render(&tools, |b| b == "rust-analyzer");
         assert!(out.contains("Language servers:"), "{out}");
         assert!(out.contains("Formatters:"), "{out}");
-        assert!(out.lines().any(|l| l.contains("✓") && l.contains("rust-analyzer")));
+        assert!(out
+            .lines()
+            .any(|l| l.contains("✓") && l.contains("rust-analyzer")));
         assert!(out.lines().any(|l| l.contains("·") && l.contains("black")));
         assert!(out.contains("1 of 3 installed"), "{out}");
         // The command is visible before anyone agrees to run it.
@@ -310,11 +356,23 @@ dap | nokind-x | x | any |
         let tools = tools_for(SAMPLE, "macos");
         let out = render(&tools, |_| false);
         let rows: Vec<&str> = out.lines().collect();
-        let idx = rows.iter().position(|l| l.contains("rust-analyzer")).unwrap();
-        assert_eq!(tool_at_row(&tools, &out, idx).unwrap().name, "rust-analyzer");
+        let idx = rows
+            .iter()
+            .position(|l| l.contains("rust-analyzer"))
+            .unwrap();
+        assert_eq!(
+            tool_at_row(&tools, &out, idx).unwrap().name,
+            "rust-analyzer"
+        );
 
         let heading = rows.iter().position(|l| l.ends_with("servers:")).unwrap();
-        assert!(tool_at_row(&tools, &out, heading).is_none(), "headings are not installable");
-        assert!(tool_at_row(&tools, &out, 9999).is_none(), "out of range is not a tool");
+        assert!(
+            tool_at_row(&tools, &out, heading).is_none(),
+            "headings are not installable"
+        );
+        assert!(
+            tool_at_row(&tools, &out, 9999).is_none(),
+            "out of range is not a tool"
+        );
     }
 }

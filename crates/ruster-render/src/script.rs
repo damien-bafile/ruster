@@ -21,9 +21,8 @@ use std::rc::Rc;
 use crossterm::event::KeyEvent;
 
 use crate::{
-    DebugOverlayView, DialogView, FloatView, FrameState, PickerView, Rect, Renderer,
-    SelectionView, SettingsView, StatuslineView, StyledLine, TermGridView, WelcomeView,
-    WhichKeyView,
+    DebugOverlayView, DialogView, FloatView, FrameState, PickerView, Rect, Renderer, SelectionView,
+    SettingsView, StatuslineView, StyledLine, TermGridView, WelcomeView, WhichKeyView,
 };
 
 /// One window as it was handed to the renderer.
@@ -121,7 +120,11 @@ impl FrameDigest {
             out.push_str(&format!(
                 "window {i}{}{}\n",
                 if w.active { " active" } else { "" },
-                if w.header.is_empty() { String::new() } else { format!(" header={:?}", w.header) },
+                if w.header.is_empty() {
+                    String::new()
+                } else {
+                    format!(" header={:?}", w.header)
+                },
             ));
             for (row, line) in w.lines.iter().enumerate() {
                 let gutter = w.gutter.get(row).map(String::as_str).unwrap_or("");
@@ -132,7 +135,10 @@ impl FrameDigest {
             }
             let s = &w.statusline;
             if !(s.left.is_empty() && s.center.is_empty() && s.right.is_empty()) {
-                out.push_str(&format!("  status [{}] [{}] [{}]\n", s.left, s.center, s.right));
+                out.push_str(&format!(
+                    "  status [{}] [{}] [{}]\n",
+                    s.left, s.center, s.right
+                ));
             }
             for (row, col, text) in &w.flash_labels {
                 out.push_str(&format!("  flash {row},{col} {text}\n"));
@@ -155,16 +161,26 @@ impl FrameDigest {
         }
         if let Some(w) = &self.welcome {
             if w.visible {
-                out.push_str(&format!("welcome version={} lsp={}\n", w.version, w.lsp_status));
+                out.push_str(&format!(
+                    "welcome version={} lsp={}\n",
+                    w.version, w.lsp_status
+                ));
                 for p in &w.recent_projects {
                     out.push_str(&format!("  recent {p}\n"));
                 }
             }
         }
         if let Some(p) = &self.picker {
-            out.push_str(&format!("picker {:?} query={:?} {:?}\n", p.title, p.query, p.placement));
+            out.push_str(&format!(
+                "picker {:?} query={:?} {:?}\n",
+                p.title, p.query, p.placement
+            ));
             for r in &p.rows {
-                out.push_str(&format!("  {} {}\n", if r.selected { ">" } else { " " }, r.label));
+                out.push_str(&format!(
+                    "  {} {}\n",
+                    if r.selected { ">" } else { " " },
+                    r.label
+                ));
             }
         }
         if let Some(k) = &self.whichkey {
@@ -197,7 +213,10 @@ impl FrameDigest {
             out.push_str(&format!(
                 "float z={}{}\n",
                 f.z,
-                f.title.as_ref().map(|t| format!(" {t:?}")).unwrap_or_default()
+                f.title
+                    .as_ref()
+                    .map(|t| format!(" {t:?}"))
+                    .unwrap_or_default()
             ));
             for l in &f.lines {
                 out.push_str(&format!("  {}\n", l.text));
@@ -244,7 +263,11 @@ impl FrameLog {
 
     /// The last frame drawn — what the screen settled on.
     pub fn last(&self) -> FrameDigest {
-        self.0.borrow().last().cloned().expect("the loop draws at least one frame")
+        self.0
+            .borrow()
+            .last()
+            .cloned()
+            .expect("the loop draws at least one frame")
     }
 
     pub fn all(&self) -> Vec<FrameDigest> {
@@ -333,7 +356,6 @@ impl ScriptedRenderer {
         self.viewport = (cols, rows);
         self
     }
-
 }
 
 impl Renderer for ScriptedRenderer {
@@ -396,7 +418,10 @@ mod tests {
         assert!(!r.should_close(), "a key is still pending");
         r.poll_input();
         r.render_frame(&FrameState::default());
-        assert!(!r.should_close(), "the key's own frame is not a settle frame");
+        assert!(
+            !r.should_close(),
+            "the key's own frame is not a settle frame"
+        );
         r.render_frame(&FrameState::default());
         assert!(!r.should_close(), "one settle frame still owed");
         r.render_frame(&FrameState::default());
@@ -413,7 +438,10 @@ mod tests {
             assert!(!r.should_close());
             r.render_frame(&FrameState::default());
         }
-        assert!(r.should_close(), "the budget must win over an infinite settle");
+        assert!(
+            r.should_close(),
+            "the budget must win over an infinite settle"
+        );
     }
 
     #[test]
@@ -423,9 +451,18 @@ mod tests {
             windows: vec![WindowView {
                 rect: Rect::new(0, 0, 40, 10),
                 header: "demo.rs".into(),
-                lines: vec![StyledLine { text: "fn main() {}".into(), highlights: vec![] }],
-                gutter: GutterView { width: 3, rows: vec!["  1".into()] },
-                signs: SignsView { width: 1, signs: vec![(0, 'E', crate::Color::Default)] },
+                lines: vec![StyledLine {
+                    text: "fn main() {}".into(),
+                    highlights: vec![],
+                }],
+                gutter: GutterView {
+                    width: 3,
+                    rows: vec!["  1".into()],
+                },
+                signs: SignsView {
+                    width: 1,
+                    signs: vec![(0, 'E', crate::Color::Default)],
+                },
                 statusline: StatuslineView {
                     left: "NORMAL".into(),
                     right: "1:1".into(),
@@ -441,8 +478,14 @@ mod tests {
         r.render_frame(&state);
 
         let text = r.log().last().to_text();
-        assert!(text.contains("window 0 active header=\"demo.rs\""), "{text}");
-        assert!(text.contains("  1|fn main() {}"), "gutter and text on one row: {text}");
+        assert!(
+            text.contains("window 0 active header=\"demo.rs\""),
+            "{text}"
+        );
+        assert!(
+            text.contains("  1|fn main() {}"),
+            "gutter and text on one row: {text}"
+        );
         assert!(text.contains("signs [(0, 'E')]"), "{text}");
         assert!(text.contains("status [NORMAL] [] [1:1]"), "{text}");
         assert!(text.contains("cmdline :w"), "{text}");

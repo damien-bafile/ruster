@@ -104,8 +104,15 @@ impl<A> LspState<A> {
             None => {
                 let language_id = ruster_lsp::registry::language_id(lang).to_string();
                 self.manager.did_open(&key, &uri, &language_id, 0, text);
-                self.docs
-                    .insert(buffer, LspDoc { uri, key, version: 0, synced: text.to_string() });
+                self.docs.insert(
+                    buffer,
+                    LspDoc {
+                        uri,
+                        key,
+                        version: 0,
+                        synced: text.to_string(),
+                    },
+                );
                 Sync::Opened
             }
             Some(doc) if doc.synced != text => {
@@ -169,7 +176,10 @@ impl<A> LspState<A> {
     }
 
     pub fn diagnostics(&self, buffer: BufferId) -> &[Diagnostic] {
-        self.diagnostics.get(&buffer).map(Vec::as_slice).unwrap_or_default()
+        self.diagnostics
+            .get(&buffer)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
     }
 
     pub fn set_diagnostics(&mut self, buffer: BufferId, diags: Vec<Diagnostic>) {
@@ -243,7 +253,10 @@ mod tests {
         let root = LspState::<TestAction>::root_for(&file);
         assert_eq!(root.canonicalize().unwrap(), tmp.canonicalize().unwrap());
         // The cwd during tests is the crate root, which is *not* this project.
-        assert_ne!(root.canonicalize().unwrap(), std::env::current_dir().unwrap());
+        assert_ne!(
+            root.canonicalize().unwrap(),
+            std::env::current_dir().unwrap()
+        );
 
         std::fs::remove_dir_all(&tmp).ok();
     }
@@ -320,13 +333,20 @@ mod tests {
         let rust = ServerKey::new("rust", Path::new("/proj"));
         s.pending.insert((rust.clone(), 1), TestAction::Hover);
         assert_eq!(s.take_pending(&rust, 1), Some(TestAction::Hover));
-        assert_eq!(s.take_pending(&rust, 1), None, "a reply must not fire twice");
+        assert_eq!(
+            s.take_pending(&rust, 1),
+            None,
+            "a reply must not fire twice"
+        );
     }
 
     #[test]
     fn an_unknown_reply_is_ignored_rather_than_guessed() {
         let mut s = state();
-        assert_eq!(s.take_pending(&ServerKey::new("rust", Path::new("/proj")), 99), None);
+        assert_eq!(
+            s.take_pending(&ServerKey::new("rust", Path::new("/proj")), 99),
+            None
+        );
     }
 
     #[test]
@@ -351,8 +371,14 @@ mod tests {
 
     fn diag(severity: u8) -> Diagnostic {
         Diagnostic {
-            start: ruster_lsp::results::LspPositionEq { line: 0, character: 0 },
-            end: ruster_lsp::results::LspPositionEq { line: 0, character: 1 },
+            start: ruster_lsp::results::LspPositionEq {
+                line: 0,
+                character: 0,
+            },
+            end: ruster_lsp::results::LspPositionEq {
+                line: 0,
+                character: 1,
+            },
             severity,
             message: "x".into(),
         }

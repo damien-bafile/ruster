@@ -8,16 +8,31 @@ pub struct Range {
 }
 
 impl Range {
-    pub fn caret(at: usize) -> Self { Range { anchor: at, head: at } }
-    pub fn start(&self) -> usize { self.anchor.min(self.head) }
-    pub fn end(&self) -> usize { self.anchor.max(self.head) }
+    pub fn caret(at: usize) -> Self {
+        Range {
+            anchor: at,
+            head: at,
+        }
+    }
+    pub fn start(&self) -> usize {
+        self.anchor.min(self.head)
+    }
+    pub fn end(&self) -> usize {
+        self.anchor.max(self.head)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Edge { Start, End }
+pub enum Edge {
+    Start,
+    End,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Dir { Left, Right }
+enum Dir {
+    Left,
+    Right,
+}
 
 #[derive(Clone)]
 pub struct CursorSet {
@@ -28,11 +43,19 @@ pub struct CursorSet {
 
 impl CursorSet {
     pub fn single(at: usize) -> Self {
-        CursorSet { cursors: vec![Range::caret(at)], primary: 0, desired_col: usize::MAX }
+        CursorSet {
+            cursors: vec![Range::caret(at)],
+            primary: 0,
+            desired_col: usize::MAX,
+        }
     }
 
-    pub fn primary(&self) -> Range { self.cursors[self.primary] }
-    pub fn head(&self) -> usize { self.primary().head }
+    pub fn primary(&self) -> Range {
+        self.cursors[self.primary]
+    }
+    pub fn head(&self) -> usize {
+        self.primary().head
+    }
 
     pub fn set_head(&mut self, at: usize, buffer: &Buffer) {
         let anchor = self.cursors[self.primary].anchor;
@@ -177,7 +200,10 @@ impl CursorSet {
         let col = self.desired_col.min(content_len);
         let new_head = start + col;
         let anchor = self.cursors[self.primary].anchor;
-        self.cursors[self.primary] = Range { anchor, head: new_head };
+        self.cursors[self.primary] = Range {
+            anchor,
+            head: new_head,
+        };
         self.collapse_at(new_head);
     }
 
@@ -224,7 +250,11 @@ mod tests {
     fn line_of_by_scan(buffer: &Buffer, char_idx: usize) -> usize {
         let mut acc = 0usize;
         for line in 0..buffer.line_count() {
-            if buffer.line_start_char(line) <= char_idx { acc = line; } else { break; }
+            if buffer.line_start_char(line) <= char_idx {
+                acc = line;
+            } else {
+                break;
+            }
         }
         acc
     }
@@ -237,16 +267,27 @@ mod tests {
         let mut char_pos = 0usize;
         let mut gidx = 0usize;
         for (i, g) in graphemes.iter().enumerate() {
-            if char_pos == from { gidx = i; break; }
+            if char_pos == from {
+                gidx = i;
+                break;
+            }
             char_pos += g.chars().count();
             gidx = i + 1;
         }
         match dir {
             Dir::Left => {
-                if gidx == 0 { from } else { from - graphemes[gidx - 1].chars().count() }
+                if gidx == 0 {
+                    from
+                } else {
+                    from - graphemes[gidx - 1].chars().count()
+                }
             }
             Dir::Right => {
-                if gidx >= graphemes.len() { from } else { from + graphemes[gidx].chars().count() }
+                if gidx >= graphemes.len() {
+                    from
+                } else {
+                    from + graphemes[gidx].chars().count()
+                }
             }
         }
     }
@@ -289,8 +330,16 @@ mod tests {
         let c = CursorSet::single(0);
         // "e" + combining acute is one cluster spanning offsets 0..2.
         let b = Buffer::from_str("e\u{0301}x");
-        assert_eq!(c.grapheme_step(&b, 1, Dir::Left), 0, "snap back to cluster start");
-        assert_eq!(c.grapheme_step(&b, 1, Dir::Right), 2, "snap forward to cluster end");
+        assert_eq!(
+            c.grapheme_step(&b, 1, Dir::Left),
+            0,
+            "snap back to cluster start"
+        );
+        assert_eq!(
+            c.grapheme_step(&b, 1, Dir::Right),
+            2,
+            "snap forward to cluster end"
+        );
     }
 
     #[test]
@@ -358,7 +407,11 @@ mod tests {
         let b = Buffer::from_str("abcd\ne\nfg");
         let mut c = CursorSet::single(3); // col 3 of "abcd"
         c.move_line(&b, 1);
-        assert_eq!(c.head(), 6, "line 'e' has only col 0 -> head at 6 (after 'e')");
+        assert_eq!(
+            c.head(),
+            6,
+            "line 'e' has only col 0 -> head at 6 (after 'e')"
+        );
         c.move_line(&b, 1);
         assert_eq!(c.head(), 9, "col 3 of 'fg' -> after 'g' (line is 2 chars)");
     }

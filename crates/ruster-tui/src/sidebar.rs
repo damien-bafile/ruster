@@ -60,7 +60,14 @@ pub struct SidebarState {
 
 impl Default for SidebarState {
     fn default() -> Self {
-        Self { tree: None, selected: 0, scroll: 0, focused: false, width: 30, pending_g: false }
+        Self {
+            tree: None,
+            selected: 0,
+            scroll: 0,
+            focused: false,
+            width: 30,
+            pending_g: false,
+        }
     }
 }
 
@@ -139,9 +146,14 @@ impl SidebarState {
     /// Expand every ancestor of `path`, select it, and scroll it into view.
     /// No-op when hidden or when `path` lies outside the tree's root.
     pub fn reveal(&mut self, path: &Path) {
-        let Some(tree) = self.tree.as_mut() else { return };
+        let Some(tree) = self.tree.as_mut() else {
+            return;
+        };
         let path = if path.is_relative() {
-            std::env::current_dir().ok().map(|cwd| cwd.join(path)).unwrap_or_else(|| path.to_path_buf())
+            std::env::current_dir()
+                .ok()
+                .map(|cwd| cwd.join(path))
+                .unwrap_or_else(|| path.to_path_buf())
         } else {
             path.to_path_buf()
         };
@@ -176,7 +188,9 @@ impl SidebarState {
             }
         }
 
-        let Some(tree) = self.tree.as_mut() else { return SidebarResponse::Ignored };
+        let Some(tree) = self.tree.as_mut() else {
+            return SidebarResponse::Ignored;
+        };
         let rows = tree.rows();
         if rows.is_empty() {
             self.focused = false;
@@ -250,8 +264,11 @@ impl SidebarState {
             KeyCode::Char('r') if is_plain(ck.modifiers) => {
                 let row = &rows[self.selected.min(rows.len() - 1)];
                 let dir = row.path.parent().unwrap_or(&row.path).to_path_buf();
-                let name =
-                    row.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                let name = row
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
                 prompt = Some(FilePrompt::rename(dir, name, PromptOrigin::Sidebar));
                 true
             }
@@ -309,8 +326,9 @@ impl SidebarState {
     pub fn view(&self, rect: CoreRect, mode: UIMode, theme: &Theme) -> WindowView {
         let rows = self.rows();
         let selected = self.selected.min(rows.len().saturating_sub(1));
-        let scroll =
-            self.scroll.min(selected.saturating_sub((rect.height as usize).saturating_sub(2) / 2));
+        let scroll = self
+            .scroll
+            .min(selected.saturating_sub((rect.height as usize).saturating_sub(2) / 2));
         let lines: Vec<StyledLine> = rows
             .iter()
             .enumerate()
@@ -420,7 +438,11 @@ mod tests {
         s.close();
         assert!(!s.is_open());
         s.open(root.clone());
-        assert_eq!(s.width(), 45, "width is panel config, not per-session state");
+        assert_eq!(
+            s.width(),
+            45,
+            "width is panel config, not per-session state"
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -498,11 +520,17 @@ mod tests {
         let shifted = |c: char| KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT);
 
         assert_eq!(s.selected, 0);
-        assert!(matches!(s.handle_key(shifted('G')), SidebarResponse::Handled));
+        assert!(matches!(
+            s.handle_key(shifted('G')),
+            SidebarResponse::Handled
+        ));
         assert_eq!(s.selected, 1, "G jumps to the last row even with SHIFT set");
 
         // R (refresh) shares the guard; it must be claimed, not fall through.
-        assert!(matches!(s.handle_key(shifted('R')), SidebarResponse::Handled));
+        assert!(matches!(
+            s.handle_key(shifted('R')),
+            SidebarResponse::Handled
+        ));
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -623,7 +651,10 @@ mod tests {
         let v = s.view(CoreRect::new(0, 0, 30, 10), UIMode::default(), &theme);
         assert_eq!(v.statusline.right, "2 items");
         assert!(v.lines[0].highlights.is_empty(), "unselected row is plain");
-        assert!(!v.lines[1].highlights.is_empty(), "selected row is highlighted");
+        assert!(
+            !v.lines[1].highlights.is_empty(),
+            "selected row is highlighted"
+        );
         // The highlight must come from the theme, not a hardcoded grey, or the
         // sidebar looks foreign against every other selectable list.
         let (off, len, style) = v.lines[1].highlights[0];
@@ -638,11 +669,19 @@ mod tests {
         // The selected row is padded out so the highlight spans the panel,
         // rather than stopping at the end of the file name.
         assert_eq!(len, 30, "selection covers the full row width");
-        assert!(v.lines[1].text.starts_with("  b.txt"), "{:?}", v.lines[1].text);
+        assert!(
+            v.lines[1].text.starts_with("  b.txt"),
+            "{:?}",
+            v.lines[1].text
+        );
         assert!(v.lines[1].text.ends_with(' '), "padded to the panel width");
         // Unselected rows are not padded.
         assert!(!v.lines[0].text.ends_with(' '));
-        assert!(v.lines[0].text.contains("▸ a"), "collapsed dir marker: {:?}", v.lines[0].text);
+        assert!(
+            v.lines[0].text.contains("▸ a"),
+            "collapsed dir marker: {:?}",
+            v.lines[0].text
+        );
         std::fs::remove_dir_all(&root).ok();
     }
 }

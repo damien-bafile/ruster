@@ -21,7 +21,9 @@ fn lldb_adapter() -> String {
 }
 
 fn on_path(cmd: &str) -> bool {
-    let Some(paths) = std::env::var_os("PATH") else { return false };
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
     std::env::split_paths(&paths).any(|dir| dir.join(cmd).is_file())
 }
 
@@ -85,8 +87,12 @@ mod tests {
     /// adapter without a program reports RUNNING and then does nothing.
     #[test]
     fn the_resolved_program_reaches_the_launch_config() {
-        let cfg = detect_config("rust", Path::new("/proj"), Some("/proj/target/debug/widget"))
-            .expect("rust has an adapter");
+        let cfg = detect_config(
+            "rust",
+            Path::new("/proj"),
+            Some("/proj/target/debug/widget"),
+        )
+        .expect("rust has an adapter");
         assert_eq!(cfg.launch_config["program"], "/proj/target/debug/widget");
         assert_eq!(cfg.launch_config["cwd"], "/proj");
         assert_eq!(cfg.launch_config["request"], "launch");

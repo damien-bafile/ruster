@@ -108,7 +108,11 @@ fn typing_character_by_character_matches() {
         let text = buf.to_string();
         engine.reparse_with_edits(&text, &buf.take_edits());
         let fresh = SyntaxEngine::new(&text, "rs").unwrap();
-        assert_eq!(engine.styled_lines(), fresh.styled_lines(), "after {ch:?}:\n{text}");
+        assert_eq!(
+            engine.styled_lines(),
+            fresh.styled_lines(),
+            "after {ch:?}:\n{text}"
+        );
     }
 }
 

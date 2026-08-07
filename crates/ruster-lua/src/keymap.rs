@@ -33,7 +33,7 @@ pub fn parse_lua_key(s: &str) -> Option<LuaKey> {
     if !s.starts_with('<') || !s.ends_with('>') {
         return None;
     }
-    let inner = &s[1..s.len()-1];
+    let inner = &s[1..s.len() - 1];
     match inner {
         "Esc" => Some(LuaKey::Esc),
         "CR" | "Enter" => Some(LuaKey::Enter),
@@ -58,9 +58,11 @@ pub fn parse_lua_key(s: &str) -> Option<LuaKey> {
                 None
             }
         }
-        _ if inner.len() >= 2 && inner.starts_with('F') => {
-            inner[1..].parse::<u8>().ok().filter(|&n| (1..=12).contains(&n)).map(LuaKey::F)
-        }
+        _ if inner.len() >= 2 && inner.starts_with('F') => inner[1..]
+            .parse::<u8>()
+            .ok()
+            .filter(|&n| (1..=12).contains(&n))
+            .map(LuaKey::F),
         _ => None,
     }
 }

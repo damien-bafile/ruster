@@ -1,6 +1,6 @@
-use streaming_iterator::StreamingIterator;
-use ruster_render::{Color, SyntaxStyle, StyledLine};
 use crate::theme::{set_current_lang, style_for_capture, RAINBOW_PALETTE};
+use ruster_render::{Color, StyledLine, SyntaxStyle};
+use streaming_iterator::StreamingIterator;
 
 pub struct Highlighter {
     query: tree_sitter::Query,
@@ -30,7 +30,11 @@ impl Highlighter {
         &self.query
     }
 
-    pub fn new(language: tree_sitter::Language, query_source: &str, lang: &str) -> Result<Self, String> {
+    pub fn new(
+        language: tree_sitter::Language,
+        query_source: &str,
+        lang: &str,
+    ) -> Result<Self, String> {
         let query = tree_sitter::Query::new(&language, query_source)
             .map_err(|e| format!("query error: {}", e))?;
         Ok(Highlighter {
@@ -60,7 +64,9 @@ impl Highlighter {
         }
         let mut out = Vec::new();
         self.cursor.set_byte_range(0..usize::MAX);
-        let mut caps = self.cursor.captures(&self.query, tree.root_node(), source.as_bytes());
+        let mut caps = self
+            .cursor
+            .captures(&self.query, tree.root_node(), source.as_bytes());
         while let Some((m, _)) = caps.next() {
             for c in m.captures {
                 if ids.contains(&c.index) {
@@ -86,7 +92,9 @@ impl Highlighter {
         let bytes = source.as_bytes();
         let mut line_starts: Vec<usize> = vec![0];
         for (i, ch) in source.char_indices() {
-            if ch == '\n' { line_starts.push(i + 1); }
+            if ch == '\n' {
+                line_starts.push(i + 1);
+            }
         }
         line_starts.push(bytes.len());
 
@@ -100,8 +108,12 @@ impl Highlighter {
         // consult the override map. On a 10k-line file that is tens of
         // thousands of allocations and lock acquisitions to produce at most a
         // couple of dozen distinct styles.
-        let styles: Vec<SyntaxStyle> =
-            self.query.capture_names().iter().map(|n| style_for_capture(n)).collect();
+        let styles: Vec<SyntaxStyle> = self
+            .query
+            .capture_names()
+            .iter()
+            .map(|n| style_for_capture(n))
+            .collect();
 
         let comment_ids: Vec<u32> = self
             .query
@@ -132,7 +144,9 @@ impl Highlighter {
         });
         let mut raw_captures: Vec<(u32, usize, usize)> = Vec::new();
         {
-            let mut captures = self.cursor.captures(&self.query, tree.root_node(), source.as_bytes());
+            let mut captures =
+                self.cursor
+                    .captures(&self.query, tree.root_node(), source.as_bytes());
             while let Some(&(ref m, _capture_idx)) = captures.next() {
                 for cap in m.captures {
                     let start = cap.node.byte_range().start;
@@ -186,11 +200,15 @@ impl Highlighter {
             // unbounded would have kept a chunk of the per-file cost — and left
             // rows that are half-styled, brackets coloured and nothing else.
             if lines.as_ref().is_some_and(|r| !r.contains(&li)) {
-                styled.push(StyledLine { text, highlights: Vec::new() });
+                styled.push(StyledLine {
+                    text,
+                    highlights: Vec::new(),
+                });
                 continue;
             }
             let text_len = text.chars().count();
-            let mut merged: Vec<(usize, usize, SyntaxStyle)> = hl.iter()
+            let mut merged: Vec<(usize, usize, SyntaxStyle)> = hl
+                .iter()
                 .map(|&(s, l, style)| {
                     let clamped_l = (s + l).min(text_len).saturating_sub(s);
                     (s, clamped_l, style)
@@ -205,15 +223,26 @@ impl Highlighter {
                         if "(){}[]".contains(ch) {
                             let color = RAINBOW_PALETTE[depth % 6];
                             merged.retain(|(s, l, _)| !(*s <= offset && offset < *s + *l));
-                            merged.push((offset, ch.len_utf8(),
-                                SyntaxStyle { fg: color, bg: Color::Default, bold: false, italic: false }));
+                            merged.push((
+                                offset,
+                                ch.len_utf8(),
+                                SyntaxStyle {
+                                    fg: color,
+                                    bg: Color::Default,
+                                    bold: false,
+                                    italic: false,
+                                },
+                            ));
                         }
                     }
                 }
             }
             merged.sort_by_key(|r| r.0);
 
-            styled.push(StyledLine { text, highlights: merged });
+            styled.push(StyledLine {
+                text,
+                highlights: merged,
+            });
         }
 
         styled
@@ -228,7 +257,9 @@ fn byte_to_char_offset(text: &str, byte: usize) -> usize {
     if text.is_ascii() {
         return byte.min(text.len());
     }
-    text.char_indices().position(|(i, _)| i >= byte).unwrap_or(text.chars().count())
+    text.char_indices()
+        .position(|(i, _)| i >= byte)
+        .unwrap_or(text.chars().count())
 }
 
 /// The 0-based line containing `byte`.
@@ -296,9 +327,15 @@ mod lookup_tests {
     fn byte_to_char_offset_agrees_on_ascii_and_unicode() {
         for text in ["plain ascii", "caf\u{e9} au lait", "\u{1f600} emoji", ""] {
             for b in 0..=text.len() {
-                let general =
-                    text.char_indices().position(|(i, _)| i >= b).unwrap_or(text.chars().count());
-                assert_eq!(byte_to_char_offset(text, b), general, "byte {b} of {text:?}");
+                let general = text
+                    .char_indices()
+                    .position(|(i, _)| i >= b)
+                    .unwrap_or(text.chars().count());
+                assert_eq!(
+                    byte_to_char_offset(text, b),
+                    general,
+                    "byte {b} of {text:?}"
+                );
             }
         }
     }

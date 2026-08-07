@@ -8,8 +8,15 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 /// Files that mark a project root, most-specific first.
-pub const ROOT_MARKERS: &[&str] =
-    &["ruster.toml", ".git", "Cargo.toml", "package.json", "go.mod", "Makefile", "pyproject.toml"];
+pub const ROOT_MARKERS: &[&str] = &[
+    "ruster.toml",
+    ".git",
+    "Cargo.toml",
+    "package.json",
+    "go.mod",
+    "Makefile",
+    "pyproject.toml",
+];
 
 /// Walk up from `from` (a file or directory) to the nearest ancestor containing
 /// a [`ROOT_MARKERS`] entry. Returns `None` if none is found up to the filesystem
@@ -21,7 +28,11 @@ pub const ROOT_MARKERS: &[&str] =
 /// an empty path, which every caller then treats as a real directory.
 pub fn project_root(from: &Path) -> Option<PathBuf> {
     let abs = absolutize(from)?;
-    let mut dir: &Path = if abs.is_dir() { abs.as_path() } else { abs.parent()? };
+    let mut dir: &Path = if abs.is_dir() {
+        abs.as_path()
+    } else {
+        abs.parent()?
+    };
     loop {
         if ROOT_MARKERS.iter().any(|m| dir.join(m).exists()) {
             return Some(dir.to_path_buf());
@@ -156,7 +167,11 @@ pub fn debug_binary(root: &Path) -> Option<PathBuf> {
 
     let text = std::fs::read_to_string(root.join("Cargo.toml")).ok()?;
     let manifest: Manifest = toml::from_str(&text).ok()?;
-    Some(root.join("target").join("debug").join(manifest.package?.name))
+    Some(
+        root.join("target")
+            .join("debug")
+            .join(manifest.package?.name),
+    )
 }
 
 /// A sensible default test command based on the project's marker files.
@@ -231,10 +246,16 @@ mod tests {
     fn debug_binary_comes_from_the_cargo_package_name() {
         let tmp = std::env::temp_dir().join(format!("ruster_dbgbin_{}", std::process::id()));
         std::fs::create_dir_all(&tmp).unwrap();
-        std::fs::write(tmp.join("Cargo.toml"), "[package]\nname = \"widget\"\nversion = \"0.1.0\"\n")
-            .unwrap();
+        std::fs::write(
+            tmp.join("Cargo.toml"),
+            "[package]\nname = \"widget\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
 
-        assert_eq!(debug_binary(&tmp).unwrap(), tmp.join("target").join("debug").join("widget"));
+        assert_eq!(
+            debug_binary(&tmp).unwrap(),
+            tmp.join("target").join("debug").join("widget")
+        );
 
         // A manifest without a package (a virtual workspace) names nothing.
         std::fs::write(tmp.join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
@@ -257,7 +278,10 @@ mod tests {
         let cwd = std::env::current_dir().unwrap();
         let root = project_root(Path::new("Cargo.toml")).expect("cwd is a project root");
         assert!(root.is_absolute(), "root must be absolute, got {root:?}");
-        assert!(!root.as_os_str().is_empty(), "root must not be the empty path");
+        assert!(
+            !root.as_os_str().is_empty(),
+            "root must not be the empty path"
+        );
         assert_eq!(root.canonicalize().unwrap(), cwd.canonicalize().unwrap());
     }
 
@@ -275,15 +299,27 @@ mod tests {
         // An empty user setting is "unset", not an empty command.
         assert_eq!(empty.build_command_with(&tmp, Some("")), "cargo build");
         // A user default beats the built-in.
-        assert_eq!(empty.build_command_with(&tmp, Some("just build")), "just build");
+        assert_eq!(
+            empty.build_command_with(&tmp, Some("just build")),
+            "just build"
+        );
 
         // A ruster.toml override beats the user default.
         let proj = ProjectConfig::parse("[build]\ncommand = \"make all\"\n").unwrap();
-        assert_eq!(proj.build_command_with(&tmp, Some("just build")), "make all");
+        assert_eq!(
+            proj.build_command_with(&tmp, Some("just build")),
+            "make all"
+        );
 
         let proj = ProjectConfig::parse("[test]\ncommand = \"make check\"\n").unwrap();
-        assert_eq!(proj.test_command_with(&tmp, Some("just test")), "make check");
-        assert_eq!(empty.test_command_with(&tmp, Some("just test")), "just test");
+        assert_eq!(
+            proj.test_command_with(&tmp, Some("just test")),
+            "make check"
+        );
+        assert_eq!(
+            empty.test_command_with(&tmp, Some("just test")),
+            "just test"
+        );
 
         std::fs::remove_dir_all(&tmp).ok();
     }

@@ -3,13 +3,13 @@ pub mod highlighter;
 pub mod markup;
 pub mod theme;
 
-use streaming_iterator::StreamingIterator;
 use highlighter::Highlighter;
 use markup::MarkupLang;
 use ruster_render::{StyledLine, SyntaxStyle};
+use streaming_iterator::StreamingIterator;
 
 pub use theme::{
-    base_group, default_fg_for, dired_style, diff_style, flash_style, groups_for_lang,
+    base_group, default_fg_for, diff_style, dired_style, flash_style, groups_for_lang,
     set_current_lang, set_syntax_overrides, sign_style, SyntaxOverrides,
 };
 
@@ -22,8 +22,22 @@ pub use theme::{
 /// gap `qcheck::every_parseable_language_has_a_highlight_query` now guards.
 pub fn highlighted_languages() -> &'static [&'static str] {
     &[
-        "rust", "python", "javascript", "typescript", "c", "lua", "json", "toml",
-        "yaml", "scheme", "just", "markdown", "org", "diff", "signs", "dired",
+        "rust",
+        "python",
+        "javascript",
+        "typescript",
+        "c",
+        "lua",
+        "json",
+        "toml",
+        "yaml",
+        "scheme",
+        "just",
+        "markdown",
+        "org",
+        "diff",
+        "signs",
+        "dired",
         "flash",
     ]
 }
@@ -75,8 +89,12 @@ impl SyntaxEngine {
         let (resolved, grammar_warning) = resolve_language(file_ext);
         if let Some(language) = resolved {
             let mut parser = tree_sitter::Parser::new();
-            parser.set_language(&language).map_err(|_| SyntaxError::QueryError("set_language".into()))?;
-            let tree = parser.parse(text, None).ok_or(SyntaxError::QueryError("parse".into()))?;
+            parser
+                .set_language(&language)
+                .map_err(|_| SyntaxError::QueryError("set_language".into()))?;
+            let tree = parser
+                .parse(text, None)
+                .ok_or(SyntaxError::QueryError("parse".into()))?;
 
             let loaded = load_queries(user_query_dir().as_deref(), key);
             let mut warnings = loaded.warnings;
@@ -115,7 +133,7 @@ impl SyntaxEngine {
                     textobject_scm: loaded.textobjects.into_owned(),
                 })),
                 cached,
-            viewport: None,
+                viewport: None,
                 warnings,
             })
         } else if let Some(mlang) = markup::markup_lang(key) {
@@ -186,7 +204,8 @@ impl SyntaxEngine {
                     tb.source = text.to_string();
                     tb.bracket_depths = compute_bracket_depths(text);
                     self.cached =
-                        tb.highlighter.highlight_lines(&tb.tree, text, &tb.bracket_depths, vp);
+                        tb.highlighter
+                            .highlight_lines(&tb.tree, text, &tb.bracket_depths, vp);
                 }
             }
             Backend::Markup(mlang) => {
@@ -226,7 +245,8 @@ impl SyntaxEngine {
         let vp = self.viewport.clone();
         if let Backend::Tree(tb) = &mut self.backend {
             self.cached =
-                tb.highlighter.highlight_lines(&tb.tree, &tb.source, &tb.bracket_depths, vp);
+                tb.highlighter
+                    .highlight_lines(&tb.tree, &tb.source, &tb.bracket_depths, vp);
         }
         true
     }
@@ -245,7 +265,8 @@ impl SyntaxEngine {
         match &mut self.backend {
             Backend::Tree(tb) => {
                 self.cached =
-                    tb.highlighter.highlight_lines(&tb.tree, &tb.source, &tb.bracket_depths, vp);
+                    tb.highlighter
+                        .highlight_lines(&tb.tree, &tb.source, &tb.bracket_depths, vp);
             }
             Backend::Markup(mlang) => {
                 self.cached = markup::highlight_markup(*mlang, text);
@@ -274,7 +295,9 @@ impl SyntaxEngine {
             Backend::Tree(tb) => tb,
             Backend::Markup(_) => return None,
         };
-        if tb.textobject_scm.is_empty() { return None; }
+        if tb.textobject_scm.is_empty() {
+            return None;
+        }
         let query_name = match (kind, target) {
             ('i', 'f') => "function.inner",
             ('a', 'f') => "function.outer",
@@ -318,9 +341,12 @@ impl SyntaxEngine {
         }
         let markers = self.todo_markers(keywords);
         for m in markers {
-            let Some(line) = self.cached.get_mut(m.line) else { continue };
+            let Some(line) = self.cached.get_mut(m.line) else {
+                continue;
+            };
             // Push last so it wins over the comment colour underneath.
-            line.highlights.push((m.col, m.keyword.chars().count(), style));
+            line.highlights
+                .push((m.col, m.keyword.chars().count(), style));
         }
     }
 
@@ -330,7 +356,9 @@ impl SyntaxEngine {
     /// `"TODO: not a real todo"` in a string literal from matching. Buffers with
     /// no grammar return nothing rather than guessing.
     pub fn todo_markers(&self, keywords: &[String]) -> Vec<TodoMarker> {
-        let Backend::Tree(tb) = &self.backend else { return Vec::new() };
+        let Backend::Tree(tb) = &self.backend else {
+            return Vec::new();
+        };
         // Comment ranges come from the last highlight pass, which already ran
         // this query over the tree. Running it again here — and recompiling it
         // from source each time — was almost all of what this scan cost.
@@ -347,14 +375,19 @@ impl SyntaxEngine {
     /// for drawing, wrong for a panel that claims to list a file's TODOs. This
     /// pays for a full-tree query, so call it on demand, not per frame.
     pub fn all_todo_markers(&mut self, keywords: &[String]) -> Vec<TodoMarker> {
-        let Backend::Tree(tb) = &mut self.backend else { return Vec::new() };
+        let Backend::Tree(tb) = &mut self.backend else {
+            return Vec::new();
+        };
         let comments = tb.highlighter.comments_in(&tb.tree, &tb.source);
         scan_comments(&tb.source, &comments, keywords)
     }
 }
 
 fn byte_to_char_pos(source: &str, byte: usize) -> usize {
-    source.char_indices().position(|(i, _)| i >= byte).unwrap_or(source.chars().count())
+    source
+        .char_indices()
+        .position(|(i, _)| i >= byte)
+        .unwrap_or(source.chars().count())
 }
 
 /// A `TODO`-class marker found inside a comment.
@@ -374,16 +407,18 @@ pub const DEFAULT_TODO_KEYWORDS: &[&str] = &["TODO", "FIXME", "HACK", "NOTE", "X
 
 pub fn language_for_ext(ext: &str) -> Option<tree_sitter::Language> {
     match ext {
-        "rs"              => Some(tree_sitter_rust::LANGUAGE.into()),
-        "py"              => Some(tree_sitter_python::LANGUAGE.into()),
+        "rs" => Some(tree_sitter_rust::LANGUAGE.into()),
+        "py" => Some(tree_sitter_python::LANGUAGE.into()),
         "js" | "mjs" | "cjs" => Some(tree_sitter_javascript::LANGUAGE.into()),
-        "ts" | "tsx"      => Some(tree_sitter_typescript::LANGUAGE_TSX.into()),
-        "c" | "h"         => Some(tree_sitter_c::LANGUAGE.into()),
-        "json"            => Some(tree_sitter_json::LANGUAGE.into()),
-        "toml"            => Some(tree_sitter_toml_ng::LANGUAGE.into()),
-        "yaml" | "yml"    => Some(tree_sitter_yaml::LANGUAGE.into()),
-        "lua"             => Some(tree_sitter_lua::LANGUAGE.into()),
-        "scm" | "ss" | "sld" | "sls" | "sch" | "scheme" => Some(tree_sitter_scheme::LANGUAGE.into()),
+        "ts" | "tsx" => Some(tree_sitter_typescript::LANGUAGE_TSX.into()),
+        "c" | "h" => Some(tree_sitter_c::LANGUAGE.into()),
+        "json" => Some(tree_sitter_json::LANGUAGE.into()),
+        "toml" => Some(tree_sitter_toml_ng::LANGUAGE.into()),
+        "yaml" | "yml" => Some(tree_sitter_yaml::LANGUAGE.into()),
+        "lua" => Some(tree_sitter_lua::LANGUAGE.into()),
+        "scm" | "ss" | "sld" | "sls" | "sch" | "scheme" => {
+            Some(tree_sitter_scheme::LANGUAGE.into())
+        }
         "just" | "justfile" => Some(tree_sitter_just::LANGUAGE.into()),
         _ => None,
     }
@@ -447,9 +482,10 @@ pub fn resolve_language(file_ext: &str) -> (Option<tree_sitter::Language>, Optio
         Ok(lang) => (Some(lang), None),
         // Nothing installed for this language, which is the normal path.
         Err(grammar::GrammarError::NotFound) => (builtin, None),
-        Err(e) if builtin.is_some() => {
-            (builtin, Some(format!("grammar {key}: {e} — using the built-in grammar")))
-        }
+        Err(e) if builtin.is_some() => (
+            builtin,
+            Some(format!("grammar {key}: {e} — using the built-in grammar")),
+        ),
         // No built-in to fall back to, so this language simply goes unparsed.
         Err(e) => (None, Some(format!("grammar {key}: {e}"))),
     }
@@ -498,7 +534,10 @@ fn read_user_query(
     match std::fs::read_to_string(&path) {
         Ok(text) => Some(text),
         Err(e) => {
-            warnings.push(format!("{}: {e} — using the built-in query", path.display()));
+            warnings.push(format!(
+                "{}: {e} — using the built-in query",
+                path.display()
+            ));
             None
         }
     }
@@ -515,8 +554,14 @@ pub(crate) fn load_queries(dir: Option<&std::path::Path>, key: &str) -> LoadedQu
 
     LoadedQueries {
         highlights_from_user: user_hl.is_some(),
-        highlights: user_hl.map_or(std::borrow::Cow::Borrowed(builtin_hl), std::borrow::Cow::Owned),
-        textobjects: user_to.map_or(std::borrow::Cow::Borrowed(builtin_to), std::borrow::Cow::Owned),
+        highlights: user_hl.map_or(
+            std::borrow::Cow::Borrowed(builtin_hl),
+            std::borrow::Cow::Owned,
+        ),
+        textobjects: user_to.map_or(
+            std::borrow::Cow::Borrowed(builtin_to),
+            std::borrow::Cow::Owned,
+        ),
         warnings,
     }
 }
@@ -637,7 +682,11 @@ mod tests {
         let dir = query_dir(&[("rust/highlights.scm", "(identifier) @variable")]);
         let loaded = load_queries(Some(&dir), "rust");
         assert_eq!(loaded.highlights, "(identifier) @variable");
-        assert_eq!(loaded.textobjects, builtin_queries("rust").1, "textobjects still built in");
+        assert_eq!(
+            loaded.textobjects,
+            builtin_queries("rust").1,
+            "textobjects still built in"
+        );
         assert!(!loaded.textobjects.is_empty());
     }
 
@@ -672,7 +721,9 @@ mod tests {
         let ok = match Highlighter::new(lang.clone(), &loaded.highlights, "rust") {
             Ok(h) => Some(h),
             Err(e) if loaded.highlights_from_user => {
-                warnings.push(format!("rust/highlights.scm: {e} — using the built-in query"));
+                warnings.push(format!(
+                    "rust/highlights.scm: {e} — using the built-in query"
+                ));
                 Highlighter::new(lang, builtin_queries("rust").0, "rust").ok()
             }
             Err(_) => None,
@@ -710,7 +761,10 @@ mod tests {
     }
 
     fn kws() -> Vec<String> {
-        super::DEFAULT_TODO_KEYWORDS.iter().map(|s| s.to_string()).collect()
+        super::DEFAULT_TODO_KEYWORDS
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
     }
 
     /// The whole point of sourcing ranges from the tree: a keyword inside a
@@ -743,7 +797,11 @@ mod tests {
         let e = SyntaxEngine::new(src, "rs").expect("rust grammar");
         let m = e.todo_markers(&kws());
         assert_eq!(m.len(), 1);
-        assert_eq!((m[0].line, m[0].col), (1, 7), "0-based line and char column");
+        assert_eq!(
+            (m[0].line, m[0].col),
+            (1, 7),
+            "0-based line and char column"
+        );
         assert_eq!(m[0].text, "indented");
     }
 
@@ -799,7 +857,10 @@ mod tests {
     #[test]
     fn json_highlights_without_error() {
         let engine = SyntaxEngine::new("{\"a\": 1, \"b\": true}", "json").unwrap();
-        assert!(engine.styled_lines().iter().any(|l| !l.highlights.is_empty()));
+        assert!(engine
+            .styled_lines()
+            .iter()
+            .any(|l| !l.highlights.is_empty()));
     }
 
     #[test]
@@ -818,7 +879,9 @@ mod tests {
         let src = "fn main() {}";
         let engine = SyntaxEngine::new(src, "rs").unwrap();
         let has_magenta = |e: &SyntaxEngine| {
-            e.styled_lines().iter().any(|l| l.highlights.iter().any(|(_, _, s)| s.fg == magenta))
+            e.styled_lines()
+                .iter()
+                .any(|l| l.highlights.iter().any(|(_, _, s)| s.fg == magenta))
         };
         assert!(has_magenta(&engine), "override not applied to `fn` keyword");
 
@@ -854,7 +917,10 @@ mod tests {
         for (ext, src) in cases {
             let engine = SyntaxEngine::new(src, ext)
                 .unwrap_or_else(|e| panic!("{ext} query failed to build: {e:?}"));
-            let has = engine.styled_lines().iter().any(|l| !l.highlights.is_empty());
+            let has = engine
+                .styled_lines()
+                .iter()
+                .any(|l| !l.highlights.is_empty());
             assert!(has, "{ext} produced no highlights");
         }
     }
@@ -870,11 +936,20 @@ mod tests {
             );
         }
         // A normal extension still wins.
-        assert_eq!(lang_key(&lang_ext_for_path(Path::new("src/main.rs"))), "rust");
+        assert_eq!(
+            lang_key(&lang_ext_for_path(Path::new("src/main.rs"))),
+            "rust"
+        );
         // *.just files work via the extension.
-        assert_eq!(lang_key(&lang_ext_for_path(Path::new("tasks.just"))), "just");
+        assert_eq!(
+            lang_key(&lang_ext_for_path(Path::new("tasks.just"))),
+            "just"
+        );
         // Markdown and Org resolve to their markup keys.
-        assert_eq!(lang_key(&lang_ext_for_path(Path::new("README.md"))), "markdown");
+        assert_eq!(
+            lang_key(&lang_ext_for_path(Path::new("README.md"))),
+            "markdown"
+        );
         assert_eq!(lang_key(&lang_ext_for_path(Path::new("notes.org"))), "org");
         // Truly unknown files resolve to nothing.
         assert_eq!(lang_key(&lang_ext_for_path(Path::new("photo.xyz"))), "");
@@ -972,10 +1047,15 @@ mod tests {
         let styled = engine.styled_lines();
         assert_eq!(styled.len(), 1);
         let line = &styled[0];
-        let bracket_highlights: Vec<_> = line.highlights.iter()
+        let bracket_highlights: Vec<_> = line
+            .highlights
+            .iter()
             .filter(|(s, _, _)| *s == 0 || *s == 6)
             .collect();
-        assert!(!bracket_highlights.is_empty(), "expected bracket highlights");
+        assert!(
+            !bracket_highlights.is_empty(),
+            "expected bracket highlights"
+        );
     }
 }
 
@@ -984,7 +1064,11 @@ mod qcheck;
 
 /// Find `keywords` inside `comments`, as whole words, and turn each hit into a
 /// marker. Shared by the cached-viewport and whole-file entry points.
-fn scan_comments(source: &str, comments: &[(usize, usize)], keywords: &[String]) -> Vec<TodoMarker> {
+fn scan_comments(
+    source: &str,
+    comments: &[(usize, usize)],
+    keywords: &[String],
+) -> Vec<TodoMarker> {
     if comments.is_empty() || keywords.is_empty() {
         return Vec::new();
     }
@@ -998,7 +1082,9 @@ fn scan_comments(source: &str, comments: &[(usize, usize)], keywords: &[String])
 
     let mut out = Vec::new();
     for range in comments.iter().map(|(s, e)| *s..*e) {
-        let Some(text) = source.get(range.clone()) else { continue };
+        let Some(text) = source.get(range.clone()) else {
+            continue;
+        };
         for kw in keywords {
             let mut from = 0;
             while let Some(rel) = text[from..].find(kw.as_str()) {
@@ -1011,8 +1097,10 @@ fn scan_comments(source: &str, comments: &[(usize, usize)], keywords: &[String])
                         .next_back()
                         .is_some_and(|c| c.is_alphanumeric() || c == '_');
                 let after = &text[at + kw.len()..];
-                let after_ok =
-                    !after.chars().next().is_some_and(|c| c.is_alphanumeric() || c == '_');
+                let after_ok = !after
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_');
                 if !(before_ok && after_ok) {
                     continue;
                 }
@@ -1021,7 +1109,12 @@ fn scan_comments(source: &str, comments: &[(usize, usize)], keywords: &[String])
                 let col = source[line_start[line]..abs].chars().count();
                 let rest = after.trim_start_matches([':', ' ', '\t']);
                 let rest = rest.lines().next().unwrap_or("").trim_end();
-                out.push(TodoMarker { keyword: kw.clone(), line, col, text: rest.to_string() });
+                out.push(TodoMarker {
+                    keyword: kw.clone(),
+                    line,
+                    col,
+                    text: rest.to_string(),
+                });
             }
         }
     }

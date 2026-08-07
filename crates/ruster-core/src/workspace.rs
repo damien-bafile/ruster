@@ -218,13 +218,25 @@ impl Workspace {
         }
         let marks_modified = matches!(
             action,
-            Action::Edit(_) | Action::IndentLine | Action::DeindentLine | Action::Undo | Action::Redo
+            Action::Edit(_)
+                | Action::IndentLine
+                | Action::DeindentLine
+                | Action::Undo
+                | Action::Redo
         );
         // Disjoint field borrows: windows for the cursor set, buffers for the doc.
         let win = self.windows.active_window_mut();
-        let doc = self.buffers.get_mut(win.buffer).expect("active buffer exists");
-        EditSession::new(&mut doc.buffer, &mut win.cursors, &mut doc.undo, &doc.indent)
-            .execute(action);
+        let doc = self
+            .buffers
+            .get_mut(win.buffer)
+            .expect("active buffer exists");
+        EditSession::new(
+            &mut doc.buffer,
+            &mut win.cursors,
+            &mut doc.undo,
+            &doc.indent,
+        )
+        .execute(action);
         if marks_modified {
             doc.modified = true;
         }
@@ -375,7 +387,10 @@ mod workspace_tests {
 
         let head = w.active_window().cursors.head();
         let max = w.buffer().len_chars();
-        assert!(head <= max, "cursor {head} must be clamped to buffer len {max}");
+        assert!(
+            head <= max,
+            "cursor {head} must be clamped to buffer len {max}"
+        );
         // Would panic before the fix.
         let _ = w.buffer().char_to_line(head);
     }

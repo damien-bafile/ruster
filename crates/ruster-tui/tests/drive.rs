@@ -226,8 +226,16 @@ fn a_bare_run_records_frames_containing_the_buffer() {
 fn the_buffer_arrives_syntax_highlighted_not_merely_as_text() {
     let log = Drive::new().file("demo.rs", DEMO).run();
     let frame = log.last();
-    let styled = frame.windows[0].lines.iter().filter(|l| !l.highlights.is_empty()).count();
-    assert!(styled > 0, "no line carried a highlight span:\n{}", log.transcript());
+    let styled = frame.windows[0]
+        .lines
+        .iter()
+        .filter(|l| !l.highlights.is_empty())
+        .count();
+    assert!(
+        styled > 0,
+        "no line carried a highlight span:\n{}",
+        log.transcript()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -244,10 +252,17 @@ const NO_WHICHKEY_DELAY: &str = "ruster.cmd(':set timeoutlen=0')";
 /// produce it, and a test that fed both keys in one frame would never see it.
 #[test]
 fn the_leader_key_raises_the_which_key_panel() {
-    let log = Drive::new().content(DEMO).setup(NO_WHICHKEY_DELAY).keys("<Space>").run();
+    let log = Drive::new()
+        .content(DEMO)
+        .setup(NO_WHICHKEY_DELAY)
+        .keys("<Space>")
+        .run();
     let frame = log.last();
     let wk = frame.whichkey.as_ref().unwrap_or_else(|| {
-        panic!("no which-key panel after the leader key:\n{}", log.transcript())
+        panic!(
+            "no which-key panel after the leader key:\n{}",
+            log.transcript()
+        )
     });
     assert!(!wk.rows.is_empty(), "the panel is empty");
     assert!(
@@ -259,11 +274,16 @@ fn the_leader_key_raises_the_which_key_panel() {
 
 #[test]
 fn a_leader_group_drills_into_its_own_panel() {
-    let log = Drive::new().content(DEMO).setup(NO_WHICHKEY_DELAY).keys("<Space>w").run();
+    let log = Drive::new()
+        .content(DEMO)
+        .setup(NO_WHICHKEY_DELAY)
+        .keys("<Space>w")
+        .run();
     let frame = log.last();
-    let wk = frame.whichkey.as_ref().unwrap_or_else(|| {
-        panic!("no which-key panel after SPC w:\n{}", log.transcript())
-    });
+    let wk = frame
+        .whichkey
+        .as_ref()
+        .unwrap_or_else(|| panic!("no which-key panel after SPC w:\n{}", log.transcript()));
     assert!(
         wk.rows.iter().any(|r| r.key == "s" || r.key == "v"),
         "the windows group should offer splits, got {:?}",
@@ -273,7 +293,11 @@ fn a_leader_group_drills_into_its_own_panel() {
 
 #[test]
 fn ctrl_d_adds_a_second_cursor_on_the_next_match() {
-    let log = Drive::new().content(DEMO).keys("/total<CR><Esc><C-n>").settle(6).run();
+    let log = Drive::new()
+        .content(DEMO)
+        .keys("/total<CR><Esc><C-n>")
+        .settle(6)
+        .run();
     let frame = log.last();
     assert!(
         !frame.windows[0].extra_cursors.is_empty(),
@@ -307,7 +331,12 @@ fn splits_window_nav_and_fullscreen_round_trip() {
         .keys("<C-w>l")
         .settle(6)
         .run();
-    assert_eq!(log.last().windows.len(), 2, "vsplit gives two windows:\n{}", log.transcript());
+    assert_eq!(
+        log.last().windows.len(),
+        2,
+        "vsplit gives two windows:\n{}",
+        log.transcript()
+    );
 
     let full = Drive::new()
         .content(DEMO)
@@ -351,7 +380,10 @@ fn visual_line_mode_puts_a_selection_on_the_frame() {
 
 #[test]
 fn the_sidebar_opens_as_a_second_window() {
-    let log = Drive::new().file("demo.rs", DEMO).setup("ruster.cmd(':sidebar')").run();
+    let log = Drive::new()
+        .file("demo.rs", DEMO)
+        .setup("ruster.cmd(':sidebar')")
+        .run();
     let frame = log.last();
     assert!(
         frame.windows.len() >= 2,
@@ -363,7 +395,10 @@ fn the_sidebar_opens_as_a_second_window() {
 
 #[test]
 fn the_settings_page_opens_with_populated_groups() {
-    let log = Drive::new().content(DEMO).setup("ruster.cmd(':settings')").run();
+    let log = Drive::new()
+        .content(DEMO)
+        .setup("ruster.cmd(':settings')")
+        .run();
     let frame = log.last();
     let s = frame
         .settings
@@ -371,7 +406,9 @@ fn the_settings_page_opens_with_populated_groups() {
         .unwrap_or_else(|| panic!("no settings page:\n{}", log.transcript()));
     assert!(!s.groups.is_empty(), "the settings page has no groups");
     assert!(
-        s.groups.iter().any(|g| g.rows.iter().any(|r| r.label.contains("heme"))),
+        s.groups
+            .iter()
+            .any(|g| g.rows.iter().any(|r| r.label.contains("heme"))),
         "expected a theme row somewhere in {:?}",
         s.groups.iter().map(|g| &g.name).collect::<Vec<_>>()
     );
@@ -379,7 +416,10 @@ fn the_settings_page_opens_with_populated_groups() {
 
 #[test]
 fn echo_raises_a_notification_toast() {
-    let log = Drive::new().content(DEMO).setup("ruster.cmd(':echo hello there')").run();
+    let log = Drive::new()
+        .content(DEMO)
+        .setup("ruster.cmd(':echo hello there')")
+        .run();
     assert!(
         log.any_contains("hello there"),
         "the echoed text never reached a frame:\n{}",
@@ -389,7 +429,10 @@ fn echo_raises_a_notification_toast() {
 
 #[test]
 fn noice_popup_raises_a_float() {
-    let log = Drive::new().content(DEMO).setup("ruster.cmd(':Noice popup')").run();
+    let log = Drive::new()
+        .content(DEMO)
+        .setup("ruster.cmd(':Noice popup')")
+        .run();
     let frame = log.last();
     assert!(
         !frame.floats.is_empty(),
@@ -400,7 +443,10 @@ fn noice_popup_raises_a_float() {
 
 #[test]
 fn the_theme_picker_lists_the_built_in_themes() {
-    let log = Drive::new().content(DEMO).setup("ruster.cmd(':Themes')").run();
+    let log = Drive::new()
+        .content(DEMO)
+        .setup("ruster.cmd(':Themes')")
+        .run();
     let frame = log.last();
     let p = frame
         .picker
@@ -437,7 +483,10 @@ fn a_lua_dialog_reaches_the_frame() {
 
 #[test]
 fn the_todo_marker_in_the_fixture_becomes_a_sign() {
-    let log = Drive::new().file("demo.rs", DEMO).setup("ruster.cmd(':TodoList')").run();
+    let log = Drive::new()
+        .file("demo.rs", DEMO)
+        .setup("ruster.cmd(':TodoList')")
+        .run();
     assert!(
         log.any_contains("prove the gutter renders this marker"),
         "the TODO never surfaced:\n{}",

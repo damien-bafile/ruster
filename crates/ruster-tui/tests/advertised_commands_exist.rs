@@ -17,7 +17,10 @@ fn parse_cmdline_body() -> &'static str {
     const SRC: &str = include_str!("../src/app.rs");
     let start = SRC.find("fn parse_cmdline").expect("parse_cmdline exists");
     let rest = &SRC[start..];
-    let end = rest[200..].find("\n    fn ").map(|i| i + 200).unwrap_or(rest.len());
+    let end = rest[200..]
+        .find("\n    fn ")
+        .map(|i| i + 200)
+        .unwrap_or(rest.len());
     &rest[..end]
 }
 
@@ -29,7 +32,9 @@ fn advertised(src: &str) -> Vec<String> {
     let mut out = Vec::new();
     for (i, _) in src.match_indices("\":") {
         let rest = &src[i + 2..];
-        let Some(close) = rest.find('"') else { continue };
+        let Some(close) = rest.find('"') else {
+            continue;
+        };
         let lit = &rest[..close];
         // Take the command word only: `:e <path>` advertises `e`.
         let word = lit.split_whitespace().next().unwrap_or("");
@@ -51,7 +56,10 @@ fn every_command_the_dashboard_advertises_is_one_the_parser_accepts() {
     let body = parse_cmdline_body();
 
     let panels: [(&str, &str); 2] = [
-        ("crates/ruster-tui/src/widgets/mod.rs", include_str!("../src/widgets/mod.rs")),
+        (
+            "crates/ruster-tui/src/widgets/mod.rs",
+            include_str!("../src/widgets/mod.rs"),
+        ),
         (
             "crates/ruster-render-raylib/src/lib.rs",
             include_str!("../../ruster-render-raylib/src/lib.rs"),

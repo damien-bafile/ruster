@@ -34,7 +34,14 @@ fn draw_text_cells<D: RaylibDraw>(
         }
         let color = colors.get(i).copied().unwrap_or(Color::WHITE);
         let x = x0 + i as f32 * m.char_w;
-        d.draw_text_ex(m.font, ch.encode_utf8(&mut buf), Vector2::new(x, y), m.size as f32, 1.0, color);
+        d.draw_text_ex(
+            m.font,
+            ch.encode_utf8(&mut buf),
+            Vector2::new(x, y),
+            m.size as f32,
+            1.0,
+            color,
+        );
     }
 }
 
@@ -49,7 +56,9 @@ fn capture_screen(
     thread: &RaylibThread,
     path: &std::path::Path,
 ) -> Result<std::path::PathBuf, String> {
-    let name = path.to_str().ok_or_else(|| format!("{} is not valid UTF-8", path.display()))?;
+    let name = path
+        .to_str()
+        .ok_or_else(|| format!("{} is not valid UTF-8", path.display()))?;
     // SAFETY: flushes raylib's own draw batch, which is the missing step.
     // raylib queues draw calls and only submits them in `EndDrawing`; reading
     // pixels syncs *GL* but knows nothing about that queue, so whatever was
@@ -151,7 +160,14 @@ fn draw_titled_box<D: RaylibDraw>(
         d.draw_rectangle(x, y, w, h, rule_fg);
     }
     if let (Some(label), Some((lx, ly))) = (label, edges.label_at) {
-        d.draw_text_ex(m.font, label, Vector2::new(lx as f32, ly as f32), m.size as f32, 1.0, label_fg);
+        d.draw_text_ex(
+            m.font,
+            label,
+            Vector2::new(lx as f32, ly as f32),
+            m.size as f32,
+            1.0,
+            label_fg,
+        );
     }
     for (x, y, w, h) in [edges.left, edges.right, edges.bottom] {
         d.draw_rectangle(x, y, w, h, rule_fg);
@@ -319,8 +335,8 @@ impl RaylibRenderer {
         let mut s = String::new();
         // Ranges of codepoints to bake, as inclusive (start, end) pairs.
         const RANGES: &[(u32, u32)] = &[
-            (0x20, 0x7E),     // printable ASCII
-            (0xA0, 0xFF),     // Latin-1 supplement
+            (0x20, 0x7E), // printable ASCII
+            (0xA0, 0xFF), // Latin-1 supplement
             // Box drawing, block elements *and* geometric shapes. The last of
             // these is easy to stop short of at 0x259F, which silently drops the
             // sidebar's ▸/▾ markers and the debugger's ● breakpoint — they render
@@ -452,7 +468,8 @@ impl RaylibRenderer {
             let shift = mods.contains(KeyModifiers::SHIFT);
             while let Some(k) = self.rl.get_key_pressed() {
                 if let Some(ch) = key::modified_char_for_key(k, shift) {
-                    self.event_buffer.push(KeyEvent::new(KeyCode::Char(ch), mods));
+                    self.event_buffer
+                        .push(KeyEvent::new(KeyCode::Char(ch), mods));
                 } else if let Some(event) = key::map_raylib_key(k) {
                     self.event_buffer.push(KeyEvent::new(event.code, mods));
                 }
@@ -460,7 +477,8 @@ impl RaylibRenderer {
         } else {
             while let Some(c) = self.rl.get_char_pressed() {
                 if let Some(ch) = char::from_u32(c as u32) {
-                    self.event_buffer.push(KeyEvent::new(KeyCode::Char(ch), mods));
+                    self.event_buffer
+                        .push(KeyEvent::new(KeyCode::Char(ch), mods));
                 }
             }
             while let Some(k) = self.rl.get_key_pressed() {
@@ -487,11 +505,16 @@ impl Renderer for RaylibRenderer {
         let char_w = self.char_w;
         // Read the config-driven metrics + palette into locals so they stay
         // disjoint from the &mut self.rl borrow the draw handle holds.
-        let (font_size, line_h, pad_x, pad_y) = (self.font_size, self.line_h, self.pad_x, self.pad_y);
+        let (font_size, line_h, pad_x, pad_y) =
+            (self.font_size, self.line_h, self.pad_x, self.pad_y);
         let theme = state.theme;
         let font = &self.font;
         let measure = |s: &str| font.measure_text(s, font_size as f32, 1.0).x;
-        let metrics = TextMetrics { font, size: font_size, char_w };
+        let metrics = TextMetrics {
+            font,
+            size: font_size,
+            char_w,
+        };
 
         let default_color = to_raylib(theme.fg, Color::new(205, 214, 244, 255));
         let gutter_color = to_raylib(theme.gutter, Color::new(108, 112, 134, 255));
@@ -516,7 +539,11 @@ impl Renderer for RaylibRenderer {
         d.clear_background(bg);
 
         // Collect and sort by x to find adjacent windows for vertical seams.
-        let mut window_list: Vec<&ruster_render::WindowView> = state.windows.iter().filter(|v| v.rect.width > 0 && v.rect.height > 0).collect();
+        let mut window_list: Vec<&ruster_render::WindowView> = state
+            .windows
+            .iter()
+            .filter(|v| v.rect.width > 0 && v.rect.height > 0)
+            .collect();
         window_list.sort_by_key(|v| v.rect.x);
 
         for (win_idx, view) in window_list.iter().enumerate() {
@@ -526,7 +553,7 @@ impl Renderer for RaylibRenderer {
             // Header row + content rows + statusline row.
             let buf_rows = view.rect.height.saturating_sub(2) as usize;
             let content_y = py + line_h; // after the header
-            // Layout left-to-right: sign column, then line-number gutter, then text.
+                                         // Layout left-to-right: sign column, then line-number gutter, then text.
             let sign_x = px;
             let gutter_x = px + (view.signs.width as f32 * char_w) as i32;
             let text_x = gutter_x + (view.gutter.width as f32 * char_w) as i32;
@@ -535,7 +562,11 @@ impl Renderer for RaylibRenderer {
 
             // Panel header: draw a ruled line with the filename as stencil label
             // before the scissor region (the header spans the full window width).
-            let label = if view.header.is_empty() { "untitled" } else { &view.header };
+            let label = if view.header.is_empty() {
+                "untitled"
+            } else {
+                &view.header
+            };
             let hdr_color = if view.active { accent } else { divider };
             d.draw_rectangle(px, py, pw, line_h, bg);
             draw_ruled_header(&mut d, metrics, (px, py), pw, label, hdr_color, divider);
@@ -561,9 +592,17 @@ impl Renderer for RaylibRenderer {
                         s.draw_rectangle(px, content_y, pw, clip_h, bg);
                         let mut row = 0;
                         let cx = px + (pw as f32 / 2.0) as i32;
-                        let draw_text = |s: &mut RaylibDrawHandle, x: i32, r: i32, text: &str, color: Color| {
-                            s.draw_text_ex(font, text, Vector2::new(x as f32, (content_y + r * line_h) as f32), font_size as f32, 1.0, color);
-                        };
+                        let draw_text =
+                            |s: &mut RaylibDrawHandle, x: i32, r: i32, text: &str, color: Color| {
+                                s.draw_text_ex(
+                                    font,
+                                    text,
+                                    Vector2::new(x as f32, (content_y + r * line_h) as f32),
+                                    font_size as f32,
+                                    1.0,
+                                    color,
+                                );
+                            };
                         let _dimmer = Color::new(0, 0, 0, 0);
 
                         let title = format!("RUSTER  {}", welcome.version);
@@ -575,11 +614,12 @@ impl Renderer for RaylibRenderer {
                         draw_text(&mut s, rx, row, rr, accent);
                         row += 2;
 
-                        let section = |s: &mut RaylibDrawHandle, r: &mut i32, label: &str, color: Color| {
-                            let hdr = format!(" ▌{}▐ ", label);
-                            draw_text(s, px + 4, *r, &hdr, color);
-                            *r += 1;
-                        };
+                        let section =
+                            |s: &mut RaylibDrawHandle, r: &mut i32, label: &str, color: Color| {
+                                let hdr = format!(" ▌{}▐ ", label);
+                                draw_text(s, px + 4, *r, &hdr, color);
+                                *r += 1;
+                            };
 
                         section(&mut s, &mut row, "RECENT PROJECTS", accent);
                         if welcome.recent_projects.is_empty() {
@@ -587,14 +627,25 @@ impl Renderer for RaylibRenderer {
                             row += 1;
                         } else {
                             for (i, proj) in welcome.recent_projects.iter().enumerate() {
-                                draw_text(&mut s, px + 8, row, &format!(" {}. {}", i + 1, proj), default_color);
+                                draw_text(
+                                    &mut s,
+                                    px + 8,
+                                    row,
+                                    &format!(" {}. {}", i + 1, proj),
+                                    default_color,
+                                );
                                 row += 1;
                             }
                         }
                         row += 1;
 
                         section(&mut s, &mut row, "QUICK ACTIONS", accent);
-                        for (cmd, desc) in &[(":e <path>", "Open file (Tab to complete)"), (":Dired", "File Explorer"), (":Files", "Find Files"), (":term", "Terminal")] {
+                        for (cmd, desc) in &[
+                            (":e <path>", "Open file (Tab to complete)"),
+                            (":Dired", "File Explorer"),
+                            (":Files", "Find Files"),
+                            (":term", "Terminal"),
+                        ] {
                             let dl = measure(cmd) + 4.0;
                             draw_text(&mut s, px + 8, row, cmd, default_color);
                             draw_text(&mut s, px + 8 + dl as i32, row, desc, gutter_color);
@@ -611,7 +662,12 @@ impl Renderer for RaylibRenderer {
                         row += 2;
 
                         section(&mut s, &mut row, "KEYBINDS", accent);
-                        for (key, desc) in &[("Ctrl+P  ", "Fuzzy Finder"), ("Ctrl+S  ", "Save"), ("Ctrl+W  ", "Window Commands"), (":help  ", "Help")] {
+                        for (key, desc) in &[
+                            ("Ctrl+P  ", "Fuzzy Finder"),
+                            ("Ctrl+S  ", "Save"),
+                            ("Ctrl+W  ", "Window Commands"),
+                            (":help  ", "Help"),
+                        ] {
                             draw_text(&mut s, px + 8, row, key, default_color);
                             let kx = px + 8 + measure(key) as i32;
                             draw_text(&mut s, kx, row, desc, gutter_color);
@@ -631,15 +687,30 @@ impl Renderer for RaylibRenderer {
                                 std::mem::swap(&mut fg, &mut bg);
                             }
                             if let ruster_render::Color::Rgb(rr, gg, bb) = bg {
-                                s.draw_rectangle(cx, gy, char_w.ceil() as i32, line_h, Color::new(rr, gg, bb, 255));
+                                s.draw_rectangle(
+                                    cx,
+                                    gy,
+                                    char_w.ceil() as i32,
+                                    line_h,
+                                    Color::new(rr, gg, bb, 255),
+                                );
                             }
                             if tc.c != ' ' && tc.c != '\0' {
                                 let color = match fg {
-                                    ruster_render::Color::Rgb(rr, gg, bb) => Color::new(rr, gg, bb, 255),
+                                    ruster_render::Color::Rgb(rr, gg, bb) => {
+                                        Color::new(rr, gg, bb, 255)
+                                    }
                                     ruster_render::Color::Default => default_color,
                                 };
                                 let mut ch = [0u8; 4];
-                                s.draw_text_ex(font, tc.c.encode_utf8(&mut ch), Vector2::new(cx as f32, gy as f32), font_size as f32, 1.0, color);
+                                s.draw_text_ex(
+                                    font,
+                                    tc.c.encode_utf8(&mut ch),
+                                    Vector2::new(cx as f32, gy as f32),
+                                    font_size as f32,
+                                    1.0,
+                                    color,
+                                );
                             }
                         }
                     }
@@ -648,188 +719,268 @@ impl Renderer for RaylibRenderer {
                         if cr < buf_rows && cc < grid.cols {
                             let cx = px + (cc as f32 * char_w) as i32;
                             let cy = content_y + cr as i32 * line_h;
-                            s.draw_rectangle(cx, cy, char_w as i32, line_h, Color::new(cur_r, cur_g, cur_b, 160));
+                            s.draw_rectangle(
+                                cx,
+                                cy,
+                                char_w as i32,
+                                line_h,
+                                Color::new(cur_r, cur_g, cur_b, 160),
+                            );
                         }
                     }
                 } else {
-                // Gutter background (only when a gutter is shown).
-                if view.gutter.width > 0 && gutter_bg != bg {
-                    s.draw_rectangle(gutter_x, content_y, text_x - gutter_x, buf_rows as i32 * line_h, gutter_bg);
-                }
-                // Sign column, left of the gutter.
-                if view.signs.width > 0 {
-                    for row in 0..buf_rows {
-                        let line = (row + scroll) as u16;
-                        if let Some((glyph, c)) = view.signs.at(line) {
-                            let gy = content_y + row as i32 * line_h;
-                            let color = to_raylib(c, default_color);
-                            let mut b = [0u8; 4];
-                            s.draw_text_ex(font, glyph.encode_utf8(&mut b), Vector2::new(sign_x as f32, gy as f32), font_size as f32, 1.0, color);
-                        }
+                    // Gutter background (only when a gutter is shown).
+                    if view.gutter.width > 0 && gutter_bg != bg {
+                        s.draw_rectangle(
+                            gutter_x,
+                            content_y,
+                            text_x - gutter_x,
+                            buf_rows as i32 * line_h,
+                            gutter_bg,
+                        );
                     }
-                }
-                // Gutter column.
-                for (row, label) in view.gutter.rows.iter().take(buf_rows).enumerate() {
-                    let gy = content_y + row as i32 * line_h;
-                    s.draw_text_ex(font, label, Vector2::new(gutter_x as f32, gy as f32), font_size as f32, 1.0, gutter_color);
-                }
-
-                // Visual-mode selection background, behind the text.
-                if let Some(sel) = view.selection {
-                    for (row, line) in view.lines.iter().skip(scroll).take(buf_rows).enumerate() {
-                        let buffer_line = (row + scroll) as u16;
-                        let line_len = line.text.chars().count() as u16;
-                        if let Some((sel_start, sel_end)) = sel.span_on(buffer_line, line_len) {
-                            let gy = content_y + row as i32 * line_h;
-                            let sx = text_x as f32 + sel_start as f32 * char_w;
-                            // End is inclusive; empty lines still get a sliver.
-                            let cols = sel_end.saturating_sub(sel_start) + 1;
-                            let width = (cols as f32 * char_w).max(char_w / 2.0);
-                            s.draw_rectangle(sx as i32, gy, width as i32, line_h, selection_bg);
-                        }
-                    }
-                }
-
-                // Buffer text (this window's own scroll).
-                for (row, line) in view.lines.iter().skip(scroll).take(buf_rows).enumerate() {
-                    let gy = content_y + row as i32 * line_h;
-                    let n = line.text.len();
-                    if n == 0 {
-                        continue;
-                    }
-                    // The selection span on this line, so selected glyphs take
-                    // the selection text color.
-                    let sel_span = view.selection.and_then(|sel| {
-                        let buffer_line = (row + scroll) as u16;
-                        sel.span_on(buffer_line, line.text.chars().count() as u16)
-                    });
-                    if line.highlights.is_empty() && sel_span.is_none() {
-                        s.draw_text_ex(font, &line.text, Vector2::new(text_x as f32, gy as f32), font_size as f32, 1.0, default_color);
-                        continue;
-                    }
-                    // Color per *character* (highlight offsets are char offsets),
-                    // then draw same-color runs — safe for multibyte lines.
-                    let chars: Vec<char> = line.text.chars().collect();
-                    let nchars = chars.len();
-                    // Draw highlight backgrounds first.
-                    for &(offset, len, ref style) in &line.highlights {
-                        if let ruster_render::Color::Rgb(r, g, b) = style.bg {
-                            let end = (offset + len).min(nchars);
-                            if offset < end {
-                                let sx = text_x as f32 + offset as f32 * char_w;
-                                let sw = (end - offset) as f32 * char_w;
-                                s.draw_rectangle(sx as i32, gy, sw as i32, line_h, Color::new(r, g, b, 255));
+                    // Sign column, left of the gutter.
+                    if view.signs.width > 0 {
+                        for row in 0..buf_rows {
+                            let line = (row + scroll) as u16;
+                            if let Some((glyph, c)) = view.signs.at(line) {
+                                let gy = content_y + row as i32 * line_h;
+                                let color = to_raylib(c, default_color);
+                                let mut b = [0u8; 4];
+                                s.draw_text_ex(
+                                    font,
+                                    glyph.encode_utf8(&mut b),
+                                    Vector2::new(sign_x as f32, gy as f32),
+                                    font_size as f32,
+                                    1.0,
+                                    color,
+                                );
                             }
                         }
                     }
-                    let mut char_colors: Vec<Color> = vec![default_color; nchars];
-                    for &(offset, len, ref style) in &line.highlights {
-                        let fg = match style.fg {
+                    // Gutter column.
+                    for (row, label) in view.gutter.rows.iter().take(buf_rows).enumerate() {
+                        let gy = content_y + row as i32 * line_h;
+                        s.draw_text_ex(
+                            font,
+                            label,
+                            Vector2::new(gutter_x as f32, gy as f32),
+                            font_size as f32,
+                            1.0,
+                            gutter_color,
+                        );
+                    }
+
+                    // Visual-mode selection background, behind the text.
+                    if let Some(sel) = view.selection {
+                        for (row, line) in view.lines.iter().skip(scroll).take(buf_rows).enumerate()
+                        {
+                            let buffer_line = (row + scroll) as u16;
+                            let line_len = line.text.chars().count() as u16;
+                            if let Some((sel_start, sel_end)) = sel.span_on(buffer_line, line_len) {
+                                let gy = content_y + row as i32 * line_h;
+                                let sx = text_x as f32 + sel_start as f32 * char_w;
+                                // End is inclusive; empty lines still get a sliver.
+                                let cols = sel_end.saturating_sub(sel_start) + 1;
+                                let width = (cols as f32 * char_w).max(char_w / 2.0);
+                                s.draw_rectangle(sx as i32, gy, width as i32, line_h, selection_bg);
+                            }
+                        }
+                    }
+
+                    // Buffer text (this window's own scroll).
+                    for (row, line) in view.lines.iter().skip(scroll).take(buf_rows).enumerate() {
+                        let gy = content_y + row as i32 * line_h;
+                        let n = line.text.len();
+                        if n == 0 {
+                            continue;
+                        }
+                        // The selection span on this line, so selected glyphs take
+                        // the selection text color.
+                        let sel_span = view.selection.and_then(|sel| {
+                            let buffer_line = (row + scroll) as u16;
+                            sel.span_on(buffer_line, line.text.chars().count() as u16)
+                        });
+                        if line.highlights.is_empty() && sel_span.is_none() {
+                            s.draw_text_ex(
+                                font,
+                                &line.text,
+                                Vector2::new(text_x as f32, gy as f32),
+                                font_size as f32,
+                                1.0,
+                                default_color,
+                            );
+                            continue;
+                        }
+                        // Color per *character* (highlight offsets are char offsets),
+                        // then draw same-color runs — safe for multibyte lines.
+                        let chars: Vec<char> = line.text.chars().collect();
+                        let nchars = chars.len();
+                        // Draw highlight backgrounds first.
+                        for &(offset, len, ref style) in &line.highlights {
+                            if let ruster_render::Color::Rgb(r, g, b) = style.bg {
+                                let end = (offset + len).min(nchars);
+                                if offset < end {
+                                    let sx = text_x as f32 + offset as f32 * char_w;
+                                    let sw = (end - offset) as f32 * char_w;
+                                    s.draw_rectangle(
+                                        sx as i32,
+                                        gy,
+                                        sw as i32,
+                                        line_h,
+                                        Color::new(r, g, b, 255),
+                                    );
+                                }
+                            }
+                        }
+                        let mut char_colors: Vec<Color> = vec![default_color; nchars];
+                        for &(offset, len, ref style) in &line.highlights {
+                            let fg = match style.fg {
+                                ruster_render::Color::Rgb(r, g, b) => Color::new(r, g, b, 255),
+                                ruster_render::Color::Default => default_color,
+                            };
+                            let end = (offset + len).min(nchars);
+                            if offset < end {
+                                char_colors[offset..end].fill(fg);
+                            }
+                        }
+                        if let Some((ss, se)) = sel_span {
+                            let end = (se as usize + 1).min(nchars);
+                            if (ss as usize) < end {
+                                char_colors[ss as usize..end].fill(selection_fg);
+                            }
+                        }
+                        draw_text_cells(
+                            &mut s,
+                            metrics,
+                            (text_x as f32, gy as f32),
+                            &chars,
+                            &char_colors,
+                        );
+                    }
+
+                    // Cursor (only the active window sets cursor_visible).
+                    if view.cursor_visible {
+                        let cline = view.cursor.0 as usize;
+                        if cline >= scroll && cline < scroll + buf_rows {
+                            let vis_row = (cline - scroll) as i32;
+                            let col = view.cursor.1 as usize;
+                            let text_before = view
+                                .lines
+                                .get(cline)
+                                .map(|l| {
+                                    // `col` is a character column; find its byte offset
+                                    // so multibyte lines don't slice mid-character.
+                                    let end = l
+                                        .text
+                                        .char_indices()
+                                        .nth(col)
+                                        .map(|(i, _)| i)
+                                        .unwrap_or(l.text.len());
+                                    &l.text[..end]
+                                })
+                                .unwrap_or("");
+                            let mut cx = text_x as f32 + measure(text_before);
+                            let mut cy = content_y + vis_row * line_h;
+                            if let Some((dcx, dcy)) = view.cursor_smooth {
+                                cx += dcx * char_w;
+                                cy = (cy as f32 + dcy * line_h as f32) as i32;
+                            }
+                            let cx = cx as i32;
+                            match view.cursor_kind {
+                                CursorKind::Block => {
+                                    // Solid block, then redraw the glyph under it in the
+                                    // cursor text color (classic block-cursor look).
+                                    s.draw_rectangle(
+                                        cx,
+                                        cy,
+                                        char_w as i32,
+                                        line_h,
+                                        Color::new(cur_r, cur_g, cur_b, 255),
+                                    );
+                                    if let Some(ch) =
+                                        view.lines.get(cline).and_then(|l| l.text.chars().nth(col))
+                                    {
+                                        if ch != ' ' {
+                                            let mut buf = [0u8; 4];
+                                            s.draw_text_ex(
+                                                font,
+                                                ch.encode_utf8(&mut buf),
+                                                Vector2::new(cx as f32, cy as f32),
+                                                font_size as f32,
+                                                1.0,
+                                                cursor_fg,
+                                            );
+                                        }
+                                    }
+                                }
+                                CursorKind::Bar => s.draw_rectangle(
+                                    cx,
+                                    cy,
+                                    2,
+                                    line_h,
+                                    Color::new(cur_r, cur_g, cur_b, 255),
+                                ),
+                            }
+                        }
+
+                        // Extra multi-cursor carets, always drawn as blocks.
+                        for &(cl, cc) in &view.extra_cursors {
+                            let cl = cl as usize;
+                            if cl < scroll || cl >= scroll + buf_rows {
+                                continue;
+                            }
+                            let vis_row = (cl - scroll) as i32;
+                            let col = cc as usize;
+                            let text_before = view
+                                .lines
+                                .get(cl)
+                                .map(|l| {
+                                    // `col` is a character column; find its byte offset
+                                    // so multibyte lines don't slice mid-character.
+                                    let end = l
+                                        .text
+                                        .char_indices()
+                                        .nth(col)
+                                        .map(|(i, _)| i)
+                                        .unwrap_or(l.text.len());
+                                    &l.text[..end]
+                                })
+                                .unwrap_or("");
+                            let cx = text_x as f32 + measure(text_before);
+                            let cy = content_y + vis_row * line_h;
+                            s.draw_rectangle(
+                                cx as i32,
+                                cy,
+                                char_w as i32,
+                                line_h,
+                                Color::new(cur_r, cur_g, cur_b, 140),
+                            );
+                        }
+                    }
+
+                    // Flash jump labels, painted over the text they target.
+                    for fl in &view.flash_labels {
+                        if fl.row as usize >= buf_rows {
+                            continue;
+                        }
+                        let lx = text_x + (fl.col as f32 * char_w) as i32;
+                        let ly = content_y + fl.row as i32 * line_h;
+                        let lw = (measure(&fl.text) as i32).max(char_w as i32);
+                        let color = match fl.color {
                             ruster_render::Color::Rgb(r, g, b) => Color::new(r, g, b, 255),
                             ruster_render::Color::Default => default_color,
                         };
-                        let end = (offset + len).min(nchars);
-                        if offset < end {
-                            char_colors[offset..end].fill(fg);
-                        }
+                        s.draw_rectangle(lx, ly, lw, line_h, accent);
+                        s.draw_text_ex(
+                            font,
+                            &fl.text,
+                            Vector2::new(lx as f32, ly as f32),
+                            font_size as f32,
+                            1.0,
+                            color,
+                        );
                     }
-                    if let Some((ss, se)) = sel_span {
-                        let end = (se as usize + 1).min(nchars);
-                        if (ss as usize) < end {
-                            char_colors[ss as usize..end].fill(selection_fg);
-                        }
-                    }
-                    draw_text_cells(&mut s, metrics, (text_x as f32, gy as f32), &chars, &char_colors);
-                }
-
-                // Cursor (only the active window sets cursor_visible).
-                if view.cursor_visible {
-                    let cline = view.cursor.0 as usize;
-                    if cline >= scroll && cline < scroll + buf_rows {
-                        let vis_row = (cline - scroll) as i32;
-                        let col = view.cursor.1 as usize;
-                        let text_before = view
-                            .lines
-                            .get(cline)
-                            .map(|l| {
-                                // `col` is a character column; find its byte offset
-                                // so multibyte lines don't slice mid-character.
-                                let end = l
-                                    .text
-                                    .char_indices()
-                                    .nth(col)
-                                    .map(|(i, _)| i)
-                                    .unwrap_or(l.text.len());
-                                &l.text[..end]
-                            })
-                            .unwrap_or("");
-                        let mut cx = text_x as f32 + measure(text_before);
-                        let mut cy = content_y + vis_row * line_h;
-                        if let Some((dcx, dcy)) = view.cursor_smooth {
-                            cx += dcx * char_w;
-                            cy = (cy as f32 + dcy * line_h as f32) as i32;
-                        }
-                        let cx = cx as i32;
-                        match view.cursor_kind {
-                            CursorKind::Block => {
-                                // Solid block, then redraw the glyph under it in the
-                                // cursor text color (classic block-cursor look).
-                                s.draw_rectangle(cx, cy, char_w as i32, line_h, Color::new(cur_r, cur_g, cur_b, 255));
-                                if let Some(ch) = view.lines.get(cline).and_then(|l| l.text.chars().nth(col)) {
-                                    if ch != ' ' {
-                                        let mut buf = [0u8; 4];
-                                        s.draw_text_ex(font, ch.encode_utf8(&mut buf), Vector2::new(cx as f32, cy as f32), font_size as f32, 1.0, cursor_fg);
-                                    }
-                                }
-                            }
-                            CursorKind::Bar => s.draw_rectangle(cx, cy, 2, line_h, Color::new(cur_r, cur_g, cur_b, 255)),
-                        }
-                    }
-
-                    // Extra multi-cursor carets, always drawn as blocks.
-                    for &(cl, cc) in &view.extra_cursors {
-                        let cl = cl as usize;
-                        if cl < scroll || cl >= scroll + buf_rows {
-                            continue;
-                        }
-                        let vis_row = (cl - scroll) as i32;
-                        let col = cc as usize;
-                        let text_before = view
-                            .lines
-                            .get(cl)
-                            .map(|l| {
-                                // `col` is a character column; find its byte offset
-                                // so multibyte lines don't slice mid-character.
-                                let end = l
-                                    .text
-                                    .char_indices()
-                                    .nth(col)
-                                    .map(|(i, _)| i)
-                                    .unwrap_or(l.text.len());
-                                &l.text[..end]
-                            })
-                            .unwrap_or("");
-                        let cx = text_x as f32 + measure(text_before);
-                        let cy = content_y + vis_row * line_h;
-                        s.draw_rectangle(cx as i32, cy, char_w as i32, line_h, Color::new(cur_r, cur_g, cur_b, 140));
-                    }
-                }
-
-                // Flash jump labels, painted over the text they target.
-                for fl in &view.flash_labels {
-                    if fl.row as usize >= buf_rows {
-                        continue;
-                    }
-                    let lx = text_x + (fl.col as f32 * char_w) as i32;
-                    let ly = content_y + fl.row as i32 * line_h;
-                    let lw = (measure(&fl.text) as i32).max(char_w as i32);
-                    let color = match fl.color {
-                        ruster_render::Color::Rgb(r, g, b) => Color::new(r, g, b, 255),
-                        ruster_render::Color::Default => default_color,
-                    };
-                    s.draw_rectangle(lx, ly, lw, line_h, accent);
-                    s.draw_text_ex(font, &fl.text, Vector2::new(lx as f32, ly as f32), font_size as f32, 1.0, color);
-                }
                 } // end: buffer vs. terminal drawing
 
                 // Per-window statusline on its bottom row (below header + content).
@@ -845,26 +996,56 @@ impl Renderer for RaylibRenderer {
                     (mode_bg, mode_fg)
                 } else {
                     let c = mode_bg;
-                    (Color::new(c.r.saturating_sub(20), c.g.saturating_sub(20), c.b.saturating_sub(20), c.a), gutter_color)
+                    (
+                        Color::new(
+                            c.r.saturating_sub(20),
+                            c.g.saturating_sub(20),
+                            c.b.saturating_sub(20),
+                            c.a,
+                        ),
+                        gutter_color,
+                    )
                 };
                 s.draw_rectangle(px, sl_y, left_w as i32, line_h, sl_bg);
-                s.draw_text_ex(font, &left, Vector2::new(px as f32, sl_y as f32), font_size as f32, 1.0, sl_fg);
+                s.draw_text_ex(
+                    font,
+                    &left,
+                    Vector2::new(px as f32, sl_y as f32),
+                    font_size as f32,
+                    1.0,
+                    sl_fg,
+                );
                 // Right section — neutral bg + statusline_fg (or gutter for inactive).
                 let right = format!(" {} ", view.statusline.right);
                 let right_x = (px + pw) as f32 - measure(&right);
-                let right_fg = if view.active { statusline_fg } else { gutter_color };
-                s.draw_text_ex(font, &right, Vector2::new(right_x, sl_y as f32), font_size as f32, 1.0, right_fg);
+                let right_fg = if view.active {
+                    statusline_fg
+                } else {
+                    gutter_color
+                };
+                s.draw_text_ex(
+                    font,
+                    &right,
+                    Vector2::new(right_x, sl_y as f32),
+                    font_size as f32,
+                    1.0,
+                    right_fg,
+                );
                 // Center section — neutral bg + statusline_fg (or gutter for inactive).
                 if !view.statusline.center.is_empty() {
                     let center_w = measure(&view.statusline.center);
                     let right_w = measure(&right);
-                    if let Some(off) = ruster_render::statusline_center_x(
-                        pw as f32,
-                        left_w,
-                        center_w,
-                        right_w,
-                    ) {
-                        s.draw_text_ex(font, &view.statusline.center, Vector2::new(px as f32 + off, sl_y as f32), font_size as f32, 1.0, right_fg);
+                    if let Some(off) =
+                        ruster_render::statusline_center_x(pw as f32, left_w, center_w, right_w)
+                    {
+                        s.draw_text_ex(
+                            font,
+                            &view.statusline.center,
+                            Vector2::new(px as f32 + off, sl_y as f32),
+                            font_size as f32,
+                            1.0,
+                            right_fg,
+                        );
                     }
                 }
             }
@@ -883,7 +1064,14 @@ impl Renderer for RaylibRenderer {
             let rows = ((screen_h - pad_y) / line_h).max(1);
             let cmd_y = pad_y + (rows - 1) * line_h;
             d.draw_rectangle(0, cmd_y, screen_w, screen_h - cmd_y, cmdline_bg);
-            d.draw_text_ex(font, cmd, Vector2::new(pad_x as f32, cmd_y as f32), font_size as f32, 1.0, cmdline_fg);
+            d.draw_text_ex(
+                font,
+                cmd,
+                Vector2::new(pad_x as f32, cmd_y as f32),
+                font_size as f32,
+                1.0,
+                cmdline_fg,
+            );
         }
 
         // Picker overlay: centered floating box, or a full-width strip docked at
@@ -911,32 +1099,67 @@ impl Renderer for RaylibRenderer {
                 d.draw_rectangle(box_x + list_w, div_y, 1, box_h - line_h / 2, accent);
             }
             // Drawn before the column scissors so it spans the whole box.
-            draw_titled_box(&mut d, metrics, (box_x, box_y, box_w, box_h), line_h, Some(&picker.title), accent, divider);
+            draw_titled_box(
+                &mut d,
+                metrics,
+                (box_x, box_y, box_w, box_h),
+                line_h,
+                Some(&picker.title),
+                accent,
+                divider,
+            );
             // List column — title, query, and rows, clipped to the list width
             // so long labels don't bleed across the divider into the preview.
             let list_clip_w = if has_preview { list_w } else { box_w };
             {
-                let mut s = d.begin_scissor_mode(
-                    box_x + 1,
-                    box_y + 1,
-                    (list_clip_w - 2).max(1),
-                    box_h - 2,
+                let mut s =
+                    d.begin_scissor_mode(box_x + 1, box_y + 1, (list_clip_w - 2).max(1), box_h - 2);
+                s.draw_text_ex(
+                    font,
+                    &format!(" > {}", picker.query),
+                    Vector2::new(box_x as f32 + 4.0, (box_y + line_h) as f32),
+                    font_size as f32,
+                    1.0,
+                    default_color,
                 );
-                s.draw_text_ex(font, &format!(" > {}", picker.query), Vector2::new(box_x as f32 + 4.0, (box_y + line_h) as f32), font_size as f32, 1.0, default_color);
                 let max_visible = ((box_h - 2 * line_h) / line_h).max(0) as usize;
                 // Keep the selection on screen; a wrap to the last item has to
                 // take the view with it.
                 let sel = picker.rows.iter().position(|r| r.selected).unwrap_or(0);
                 self.picker_scroll = ruster_render::list_scroll(
-                    self.picker_scroll, sel, max_visible, picker.rows.len());
+                    self.picker_scroll,
+                    sel,
+                    max_visible,
+                    picker.rows.len(),
+                );
                 let pscroll = self.picker_scroll;
-                for (i, row) in picker.rows.iter().skip(pscroll).take(max_visible).enumerate() {
+                for (i, row) in picker
+                    .rows
+                    .iter()
+                    .skip(pscroll)
+                    .take(max_visible)
+                    .enumerate()
+                {
                     let ry = box_y + (2 + i as i32) * line_h;
                     if row.selected {
                         s.draw_rectangle(box_x, ry, list_clip_w, line_h, accent);
-                        s.draw_text_ex(font, &format!(" {}", row.label), Vector2::new(box_x as f32 + 4.0, ry as f32), font_size as f32, 1.0, accent_fg);
+                        s.draw_text_ex(
+                            font,
+                            &format!(" {}", row.label),
+                            Vector2::new(box_x as f32 + 4.0, ry as f32),
+                            font_size as f32,
+                            1.0,
+                            accent_fg,
+                        );
                     } else {
-                        s.draw_text_ex(font, &format!(" {}", row.label), Vector2::new(box_x as f32 + 4.0, ry as f32), font_size as f32, 1.0, default_color);
+                        s.draw_text_ex(
+                            font,
+                            &format!(" {}", row.label),
+                            Vector2::new(box_x as f32 + 4.0, ry as f32),
+                            font_size as f32,
+                            1.0,
+                            default_color,
+                        );
                     }
                 }
             }
@@ -959,7 +1182,14 @@ impl Renderer for RaylibRenderer {
                         continue;
                     }
                     if line.highlights.is_empty() {
-                        s.draw_text_ex(font, &line.text, Vector2::new(px as f32, ly as f32), font_size as f32, 1.0, default_color);
+                        s.draw_text_ex(
+                            font,
+                            &line.text,
+                            Vector2::new(px as f32, ly as f32),
+                            font_size as f32,
+                            1.0,
+                            default_color,
+                        );
                         continue;
                     }
                     let chars: Vec<char> = line.text.chars().collect();
@@ -975,7 +1205,13 @@ impl Renderer for RaylibRenderer {
                             char_colors[offset..end].fill(fg);
                         }
                     }
-                    draw_text_cells(&mut s, metrics, (px as f32, ly as f32), &chars, &char_colors);
+                    draw_text_cells(
+                        &mut s,
+                        metrics,
+                        (px as f32, ly as f32),
+                        &chars,
+                        &char_colors,
+                    );
                 }
             }
         }
@@ -990,7 +1226,14 @@ impl Renderer for RaylibRenderer {
             }
             d.draw_rectangle(tx, ty, tw, line_h, whichkey_bg);
             d.draw_rectangle(tx, ty, 2, line_h, accent);
-            d.draw_text_ex(font, text, Vector2::new((tx + 6) as f32, ty as f32), font_size as f32, 1.0, whichkey_fg);
+            d.draw_text_ex(
+                font,
+                text,
+                Vector2::new((tx + 6) as f32, ty as f32),
+                font_size as f32,
+                1.0,
+                whichkey_fg,
+            );
         }
 
         // Noice notify panel: the notification history, docked right.
@@ -1005,7 +1248,14 @@ impl Renderer for RaylibRenderer {
                 if ly + line_h > screen_h {
                     break;
                 }
-                s.draw_text_ex(font, &line.text, Vector2::new((panel_x + 6) as f32, ly as f32), font_size as f32, 1.0, whichkey_fg);
+                s.draw_text_ex(
+                    font,
+                    &line.text,
+                    Vector2::new((panel_x + 6) as f32, ly as f32),
+                    font_size as f32,
+                    1.0,
+                    whichkey_fg,
+                );
             }
         }
 
@@ -1019,19 +1269,34 @@ impl Renderer for RaylibRenderer {
             // Toolbar bar across the top of the panel.
             d.draw_rectangle(panel_x, 0, panel_w, line_h, accent);
             let mut s = d.begin_scissor_mode(panel_x, 0, panel_w, panel_h);
-            s.draw_text_ex(font, &dbg.toolbar, Vector2::new((panel_x + 6) as f32, 0.0), font_size as f32, 1.0, accent_fg);
+            s.draw_text_ex(
+                font,
+                &dbg.toolbar,
+                Vector2::new((panel_x + 6) as f32, 0.0),
+                font_size as f32,
+                1.0,
+                accent_fg,
+            );
             for (i, row) in rows.iter().enumerate() {
                 let ry = (i as i32 + 1) * line_h + 4;
                 if ry + line_h > panel_h {
                     break;
                 }
                 // Detail rows are dimmed so section headings stand out.
-                let color = if row.starts_with(' ') || row.starts_with(|c: char| c.is_ascii_digit()) {
+                let color = if row.starts_with(' ') || row.starts_with(|c: char| c.is_ascii_digit())
+                {
                     gutter_color
                 } else {
                     whichkey_fg
                 };
-                s.draw_text_ex(font, row, Vector2::new((panel_x + 6) as f32, ry as f32), font_size as f32, 1.0, color);
+                s.draw_text_ex(
+                    font,
+                    row,
+                    Vector2::new((panel_x + 6) as f32, ry as f32),
+                    font_size as f32,
+                    1.0,
+                    color,
+                );
             }
         }
 
@@ -1044,12 +1309,33 @@ impl Renderer for RaylibRenderer {
             let mut s = d.begin_scissor_mode(0, panel_top, screen_w, screen_h - panel_top);
             s.draw_rectangle(0, panel_top, screen_w, screen_h - panel_top, whichkey_bg);
             s.draw_rectangle(0, panel_top, screen_w, 2, accent);
-            s.draw_text_ex(font, &format!(" {} ", wk.title), Vector2::new(pad_x as f32, (panel_top + 4) as f32), font_size as f32, 1.0, accent);
+            s.draw_text_ex(
+                font,
+                &format!(" {} ", wk.title),
+                Vector2::new(pad_x as f32, (panel_top + 4) as f32),
+                font_size as f32,
+                1.0,
+                accent,
+            );
             for (i, entry) in wk.rows.iter().enumerate() {
                 let ry = panel_top + 4 + (i as i32 + 1) * line_h;
-                s.draw_text_ex(font, &entry.key, Vector2::new(pad_x as f32, ry as f32), font_size as f32, 1.0, whichkey_key);
+                s.draw_text_ex(
+                    font,
+                    &entry.key,
+                    Vector2::new(pad_x as f32, ry as f32),
+                    font_size as f32,
+                    1.0,
+                    whichkey_key,
+                );
                 let kx = pad_x + 6 + font.measure_text(&entry.key, font_size as f32, 1.0).x as i32;
-                s.draw_text_ex(font, &entry.desc, Vector2::new(kx as f32, ry as f32), font_size as f32, 1.0, whichkey_fg);
+                s.draw_text_ex(
+                    font,
+                    &entry.desc,
+                    Vector2::new(kx as f32, ry as f32),
+                    font_size as f32,
+                    1.0,
+                    whichkey_fg,
+                );
             }
         }
 
@@ -1065,7 +1351,15 @@ impl Renderer for RaylibRenderer {
             let mut s = d.begin_scissor_mode(bx, by, bw, bh);
             s.draw_rectangle(bx, by, bw, bh, sbg);
             let title = format!("Settings{}", if settings.dirty { " [+]" } else { "" });
-            draw_titled_box(&mut s, metrics, (bx, by, bw, bh), line_h, Some(&title), accent, divider);
+            draw_titled_box(
+                &mut s,
+                metrics,
+                (bx, by, bw, bh),
+                line_h,
+                Some(&title),
+                accent,
+                divider,
+            );
 
             // Flatten groups into header/row lines.
             let mut lines: Vec<(bool, String, Option<&SettingRowView>)> = Vec::new();
@@ -1090,18 +1384,43 @@ impl Renderer for RaylibRenderer {
             for (i, (is_h, label, row)) in lines.iter().skip(scroll).take(body_rows).enumerate() {
                 let ry = by + line_h + i as i32 * line_h;
                 if *is_h {
-                    s.draw_text_ex(font, &format!("── {} ", label.to_uppercase()), Vector2::new((bx + 4) as f32, ry as f32), font_size as f32, 1.0, accent);
+                    s.draw_text_ex(
+                        font,
+                        &format!("── {} ", label.to_uppercase()),
+                        Vector2::new((bx + 4) as f32, ry as f32),
+                        font_size as f32,
+                        1.0,
+                        accent,
+                    );
                 } else if let Some(r) = row {
                     // The selected row sits on the selection bar, so its text
                     // uses the selection-text colour.
-                    let row_fg = if r.selected { selection_fg } else { default_color };
+                    let row_fg = if r.selected {
+                        selection_fg
+                    } else {
+                        default_color
+                    };
                     if r.selected {
                         s.draw_rectangle(bx, ry, bw, line_h, sel_bg);
                     }
-                    s.draw_text_ex(font, label, Vector2::new((bx + 8) as f32, ry as f32), font_size as f32, 1.0, row_fg);
+                    s.draw_text_ex(
+                        font,
+                        label,
+                        Vector2::new((bx + 8) as f32, ry as f32),
+                        font_size as f32,
+                        1.0,
+                        row_fg,
+                    );
                     let ctrl = ruster_render::control_display(r);
                     let cc = if r.editing { accent } else { row_fg };
-                    s.draw_text_ex(font, &ctrl, Vector2::new(value_x as f32, ry as f32), font_size as f32, 1.0, cc);
+                    s.draw_text_ex(
+                        font,
+                        &ctrl,
+                        Vector2::new(value_x as f32, ry as f32),
+                        font_size as f32,
+                        1.0,
+                        cc,
+                    );
                     // A swatch after a hex color value, so the picker shows it.
                     if let Some((cr, cg, cb)) = r.swatch.as_deref().and_then(hex_rgb) {
                         let sw = font_size;
@@ -1114,12 +1433,26 @@ impl Renderer for RaylibRenderer {
             // Selected help + footer.
             if let Some((_, _, Some(r))) = lines.get(selected) {
                 let hy = by + bh - 2 * line_h;
-                s.draw_text_ex(font, &r.help, Vector2::new((bx + 4) as f32, hy as f32), font_size as f32, 1.0, gutter_color);
+                s.draw_text_ex(
+                    font,
+                    &r.help,
+                    Vector2::new((bx + 4) as f32, hy as f32),
+                    font_size as f32,
+                    1.0,
+                    gutter_color,
+                );
             }
             let fy = by + bh - line_h;
             s.draw_rectangle(bx, fy, bw, line_h, bar_bg);
             // The footer is a bar, so its text uses the bar/divider text colour.
-            s.draw_text_ex(font, &settings.footer, Vector2::new((bx + 4) as f32, fy as f32), font_size as f32, 1.0, statusline_fg);
+            s.draw_text_ex(
+                font,
+                &settings.footer,
+                Vector2::new((bx + 4) as f32, fy as f32),
+                font_size as f32,
+                1.0,
+                statusline_fg,
+            );
         }
 
         // Floats, then the dialog: a modal is the thing with focus, so it
@@ -1155,7 +1488,12 @@ impl Renderer for RaylibRenderer {
             let inner = f.inner();
             let ix = pad_x + (inner.x as f32 * char_w) as i32;
             let iy = pad_y + inner.y as i32 * line_h;
-            let mut s = d.begin_scissor_mode(ix, iy, (inner.width as f32 * char_w) as i32, inner.height as i32 * line_h);
+            let mut s = d.begin_scissor_mode(
+                ix,
+                iy,
+                (inner.width as f32 * char_w) as i32,
+                inner.height as i32 * line_h,
+            );
             for (row, line) in f.lines.iter().enumerate() {
                 if row as u16 >= inner.height {
                     break;
@@ -1165,7 +1503,14 @@ impl Renderer for RaylibRenderer {
                     continue;
                 }
                 if line.highlights.is_empty() {
-                    s.draw_text_ex(font, &line.text, Vector2::new(ix as f32, ly as f32), font_size as f32, 1.0, default_color);
+                    s.draw_text_ex(
+                        font,
+                        &line.text,
+                        Vector2::new(ix as f32, ly as f32),
+                        font_size as f32,
+                        1.0,
+                        default_color,
+                    );
                     continue;
                 }
                 let chars: Vec<char> = line.text.chars().collect();
@@ -1176,7 +1521,13 @@ impl Renderer for RaylibRenderer {
                         *c = fg;
                     }
                 }
-                draw_text_cells(&mut s, metrics, (ix as f32, ly as f32), &chars, &char_colors);
+                draw_text_cells(
+                    &mut s,
+                    metrics,
+                    (ix as f32, ly as f32),
+                    &chars,
+                    &char_colors,
+                );
             }
         }
 
@@ -1188,7 +1539,15 @@ impl Renderer for RaylibRenderer {
             let dx = (screen_w - dw) / 2;
             let dy = (screen_h - dh) / 2;
             d.draw_rectangle(dx, dy, dw, dh, bg);
-            draw_titled_box(&mut d, metrics, (dx, dy, dw, dh), line_h, Some(&dlg.title), accent, divider);
+            draw_titled_box(
+                &mut d,
+                metrics,
+                (dx, dy, dw, dh),
+                line_h,
+                Some(&dlg.title),
+                accent,
+                divider,
+            );
             let value_x = dx + (26.0 * char_w) as i32;
             for (i, r) in dlg.rows.iter().enumerate() {
                 let ry = dy + (1 + i as i32) * line_h;
@@ -1206,17 +1565,44 @@ impl Renderer for RaylibRenderer {
                 let shown = ruster_render::control_display(r);
                 if r.kind == ruster_render::ControlKind::Button {
                     // A button is one thing, not a label with a value beside it.
-                    d.draw_text_ex(font, &shown, Vector2::new((dx + 8) as f32, ry as f32), font_size as f32, 1.0, rfg);
+                    d.draw_text_ex(
+                        font,
+                        &shown,
+                        Vector2::new((dx + 8) as f32, ry as f32),
+                        font_size as f32,
+                        1.0,
+                        rfg,
+                    );
                 } else {
-                    d.draw_text_ex(font, &r.label, Vector2::new((dx + 8) as f32, ry as f32), font_size as f32, 1.0, rfg);
+                    d.draw_text_ex(
+                        font,
+                        &r.label,
+                        Vector2::new((dx + 8) as f32, ry as f32),
+                        font_size as f32,
+                        1.0,
+                        rfg,
+                    );
                     let vfg = if r.editing { accent } else { rfg };
-                    d.draw_text_ex(font, &shown, Vector2::new(value_x as f32, ry as f32), font_size as f32, 1.0, vfg);
+                    d.draw_text_ex(
+                        font,
+                        &shown,
+                        Vector2::new(value_x as f32, ry as f32),
+                        font_size as f32,
+                        1.0,
+                        vfg,
+                    );
                 }
             }
             let fy = dy + dh - 2 * line_h;
-            d.draw_text_ex(font, &dlg.footer, Vector2::new((dx + 8) as f32, fy as f32), font_size as f32, 1.0, gutter_color);
+            d.draw_text_ex(
+                font,
+                &dlg.footer,
+                Vector2::new((dx + 8) as f32, fy as f32),
+                font_size as f32,
+                1.0,
+                gutter_color,
+            );
         }
-
 
         // Capture *before* the draw handle drops.
         //
@@ -1318,7 +1704,11 @@ mod tests {
     #[test]
     fn an_untitled_box_has_one_continuous_top_rule() {
         let e = box_edges((0, 0, 200, 6 * LINE_H), LINE_H, CHAR_W, None).expect("big enough");
-        assert_eq!(e.top, vec![(0, LINE_H / 2, 200, 1)], "a single full-width run");
+        assert_eq!(
+            e.top,
+            vec![(0, LINE_H / 2, 200, 1)],
+            "a single full-width run"
+        );
         assert_eq!(e.label_at, None);
     }
 
@@ -1335,8 +1725,14 @@ mod tests {
         assert_eq!(x1 + w1, 300, "the right run ends at the right edge");
         // The gap is exactly the title plus its padding — the label sits in it.
         let (label_x, label_y) = e.label_at.expect("titled");
-        assert!(x0 + w0 <= label_x && label_x + 40 <= x1, "the title fits the gap");
-        assert_eq!(label_y, 50, "the title is drawn on the header row, above the rule");
+        assert!(
+            x0 + w0 <= label_x && label_x + 40 <= x1,
+            "the title fits the gap"
+        );
+        assert_eq!(
+            label_y, 50,
+            "the title is drawn on the header row, above the rule"
+        );
     }
 
     /// A title too wide for the box must not produce a negative-width run that
@@ -1351,8 +1747,14 @@ mod tests {
     /// Too small to hold a border: draw nothing rather than overlapping edges.
     #[test]
     fn a_box_with_no_room_for_a_border_is_skipped() {
-        assert!(box_edges((0, 0, 3, 100), LINE_H, CHAR_W, None).is_none(), "too narrow");
-        assert!(box_edges((0, 0, 100, LINE_H), LINE_H, CHAR_W, None).is_none(), "too short");
+        assert!(
+            box_edges((0, 0, 3, 100), LINE_H, CHAR_W, None).is_none(),
+            "too narrow"
+        );
+        assert!(
+            box_edges((0, 0, 100, LINE_H), LINE_H, CHAR_W, None).is_none(),
+            "too short"
+        );
     }
 
     /// Every glyph the editor draws has to be baked into the font atlas, or
@@ -1364,8 +1766,7 @@ mod tests {
     /// starts drawing one.
     #[test]
     fn every_glyph_the_editor_draws_is_in_the_font_atlas() {
-        let atlas: std::collections::HashSet<char> =
-            RaylibRenderer::font_chars().chars().collect();
+        let atlas: std::collections::HashSet<char> = RaylibRenderer::font_chars().chars().collect();
 
         let glyphs = [
             ('▸', "sidebar: collapsed directory"),
@@ -1384,8 +1785,7 @@ mod tests {
             ('╰', "float border: bottom-left"),
             ('╯', "float border: bottom-right"),
         ];
-        let missing: Vec<_> =
-            glyphs.iter().filter(|(c, _)| !atlas.contains(c)).collect();
+        let missing: Vec<_> = glyphs.iter().filter(|(c, _)| !atlas.contains(c)).collect();
         assert!(
             missing.is_empty(),
             "glyphs absent from the font atlas, so the GUI draws `?`: {missing:?}"
