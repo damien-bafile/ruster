@@ -68,7 +68,7 @@ ordinary keycodes.
 | Actions no-op only where designed | `resize`/`swap` against the outer edge | ✅ both do nothing on the window with no neighbour that way, which is what `Tree::resize` documents. Indistinguishable from a dead keybind on screen, which is why `dispatch` now logs the resulting geometry |
 | Screenshot costs a frame | capture nested, watch the log | ⚠️ every capture is followed by one `Failed to submit buffer: The context has been lost`; the next frame renders normally and the PNG is correct. A one-frame stutter per screenshot, not a lost session |
 | DRM fails gracefully without a seat | `--drm` inside a Wayland session | ✅ exits 1 with `failed to initialize libseat session` plus the seatd/logind hint; display untouched |
-| DRM boots (hardware) | `bash /tmp/drm-test.sh` on a free VT | ✅ booted on seat0: `/dev/dri/card1`, connector DP-3, mode `3440x1440@60`, GLES on the RTX 4090, socket `wayland-1` |
+| DRM boots (hardware) | `bash scripts/drm-test.sh` on a free VT | ✅ booted on seat0: `/dev/dri/card1`, connector DP-3, mode `3440x1440@60`, GLES on the RTX 4090, socket `wayland-1` |
 | DRM launches its startup client | the Lua config's client appears on a DRM boot | ✅ `new toplevel` → `toplevel mapped`, and the client was usable |
 | DRM keyboard (libinput) | type, and use the quit binding | ✅ 95 key events routed through the seat; `Super+Shift+q` quit the compositor |
 | DRM pointer (libinput) | move a mouse | ⛔ not confirmed on hardware — relative-motion handling is still unexecuted there, and nothing logs pointer events |
