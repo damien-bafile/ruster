@@ -31,7 +31,7 @@ use tracing::{debug, info};
 use crate::backend::Backend;
 use crate::compositor::CompositorState;
 use crate::lua::Action;
-use ruster_shell::WindowId;
+use ruster_shell::{Rect, WindowId};
 
 /// Global mod for WM binds: Mod4 (Super/Logo).
 pub const WM_MOD: u32 = 4;
@@ -98,28 +98,23 @@ pub fn resolve_wm_action(
 /// toplevel covers the whole output from the origin, so no frame offset.
 pub const TOPLEVEL_OFFSET: Point<f64, Logical> = Point::new(0.0, 0.0);
 
-/// The pointer focus for the focused fullscreen toplevel: `Some(origin)`,
-/// where `origin` is the toplevel's origin in *global* coordinates, when the
-/// pointer lies within the toplevel's logical bounds, and `None` otherwise.
+/// The window under `pointer`, and the origin of its tile, from a laid-out tree.
 ///
-/// smithay's `PointerInnerHandle::motion` derives the client-visible position
-/// as `event.location - origin`, so the focus tuple's second element must be
-/// the surface origin — handing it the local pointer position would report
-/// every enter/motion at `(0,0)`. Phase 0 draws the toplevel at the origin,
-/// so the origin is [`TOPLEVEL_OFFSET`] regardless of where the pointer is.
-pub fn pointer_focus(
-    toplevel_size: Size<i32, Logical>,
+/// The origin is the half that is easy to get wrong. smithay derives the
+/// client-visible position as `pointer - origin`, so a window tiled at x=937
+/// that reports an origin of `(0, 0)` tells its client the pointer is 937px
+/// further right than it is — every hover lands in the wrong place, and only for
+/// the windows that are not at the origin. Phase 0 could return a constant
+/// because there was only ever one window and it filled the output.
+pub fn tile_under(
+    geometry: &[(WindowId, Rect)],
     pointer: Point<f64, Logical>,
-) -> Option<Point<f64, Logical>> {
-    if pointer.x < 0.0
-        || pointer.y < 0.0
-        || pointer.x >= toplevel_size.w as f64
-        || pointer.y >= toplevel_size.h as f64
-    {
-        None
-    } else {
-        Some(TOPLEVEL_OFFSET)
-    }
+) -> Option<(WindowId, Point<f64, Logical>)> {
+    let (px, py) = (pointer.x.floor() as i32, pointer.y.floor() as i32);
+    geometry
+        .iter()
+        .find(|(_, r)| r.contains(px, py))
+        .map(|(id, r)| (*id, Point::from((r.x as f64, r.y as f64))))
 }
 
 /// Apply a resolved WM [`Action`] to the compositor lifecycle it owns. Only
@@ -144,16 +139,12 @@ impl<B: Backend + 'static> CompositorState<B> {
     /// is the focused one when it is mapped; when focus is stale or cleared
     /// (its toplevel unmapped) the most recently mapped window is the
     /// fallback, which lets a click always recover a visible window.
-    /// [`pointer_focus`] supplies the fullscreen-rect containment test, so a
-    /// location outside the output bounds matches nothing.
+    /// [`tile_under`] supplies the containment test against the tree, so a
+    /// location over no window matches nothing.
     fn toplevel_under(&self, location: Point<f64, Logical>) -> Option<WindowId> {
-        let size = self.logical_output_size()?;
-        pointer_focus(size, location)?;
-        let fallback = self.mapped.iter().max().copied();
-        self.shell
-            .focus
+        tile_under(&self.geometry(), location)
+            .map(|(id, _)| id)
             .filter(|id| self.mapped.contains(id))
-            .or(fallback)
     }
 
     /// The surface under the pointer with its origin in global coordinates, or
@@ -170,12 +161,11 @@ impl<B: Backend + 'static> CompositorState<B> {
         &self,
         location: Point<f64, Logical>,
     ) -> Option<(WlSurface, Point<f64, Logical>)> {
-        let focus = self.shell.focused()?;
-        let toplevel = self.toplevels.get(&focus.id)?;
-        if !self.mapped.contains(&focus.id) {
+        let (id, origin) = tile_under(&self.geometry(), location)?;
+        if !self.mapped.contains(&id) {
             return None;
         }
-        let origin = pointer_focus(self.logical_output_size()?, location)?;
+        let toplevel = self.toplevels.get(&id)?;
         Some((toplevel.wl_surface().clone(), origin))
     }
 
@@ -682,33 +672,6 @@ mod tests {
     }
 
     #[test]
-    fn pointer_focus_reports_the_surface_origin_not_the_local_position() {
-        // smithay's PointerInnerHandle::motion sends `event.location - origin`
-        // to the client, so the focus tuple's second element is the surface's
-        // origin in *global* coordinates. A fullscreen toplevel at the origin
-        // reports (0,0) no matter where the pointer is inside it.
-        let size = Size::from((800, 600));
-        assert_eq!(
-            pointer_focus(size, Point::from((10.0, 20.0))),
-            Some(TOPLEVEL_OFFSET)
-        );
-        assert_eq!(
-            pointer_focus(size, Point::from((799.0, 599.0))),
-            Some(TOPLEVEL_OFFSET)
-        );
-    }
-
-    #[test]
-    fn pointer_focus_outside_toplevel_is_none() {
-        let size = Size::from((800, 600));
-        // Outside on every edge.
-        assert_eq!(pointer_focus(size, Point::from((-1.0, 0.0))), None);
-        assert_eq!(pointer_focus(size, Point::from((800.0, 0.0))), None);
-        assert_eq!(pointer_focus(size, Point::from((0.0, 600.0))), None);
-        assert_eq!(pointer_focus(size, Point::from((0.0, 700.0))), None);
-    }
-
-    #[test]
     fn keysym_quit_binding_recognized() {
         // Mod4+Shift+q → quit
         let keysym = Keysym::q;
@@ -786,6 +749,65 @@ mod tests {
             resolve_wm_action(&keybinds, &cycle_mods, Keysym::t),
             Some(Action::CycleWorkspace)
         );
+    }
+
+    fn geom() -> Vec<(WindowId, Rect)> {
+        // Two tiles side by side across a 1000x800 output.
+        vec![
+            (WindowId(0), Rect::new(0, 0, 500, 800)),
+            (WindowId(1), Rect::new(500, 0, 500, 800)),
+        ]
+    }
+
+    #[test]
+    fn the_pointer_picks_the_tile_it_is_over() {
+        assert_eq!(
+            tile_under(&geom(), Point::from((10.0, 10.0))).map(|(id, _)| id),
+            Some(WindowId(0))
+        );
+        assert_eq!(
+            tile_under(&geom(), Point::from((600.0, 10.0))).map(|(id, _)| id),
+            Some(WindowId(1))
+        );
+        assert_eq!(tile_under(&geom(), Point::from((1200.0, 10.0))), None);
+        assert_eq!(tile_under(&geom(), Point::from((-1.0, 10.0))), None);
+    }
+
+    #[test]
+    fn the_origin_is_the_tile_corner_not_the_output_corner() {
+        // The bug this exists to prevent: smithay derives the client-visible
+        // position as `pointer - origin`, so a window tiled at x=500 that
+        // reports an origin of (0, 0) tells its client the pointer is 500px
+        // further right than it is. It only goes wrong for windows away from
+        // the origin, which is why one fullscreen window never showed it.
+        let (_, origin) = tile_under(&geom(), Point::from((600.0, 40.0))).unwrap();
+        assert_eq!(origin, Point::from((500.0, 0.0)));
+
+        let local = Point::from((600.0, 40.0)) - origin;
+        assert_eq!(
+            local,
+            Point::from((100.0, 40.0)),
+            "100px into the right tile"
+        );
+    }
+
+    #[test]
+    fn a_shared_tile_edge_belongs_to_one_window() {
+        // Tiles touch. If both claimed x=500 the window a click focused would
+        // depend on iteration order.
+        assert_eq!(
+            tile_under(&geom(), Point::from((499.9, 400.0))).map(|(id, _)| id),
+            Some(WindowId(0))
+        );
+        assert_eq!(
+            tile_under(&geom(), Point::from((500.0, 400.0))).map(|(id, _)| id),
+            Some(WindowId(1))
+        );
+    }
+
+    #[test]
+    fn an_empty_layout_is_over_nothing() {
+        assert_eq!(tile_under(&[], Point::from((10.0, 10.0))), None);
     }
 
     #[test]
