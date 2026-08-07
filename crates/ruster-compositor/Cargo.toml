@@ -24,6 +24,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ctrlc = { version = "3", features = ["termination"] }
 anyhow = "1"
+png = "0.18"
 
 # Smithay is Linux-only; off Linux the lib is empty and the bin is a stub that
 # exits with an explanatory error. See `src/main.rs`.

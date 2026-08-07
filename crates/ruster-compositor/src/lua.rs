@@ -22,6 +22,12 @@ pub enum Action {
     Quit,
     /// Advance the active workspace (Super+t by default).
     CycleWorkspace,
+    /// Write the composited output to a PNG.
+    ///
+    /// The compositor implements no screencopy protocol, so on a real boot
+    /// nothing outside it can see the screen. This is how a DRM session
+    /// produces evidence instead of a description.
+    Screenshot,
 }
 
 /// The parsed compositor config: keybinds as `(binding, action-name)` pairs,
@@ -259,6 +265,7 @@ impl Action {
         {
             "quit" => Some(Action::Quit),
             "cycle workspace" => Some(Action::CycleWorkspace),
+            "screenshot" => Some(Action::Screenshot),
             _ => None,
         }
     }

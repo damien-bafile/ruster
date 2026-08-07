@@ -85,6 +85,14 @@ fn run_winit() -> anyhow::Result<()> {
         // rest of the frame.
         let geometry = state.geometry();
         let tree_status = state.tree_status();
+        let shot = state.screenshot_pending.then(|| {
+            state.screenshot_pending = false;
+            state.screenshot_count += 1;
+            (
+                ruster_compositor::screenshot::capture_path(state.screenshot_count),
+                state.backend_data.output.current_mode().map(|m| m.size),
+            )
+        });
         let render_res = state
             .backend_data
             .backend
@@ -116,6 +124,22 @@ fn run_winit() -> anyhow::Result<()> {
                 .map_err(|err| match err {
                     OutputDamageTrackerError::Rendering(err) => err.into(),
                     _ => unreachable!(),
+                })
+                .inspect(|_| {
+                    // After the frame is drawn and before it is submitted: the
+                    // contents are complete, and the copy is non-destructive so
+                    // what reaches the screen is unchanged.
+                    if let Some((path, Some(size))) = shot {
+                        match ruster_compositor::screenshot::capture(
+                            renderer,
+                            &fb,
+                            (size.w, size.h).into(),
+                            &path,
+                        ) {
+                            Ok(path) => tracing::info!(path = %path.display(), "screenshot"),
+                            Err(err) => tracing::warn!("screenshot failed: {err}"),
+                        }
+                    }
                 })
             });
         match render_res {

@@ -2460,6 +2460,7 @@ dependencies = [
  "ctrlc",
  "dirs",
  "mlua",
+ "png",
  "ruster-core",
  "ruster-lua",
  "ruster-render",

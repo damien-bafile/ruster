@@ -25,7 +25,12 @@
 -- "M-S-q", "M-t", "M-F9", "C-A-space". Modifiers match exactly, so "M-t" does
 -- not fire while Shift is held.
 --
--- Actions: "quit", "cycle workspace".
+-- Actions: "quit", "cycle workspace", "screenshot".
+--
+-- `screenshot` writes the composited output to $XDG_RUNTIME_DIR/ruster-shot-N.png
+-- (or /tmp when that is unset, as on a bare VT). It exists because the
+-- compositor implements no screencopy protocol, so on a real DRM boot nothing
+-- outside it can see the screen.
 --
 -- startup_clients are launched on the compositor's socket at boot. A client
 -- whose binary is not installed is skipped. On a DRM boot this is the only way
@@ -34,6 +39,7 @@ return {
   keybinds = {
     { "M-S-q", "quit" },
     { "M-t",   "cycle workspace" },
+    { "M-S-s", "screenshot" },
   },
   startup_clients = { "foot" },
 }

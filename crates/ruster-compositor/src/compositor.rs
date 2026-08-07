@@ -76,6 +76,13 @@ pub struct CompositorState<B: Backend + 'static> {
     /// The compositor's UI chrome (statusline, editor frame, which-key), drawn
     /// above the client surfaces (Task 8).
     pub chrome: Option<Chrome>,
+    /// Set by the screenshot keybind, cleared by the render loop once it has
+    /// captured. The capture needs the renderer and the finished framebuffer,
+    /// neither of which the key handler has, so the request has to wait for the
+    /// frame rather than be served where it is made.
+    pub screenshot_pending: bool,
+    /// How many captures this session has taken, so they do not overwrite.
+    pub screenshot_count: u32,
     /// Configured WM keybinds as `(binding, action)` pairs, loaded from
     /// `compositor.lua` (Task 9). Empty until the config is applied.
     pub keybinds: Vec<(String, String)>,
@@ -290,6 +297,8 @@ pub fn create_state<B: Backend + 'static>(
         pending_focus: None,
         mapped: HashSet::new(),
         chrome: Some(Chrome::new(Theme::default())),
+        screenshot_pending: false,
+        screenshot_count: 0,
         keybinds: Vec::new(),
     }
 }

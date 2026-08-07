@@ -128,7 +128,9 @@ pub fn tile_under(
 pub fn apply_action(action: &Action, running: &Arc<AtomicBool>) {
     match action {
         Action::Quit => running.store(false, Ordering::SeqCst),
-        Action::CycleWorkspace => {}
+        // Both need more than the `running` flag, so their effects live at the
+        // dispatch site where `&mut CompositorState` is in hand.
+        Action::CycleWorkspace | Action::Screenshot => {}
     }
 }
 
@@ -249,6 +251,15 @@ impl<B: Backend + 'static> CompositorState<B> {
                         if key_state == KeyState::Pressed {
                             info!("workspace cycle keybinding");
                             compositor.cycle_workspace();
+                        }
+                        FilterResult::Intercept(())
+                    }
+                    Some(Action::Screenshot) => {
+                        if key_state == KeyState::Pressed {
+                            // Served by the render loop: capturing needs the
+                            // renderer and a finished framebuffer, and this
+                            // closure has neither.
+                            compositor.screenshot_pending = true;
                         }
                         FilterResult::Intercept(())
                     }
