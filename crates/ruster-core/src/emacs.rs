@@ -413,7 +413,11 @@ mod tests {
             e.execute(a);
         }
         // Move point to offset 5 with C-u 5 C-f.
-        for &k in &[KeyEvent::Ctrl('u'), KeyEvent::Char('5'), KeyEvent::Ctrl('f')] {
+        for &k in &[
+            KeyEvent::Ctrl('u'),
+            KeyEvent::Char('5'),
+            KeyEvent::Ctrl('f'),
+        ] {
             for a in em.handle(k, &e) {
                 e.execute(a);
             }
@@ -464,11 +468,7 @@ mod tests {
 
     #[test]
     fn alt_f_b_word_motions() {
-        let (e, _) = run(
-            "foo bar baz",
-            0,
-            &[KeyEvent::Alt('f'), KeyEvent::Char('|')],
-        );
+        let (e, _) = run("foo bar baz", 0, &[KeyEvent::Alt('f'), KeyEvent::Char('|')]);
         // M-f lands at the start of "bar" (offset 4).
         assert_eq!(e.buffer().to_string(), "foo |bar baz");
     }

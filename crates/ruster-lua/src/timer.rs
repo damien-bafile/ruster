@@ -31,7 +31,10 @@ pub struct Timers {
 
 impl Timers {
     pub fn new() -> Self {
-        Timers { next_id: 1, entries: Vec::new() }
+        Timers {
+            next_id: 1,
+            entries: Vec::new(),
+        }
     }
 
     /// Register a callback. `interval_ms` set makes it repeat.
@@ -48,7 +51,11 @@ impl Timers {
         // A negative or NaN delay means "as soon as possible", not "never" —
         // `ruster.defer(0, f)` is a legitimate way to run something after the
         // current frame settles.
-        let delay = if delay_ms.is_finite() { delay_ms.max(0.0) } else { 0.0 };
+        let delay = if delay_ms.is_finite() {
+            delay_ms.max(0.0)
+        } else {
+            0.0
+        };
         self.entries.push(Entry {
             id,
             remaining_ms: delay,
@@ -86,7 +93,11 @@ impl Timers {
     /// catching up by firing five times in one frame is never what a debounce
     /// wanted, and it would let one slow frame cascade into several.
     pub fn take_due(&mut self, lua: &Lua, dt_ms: f64) -> Vec<Function> {
-        let dt = if dt_ms.is_finite() { dt_ms.max(0.0) } else { 0.0 };
+        let dt = if dt_ms.is_finite() {
+            dt_ms.max(0.0)
+        } else {
+            0.0
+        };
         let mut due = Vec::new();
         let mut i = 0;
         while i < self.entries.len() {

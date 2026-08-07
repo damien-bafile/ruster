@@ -36,7 +36,11 @@ fn a_deferred_callback_runs_once_when_it_comes_due() {
     // And never again.
     tick(&rt, 1000.0);
     assert_eq!(count(&rt), 1, "a defer is one-shot");
-    assert_eq!(rt.timer_count(), 0, "it was removed, not left to accumulate");
+    assert_eq!(
+        rt.timer_count(),
+        0,
+        "it was removed, not left to accumulate"
+    );
 }
 
 #[test]
@@ -65,19 +69,27 @@ fn a_repeating_timer_fires_at_most_once_per_frame() {
     for _ in 0..3 {
         tick(&rt, 1.0);
     }
-    assert_eq!(count(&rt), 1, "the missed time was carried over into a burst");
+    assert_eq!(
+        count(&rt),
+        1,
+        "the missed time was carried over into a burst"
+    );
 }
 
 #[test]
 fn a_timer_can_be_cancelled() {
-    let rt = runtime_with(
-        "n = 0; id = ruster.timer(10, function() n = n + 1 end)",
-    );
+    let rt = runtime_with("n = 0; id = ruster.timer(10, function() n = n + 1 end)");
     tick(&rt, 10.0);
     assert_eq!(count(&rt), 1);
 
-    rt.lua.load("stopped = ruster.timer_stop(id)").exec().unwrap();
-    assert!(rt.lua.globals().get::<bool>("stopped").unwrap(), "cancel reported success");
+    rt.lua
+        .load("stopped = ruster.timer_stop(id)")
+        .exec()
+        .unwrap();
+    assert!(
+        rt.lua.globals().get::<bool>("stopped").unwrap(),
+        "cancel reported success"
+    );
     assert_eq!(rt.timer_count(), 0);
 
     tick(&rt, 100.0);
@@ -102,7 +114,10 @@ fn cancelling_an_already_fired_defer_is_a_no_op() {
         )
         .exec()
         .unwrap();
-    assert!(!rt.lua.globals().get::<bool>("stopped").unwrap(), "nothing to cancel");
+    assert!(
+        !rt.lua.globals().get::<bool>("stopped").unwrap(),
+        "nothing to cancel"
+    );
     tick(&rt, 20.0);
     assert_eq!(count(&rt), 101, "the unrelated timer still ran");
 }
@@ -160,9 +175,9 @@ fn a_failing_callback_does_not_take_the_editor_down() {
     // And it is reported rather than swallowed: a plugin author with neither an
     // effect nor an error message has nothing to go on.
     let actions = rt.drain_actions();
-    let reported = actions.iter().any(|a| {
-        matches!(a, ruster_lua::runtime::LuaAction::Notify(3, msg) if msg.contains("boom"))
-    });
+    let reported = actions.iter().any(
+        |a| matches!(a, ruster_lua::runtime::LuaAction::Notify(3, msg) if msg.contains("boom")),
+    );
     assert!(reported, "the failure was swallowed: {actions:?}");
 }
 

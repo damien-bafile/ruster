@@ -54,7 +54,12 @@ pub struct TermCell {
 
 impl Default for TermCell {
     fn default() -> Self {
-        TermCell { c: ' ', fg: TermColor::Default, bg: TermColor::Default, attrs: TermAttrs::default() }
+        TermCell {
+            c: ' ',
+            fg: TermColor::Default,
+            bg: TermColor::Default,
+            attrs: TermAttrs::default(),
+        }
     }
 }
 
@@ -75,7 +80,9 @@ impl TermGrid {
         if row >= self.rows {
             return String::new();
         }
-        (0..self.cols).map(|c| self.cells[row * self.cols + c].c).collect()
+        (0..self.cols)
+            .map(|c| self.cells[row * self.cols + c].c)
+            .collect()
     }
 }
 
@@ -128,7 +135,12 @@ impl TerminalSession {
     ) -> Result<Self> {
         let pty = native_pty_system();
         let pair = pty
-            .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .openpty(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .map_err(|e| format!("openpty failed: {e}"))?;
 
         let mut cmd = CommandBuilder::new(program);
@@ -143,8 +155,14 @@ impl TerminalSession {
         // it lets the PTY report EOF cleanly when the child exits.
         drop(pair.slave);
 
-        let size = TermSize { cols: cols as usize, screen_lines: rows as usize };
-        let config = Config { scrolling_history: scrollback, ..Config::default() };
+        let size = TermSize {
+            cols: cols as usize,
+            screen_lines: rows as usize,
+        };
+        let config = Config {
+            scrolling_history: scrollback,
+            ..Config::default()
+        };
         let term = Arc::new(Mutex::new(Term::new(config, &size, EventProxy)));
 
         let mut read_src = pair
@@ -186,7 +204,10 @@ impl TerminalSession {
     /// Write raw bytes (already-encoded input) to the child.
     pub fn write_input(&self, bytes: &[u8]) -> Result<()> {
         use std::io::Write;
-        let mut w = self.writer.lock().map_err(|_| "writer poisoned".to_string())?;
+        let mut w = self
+            .writer
+            .lock()
+            .map_err(|_| "writer poisoned".to_string())?;
         w.write_all(bytes).map_err(|e| e.to_string())?;
         w.flush().map_err(|e| e.to_string())
     }
@@ -197,10 +218,18 @@ impl TerminalSession {
             return Ok(());
         }
         self.master
-            .resize(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .resize(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .map_err(|e| format!("PTY resize failed: {e}"))?;
         if let Ok(mut t) = self.term.lock() {
-            t.resize(TermSize { cols: cols as usize, screen_lines: rows as usize });
+            t.resize(TermSize {
+                cols: cols as usize,
+                screen_lines: rows as usize,
+            });
         }
         self.cols = cols;
         self.rows = rows;
@@ -239,8 +268,16 @@ impl TerminalSession {
             }
         }
         let point = grid.cursor.point;
-        let cursor = (point.line.0.max(0) as usize, point.column.0.min(cols.saturating_sub(1)));
-        TermGrid { cols, rows, cells, cursor }
+        let cursor = (
+            point.line.0.max(0) as usize,
+            point.column.0.min(cols.saturating_sub(1)),
+        );
+        TermGrid {
+            cols,
+            rows,
+            cells,
+            cursor,
+        }
     }
 }
 

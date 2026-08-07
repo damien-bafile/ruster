@@ -48,14 +48,28 @@ impl std::fmt::Display for Buffer {
 }
 
 impl Buffer {
-    pub fn new() -> Self { Self { rope: Rope::new(), revision: 0, pending_edits: Vec::new() } }
+    pub fn new() -> Self {
+        Self {
+            rope: Rope::new(),
+            revision: 0,
+            pending_edits: Vec::new(),
+        }
+    }
     // An infallible constructor, not the fallible `FromStr` trait.
     #[allow(clippy::should_implement_trait)]
-    pub fn from_str(s: &str) -> Self { Self { rope: Rope::from_str(s), revision: 0, pending_edits: Vec::new() } }
+    pub fn from_str(s: &str) -> Self {
+        Self {
+            rope: Rope::from_str(s),
+            revision: 0,
+            pending_edits: Vec::new(),
+        }
+    }
 
     /// A counter that changes whenever the text does. Equal revisions mean
     /// equal contents; unequal ones mean it *may* have changed.
-    pub fn revision(&self) -> u64 { self.revision }
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
 
     /// Take the edits recorded since the last call, for an incremental
     /// reparse. Draining is deliberate: applying the same edit twice would
@@ -72,10 +86,18 @@ impl Buffer {
         (row, byte - self.rope.line_to_byte(row))
     }
 
-    pub fn len_chars(&self) -> usize { self.rope.len_chars() }
-    pub fn line_count(&self) -> usize { self.rope.len_lines() }
-    pub fn char_at(&self, idx: usize) -> char { self.rope.char(idx) }
-    pub fn slice_string(&self, start: usize, end: usize) -> String { self.rope.slice(start..end).to_string() }
+    pub fn len_chars(&self) -> usize {
+        self.rope.len_chars()
+    }
+    pub fn line_count(&self) -> usize {
+        self.rope.len_lines()
+    }
+    pub fn char_at(&self, idx: usize) -> char {
+        self.rope.char(idx)
+    }
+    pub fn slice_string(&self, start: usize, end: usize) -> String {
+        self.rope.slice(start..end).to_string()
+    }
     pub fn line_to_string(&self, line_idx: usize) -> String {
         self.rope.line(line_idx).to_string()
     }
@@ -122,7 +144,11 @@ impl Buffer {
             old_end_point: start_point,
             new_end_point: self.point_at(new_end_byte),
         });
-        Change { at, deleted: String::new(), inserted: text.to_string() }
+        Change {
+            at,
+            deleted: String::new(),
+            inserted: text.to_string(),
+        }
     }
 
     pub fn delete(&mut self, range: std::ops::Range<usize>) -> Change {
@@ -142,7 +168,11 @@ impl Buffer {
             old_end_point,
             new_end_point: start_point,
         });
-        Change { at, deleted, inserted: String::new() }
+        Change {
+            at,
+            deleted,
+            inserted: String::new(),
+        }
     }
 
     /// Apply a change; returns the inverse change that would undo this application.
@@ -153,12 +183,18 @@ impl Buffer {
         let ins_len = ch.inserted.chars().count();
         self.rope.remove(ch.at..ch.at + ins_len);
         self.rope.insert(ch.at, &ch.deleted);
-        Change { at: ch.at, deleted: ch.inserted.clone(), inserted: ch.deleted.clone() }
+        Change {
+            at: ch.at,
+            deleted: ch.inserted.clone(),
+            inserted: ch.deleted.clone(),
+        }
     }
 }
 
 impl Default for Buffer {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[cfg(test)]
@@ -170,7 +206,14 @@ mod tests {
         let mut b = Buffer::from_str("helo");
         let ch = b.insert(4, "!");
         assert_eq!(b.to_string(), "helo!");
-        assert_eq!(ch, Change { at: 4, deleted: String::new(), inserted: "!".to_string() });
+        assert_eq!(
+            ch,
+            Change {
+                at: 4,
+                deleted: String::new(),
+                inserted: "!".to_string()
+            }
+        );
     }
 
     #[test]
@@ -178,56 +221,63 @@ mod tests {
         let mut b = Buffer::from_str("hello world");
         let ch = b.delete(5..11);
         assert_eq!(b.to_string(), "hello");
-        assert_eq!(ch, Change { at: 5, deleted: " world".to_string(), inserted: String::new() });
+        assert_eq!(
+            ch,
+            Change {
+                at: 5,
+                deleted: " world".to_string(),
+                inserted: String::new()
+            }
+        );
     }
 
     #[test]
     fn apply_inverse_round_trips() {
         let mut b = Buffer::from_str("hello");
-        let ch = b.delete(0..2);      // b: "hello" -> "llo"; ch: del="he", ins=""
-        let inv = b.apply(&ch);        // applying ch inverts the deletion: b -> "hello"
+        let ch = b.delete(0..2); // b: "hello" -> "llo"; ch: del="he", ins=""
+        let inv = b.apply(&ch); // applying ch inverts the deletion: b -> "hello"
         assert_eq!(b.to_string(), "hello");
         assert_eq!(inv.inserted, ch.deleted);
-        let inv2 = b.apply(&inv);      // applying inv re-applies the deletion: b -> "llo"
+        let inv2 = b.apply(&inv); // applying inv re-applies the deletion: b -> "llo"
         assert_eq!(b.to_string(), "llo");
         assert_eq!(inv2, ch);
     }
 
-#[cfg(test)]
-mod revision_tests {
-    use super::*;
+    #[cfg(test)]
+    mod revision_tests {
+        use super::*;
 
-    #[test]
-    fn the_revision_changes_only_when_the_text_does() {
-        let mut b = Buffer::from_str("hello");
-        let start = b.revision();
+        #[test]
+        fn the_revision_changes_only_when_the_text_does() {
+            let mut b = Buffer::from_str("hello");
+            let start = b.revision();
 
-        // Reads do not count as changes.
-        let _ = b.to_string();
-        let _ = b.line_count();
-        assert_eq!(b.revision(), start, "reading is not a change");
+            // Reads do not count as changes.
+            let _ = b.to_string();
+            let _ = b.line_count();
+            assert_eq!(b.revision(), start, "reading is not a change");
 
-        b.insert(5, " world");
-        let after_insert = b.revision();
-        assert_ne!(after_insert, start, "an insert is a change");
+            b.insert(5, " world");
+            let after_insert = b.revision();
+            assert_ne!(after_insert, start, "an insert is a change");
 
-        b.delete(0..1);
-        assert_ne!(b.revision(), after_insert, "a delete is a change");
-    }
-
-    /// Two edits must not collide onto one revision, or the second is missed.
-    #[test]
-    fn every_edit_gets_its_own_revision() {
-        let mut b = Buffer::new();
-        let mut seen = vec![b.revision()];
-        for i in 0..5 {
-            b.insert(i, "x");
-            seen.push(b.revision());
+            b.delete(0..1);
+            assert_ne!(b.revision(), after_insert, "a delete is a change");
         }
-        let mut sorted = seen.clone();
-        sorted.sort_unstable();
-        sorted.dedup();
-        assert_eq!(sorted.len(), seen.len(), "revisions repeat: {seen:?}");
+
+        /// Two edits must not collide onto one revision, or the second is missed.
+        #[test]
+        fn every_edit_gets_its_own_revision() {
+            let mut b = Buffer::new();
+            let mut seen = vec![b.revision()];
+            for i in 0..5 {
+                b.insert(i, "x");
+                seen.push(b.revision());
+            }
+            let mut sorted = seen.clone();
+            sorted.sort_unstable();
+            sorted.dedup();
+            assert_eq!(sorted.len(), seen.len(), "revisions repeat: {seen:?}");
+        }
     }
-}
 }

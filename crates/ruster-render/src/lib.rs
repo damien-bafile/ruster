@@ -165,19 +165,39 @@ pub struct SyntaxStyle {
 
 impl Default for SyntaxStyle {
     fn default() -> Self {
-        SyntaxStyle { fg: Color::Default, bg: Color::Default, bold: false, italic: false }
+        SyntaxStyle {
+            fg: Color::Default,
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        }
     }
 }
 
 impl SyntaxStyle {
     pub fn error() -> Self {
-        SyntaxStyle { fg: Color::Rgb(243, 139, 168), bg: Color::Default, bold: false, italic: false }
+        SyntaxStyle {
+            fg: Color::Rgb(243, 139, 168),
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        }
     }
     pub fn warning() -> Self {
-        SyntaxStyle { fg: Color::Rgb(249, 226, 175), bg: Color::Default, bold: false, italic: false }
+        SyntaxStyle {
+            fg: Color::Rgb(249, 226, 175),
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        }
     }
     pub fn info() -> Self {
-        SyntaxStyle { fg: Color::Rgb(137, 180, 250), bg: Color::Default, bold: false, italic: false }
+        SyntaxStyle {
+            fg: Color::Rgb(137, 180, 250),
+            bg: Color::Default,
+            bold: false,
+            italic: false,
+        }
     }
 }
 
@@ -188,7 +208,11 @@ pub struct StyledLine {
 }
 
 #[derive(Debug, Copy, Clone, Default, PartialEq, Eq)]
-pub enum CursorKind { #[default] Block, Bar }
+pub enum CursorKind {
+    #[default]
+    Block,
+    Bar,
+}
 
 /// A rectangle in cell coordinates (origin top-left). Mirrors
 /// `ruster_core::windows::Rect`; kept local so this crate stays dependency-free.
@@ -202,7 +226,12 @@ pub struct Rect {
 
 impl Rect {
     pub fn new(x: u16, y: u16, width: u16, height: u16) -> Self {
-        Rect { x, y, width, height }
+        Rect {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 }
 
@@ -229,7 +258,11 @@ impl SignsView {
     /// The sign (glyph, color) for a buffer line, if any. Later signs win, so a
     /// higher-severity sign pushed last overrides a lower one on the same line.
     pub fn at(&self, line: u16) -> Option<(char, Color)> {
-        self.signs.iter().rev().find(|(l, _, _)| *l == line).map(|(_, g, c)| (*g, *c))
+        self.signs
+            .iter()
+            .rev()
+            .find(|(l, _, _)| *l == line)
+            .map(|(_, g, c)| (*g, *c))
     }
 }
 
@@ -389,8 +422,16 @@ impl SelectionView {
                 }
             }
             SelectionKind::Char => {
-                let start = if line == self.start.0 { self.start.1 } else { 0 };
-                let end = if line == self.end.0 { self.end.1 } else { line_len };
+                let start = if line == self.start.0 {
+                    self.start.1
+                } else {
+                    0
+                };
+                let end = if line == self.end.0 {
+                    self.end.1
+                } else {
+                    line_len
+                };
                 Some((start, end))
             }
         }
@@ -687,7 +728,11 @@ impl FloatView {
         title: Option<String>,
     ) -> Self {
         let pad = 2; // border on both sides
-        let content_w = lines.iter().map(|l| l.text.chars().count()).max().unwrap_or(0);
+        let content_w = lines
+            .iter()
+            .map(|l| l.text.chars().count())
+            .max()
+            .unwrap_or(0);
         let mut w = (content_w as u16).saturating_add(pad);
         // The title sits on the top border, inset two cells from the left, so it
         // needs its length plus that inset plus the closing corner — otherwise a
@@ -731,7 +776,13 @@ impl FloatView {
         let x = x.clamp(area.x, max_x.max(area.x));
         let y = y.clamp(area.y, max_y.max(area.y));
 
-        FloatView { rect: Rect::new(x, y, w, h), lines, title, border: true, z: 0 }
+        FloatView {
+            rect: Rect::new(x, y, w, h),
+            lines,
+            title,
+            border: true,
+            z: 0,
+        }
     }
 
     pub fn with_z(mut self, z: i32) -> Self {
@@ -771,7 +822,11 @@ pub fn floats_in_draw_order(floats: &[FloatView]) -> Vec<&FloatView> {
 pub fn control_display(row: &SettingRowView) -> String {
     match row.kind {
         ControlKind::Toggle => {
-            if row.value == "on" { "[x] on".to_string() } else { "[ ] off".to_string() }
+            if row.value == "on" {
+                "[x] on".to_string()
+            } else {
+                "[ ] off".to_string()
+            }
         }
         ControlKind::Enum => format!("< {} >", row.value),
         ControlKind::Button => format!("[ {} ]", row.label),
@@ -882,9 +937,9 @@ pub trait Renderer {
 #[cfg(test)]
 mod tests {
     use crate::{
-        floats_in_draw_order, Color, FloatAnchor, FloatEdge, FloatView, FrameState, Rect,
-        Renderer, SelectionKind, SelectionView, StatuslineView, StyledLine, TermCellView,
-        TermGridView, UIMode, WindowView,
+        floats_in_draw_order, Color, FloatAnchor, FloatEdge, FloatView, FrameState, Rect, Renderer,
+        SelectionKind, SelectionView, StatuslineView, StyledLine, TermCellView, TermGridView,
+        UIMode, WindowView,
     };
 
     struct TestRenderer;
@@ -916,7 +971,10 @@ mod tests {
         use crate::DebugOverlayView;
         // A session that has started but not stopped yet has no frames; the
         // panel still needs something to draw.
-        assert_eq!(DebugOverlayView::default().rows(), vec!["(no frames)".to_string()]);
+        assert_eq!(
+            DebugOverlayView::default().rows(),
+            vec!["(no frames)".to_string()]
+        );
     }
 
     #[test]
@@ -995,7 +1053,10 @@ mod tests {
     fn sample_window() -> WindowView {
         WindowView {
             rect: Rect::new(0, 0, 80, 24),
-            lines: vec![StyledLine { text: "hello".to_string(), highlights: vec![] }],
+            lines: vec![StyledLine {
+                text: "hello".to_string(),
+                highlights: vec![],
+            }],
             cursor_visible: true,
             statusline: StatuslineView {
                 left: "NORMAL".into(),
@@ -1016,8 +1077,15 @@ mod tests {
             cols: 2,
             rows: 1,
             cells: vec![
-                TermCellView { c: 'h', fg: Color::Rgb(1, 2, 3), ..TermCellView::default() },
-                TermCellView { c: 'i', ..TermCellView::default() },
+                TermCellView {
+                    c: 'h',
+                    fg: Color::Rgb(1, 2, 3),
+                    ..TermCellView::default()
+                },
+                TermCellView {
+                    c: 'i',
+                    ..TermCellView::default()
+                },
             ],
             cursor: (0, 1),
         };
@@ -1030,24 +1098,44 @@ mod tests {
     #[test]
     fn selection_spans_per_line() {
         // charwise from (1,4) to (3,2)
-        let sel = SelectionView { start: (1, 4), end: (3, 2), kind: SelectionKind::Char };
+        let sel = SelectionView {
+            start: (1, 4),
+            end: (3, 2),
+            kind: SelectionKind::Char,
+        };
         assert_eq!(sel.span_on(0, 10), None, "before the selection");
-        assert_eq!(sel.span_on(1, 10), Some((4, 10)), "first line: from start col");
+        assert_eq!(
+            sel.span_on(1, 10),
+            Some((4, 10)),
+            "first line: from start col"
+        );
         assert_eq!(sel.span_on(2, 10), Some((0, 10)), "middle line: whole line");
         assert_eq!(sel.span_on(3, 10), Some((0, 2)), "last line: up to end col");
         assert_eq!(sel.span_on(4, 10), None, "after the selection");
 
         // single-line charwise
-        let one = SelectionView { start: (2, 3), end: (2, 7), kind: SelectionKind::Char };
+        let one = SelectionView {
+            start: (2, 3),
+            end: (2, 7),
+            kind: SelectionKind::Char,
+        };
         assert_eq!(one.span_on(2, 20), Some((3, 7)));
 
         // line-wise ignores columns
-        let lw = SelectionView { start: (1, 5), end: (2, 1), kind: SelectionKind::Line };
+        let lw = SelectionView {
+            start: (1, 5),
+            end: (2, 1),
+            kind: SelectionKind::Line,
+        };
         assert_eq!(lw.span_on(1, 8), Some((0, 8)));
         assert_eq!(lw.span_on(2, 4), Some((0, 4)));
 
         // block-wise selects the same columns on every line, clipped per line
-        let blk = SelectionView { start: (1, 2), end: (3, 5), kind: SelectionKind::Block };
+        let blk = SelectionView {
+            start: (1, 2),
+            end: (3, 5),
+            kind: SelectionKind::Block,
+        };
         assert_eq!(blk.span_on(1, 10), Some((2, 5)));
         assert_eq!(blk.span_on(2, 10), Some((2, 5)));
         assert_eq!(blk.span_on(3, 4), Some((2, 4)), "clipped to a short line");
@@ -1056,7 +1144,10 @@ mod tests {
 
     #[test]
     fn renderer_trait_is_object_safe() {
-        let state = FrameState { windows: vec![sample_window()], ..Default::default() };
+        let state = FrameState {
+            windows: vec![sample_window()],
+            ..Default::default()
+        };
         let mut r = TestRenderer;
         r.render_frame(&state);
         assert_eq!(r.viewport_cells(), (80, 24));
@@ -1075,7 +1166,10 @@ mod tests {
     fn gutter_absolute_numbers() {
         let g = gutter_view(0, 3, 0, true, false, 3);
         assert_eq!(g.width, 4); // max(3,1)+1
-        assert_eq!(g.rows, vec!["  1 ".to_string(), "  2 ".to_string(), "  3 ".to_string()]);
+        assert_eq!(
+            g.rows,
+            vec!["  1 ".to_string(), "  2 ".to_string(), "  3 ".to_string()]
+        );
     }
 
     #[test]
@@ -1099,7 +1193,10 @@ mod tests {
     fn gutter_hybrid_is_wider_than_single() {
         let single = gutter_view(0, 100, 0, true, false, 3).width;
         let hybrid = gutter_view(0, 100, 0, true, true, 3).width;
-        assert!(hybrid > single, "hybrid gutter is wider: {hybrid} vs {single}");
+        assert!(
+            hybrid > single,
+            "hybrid gutter is wider: {hybrid} vs {single}"
+        );
     }
 
     #[test]
@@ -1117,10 +1214,18 @@ mod tests {
     }
 
     fn sl(t: &str) -> StyledLine {
-        StyledLine { text: t.to_string(), highlights: vec![] }
+        StyledLine {
+            text: t.to_string(),
+            highlights: vec![],
+        }
     }
 
-    const AREA: Rect = Rect { x: 0, y: 0, width: 80, height: 24 };
+    const AREA: Rect = Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 24,
+    };
 
     #[test]
     fn float_sizes_to_its_content_plus_border() {
@@ -1164,7 +1269,11 @@ mod tests {
             FloatAnchor::Cursor { col: 4, row: 22 },
             vec![sl("a"), sl("b")],
         );
-        assert!(f.rect.y < 22, "flipped above the cursor, got y={}", f.rect.y);
+        assert!(
+            f.rect.y < 22,
+            "flipped above the cursor, got y={}",
+            f.rect.y
+        );
         assert!(f.rect.y + f.rect.height <= 24);
     }
 
@@ -1176,12 +1285,20 @@ mod tests {
     /// anything assuming a `0,0` origin is caught.
     #[test]
     fn floats_are_clamped_inside_the_area_at_every_edge() {
-        const OFF: Rect = Rect { x: 7, y: 3, width: 60, height: 20 };
+        const OFF: Rect = Rect {
+            x: 7,
+            y: 3,
+            width: 60,
+            height: 20,
+        };
         let wide = vec![sl(&"x".repeat(200))];
         let tall: Vec<StyledLine> = (0..100).map(|i| sl(&format!("line {i}"))).collect();
         let anchors = [
             FloatAnchor::Center,
-            FloatAnchor::Cursor { col: OFF.x + OFF.width - 1, row: OFF.y + OFF.height - 1 },
+            FloatAnchor::Cursor {
+                col: OFF.x + OFF.width - 1,
+                row: OFF.y + OFF.height - 1,
+            },
             FloatAnchor::Cursor { col: 0, row: 0 },
             FloatAnchor::Cursor { col: 200, row: 200 },
             FloatAnchor::Edge(FloatEdge::Top),
@@ -1197,12 +1314,14 @@ mod tests {
                 assert!(
                     f.rect.x + f.rect.width <= OFF.x + OFF.width,
                     "{a:?} right edge: x={} w={}",
-                    f.rect.x, f.rect.width
+                    f.rect.x,
+                    f.rect.width
                 );
                 assert!(
                     f.rect.y + f.rect.height <= OFF.y + OFF.height,
                     "{a:?} bottom edge: y={} h={}",
-                    f.rect.y, f.rect.height
+                    f.rect.y,
+                    f.rect.height
                 );
             }
         }

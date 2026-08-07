@@ -18,7 +18,12 @@ pub struct Rect {
 
 impl Rect {
     pub fn new(x: u16, y: u16, width: u16, height: u16) -> Self {
-        Rect { x, y, width, height }
+        Rect {
+            x,
+            y,
+            width,
+            height,
+        }
     }
     fn cx(&self) -> i32 {
         self.x as i32 + self.width as i32 / 2
@@ -41,7 +46,12 @@ pub struct Window {
 
 impl Window {
     fn new(buffer: BufferId) -> Self {
-        Window { buffer, cursors: CursorSet::single(0), scroll_top: 0, height: 0 }
+        Window {
+            buffer,
+            cursors: CursorSet::single(0),
+            scroll_top: 0,
+            height: 0,
+        }
     }
 }
 
@@ -64,7 +74,12 @@ pub enum FocusDir {
 
 enum Layout {
     Leaf(WindowId),
-    Split { dir: SplitDir, ratio: f32, first: Box<Layout>, second: Box<Layout> },
+    Split {
+        dir: SplitDir,
+        ratio: f32,
+        first: Box<Layout>,
+        second: Box<Layout>,
+    },
 }
 
 /// A binary tree of split windows. Leaves are [`Window`]s; internal nodes are
@@ -87,7 +102,12 @@ fn build(
     active: &mut Option<WindowId>,
 ) -> Option<Layout> {
     match snap {
-        LayoutSnapshot::Leaf { buffer, cursor, scroll, active: is_active } => {
+        LayoutSnapshot::Leaf {
+            buffer,
+            cursor,
+            scroll,
+            active: is_active,
+        } => {
             let buf = resolve(*buffer)?;
             let id = WindowId(*next);
             *next += 1;
@@ -105,7 +125,12 @@ fn build(
             }
             Some(Layout::Leaf(id))
         }
-        LayoutSnapshot::Split { dir, ratio, first, second } => {
+        LayoutSnapshot::Split {
+            dir,
+            ratio,
+            first,
+            second,
+        } => {
             let a = build(first, resolve, windows, next, active);
             let b = build(second, resolve, windows, next, active);
             match (a, b) {
@@ -154,7 +179,10 @@ impl WindowTree {
     /// and the other special buffers. A split with an unsaveable child collapses
     /// to its saveable side, so a layout that was half scratch still restores
     /// its real windows instead of being dropped whole.
-    pub fn snapshot(&self, index_of: impl Fn(BufferId) -> Option<usize> + Copy) -> Option<LayoutSnapshot> {
+    pub fn snapshot(
+        &self,
+        index_of: impl Fn(BufferId) -> Option<usize> + Copy,
+    ) -> Option<LayoutSnapshot> {
         self.snapshot_at(&self.root, index_of)
     }
 
@@ -173,8 +201,16 @@ impl WindowTree {
                     active: *id == self.active,
                 })
             }
-            Layout::Split { dir, ratio, first, second } => {
-                match (self.snapshot_at(first, index_of), self.snapshot_at(second, index_of)) {
+            Layout::Split {
+                dir,
+                ratio,
+                first,
+                second,
+            } => {
+                match (
+                    self.snapshot_at(first, index_of),
+                    self.snapshot_at(second, index_of),
+                ) {
                     (Some(a), Some(b)) => Some(LayoutSnapshot::Split {
                         dir: *dir,
                         ratio: *ratio,
@@ -207,7 +243,13 @@ impl WindowTree {
         // Nothing was marked active (or the active leaf was dropped): focus the
         // first window rather than leaving the tree without a cursor.
         let active = active.or_else(|| windows.keys().copied().min())?;
-        Some(WindowTree { root, windows, active, next, fullscreen: None })
+        Some(WindowTree {
+            root,
+            windows,
+            active,
+            next,
+            fullscreen: None,
+        })
     }
 
     /// The layout ratios, for tests and for callers that need to compare shapes.
@@ -216,7 +258,9 @@ impl WindowTree {
         fn walk(l: &Layout, out: &mut String) {
             match l {
                 Layout::Leaf(_) => out.push('L'),
-                Layout::Split { dir, first, second, .. } => {
+                Layout::Split {
+                    dir, first, second, ..
+                } => {
                     out.push(if *dir == SplitDir::Vertical { 'V' } else { 'H' });
                     out.push('(');
                     walk(first, out);
@@ -260,7 +304,9 @@ impl WindowTree {
     }
 
     pub fn active_window_mut(&mut self) -> &mut Window {
-        self.windows.get_mut(&self.active).expect("active window exists")
+        self.windows
+            .get_mut(&self.active)
+            .expect("active window exists")
     }
 
     pub fn window(&self, id: WindowId) -> Option<&Window> {
@@ -405,13 +451,17 @@ fn overlaps_h(a: &Rect, b: &Rect) -> bool {
 fn layout_rects(layout: &Layout, area: Rect, out: &mut Vec<(WindowId, Rect)>) {
     match layout {
         Layout::Leaf(id) => out.push((*id, area)),
-        Layout::Split { dir, ratio, first, second } => match dir {
+        Layout::Split {
+            dir,
+            ratio,
+            first,
+            second,
+        } => match dir {
             SplitDir::Vertical => {
                 let w1 = ((area.width as f32) * ratio).round() as u16;
                 let w1 = w1.clamp(0, area.width);
                 let first_area = Rect::new(area.x, area.y, w1, area.height);
-                let second_area =
-                    Rect::new(area.x + w1, area.y, area.width - w1, area.height);
+                let second_area = Rect::new(area.x + w1, area.y, area.width - w1, area.height);
                 layout_rects(first, first_area, out);
                 layout_rects(second, second_area, out);
             }
@@ -419,8 +469,7 @@ fn layout_rects(layout: &Layout, area: Rect, out: &mut Vec<(WindowId, Rect)>) {
                 let h1 = ((area.height as f32) * ratio).round() as u16;
                 let h1 = h1.clamp(0, area.height);
                 let first_area = Rect::new(area.x, area.y, area.width, h1);
-                let second_area =
-                    Rect::new(area.x, area.y + h1, area.width, area.height - h1);
+                let second_area = Rect::new(area.x, area.y + h1, area.width, area.height - h1);
                 layout_rects(first, first_area, out);
                 layout_rects(second, second_area, out);
             }
@@ -593,7 +642,9 @@ mod tests {
     fn split_copies_cursor_and_buffer() {
         let mut t = tree();
         t.active_window_mut().scroll_top = 7;
-        t.active_window_mut().cursors.set_head(0, &crate::buffer::Buffer::from_str(""));
+        t.active_window_mut()
+            .cursors
+            .set_head(0, &crate::buffer::Buffer::from_str(""));
         let buf = t.active_window().buffer;
         let new = t.split(SplitDir::Horizontal);
         assert_eq!(t.window(new).unwrap().buffer, buf);
@@ -615,14 +666,25 @@ mod tests {
         let active_buf = t.active_window().buffer;
 
         // BufferId(n) <-> index n-1.
-        let snap = t.snapshot(|b| Some(b.0 as usize - 1)).expect("all saveable");
-        let restored = WindowTree::restore(&snap, |i| Some(BufferId(i as u32 + 1))).expect("rebuilt");
+        let snap = t
+            .snapshot(|b| Some(b.0 as usize - 1))
+            .expect("all saveable");
+        let restored =
+            WindowTree::restore(&snap, |i| Some(BufferId(i as u32 + 1))).expect("rebuilt");
 
         assert_eq!(restored.shape(), before, "same tree shape");
         assert_eq!(restored.len(), 3);
-        assert_eq!(restored.active_window().buffer, active_buf, "focus preserved");
+        assert_eq!(
+            restored.active_window().buffer,
+            active_buf,
+            "focus preserved"
+        );
         let first = restored.window(WindowId(1)).unwrap();
-        assert_eq!((first.cursors.head(), first.scroll_top), (42, 7), "cursor and scroll kept");
+        assert_eq!(
+            (first.cursors.head(), first.scroll_top),
+            (42, 7),
+            "cursor and scroll kept"
+        );
     }
 
     /// Terminals and dired are not saveable; their windows must drop out and
@@ -633,8 +695,13 @@ mod tests {
         let right = t.split(SplitDir::Vertical);
         t.window_mut(right).unwrap().buffer = BufferId(99); // a terminal, say
 
-        let snap = t.snapshot(|b| (b.0 != 99).then_some(b.0 as usize - 1)).expect("one survives");
-        assert!(matches!(snap, LayoutSnapshot::Leaf { buffer: 0, .. }), "{snap:?}");
+        let snap = t
+            .snapshot(|b| (b.0 != 99).then_some(b.0 as usize - 1))
+            .expect("one survives");
+        assert!(
+            matches!(snap, LayoutSnapshot::Leaf { buffer: 0, .. }),
+            "{snap:?}"
+        );
 
         let restored = WindowTree::restore(&snap, |i| Some(BufferId(i as u32 + 1))).unwrap();
         assert_eq!(restored.len(), 1);
@@ -654,13 +721,27 @@ mod tests {
         let snap = LayoutSnapshot::Split {
             dir: SplitDir::Vertical,
             ratio: 0.5,
-            first: Box::new(LayoutSnapshot::Leaf { buffer: 0, cursor: 0, scroll: 0, active: true }),
-            second: Box::new(LayoutSnapshot::Leaf { buffer: 1, cursor: 0, scroll: 0, active: false }),
+            first: Box::new(LayoutSnapshot::Leaf {
+                buffer: 0,
+                cursor: 0,
+                scroll: 0,
+                active: true,
+            }),
+            second: Box::new(LayoutSnapshot::Leaf {
+                buffer: 1,
+                cursor: 0,
+                scroll: 0,
+                active: false,
+            }),
         };
         // Index 0 is gone; only index 1 reopens.
         let t = WindowTree::restore(&snap, |i| (i == 1).then_some(BufferId(7))).expect("one left");
         assert_eq!(t.len(), 1);
-        assert_eq!(t.active_window().buffer, BufferId(7), "focus falls to what remains");
+        assert_eq!(
+            t.active_window().buffer,
+            BufferId(7),
+            "focus falls to what remains"
+        );
 
         // And if nothing reopens at all, there is no tree.
         assert!(WindowTree::restore(&snap, |_| None).is_none());

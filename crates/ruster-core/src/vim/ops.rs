@@ -1,28 +1,40 @@
 use crate::buffer::Buffer;
 use crate::editor::EditorView;
-use crate::vim::motions::{next_word_start, prev_word_start, word_end, last_printable_in_line, char_to_line};
+use crate::vim::motions::{
+    char_to_line, last_printable_in_line, next_word_start, prev_word_start, word_end,
+};
 
 /// Compute the (start, end) char range for an operator (`d`/`y`/`c`) applied `count` times
 /// to the named `motion`. Motions supported in the slice: `w`, `b`, `e`, `$`, `d` (line).
 /// Returns `None` for any other motion (text objects come in Task 9).
-pub fn range_for_motion(editor: &dyn EditorView, motion: char, count: u32) -> Option<(usize, usize)> {
+pub fn range_for_motion(
+    editor: &dyn EditorView,
+    motion: char,
+    count: u32,
+) -> Option<(usize, usize)> {
     let head = editor.primary_head();
     let buf: &Buffer = editor.buffer();
     let total = buf.len_chars();
     match motion {
         'w' => {
             let mut end = head;
-            for _ in 0..count { end = next_word_start(buf, end); }
+            for _ in 0..count {
+                end = next_word_start(buf, end);
+            }
             Some((head, end.min(total)))
         }
         'e' => {
             let mut end = head;
-            for _ in 0..count { end = word_end(buf, end); }
+            for _ in 0..count {
+                end = word_end(buf, end);
+            }
             Some((head, (end + 1).min(total)))
         }
         'b' => {
             let mut start = head;
-            for _ in 0..count { start = prev_word_start(buf, start); }
+            for _ in 0..count {
+                start = prev_word_start(buf, start);
+            }
             Some((start, head))
         }
         '$' => {
@@ -48,7 +60,8 @@ pub fn range_for_motion(editor: &dyn EditorView, motion: char, count: u32) -> Op
             // when not the last line). Doubled-operator convention.
             let line = char_to_line(editor, head);
             let start = buf.line_start_char(line);
-            let end_line = (line + (count as usize).saturating_sub(1)).min(buf.line_count().saturating_sub(1));
+            let end_line =
+                (line + (count as usize).saturating_sub(1)).min(buf.line_count().saturating_sub(1));
             let end = buf.line_end_char(end_line);
             Some((start, end))
         }
@@ -63,8 +76,12 @@ mod tests {
     use crate::vim::{VimMode, VimState};
 
     fn to_start(e: &mut Editor, v: &mut VimState) {
-        for a in v.handle(KeyEvent::Char('g'), e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('g'), e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('g'), e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('g'), e) {
+            e.execute(a);
+        }
     }
 
     #[test]
@@ -72,8 +89,12 @@ mod tests {
         let mut e = Editor::from_str("hello world");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Char('d'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('w'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('d'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('w'), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.buffer().to_string(), "world");
         assert_eq!(e.primary_head(), 0);
     }
@@ -83,8 +104,12 @@ mod tests {
         let mut e = Editor::from_str("hello world");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Char('d'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('$'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('d'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('$'), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.buffer().to_string(), "");
         assert_eq!(e.primary_head(), 0);
     }
@@ -94,8 +119,12 @@ mod tests {
         let mut e = Editor::from_str("abc\ndef\nghi");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Char('d'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('d'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('d'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('d'), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.buffer().to_string(), "def\nghi");
         assert_eq!(e.primary_head(), 0);
     }
@@ -105,7 +134,9 @@ mod tests {
         let mut e = Editor::from_str("ab");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Char('x'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('x'), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.buffer().to_string(), "b");
         assert_eq!(e.primary_head(), 0);
     }
@@ -115,11 +146,17 @@ mod tests {
         let mut e = Editor::from_str("hello");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Char('y'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('y'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('y'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('y'), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.buffer().to_string(), "hello");
         // `yy` is line-wise, so `p` puts the copy on the following line.
-        for a in v.handle(KeyEvent::Char('p'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('p'), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.buffer().to_string(), "hello\nhello");
     }
 
@@ -129,21 +166,27 @@ mod tests {
         let mut e = Editor::from_str("ab");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Char('a'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('a'), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.primary_head(), 1, "a moves one right");
 
         // `A` appends at end of line.
         let mut e = Editor::from_str("ab\ncd");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Char('A'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('A'), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.primary_head(), 2, "A goes to end of the first line");
 
         // `I` goes to the first non-blank.
         let mut e = Editor::from_str("   xy");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Char('I'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('I'), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.primary_head(), 3, "I skips leading blanks");
     }
 
@@ -152,13 +195,17 @@ mod tests {
         let mut e = Editor::from_str("one\ntwo");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Char('o'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('o'), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.buffer().to_string(), "one\n\ntwo");
 
         let mut e = Editor::from_str("one\ntwo");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Char('O'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('O'), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.buffer().to_string(), "\none\ntwo");
         assert_eq!(e.primary_head(), 0, "cursor sits on the new empty line");
     }
@@ -168,14 +215,20 @@ mod tests {
         let mut e = Editor::from_str("cat");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Char('r'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('b'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('r'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('b'), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.buffer().to_string(), "bat");
 
         let mut e = Editor::from_str("cat");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Char('~'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('~'), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.buffer().to_string(), "Cat");
     }
 
@@ -184,9 +237,15 @@ mod tests {
         let mut e = Editor::from_str("hello world\nnext");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('D'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('l'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('l'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('D'), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.buffer().to_string(), "he\nnext");
     }
 
@@ -196,18 +255,28 @@ mod tests {
         let mut e = Editor::from_str("one,two,three");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Char('f'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char(','), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('f'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char(','), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.primary_head(), 3);
-        for a in v.handle(KeyEvent::Char(';'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char(';'), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.primary_head(), 7, "; repeats the find");
 
         // `t` stops just before the target.
         let mut e = Editor::from_str("one,two");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Char('t'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char(','), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('t'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char(','), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.primary_head(), 2);
     }
 
@@ -217,18 +286,30 @@ mod tests {
         let mut e = Editor::from_str("one,two");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Char('d'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('t'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char(','), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('d'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('t'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char(','), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.buffer().to_string(), ",two", "dt, stops before the comma");
 
         // `df,` is inclusive of the comma.
         let mut e = Editor::from_str("one,two");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Char('d'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('f'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char(','), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('d'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('f'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char(','), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.buffer().to_string(), "two");
     }
 
@@ -238,12 +319,22 @@ mod tests {
         let mut e = Editor::from_str("abcd\nefgh\nijkl");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Ctrl('v'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Ctrl('v'), &e) {
+            e.execute(a);
+        }
         assert_eq!(v.mode, crate::vim::VimMode::VisualBlock);
-        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('j'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('j'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('d'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('l'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('j'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('j'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('d'), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.buffer().to_string(), "cd\ngh\nkl");
         assert_eq!(v.mode, crate::vim::VimMode::Normal);
     }
@@ -253,11 +344,23 @@ mod tests {
         let mut e = Editor::from_str("abcd\nefgh");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Ctrl('v'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('j'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('y'), &e) { e.execute(a); }
-        assert_eq!(e.buffer().to_string(), "abcd\nefgh", "yank leaves text alone");
+        for a in v.handle(KeyEvent::Ctrl('v'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('l'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('j'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('y'), &e) {
+            e.execute(a);
+        }
+        assert_eq!(
+            e.buffer().to_string(),
+            "abcd\nefgh",
+            "yank leaves text alone"
+        );
         assert_eq!(v.register.as_deref(), Some("ab\nef"));
     }
 
@@ -267,12 +370,24 @@ mod tests {
         let mut e = Editor::from_str("abcd\nx\nijkl");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Ctrl('v'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('j'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('j'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('d'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Ctrl('v'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('l'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('l'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('j'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('j'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('d'), &e) {
+            e.execute(a);
+        }
         // Columns 0..=2 removed where present; "x" only loses its single char.
         assert_eq!(e.buffer().to_string(), "d\n\nl");
     }
@@ -283,17 +398,27 @@ mod tests {
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
         // Type "/alpha" then Enter.
-        for a in v.handle(KeyEvent::Char('/'), &e) { e.execute(a); }
-        for c in "alpha".chars() {
-            for a in v.handle(KeyEvent::Char(c), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('/'), &e) {
+            e.execute(a);
         }
-        for a in v.handle(KeyEvent::Enter, &e) { e.execute(a); }
+        for c in "alpha".chars() {
+            for a in v.handle(KeyEvent::Char(c), &e) {
+                e.execute(a);
+            }
+        }
+        for a in v.handle(KeyEvent::Enter, &e) {
+            e.execute(a);
+        }
         assert_eq!(e.primary_head(), 11, "jumps to the second 'alpha'");
         // `n` goes to the third.
-        for a in v.handle(KeyEvent::Char('n'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('n'), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.primary_head(), 23);
         // `N` goes back.
-        for a in v.handle(KeyEvent::Char('N'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('N'), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.primary_head(), 11);
     }
 
@@ -302,12 +427,18 @@ mod tests {
         let mut e = Editor::from_str("needle and more");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Char('/'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('/'), &e) {
+            e.execute(a);
+        }
         for c in "needle".chars() {
-            for a in v.handle(KeyEvent::Char(c), &e) { e.execute(a); }
+            for a in v.handle(KeyEvent::Char(c), &e) {
+                e.execute(a);
+            }
         }
         // Only match is at 0, behind the cursor — the search wraps to it.
-        for a in v.handle(KeyEvent::Enter, &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Enter, &e) {
+            e.execute(a);
+        }
         assert_eq!(e.primary_head(), 0);
     }
 
@@ -316,7 +447,9 @@ mod tests {
         let mut e = Editor::from_str("foo bar foo");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Char('*'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('*'), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.primary_head(), 8, "jumps to the next 'foo'");
     }
 
@@ -325,9 +458,15 @@ mod tests {
         let mut e = Editor::from_str("alpha beta");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Char('/'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('b'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Esc, &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('/'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('b'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Esc, &e) {
+            e.execute(a);
+        }
         assert_eq!(e.primary_head(), 0);
         assert_eq!(v.mode, crate::vim::VimMode::Normal);
     }
@@ -338,10 +477,14 @@ mod tests {
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
         // From the start, % finds the first '(' at 3 and jumps to its match.
-        for a in v.handle(KeyEvent::Char('%'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('%'), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.primary_head(), 12, "outer close paren");
         // And back again.
-        for a in v.handle(KeyEvent::Char('%'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('%'), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.primary_head(), 3, "back to the opener");
     }
 
@@ -350,9 +493,15 @@ mod tests {
         let mut e = Editor::from_str("hello");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Char('y'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('y'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('P'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('y'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('y'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('P'), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.buffer().to_string(), "hello\nhello");
     }
 
@@ -361,10 +510,18 @@ mod tests {
         let mut e = Editor::from_str("hello world");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('d'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('0'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('l'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('l'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('d'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('0'), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.buffer().to_string(), "lo world");
         assert_eq!(e.primary_head(), 0);
     }
@@ -374,9 +531,15 @@ mod tests {
         let mut e = Editor::from_str("foo\nbar\nbaz");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Char('j'), &e) { e.execute(a); } // cursor -> line 1
-        for a in v.handle(KeyEvent::Char('d'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('G'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('j'), &e) {
+            e.execute(a);
+        } // cursor -> line 1
+        for a in v.handle(KeyEvent::Char('d'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('G'), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.buffer().to_string(), "foo\n");
     }
 
@@ -385,11 +548,17 @@ mod tests {
         let mut e = Editor::from_str("foo\nbar\nbaz");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Char('y'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('G'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('y'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('G'), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.buffer().to_string(), "foo\nbar\nbaz");
         // `yG` is line-wise: `p` puts the three lines after the current one.
-        for a in v.handle(KeyEvent::Char('p'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('p'), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.buffer().to_string(), "foo\nfoo\nbar\nbaz\nbar\nbaz");
     }
 
@@ -398,14 +567,24 @@ mod tests {
         let mut e = Editor::from_str("hello world");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('l'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('l'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('l'), &e) {
+            e.execute(a);
+        }
         // cursor at 2; c0 deletes 0..3 → "lo world", enters Insert
-        for a in v.handle(KeyEvent::Char('c'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('0'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('c'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('0'), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.buffer().to_string(), "lo world");
         assert_eq!(v.mode, VimMode::Insert);
-        for a in v.handle(KeyEvent::Char('H'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('H'), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.buffer().to_string(), "Hlo world");
     }
 
@@ -414,8 +593,12 @@ mod tests {
         let mut e = Editor::from_str("hello");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Char('>'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('>'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('>'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('>'), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.buffer().to_string(), "    hello");
     }
 
@@ -424,11 +607,17 @@ mod tests {
         let mut e = Editor::from_str("hello world");
         let mut v = VimState::new();
         to_start(&mut e, &mut v);
-        for a in v.handle(KeyEvent::Char('c'), &e) { e.execute(a); }
-        for a in v.handle(KeyEvent::Char('w'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('c'), &e) {
+            e.execute(a);
+        }
+        for a in v.handle(KeyEvent::Char('w'), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.buffer().to_string(), "world");
         assert_eq!(v.mode, VimMode::Insert);
-        for a in v.handle(KeyEvent::Char('H'), &e) { e.execute(a); }
+        for a in v.handle(KeyEvent::Char('H'), &e) {
+            e.execute(a);
+        }
         assert_eq!(e.buffer().to_string(), "Hworld");
     }
 }

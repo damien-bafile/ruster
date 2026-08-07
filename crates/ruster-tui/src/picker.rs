@@ -36,7 +36,10 @@ pub struct PickerItem {
 
 impl PickerItem {
     pub fn new(label: impl Into<String>, action: PickerAction) -> Self {
-        PickerItem { label: label.into(), action }
+        PickerItem {
+            label: label.into(),
+            action,
+        }
     }
 }
 

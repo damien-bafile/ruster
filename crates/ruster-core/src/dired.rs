@@ -14,7 +14,12 @@ pub struct DirEntry {
 
 impl DirEntry {
     fn dir(name: &str) -> Self {
-        DirEntry { name: name.to_string(), is_dir: true, is_exec: false, is_symlink: false }
+        DirEntry {
+            name: name.to_string(),
+            is_dir: true,
+            is_exec: false,
+            is_symlink: false,
+        }
     }
 }
 
@@ -67,7 +72,6 @@ pub fn list(path: &Path, show_hidden: bool) -> Vec<DirEntry> {
         return drive_roots();
     }
 
-
     let mut dirs: Vec<DirEntry> = Vec::new();
     let mut files: Vec<DirEntry> = Vec::new();
     if let Ok(rd) = std::fs::read_dir(path) {
@@ -85,7 +89,12 @@ pub fn list(path: &Path, show_hidden: bool) -> Vec<DirEntry> {
                 .ok()
                 .map(|m| !m.is_dir() && executable(&m))
                 .unwrap_or(false);
-            let item = DirEntry { name, is_dir, is_exec, is_symlink };
+            let item = DirEntry {
+                name,
+                is_dir,
+                is_exec,
+                is_symlink,
+            };
             if is_dir {
                 dirs.push(item);
             } else {
@@ -211,7 +220,10 @@ mod tests {
     #[test]
     fn drive_root_offers_dotdot_to_reach_drives() {
         let entries = list(Path::new("C:\\"), true);
-        assert_eq!(entries[0].name, "..", "drive root can ascend to the drive picker");
+        assert_eq!(
+            entries[0].name, "..",
+            "drive root can ascend to the drive picker"
+        );
     }
 
     #[test]

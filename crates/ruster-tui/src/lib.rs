@@ -11,8 +11,8 @@ pub mod lsp_state;
 pub mod mason;
 pub mod picker;
 pub mod quickfix;
-pub mod runner;
 pub mod renderer;
+pub mod runner;
 pub mod settings;
 pub mod sidebar;
 pub mod trouble;
@@ -30,7 +30,10 @@ mod tests {
         let view = WindowView {
             rect: Rect::new(0, 0, 80, 24),
             header: "f".to_string(),
-            lines: vec![StyledLine { text: "hi".to_string(), highlights: vec![] }],
+            lines: vec![StyledLine {
+                text: "hi".to_string(),
+                highlights: vec![],
+            }],
             cursor: (0, 1),
             cursor_kind: CursorKind::Bar,
             cursor_visible: true,
@@ -44,7 +47,10 @@ mod tests {
             active: true,
             ..Default::default()
         };
-        let state = FrameState { windows: vec![view], ..Default::default() };
+        let state = FrameState {
+            windows: vec![view],
+            ..Default::default()
+        };
         // Dummy renderer has no terminal; this exercises the type wiring.
         r.render_frame(&state);
     }
