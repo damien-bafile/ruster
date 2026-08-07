@@ -37,12 +37,22 @@ jobs:
       if: runner.os == 'Windows'
       run: choco install ripgrep -y
 
+    # Formatting is deterministic and platform-independent, so one runner is
+    # enough. Runs before the build so a formatting-only failure is obvious
+    # rather than buried under a compile.
+    - name: Formatting
+      if: runner.os == 'Linux'
+      run: cargo fmt --all --check
+
     - name: Build
       run: cargo build --verbose
     - name: Run tests
       run: cargo test --verbose
-    # Lints aren't platform-specific, so one runner is enough. --all-targets
-    # covers test code too, where several past findings lived.
+
+    # Clippy runs on every platform, not just Linux. Lints themselves are
+    # portable, but the *code* is not: `#[cfg(...)]` arms are only compiled on
+    # the platform they target, so a Linux-only lint job never sees the
+    # `cfg(not(target_os = "linux"))` fallbacks at all. --all-targets covers
+    # test code too, where several past findings lived.
     - name: Clippy
-      if: runner.os == 'Linux'
       run: cargo clippy --workspace --all-targets -- -D warnings
