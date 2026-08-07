@@ -14,6 +14,17 @@ pub trait Backend {
     /// The compositor's primary output — the one the fullscreen toplevel
     /// spans — used e.g. to size the initial `xdg_toplevel` configure.
     fn output(&self) -> &Output;
+
+    /// Switch the seat to another virtual terminal.
+    ///
+    /// On a real session this is the user's escape hatch, and it is the
+    /// compositor's job to provide it: once a compositor holds the session,
+    /// logind turns the VT's own keyboard off, so `Ctrl+Alt+F<n>` and `Ctrl+C`
+    /// no longer reach the console. Nothing outside the compositor can switch
+    /// away — if it does not handle these keys, the only way out is another
+    /// machine or a power button. Nested backends have no session and ignore
+    /// this.
+    fn change_vt(&mut self, _vt: i32) {}
 }
 
 /// The logical size of an output: its current physical mode size divided by

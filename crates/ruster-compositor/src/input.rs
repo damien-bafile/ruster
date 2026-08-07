@@ -21,6 +21,7 @@ use smithay::backend::input::{
     KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
 };
 use smithay::input::keyboard::xkb::keysym_get_name;
+use smithay::input::keyboard::xkb::keysyms as xkb_keysyms;
 use smithay::input::keyboard::{FilterResult, Keysym, ModifiersState};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
 use smithay::reexports::wayland_server::protocol::{wl_pointer, wl_surface::WlSurface};
@@ -39,6 +40,20 @@ pub const WM_MOD: u32 = 4;
 /// Super+Shift+q.
 pub fn is_quit_keysym(keysym: Keysym, mods: &ModifiersState) -> bool {
     keysym == Keysym::q && mods.logo && mods.shift
+}
+
+/// The VT `Ctrl+Alt+F<n>` asks for, or `None` for any other key.
+///
+/// xkb turns `Ctrl+Alt+F1`..`F12` into the `XF86Switch_VT_1`..`_12` keysyms,
+/// which occupy a contiguous range — matching the range keeps all twelve in one
+/// line and does not depend on twelve constants being named as expected.
+pub fn vt_switch_target(keysym: Keysym) -> Option<i32> {
+    const FIRST: u32 = xkb_keysyms::KEY_XF86Switch_VT_1;
+    const LAST: u32 = xkb_keysyms::KEY_XF86Switch_VT_12;
+    let raw = keysym.raw();
+    (FIRST..=LAST)
+        .contains(&raw)
+        .then(|| (raw - FIRST) as i32 + 1)
 }
 
 /// True when the given keysym+modifier should cycle active workspaces:
@@ -206,6 +221,30 @@ impl<B: Backend + 'static> CompositorState<B> {
                 let keysym = handle
                     .raw_latin_sym_or_raw_current_sym()
                     .unwrap_or(Keysym::NoSymbol);
+                // Every key, at debug level: when a binding does not fire on
+                // real hardware this is the only way to see whether the keysym
+                // or the modifier state is the one that disagreed.
+                debug!(
+                    key = %keysym_get_name(keysym),
+                    modified = %keysym_get_name(handle.modified_sym()),
+                    logo = modifiers.logo,
+                    shift = modifiers.shift,
+                    ctrl = modifiers.ctrl,
+                    alt = modifiers.alt,
+                    pressed = key_state == KeyState::Pressed,
+                    "key",
+                );
+
+                // VT switching comes first and is never configurable: it is the
+                // escape hatch, and a user who has bound themselves into a
+                // corner still has to be able to get out.
+                if key_state == KeyState::Pressed {
+                    if let Some(vt) = vt_switch_target(keysym) {
+                        compositor.backend_data.change_vt(vt);
+                        return FilterResult::Intercept(());
+                    }
+                }
+
                 match resolve_wm_action(&compositor.keybinds, modifiers, keysym) {
                     Some(Action::Quit) => {
                         if key_state == KeyState::Pressed {
@@ -747,6 +786,27 @@ mod tests {
             resolve_wm_action(&keybinds, &cycle_mods, Keysym::t),
             Some(Action::CycleWorkspace)
         );
+    }
+
+    #[test]
+    fn vt_switch_keysyms_map_to_their_terminal() {
+        assert_eq!(
+            vt_switch_target(Keysym::new(xkb_keysyms::KEY_XF86Switch_VT_1)),
+            Some(1)
+        );
+        assert_eq!(
+            vt_switch_target(Keysym::new(xkb_keysyms::KEY_XF86Switch_VT_3)),
+            Some(3)
+        );
+        assert_eq!(
+            vt_switch_target(Keysym::new(xkb_keysyms::KEY_XF86Switch_VT_12)),
+            Some(12)
+        );
+        // Ordinary keys are not VT switches — in particular the WM binds, which
+        // are resolved after this check and must still reach it.
+        assert_eq!(vt_switch_target(Keysym::q), None);
+        assert_eq!(vt_switch_target(Keysym::F1), None);
+        assert_eq!(vt_switch_target(Keysym::NoSymbol), None);
     }
 
     #[test]

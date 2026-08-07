@@ -106,6 +106,13 @@ impl Backend for RusterUdevData {
     fn output(&self) -> &Output {
         &self.output
     }
+
+    fn change_vt(&mut self, vt: i32) {
+        info!(vt, "switching virtual terminal");
+        if let Err(err) = self.session.change_vt(vt) {
+            error!(vt, "failed to switch virtual terminal: {err}");
+        }
+    }
 }
 
 /// Boot the DRM/udev backend on the primary GPU: open a libseat session, find
