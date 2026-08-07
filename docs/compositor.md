@@ -64,7 +64,13 @@ ordinary keycodes.
 | Lua keybinds work | cycle binding changes the WS label; quit binding exits 0 | ✅ injected `Super+F9` at the evdev level → statusline went `WS 1` → `WS 2`; `Super+F10` → process exits 0 |
 | SIGINT quits cleanly | `Ctrl-C`, process exits 0 | ✅ exits 0, logs `shutting down` |
 | DRM fails gracefully without a seat | `--drm` inside a Wayland session | ✅ exits 1 with `failed to initialize libseat session` plus the seatd/logind hint; display untouched |
-| DRM boots (hardware) | `just compositor-drm` on a free VT | ⛔ **not run** — libseat cannot open a session from inside another compositor, so this needs a real VT. Everything past that point is compile-verified only: GPU/output setup, libinput devices, the VT suspend/resume cycle, and startup clients under DRM have never executed |
+| DRM boots (hardware) | `bash /tmp/drm-test.sh` on a free VT | ✅ booted on seat0: `/dev/dri/card1`, connector DP-3, mode `3440x1440@60`, GLES on the RTX 4090, socket `wayland-1` |
+| DRM launches its startup client | the Lua config's client appears on a DRM boot | ✅ `new toplevel` → `toplevel mapped`, and the client was usable |
+| DRM keyboard (libinput) | type, and use the quit binding | ✅ 95 key events routed through the seat; `Super+Shift+q` quit the compositor |
+| DRM pointer (libinput) | move a mouse | ⛔ not confirmed — relative-motion handling is new code and nothing logs pointer events, so the boot proves nothing either way. No cursor is drawn regardless |
+| `Ctrl+Alt+F<n>` switches VT | press it on a DRM boot | ⛔ **not exercised** — the boot was ended with the quit binding instead, so no `XF86Switch_VT` keysym ever reached the handler. This is the escape hatch; it is unproven |
+| VT suspend/resume | switch away from a DRM boot and back | ⛔ not run — no `pausing session`/`resuming session` in the log |
+| DRM restores the previous state on exit | quit and check the log | ⛔ **fails**: `Failed to restore previous state. Error: Invalid argument (os error 22)` from smithay's atomic teardown |
 
 ## Running the real thing
 
