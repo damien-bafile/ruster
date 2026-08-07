@@ -1,8 +1,8 @@
 ─ main.rs ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  3 //! Line numbers here are load-bearing: the capture specs in
-  4 //! `scripts/verify-capture.sh` jump to a line and expect a particular symbol
-  5 //! under the cursor. Adding or removing a line above one of them moves the
-  6 //! target, and the capture comes back empty in a way that looks like the
+  3 //! Line numbers here are load-bearing: the capture╭────────╮
+  4 //! `scripts/verify-capture.sh` jump to a line and │        │articular symbol
+  5 //! under the cursor. Adding or removing a line abo│p: Point│them moves the
+  6 //! target, and the capture comes back empty in a w╰────────╯oks like the
   7 //! feature failing rather than the fixture drifting. The two that matter:
   8 //!
   9 //!   line 20 — `pub fn origin`, three `w` motions from column 1 to the name,

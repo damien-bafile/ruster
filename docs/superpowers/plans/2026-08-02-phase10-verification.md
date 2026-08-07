@@ -135,9 +135,8 @@ the README.
       those are fixed and recaptured.
 - [x] **Task: final sweep**, 2026-08-07. `just verify` produced all 32 pairs —
       64 artifacts, none empty, all read rather than skimmed. Every surface
-      shows its content; the one exception is `hover`, where the scripted
-      capture is unreliable against a throwaway project path though the feature
-      works by hand (see `docs/verification/README.md`).
+      shows its content, `hover` included — the row that had resisted capture
+      for days turned out to be a real product bug, not a harness quirk (below).
 
       The sweep paid for itself again, finding three more defects:
 
@@ -155,7 +154,14 @@ the README.
         effect.
       - **The call-stack fold numbered its summary row by position**, putting a
         `3` under frames 0, 14 and 15. It now carries the depth of the first
-        frame it stands for, and `/usr/lib/` (the dynamic loader) folds too. `just verify all` produces every pair; confirm the
+        frame it stands for, and `/usr/lib/` (the dynamic loader) folds too.
+      - **`uri_from_path` did not resolve symlinks**, so every LSP request for a
+        project under a symlinked path was answered `null`. This is what had
+        been dismissed as "the hover capture is flaky": on macOS `$TMPDIR` is
+        `/var/folders/…` and `/var` is a symlink, so `rootUri` and the document
+        URIs named different directories and rust-analyzer put every document
+        outside the workspace. Also hits `/tmp` and any symlinked project or
+        home directory — hover, goto, references and rename alike. `just verify all` produces every pair; confirm the
       tree is clean, docs/verification is committed, and the matrix has no
       empty cells.
 
