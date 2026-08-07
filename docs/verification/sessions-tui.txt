@@ -1,5 +1,5 @@
 ─ *messages* ───────────────────────────────────────────────────────────────────────────────────────────────────────────
-                                                                      ⚠ No project — nothing to save a session for
+[ECHO] INFO Session saved (1 files)
 
 
 
@@ -37,4 +37,4 @@
 
 
 
- -- NORMAL -- │*messages*                                                                                     100%  1,1
+ -- NORMAL --  [proj] │*messages*                                                                              50%  1,1

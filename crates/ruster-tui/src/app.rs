@@ -528,6 +528,7 @@ fn is_runtime_frame(loc: &str) -> bool {
         "/library/std/",
         "/library/core/",
         "/library/alloc/",
+        "/usr/lib/",          // the dynamic loader — `dyld`start` is not the user's
     ];
     RUNTIME.iter().any(|m| loc.contains(m))
 }
@@ -4617,8 +4618,19 @@ impl App {
                     self.settings = None;
                     return;
                 }
-                CmdAction::Quit | CmdAction::ForceQuit | CmdAction::Settings => {
+                // `:q` and `:Settings` close the page — leaving it is what the
+                // user is asking for. `:q!` is not that: it means quit the
+                // editor, forcefully, and swallowing it left no way to exit
+                // while the page was up. The capture harness found this by
+                // timing out on the one surface whose deferred `:q!` never
+                // took effect.
+                CmdAction::Quit | CmdAction::Settings => {
                     self.settings = None;
+                    return;
+                }
+                CmdAction::ForceQuit => {
+                    self.settings = None;
+                    self.should_quit = true;
                     return;
                 }
                 // Taking a picture of a page is not asking to leave it. This
@@ -4816,19 +4828,9 @@ impl App {
                     format!("{} = {} (default)", key, default.display()),
                 ));
             }
-            CmdAction::Echo(text, level) => {
-                // Both stores, not just the transient one. The toast expires
-                // after `noice.*_timeout`; the log is what `:messages` reads.
-                // Writing only the toast meant every `:echo`, `:echom` and
-                // `:echoe` vanished for good and `:messages` opened an empty
-                // buffer — the one surface whose whole job is remembering.
-                self.push_message(
-                    level,
-                    ruster_core::message::MessageSource::Echo,
-                    text.clone(),
-                );
-                self.notify.push(Notification::new(level, ruster_core::message::MessageSource::Echo, text));
-            }
+            // Through `echo_at`, which records as well as shows — the same path
+            // every internal message takes, rather than a second copy of it.
+            CmdAction::Echo(text, level) => self.echo_at(level, text),
             CmdAction::NoicePanel => self.show_noice_panel = !self.show_noice_panel,
             CmdAction::NoiceSplit => self.open_noice_split(),
             CmdAction::NoicePopup => {
@@ -5827,11 +5829,21 @@ impl App {
         self.echo_at(ruster_core::message::MessageLevel::Error, msg);
     }
 
+    /// Show a message and record it.
+    ///
+    /// Both stores, not just the toast. This is the choke point for all 90-odd
+    /// `echo`/`echo_warn`/`echo_error`/`echo_success` sites — "Session saved",
+    /// "No files open", every warning the editor raises about itself — and it
+    /// wrote only to the transient one, so all of it expired after a couple of
+    /// seconds and `:messages` had nothing to show. The surface whose entire
+    /// job is remembering was the one thing these never reached.
     fn echo_at(&mut self, level: ruster_core::message::MessageLevel, msg: impl Into<String>) {
+        let text = msg.into();
+        self.push_message(level, ruster_core::message::MessageSource::Echo, text.clone());
         self.notify.push(Notification::new(
             level,
             ruster_core::message::MessageSource::Echo,
-            msg.into(),
+            text,
         ));
     }
 
@@ -8024,11 +8036,21 @@ impl App {
             // worse than showing everything.
             stack = all;
         } else if hidden > 0 {
+            // The kept frames keep their original depths, so the summary must
+            // carry the depth of the first frame it stands for. Numbering it
+            // by position instead put a `3` under frames 0, 14 and 15 — a
+            // number that looked like a frame and belonged to none.
+            let first_hidden = all
+                .iter()
+                .find(|(_, _, loc)| is_runtime_frame(loc))
+                .map(|(d, _, _)| *d)
+                .unwrap_or(0);
             stack.push((
-                stack.len() as u16,
+                first_hidden,
                 "…".to_string(),
                 format!("{hidden} runtime frame{} hidden", if hidden == 1 { "" } else { "s" }),
             ));
+            stack.sort_by_key(|(d, _, _)| *d);
         }
         let scopes: Vec<(String, Vec<(String, String)>)> = session
             .variables
@@ -9998,6 +10020,8 @@ mod tests {
         assert!(is_runtime_frame("?"), "a frame with no source cannot be opened");
         assert!(is_runtime_frame("?:0"));
 
+        assert!(is_runtime_frame("/usr/lib/dyld`start:1673"), "the loader is not the user's");
+
         assert!(!is_runtime_frame("/Users/x/Dev/demo/src/main.rs:31"));
         assert!(!is_runtime_frame("/tmp/proj/src/lib.rs:1"));
         // A project that merely has "library" in its path is still the user's.
@@ -10025,6 +10049,53 @@ mod tests {
         assert_eq!(items.len(), 1, "one marker in the fixture: {items:?}");
         assert_eq!(items[0].line, 3, "the TODO is on line 3, one-based");
         assert_eq!(items[0].col, 4, "and column 4, one-based");
+    }
+
+    /// `:q!` quits even with the settings page open.
+    ///
+    /// `:q` and `:Settings` close the page — leaving it is what is being asked
+    /// for — but `:q!` means quit the editor, and swallowing it left no way out
+    /// while the page was up. Found by the capture harness, whose deferred
+    /// `:q!` never took effect on that one surface and hit the timeout.
+    #[test]
+    fn force_quit_still_quits_with_the_settings_page_open() {
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::Settings);
+        assert!(a.settings.is_some());
+        a.apply_cmd(CmdAction::ForceQuit);
+        assert!(a.should_quit, "`:q!` means quit, page or no page");
+
+        // `:q` still just closes the page.
+        let mut b = App::new("x".into(), PathBuf::from("f.txt"));
+        b.apply_cmd(CmdAction::Settings);
+        b.apply_cmd(CmdAction::Quit);
+        assert!(b.settings.is_none(), "`:q` closes the page");
+        assert!(!b.should_quit, "and does not quit the editor");
+    }
+
+    /// Messages the editor raises about itself reach the log too, not only
+    /// `:echo`.
+    ///
+    /// `echo_at` is the choke point for ~90 `echo`/`echo_warn`/`echo_error`
+    /// sites — "Session saved", "No files open", every internal warning — and
+    /// it wrote to the toast alone, so all of it expired in seconds and
+    /// `:messages` had nothing. Fixing only the `:echo` command would have left
+    /// the other ninety.
+    #[test]
+    fn internal_messages_are_recorded_in_the_message_log() {
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.echo("saved something");
+        a.echo_warn("a warning".to_string());
+        a.echo_error("a failure".to_string());
+        a.apply_cmd(CmdAction::Messages);
+
+        let text = {
+            let w = a.ws.borrow();
+            w.buffers.get(a.messages_buf.expect("messages buffer")).unwrap().buffer.to_string()
+        };
+        for needle in ["saved something", "a warning", "a failure"] {
+            assert!(text.contains(needle), "the log kept {needle:?}: {text:?}");
+        }
     }
 
     /// `:echo` has to reach the log, not just the toast.

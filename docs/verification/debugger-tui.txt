@@ -1,18 +1,18 @@
 ─ main.rs ──────────────────────────────────────────────────────────────────[Debug: PAUSED] F5:Continue F10:Next F11:Ste
    7 //! feature failing rather than the fixture drifting. The two that mattCall stack
    8 //!                                                                     0  demo_project::main  /private/var/folders
-   9 //!   line 20 — `pub fn origin`, three `w` motions from column 1 to the14  main  /var/folders/br/7b_4tlhn30j4dp_ttk
-  10 //!             which is the hover target                              15  start  /usr/lib/dyld`start:1673
-  11 //!   line 31 — the first statement of `main`, the breakpoint target    3  …  13 runtime frames hidden
-  12
-  13 /// A point in the plane. `:hover` over this name is the hover capture.Locals
-  14 #[derive(Debug, Clone, Copy)]
-  15 pub struct Point {                                                     Globals
-  16     pub x: i32,
-  17     pub y: i32,                                                        Registers
-  18 }                                                                        General Purpose Registers =
-  19                                                                          Floating Point Registers =
-  20 impl Point {                                                             Exception State Registers =
+   9 //!   line 20 — `pub fn origin`, three `w` motions from column 1 to the 1  …  14 runtime frames hidden
+  10 //!             which is the hover target                              14  main  /var/folders/br/7b_4tlhn30j4dp_ttk
+  11 //!   line 31 — the first statement of `main`, the breakpoint target
+  12                                                                        Locals
+  13 /// A point in the plane. `:hover` over this name is the hover capture.
+  14 #[derive(Debug, Clone, Copy)]                                          Globals
+  15 pub struct Point {
+  16     pub x: i32,                                                        Registers
+  17     pub y: i32,                                                          General Purpose Registers =
+  18 }                                                                        Floating Point Registers =
+  19                                                                          Exception State Registers =
+  20 impl Point {
   21     pub fn origin() -> Point {
   22         Point { x: 0, y: 0 }
   23     }

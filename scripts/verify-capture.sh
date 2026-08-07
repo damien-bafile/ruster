@@ -64,6 +64,11 @@ TUI_MIN_WAIT_MS=2500
 #   KEYS  — keys to send after the app settles (tmux notation); needs real input
 #   OPEN  — what to open: "fixture" (default), "repo" (a dirty scratch repo),
 #           "none" (bare launch, for the dashboard), or "self" (this checkout)
+#   SEED  — extra state to plant in the throwaway config dir before launch.
+#           "recent" writes a `recent-projects` list, without which `:projects`
+#           can only ever capture its own "no recent projects" warning: the
+#           config dir is thrown away per capture, so the history it reads is
+#           always empty.
 #   NEEDS — a live service that must be on PATH, else the surface is skipped
 #   WAIT  — ms to let the surface settle before capturing (default 1200)
 
@@ -79,7 +84,7 @@ SURFACES=(
 NUMBERS="gutter = { number = true }"
 
 spec() {
-  LUA=""; CONF=""; DEFER=""; KEYS=""; OPEN="fixture"; NEEDS=""; WAIT=1200
+  LUA=""; CONF=""; DEFER=""; KEYS=""; OPEN="fixture"; NEEDS=""; SEED=""; WAIT=1200
   case "$1" in
     dashboard)      OPEN="none" ;;
     editor)         CONF="$NUMBERS" ;;
@@ -104,7 +109,7 @@ spec() {
     help)           LUA=":help" ;;
     messages)       LUA=":echo first message|:echo second message|:messages" ;;
     mason)          LUA=":Mason" ;;
-    projects)       LUA=":projects" ;;
+    projects)       SEED="recent"; LUA=":projects" ;;
     noice-toast)    LUA=":echo the mini toast renders top-right" ;;
     noice-panel)    LUA=":echo one|:echo two|:Noice" ;;
     noice-popup)    LUA=":echo popped|:Noice popup" ;;
@@ -114,7 +119,9 @@ spec() {
     debugger)       NEEDS="lldb-dap"; OPEN="project"; CONF="$NUMBERS"
                     LUA=":44|:db_toggle"; DEFER=":debug"; WAIT=12000 ;;
     terminal)       LUA=":term"; WAIT=2500 ;;
-    sessions)       LUA=":SessionSave|:messages" ;;
+    # A session needs a project to belong to; from a loose file in a temp
+    # directory `:SessionSave` can only report that there is nothing to save.
+    sessions)       OPEN="project"; LUA=":SessionSave|:messages" ;;
     gotoline)       CONF="$NUMBERS"; LUA=":16" ;;
     *) echo "unknown surface: $1" >&2; return 1 ;;
   esac
@@ -178,6 +185,10 @@ capture run can hit this partway through." ;;
 # to stay modified would show up in this repo's `git status` forever.
 make_scratch_repo() {
   local dir="$1"
+  # Idempotent: the TUI and GUI halves of one surface share a scratch dir, and
+  # rebuilding over an existing repo printed "nothing to commit" into the run
+  # log for every git surface.
+  [ -d "$dir/.git" ] && return 0
   mkdir -p "$dir"
   git -C "$dir" init -q
   git -C "$dir" config user.email verify@example.com
@@ -198,6 +209,7 @@ make_scratch_repo() {
 # inside `docs/` would leave a `target/` directory behind.
 make_scratch_project() {
   local dir="$1"
+  [ -f "$dir/Cargo.toml" ] && return 0
   mkdir -p "$(dirname "$dir")"
   cp -R "$OUT/fixtures/demo-project" "$dir"
   ( cd "$dir" && cargo build -q 2>/dev/null ) || echo "  note: fixture project did not build; the debugger surface will be empty" >&2
@@ -234,6 +246,10 @@ ruster.config = {
   $CONF
 }
 EOF
+  if [ "$SEED" = "recent" ]; then
+    # Paths must exist — `recent_projects` filters out any that do not.
+    printf '%s\n%s\n' "$ROOT" "$ROOT/crates/ruster-tui" > "$cfg/ruster/recent-projects"
+  fi
   : > "$cfg/ruster/init.lua"
   if [ "$LUA" = "@dialog" ]; then
     printf '%s\n' "$DIALOG_LUA" >> "$cfg/ruster/init.lua"

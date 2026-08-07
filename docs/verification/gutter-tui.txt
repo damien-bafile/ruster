@@ -14,14 +14,14 @@
  12
  13  /// A point in the plane.
  14  #╭─ TODO ───────────────────────────────────────────────────────────────────────────────────────────────────╮
- 15  p│ >                                        │ //!                                                           │
- 16   │ I demo.rs:4:19  TODO: and a FIXME for the│ //! Small on purpose, but chosen so one file exercises most of│
- 17   │ I demo.rs:4:30  FIXME: for the marker sca│ //! supposed to show: keywords, strings, numbers and comments │
- 18  }│ I demo.rs:25:7  TODO: support translation│ //! highlighter; a TODO and a FIXME for the marker scanner and│
- 19   │ I demo.rs:39:4  FIXME: this allocates a f│ //! repeated identifier for multi-cursor; a two-character-pref│
- 20  i│                                          │ //! jump; and enough lines that the gutter and the scroll offs│
- 21   │                                          │ //!                                                           │
- 22   │                                          │ //! Capturing the same file every time is what makes two runs │
+ 15  p│ >                                        │ //! Small on purpose, but chosen so one file exercises most of│
+ 16   │ I demo.rs:5:20  TODO: and a FIXME for the│ //! supposed to show: keywords, strings, numbers and comments │
+ 17   │ I demo.rs:5:31  FIXME: for the marker sca│ //! highlighter; a TODO and a FIXME for the marker scanner and│
+ 18  }│ I demo.rs:26:8  TODO: support translation│ //! repeated identifier for multi-cursor; a two-character-pref│
+ 19   │ I demo.rs:40:5  FIXME: this allocates a f│ //! jump; and enough lines that the gutter and the scroll offs│
+ 20  i│                                          │ //!                                                           │
+ 21   │                                          │ //! Capturing the same file every time is what makes two runs │
+ 22   │                                          │                                                               │
  23   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────╯
  24
  25      // TODO: support translation by a vector rather than a scalar

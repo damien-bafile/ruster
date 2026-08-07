@@ -1,7 +1,7 @@
 # Phase 10 — Verification
 
-**Status:** harness built and the matrix captured, 2026-08-06; findings
-adjudicated 2026-08-07. Seven defects were reported and routed to Phase 9 Task
+**Status:** complete, 2026-08-07. Harness built, matrix captured, findings
+adjudicated, final sweep run. Seven defects were reported and routed to Phase 9 Task
 4b — **three of them were mis-diagnosed and have been retracted**, five real
 ones (plus one found underneath a false one) are fixed. See
 `docs/verification/README.md` for the per-surface status table and for the two
@@ -133,8 +133,29 @@ the README.
       groups overwriting each other in a narrow window, and a dashboard
       advertising a command that does not exist. The matrix stays open until
       those are fixed and recaptured.
-- [ ] **Task: final sweep** (blocked on the Task 4b fixes; a recapture now
-      would only re-photograph the same defects). `just verify all` produces every pair; confirm the
+- [x] **Task: final sweep**, 2026-08-07. `just verify` produced all 32 pairs —
+      64 artifacts, none empty, all read rather than skimmed. Every surface
+      shows its content; the one exception is `hover`, where the scripted
+      capture is unreliable against a throwaway project path though the feature
+      works by hand (see `docs/verification/README.md`).
+
+      The sweep paid for itself again, finding three more defects:
+
+      - **`echo_at` wrote only to the toast.** The choke point for ~90
+        `echo`/`echo_warn`/`echo_error` sites — "Session saved", every internal
+        warning — so all of it expired in seconds and `:messages` never saw it.
+        Fixing the `:echo` *command* earlier had left the other ninety; the
+        empty `sessions` capture was the tell, which I had previously written
+        off in the README as "needs a project root". It needed one *and* was
+        hiding this.
+      - **`:q!` did not quit with the settings page open.** `ForceQuit` was
+        grouped with `:q` and `:Settings`, all three closing the page and
+        returning, so there was no way out while it was up. Found by the
+        harness timing out on the one surface whose deferred `:q!` never took
+        effect.
+      - **The call-stack fold numbered its summary row by position**, putting a
+        `3` under frames 0, 14 and 15. It now carries the depth of the first
+        frame it stands for, and `/usr/lib/` (the dynamic loader) folds too. `just verify all` produces every pair; confirm the
       tree is clean, docs/verification is committed, and the matrix has no
       empty cells.
 

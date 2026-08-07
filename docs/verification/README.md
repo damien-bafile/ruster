@@ -109,15 +109,15 @@ Status is what the artifacts currently show, not what is intended.
 | `help` | `:help` | long markup buffer | ok |
 | `messages` | `:echo` ×2, `:messages` | the two messages in the log | ok (`:echo` now reaches the log) |
 | `mason` | `:Mason` | `✓`/`·` glyphs, install commands | ok |
-| `projects` | `:projects` | recent project list | needs a persistent config dir; warns otherwise |
+| `projects` | `:projects` | recent project list | ok (the spec seeds `recent-projects`) |
 | `noice-toast` | `:echo` | mini toast, top right | ok |
 | `noice-panel` | `:echo` ×2, `:Noice` | stacking panel | shows only `Notify`-routed messages; `:echo` routes to `Mini` |
 | `noice-popup` | `:Noice popup` | centred popup float | ok |
 | `dialog` | `ruster.ui.dialog` | modal above every float | ok |
 | `hover` | fixture project, deferred `:hover` | float with rustdoc, wrapped and clamped | works by hand; scripted capture unreliable — see note |
-| `debugger` | fixture project, breakpoint, deferred `:debug` | `[Debug: PAUSED]`, call stack, scopes | ok (runtime frames now folded) |
+| `debugger` | fixture project, breakpoint, deferred `:debug` | `[Debug: PAUSED]`, call stack, scopes | ok — runtime frames folded, at the depth they stand for |
 | `terminal` | `:term` | shell prompt, TERMINAL mode | ok |
-| `sessions` | `:SessionSave` | confirmation in the log | needs a project root |
+| `sessions` | `:SessionSave` | confirmation in the log | ok (`Session saved (N files)`) |
 | `gotoline` | `:16` | cursor and statusline agree | ok |
 
 ## Two ways a capture lies
