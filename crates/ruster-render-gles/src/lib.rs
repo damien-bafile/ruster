@@ -8,4 +8,5 @@
 #![cfg(target_os = "linux")]
 
 pub mod atlas;
+pub mod cursor;
 pub mod geometry;

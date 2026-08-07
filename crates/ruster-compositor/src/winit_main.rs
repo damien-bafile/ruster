@@ -91,6 +91,8 @@ fn run_winit() -> anyhow::Result<()> {
                     .focused()
                     .map(|w| w.title.clone())
                     .unwrap_or_default();
+                let cursor_status = state.cursor_status.clone();
+                let cursor_location = state.pointer.current_location();
                 render_frame(
                     state.shell.focus,
                     &state.toplevels,
@@ -102,6 +104,8 @@ fn run_winit() -> anyhow::Result<()> {
                     renderer,
                     &mut fb,
                     age,
+                    &cursor_status,
+                    cursor_location,
                 )
                 .map_err(|err| match err {
                     OutputDamageTrackerError::Rendering(err) => err.into(),

@@ -413,6 +413,8 @@ impl CompositorState<RusterUdevData> {
                 return;
             }
         };
+        let cursor_status = self.cursor_status.clone();
+        let cursor_location = self.pointer.current_location();
         let elements = collect_render_elements(
             self.shell.focus,
             &self.toplevels,
@@ -421,6 +423,8 @@ impl CompositorState<RusterUdevData> {
             self.shell.workspace,
             &focused_title,
             &mut renderer,
+            &cursor_status,
+            cursor_location,
         );
         send_frame_callbacks(self.shell.focus, &self.toplevels, &output);
 

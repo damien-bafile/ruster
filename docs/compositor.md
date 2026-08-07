@@ -67,7 +67,8 @@ ordinary keycodes.
 | DRM boots (hardware) | `bash /tmp/drm-test.sh` on a free VT | ✅ booted on seat0: `/dev/dri/card1`, connector DP-3, mode `3440x1440@60`, GLES on the RTX 4090, socket `wayland-1` |
 | DRM launches its startup client | the Lua config's client appears on a DRM boot | ✅ `new toplevel` → `toplevel mapped`, and the client was usable |
 | DRM keyboard (libinput) | type, and use the quit binding | ✅ 95 key events routed through the seat; `Super+Shift+q` quit the compositor |
-| DRM pointer (libinput) | move a mouse | ⛔ not confirmed — relative-motion handling is new code and nothing logs pointer events, so the boot proves nothing either way. No cursor is drawn regardless |
+| DRM pointer (libinput) | move a mouse | ⛔ not confirmed on hardware — relative-motion handling is still unexecuted there, and nothing logs pointer events |
+| Cursor is drawn | move the pointer over chrome, then over a client | ✅ nested: the built-in arrow renders over chrome, and a client's own cursor surface (foot's I-beam) renders with its hotspot applied once the pointer enters it |
 | `Ctrl+Alt+F<n>` switches VT | press it on a DRM boot | ⛔ **not exercised** — the boot was ended with the quit binding instead, so no `XF86Switch_VT` keysym ever reached the handler. This is the escape hatch; it is unproven |
 | VT suspend/resume | switch away from a DRM boot and back | ⛔ not run — no `pausing session`/`resuming session` in the log |
 | DRM restores the previous state on exit | quit and check the log | ⛔ **fails**: `Failed to restore previous state. Error: Invalid argument (os error 22)` from smithay's atomic teardown |

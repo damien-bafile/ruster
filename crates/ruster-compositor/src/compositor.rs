@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use smithay::backend::renderer::utils::on_commit_buffer_handler;
 use smithay::input::keyboard::{KeyboardHandle, XkbConfig};
-use smithay::input::pointer::PointerHandle;
+use smithay::input::pointer::{CursorImageStatus, PointerHandle};
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::Output;
 use smithay::reexports::calloop::generic::Generic;
@@ -58,6 +58,10 @@ pub struct CompositorState<B: Backend + 'static> {
     pub seat: Seat<CompositorState<B>>,
     pub keyboard: KeyboardHandle<CompositorState<B>>,
     pub pointer: PointerHandle<CompositorState<B>>,
+    /// What the pointer should currently look like. Starts as the default
+    /// named cursor, which the compositor draws itself; a client focusing the
+    /// pointer replaces it with its own surface.
+    pub cursor_status: CursorImageStatus,
     /// xdg toplevel surfaces keyed by their `ShellState` window id.
     pub toplevels: HashMap<WindowId, ToplevelSurface>,
     /// Window that should take focus once the seat is set up (Task 10).
@@ -159,6 +163,7 @@ pub fn create_state<B: Backend + 'static>(
         seat: globals.seat,
         keyboard: globals.keyboard,
         pointer: globals.pointer,
+        cursor_status: CursorImageStatus::default_named(),
         toplevels: HashMap::new(),
         pending_focus: None,
         mapped: HashSet::new(),
@@ -330,6 +335,14 @@ impl<B: Backend + 'static> SeatHandler for CompositorState<B> {
 
     fn seat_state(&mut self) -> &mut SeatState<CompositorState<B>> {
         &mut self.seat_state
+    }
+
+    /// A client asked for a different pointer image (or for none). Record it;
+    /// the render loop draws whatever is current. Ignoring this callback is
+    /// what left the pointer invisible: a client's `wl_pointer.set_cursor`
+    /// went nowhere, and nothing else ever drew a cursor either.
+    fn cursor_image(&mut self, _seat: &Seat<Self>, image: CursorImageStatus) {
+        self.cursor_status = image;
     }
 }
 

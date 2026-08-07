@@ -11,11 +11,14 @@ use std::any::Any;
 
 use ruster_render::Theme;
 use ruster_render_gles::atlas::{layout_text, Atlas};
+use ruster_render_gles::cursor::CursorBitmap;
 use ruster_render_gles::geometry::{rect_verts, rounded_rect_verts, GlyphQuad, Vertex};
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::solid::{SolidColorBuffer, SolidColorRenderElement};
+use smithay::backend::renderer::element::texture::TextureRenderElement;
 use smithay::backend::renderer::element::{Id, Kind};
 use smithay::backend::renderer::{Color32F, ImportMem, Renderer};
+use smithay::utils::{Physical, Point, Transform};
 
 /// One frame's worth of chrome geometry: solid quads and textured glyph quads,
 /// both in physical pixels with the origin at the output's top-left.
@@ -70,6 +73,11 @@ pub struct Chrome {
     /// and the two backends composite through different ones (`GlesRenderer`
     /// nested, `MultiRenderer` on DRM) while `Chrome` itself is shared.
     texture: Option<(u64, Box<dyn Any>)>,
+    /// The built-in pointer image, and its uploaded texture once a renderer has
+    /// been seen. Boxed as `Any` for the same reason the atlas texture is.
+    cursor: CursorBitmap,
+    cursor_texture: Option<Box<dyn Any>>,
+    cursor_id: Id,
     /// One render-element id per glyph slot, reused across frames.
     ///
     /// The damage tracker keys element state by id, so glyphs sharing one id
@@ -86,6 +94,9 @@ impl Chrome {
             theme,
             line_h: 24,
             texture: None,
+            cursor: CursorBitmap::arrow(),
+            cursor_texture: None,
+            cursor_id: Id::new(),
             glyph_ids: Vec::new(),
         }
     }
@@ -129,6 +140,53 @@ impl Chrome {
             self.glyph_ids.push(Id::new());
         }
         self.glyph_ids[index].clone()
+    }
+
+    /// The built-in arrow cursor, positioned so its hotspot sits at `location`.
+    ///
+    /// Uploaded once and cached like the glyph atlas; the id is stable across
+    /// frames so the damage tracker sees a moving element rather than a new one
+    /// each frame.
+    pub fn cursor_element<R>(
+        &mut self,
+        renderer: &mut R,
+        location: Point<f64, Physical>,
+    ) -> Option<TextureRenderElement<R::TextureId>>
+    where
+        R: Renderer + ImportMem,
+        R::TextureId: Clone + 'static,
+    {
+        let texture = match self.cursor_texture.as_ref() {
+            Some(cached) => cached.downcast_ref::<R::TextureId>()?.clone(),
+            None => {
+                let texture = renderer
+                    .import_memory(
+                        self.cursor.pixels(),
+                        Fourcc::Abgr8888,
+                        (self.cursor.width, self.cursor.height).into(),
+                        false,
+                    )
+                    .inspect_err(|_| tracing::warn!("failed to upload the cursor image"))
+                    .ok()?;
+                self.cursor_texture = Some(Box::new(texture.clone()));
+                texture
+            }
+        };
+        let (hx, hy) = self.cursor.hotspot;
+        let origin = Point::<f64, Physical>::from((location.x - hx as f64, location.y - hy as f64));
+        Some(TextureRenderElement::from_static_texture(
+            self.cursor_id.clone(),
+            renderer.context_id(),
+            origin,
+            texture,
+            1,
+            Transform::Normal,
+            None,
+            None,
+            None,
+            None,
+            Kind::Cursor,
+        ))
     }
 
     /// Bottom statusline: returns its height in px.

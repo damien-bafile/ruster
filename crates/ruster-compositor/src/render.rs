@@ -22,8 +22,12 @@ use smithay::backend::renderer::{
 };
 use smithay::desktop::space::SurfaceTree;
 use smithay::desktop::utils::send_frames_surface_tree;
+use smithay::input::pointer::{CursorImageStatus, CursorImageSurfaceData};
 use smithay::output::Output;
-use smithay::utils::{Clock, Monotonic, Physical, Point, Rectangle, Scale, Size, Transform};
+use smithay::utils::{
+    Clock, Logical, Monotonic, Physical, Point, Rectangle, Scale, Size, Transform,
+};
+use smithay::wayland::compositor::with_states;
 use smithay::wayland::shell::xdg::ToplevelSurface;
 
 use crate::chrome::{solid_elements_from_verts, Chrome, ChromeBatch};
@@ -87,6 +91,8 @@ pub fn render_frame(
     renderer: &mut GlesRenderer,
     framebuffer: &mut <GlesRenderer as RendererSuper>::Framebuffer<'_>,
     age: usize,
+    cursor_status: &CursorImageStatus,
+    cursor_location: Point<f64, Logical>,
 ) -> Result<Option<Vec<Rectangle<i32, Physical>>>, RenderError> {
     let elements = collect_render_elements(
         focus,
@@ -96,6 +102,8 @@ pub fn render_frame(
         workspace,
         focused_title,
         renderer,
+        cursor_status,
+        cursor_location,
     );
     let result =
         damage_tracker.render_output(renderer, framebuffer, age, &elements, CLEAR_COLOR)?;
@@ -117,11 +125,24 @@ pub fn collect_render_elements<R: Renderer + ImportAll + ImportMem>(
     workspace: u32,
     focused_title: &str,
     renderer: &mut R,
+    cursor_status: &CursorImageStatus,
+    cursor_location: Point<f64, Logical>,
 ) -> Vec<ChromeRenderElements<R>>
 where
     <R as RendererSuper>::TextureId: Clone + 'static,
 {
     let mut elements: Vec<ChromeRenderElements<R>> = Vec::new();
+
+    // The pointer goes in front of everything, chrome included.
+    if let Some(chrome) = chrome.as_mut() {
+        elements.extend(cursor_elements(
+            chrome,
+            renderer,
+            cursor_status,
+            cursor_location,
+            output.current_scale().fractional_scale(),
+        ));
+    }
 
     // Chrome is drawn unconditionally and sits above the client surface; the
     // statusline bar spans the bottom of the output, the which-key overlay
@@ -186,6 +207,56 @@ where
     }
 
     elements
+}
+
+/// Build the render elements for the pointer, which sit in front of everything.
+///
+/// A client that has taken pointer focus supplies its own cursor surface, and
+/// its hotspot is subtracted so the image tracks the point that actually
+/// clicks. Otherwise the compositor draws its own arrow — over its chrome, over
+/// an empty output, and before any client has had the chance to set one. A
+/// hidden cursor draws nothing.
+fn cursor_elements<R: Renderer + ImportAll + ImportMem>(
+    chrome: &mut Chrome,
+    renderer: &mut R,
+    status: &CursorImageStatus,
+    location: Point<f64, Logical>,
+    scale: f64,
+) -> Vec<ChromeRenderElements<R>>
+where
+    <R as RendererSuper>::TextureId: Clone + 'static,
+{
+    let physical = location.to_physical(scale);
+    match status {
+        CursorImageStatus::Hidden => Vec::new(),
+        CursorImageStatus::Surface(surface) => {
+            // The hotspot lives on the surface, put there by `set_cursor`.
+            let hotspot = with_states(surface, |states| {
+                states
+                    .data_map
+                    .get::<CursorImageSurfaceData>()
+                    .map(|attrs| attrs.lock().unwrap().hotspot)
+                    .unwrap_or_default()
+            });
+            let origin = location - hotspot.to_f64();
+            let tree = SurfaceTree::from_surface(surface);
+            AsRenderElements::<R>::render_elements(
+                &tree,
+                renderer,
+                origin.to_physical(scale).to_i32_round(),
+                Scale::from(scale),
+                1.0,
+            )
+            .into_iter()
+            .map(ChromeRenderElements::Surface)
+            .collect()
+        }
+        CursorImageStatus::Named(_) => chrome
+            .cursor_element(renderer, physical)
+            .into_iter()
+            .map(ChromeRenderElements::Texture)
+            .collect(),
+    }
 }
 
 /// Upload the glyph atlas (once per change) and build one textured element per
