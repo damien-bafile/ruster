@@ -46,7 +46,7 @@ use crate::compositor::{
 };
 use crate::lua::{apply_config_to_shell, load_compositor_config};
 use crate::render::{
-    collect_render_elements, send_frame_callbacks, ChromeRenderElements, CLEAR_COLOR,
+    collect_render_elements, send_frame_callbacks, ChromeRenderElements, FrameInput, CLEAR_COLOR,
 };
 
 /// Pixel formats the compositor will try for the primary plane, in order of
@@ -419,19 +419,19 @@ impl CompositorState<RusterUdevData> {
         };
         let cursor_status = self.cursor_status.clone();
         let cursor_location = self.pointer.current_location();
-        let elements = collect_render_elements(
-            self.shell.focus,
-            &self.toplevels,
-            &output,
-            &mut self.chrome,
-            self.workspaces.active(),
-            &focused_title,
-            &mut renderer,
-            &cursor_status,
+        let scene = FrameInput {
+            focus: self.shell.focus,
+            toplevels: &self.toplevels,
+            output: &output,
+            workspace: self.workspaces.active(),
+            focused_title: &focused_title,
+            cursor_status: &cursor_status,
             cursor_location,
-            &geometry,
+            geometry: &geometry,
             tree_status,
-        );
+            keybinds: &self.keybinds,
+        };
+        let elements = collect_render_elements(&scene, &mut self.chrome, &mut renderer);
         send_frame_callbacks(self.shell.focus, &self.toplevels, &output);
 
         let reschedule = match self.backend_data.drm_output.render_frame(

@@ -15,7 +15,7 @@ use ruster_compositor::compositor::{
     create_state, init_listener, install_signal_handlers, log_startup_header, CompositorState,
 };
 use ruster_compositor::lua::{apply_config_to_shell, load_compositor_config};
-use ruster_compositor::render::render_frame;
+use ruster_compositor::render::{render_frame, FrameInput};
 
 use tracing_subscriber::EnvFilter;
 
@@ -105,21 +105,25 @@ fn run_winit() -> anyhow::Result<()> {
                     .unwrap_or_default();
                 let cursor_status = state.cursor_status.clone();
                 let cursor_location = state.pointer.current_location();
+                let scene = FrameInput {
+                    focus: state.shell.focus,
+                    toplevels: &state.toplevels,
+                    output: &state.backend_data.output,
+                    workspace: state.workspaces.active(),
+                    focused_title: &focused_title,
+                    cursor_status: &cursor_status,
+                    cursor_location,
+                    geometry: &geometry,
+                    tree_status,
+                    keybinds: &state.keybinds,
+                };
                 render_frame(
-                    state.shell.focus,
-                    &state.toplevels,
-                    &mut state.backend_data.damage_tracker,
-                    &state.backend_data.output,
+                    &scene,
                     &mut state.chrome,
-                    state.workspaces.active(),
-                    &focused_title,
+                    &mut state.backend_data.damage_tracker,
                     renderer,
                     &mut fb,
                     age,
-                    &cursor_status,
-                    cursor_location,
-                    &geometry,
-                    tree_status,
                 )
                 .map_err(|err| match err {
                     OutputDamageTrackerError::Rendering(err) => err.into(),

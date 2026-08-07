@@ -269,12 +269,22 @@ thread_local! {
 
 /// Lay out a string, measuring its pixel width. Used by chrome drawing and by
 /// the atlas for glyph metrics.
+///
+/// Shaped [`Shaping::Basic`], one glyph per character, because that is the only
+/// thing [`Atlas`] can store: its cache is keyed by `char`, and it rasterizes
+/// each one by shaping it alone. Ask for `Advanced` and the shaper returns a
+/// single `fl` ligature glyph spanning two characters, [`glyph_cluster_char`]
+/// keeps only the leading `f`, and the `l` is dropped while the pen still
+/// advances the full ligature width — "toggle floating" reaches the screen as
+/// "toggle f oating". Storing ligatures would mean keying the atlas by the
+/// shaped glyph instead, which is the better design and a bigger change than
+/// the bug warrants.
 pub fn layout_text(text: &str, font_size_px: u32, wrap_width: Option<f32>) -> TextLayout {
     FONT_SYSTEM.with(|thread| {
         let mut fs = thread.borrow_mut();
         let metrics = Metrics::new(font_size_px as f32, font_size_px as f32 + 4.0);
         let mut buf = Buffer::new(&mut fs, metrics);
-        buf.set_text(text, &Attrs::new(), Shaping::Advanced, None);
+        buf.set_text(text, &Attrs::new(), Shaping::Basic, None);
         if let Some(w) = wrap_width {
             buf.set_size(Some(w), None);
         }
@@ -375,6 +385,24 @@ mod tests {
         let horizontally_apart = a.u1 <= b.u0 || b.u1 <= a.u0;
         let vertically_apart = a.v1 <= b.v0 || b.v1 <= a.v0;
         assert!(horizontally_apart || vertically_apart);
+    }
+
+    #[test]
+    fn every_character_gets_a_glyph_even_when_the_font_would_ligate() {
+        // "fl", "fi" and "ffi" are the common ligatures. With advanced shaping
+        // each collapses to one glyph spanning several chars, and since the
+        // atlas is keyed by char the trailing ones are silently dropped: the
+        // which-key overlay drew "toggle floating" as "toggle f oating".
+        for word in ["floating", "file", "office", "flat"] {
+            let layout = layout_text(word, 16, None);
+            assert_eq!(
+                layout.glyphs.len(),
+                word.chars().count(),
+                "{word:?} lost a character to a ligature"
+            );
+            let laid_out: String = layout.glyphs.iter().map(|(_, _, c)| *c).collect();
+            assert_eq!(laid_out, word, "and it must be the same characters");
+        }
     }
 
     #[test]

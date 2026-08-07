@@ -53,18 +53,69 @@ smithay::backend::renderer::element::render_elements! {
     Surface=WaylandSurfaceRenderElement<R>,
 }
 
+/// How many binds the which-key overlay will show before it stops.
+///
+/// The overlay is a fixed panel in the top-left corner with no scrolling and no
+/// paging, so a full keymap — forty-odd binds once workspaces are numbered —
+/// would run off the screen. Showing a truthful prefix beats showing a
+/// stale-but-tidy two.
+const WHICHKEY_MAX_ROWS: usize = 12;
+
+/// The rows the which-key overlay should show, from the binds actually in force.
+///
+/// This used to be a hardcoded pair, `M-t`/`M-S-q`, rebuilt every frame and
+/// always identical — so a config that bound neither still had the overlay
+/// advertising both. Anything the overlay claims is now something the keyboard
+/// will really do, which is the whole point of the panel.
+fn whichkey_rows(keybinds: &[(String, String)]) -> Vec<(String, String)> {
+    keybinds.iter().take(WHICHKEY_MAX_ROWS).cloned().collect()
+}
+
 /// The welcome buffer shown in the editor frame until an embedded editor
 /// provides real content (Phase 3).
-const WELCOME_BUFFER: &[&str] = &[
-    "RUSTER  v0.1.0",
-    "────────────",
-    "EXWM-style Wayland compositor",
-    "M-t  cycle workspace",
-    "M-S-q quit",
-];
+///
+/// It advertised `M-t`/`M-S-q` as fixed text for the same reason and with the
+/// same result: on a config that rebound them it was simply wrong. Now it shows
+/// how to quit, whatever quitting is bound to here.
+fn welcome_buffer(keybinds: &[(String, String)]) -> Vec<String> {
+    let mut lines = vec![
+        "RUSTER  v0.1.0".to_string(),
+        "────────────".to_string(),
+        "EXWM-style Wayland compositor".to_string(),
+    ];
+    match keybinds.iter().find(|(_, action)| action == "quit") {
+        Some((bind, _)) => lines.push(format!("{bind}  quit")),
+        // `M-S-q` quits regardless of the config, so naming it is true even
+        // when nothing is bound at all. See `input::is_quit_keysym`.
+        None => lines.push("M-S-q  quit".to_string()),
+    }
+    lines
+}
 
-/// The which-key bindings advertised on the overlay (Task 10 makes them real).
-const WHICHKEY_BINDS: &[(&str, &str)] = &[("M-t", "cycle workspace"), ("M-S-q", "quit")];
+/// Everything one frame needs to know about *what* to draw, as opposed to the
+/// backend machinery that draws it.
+///
+/// This exists because both entry points — winit's [`render_frame`] and the DRM
+/// backend, which calls [`collect_render_elements`] directly — need the same ten
+/// values, and passing them positionally had already reached fourteen arguments
+/// behind an `allow(too_many_arguments)`. At that width the compiler stops
+/// helping: two `&str`s or two `u32`s in the wrong order still compile.
+pub struct FrameInput<'a> {
+    /// The focused window. The surfaces themselves come from `geometry`; this
+    /// is what the chrome names.
+    pub focus: Option<WindowId>,
+    pub toplevels: &'a HashMap<WindowId, ToplevelSurface>,
+    pub output: &'a Output,
+    pub workspace: u32,
+    pub focused_title: &'a str,
+    pub cursor_status: &'a CursorImageStatus,
+    pub cursor_location: Point<f64, Logical>,
+    /// Where each visible window sits, bottom to top.
+    pub geometry: &'a [(WindowId, ruster_shell::Rect)],
+    pub tree_status: TreeStatus,
+    /// The keybinds actually in force, for the which-key overlay to advertise.
+    pub keybinds: &'a [(String, String)],
+}
 
 /// Composite the focused toplevel fullscreen onto the output, draw ruster's
 /// chrome on top, and render it.
@@ -76,43 +127,22 @@ const WHICHKEY_BINDS: &[(&str, &str)] = &[("M-t", "cycle workspace"), ("M-S-q", 
 /// the next redraw; the 1s throttle only backstops surfaces not on a scan-out
 /// output.
 ///
-/// `chrome`/`workspace`/`focused_title` carry the compositor's chrome state and
-/// shell focus in so the function stays a free, testable function (it does not
-/// need the whole [`CompositorState`](crate::compositor::CompositorState)).
-#[allow(clippy::too_many_arguments)]
+/// [`FrameInput`] carries the compositor's chrome state and shell focus in so
+/// this stays a free, testable function — it does not need the whole
+/// [`CompositorState`](crate::compositor::CompositorState).
 pub fn render_frame(
-    focus: Option<WindowId>,
-    toplevels: &HashMap<WindowId, ToplevelSurface>,
-    damage_tracker: &mut OutputDamageTracker,
-    output: &Output,
+    scene: &FrameInput<'_>,
     chrome: &mut Option<Chrome>,
-    workspace: u32,
-    focused_title: &str,
+    damage_tracker: &mut OutputDamageTracker,
     renderer: &mut GlesRenderer,
     framebuffer: &mut <GlesRenderer as RendererSuper>::Framebuffer<'_>,
     age: usize,
-    cursor_status: &CursorImageStatus,
-    cursor_location: Point<f64, Logical>,
-    geometry: &[(WindowId, ruster_shell::Rect)],
-    tree_status: TreeStatus,
 ) -> Result<Option<Vec<Rectangle<i32, Physical>>>, RenderError> {
-    let elements = collect_render_elements(
-        focus,
-        toplevels,
-        output,
-        chrome,
-        workspace,
-        focused_title,
-        renderer,
-        cursor_status,
-        cursor_location,
-        geometry,
-        tree_status,
-    );
+    let elements = collect_render_elements(scene, chrome, renderer);
     let result =
         damage_tracker.render_output(renderer, framebuffer, age, &elements, CLEAR_COLOR)?;
     let damage = result.damage.cloned();
-    send_frame_callbacks(focus, toplevels, output);
+    send_frame_callbacks(scene.focus, scene.toplevels, scene.output);
     Ok(damage)
 }
 
@@ -120,21 +150,10 @@ pub fn render_frame(
 /// editor frame, which-key) followed by the focused toplevel, both composited
 /// by the renderer in front-to-back order. Generic over the renderer so both
 /// the winit (`GlesRenderer`) and DRM (`MultiRenderer`) backends share it.
-#[allow(clippy::too_many_arguments)]
 pub fn collect_render_elements<R: Renderer + ImportAll + ImportMem>(
-    // Kept for the chrome, which still names the focused window; the surfaces
-    // themselves now come from the tree rather than from focus.
-    _focus: Option<WindowId>,
-    toplevels: &HashMap<WindowId, ToplevelSurface>,
-    output: &Output,
+    scene: &FrameInput<'_>,
     chrome: &mut Option<Chrome>,
-    workspace: u32,
-    focused_title: &str,
     renderer: &mut R,
-    cursor_status: &CursorImageStatus,
-    cursor_location: Point<f64, Logical>,
-    geometry: &[(WindowId, ruster_shell::Rect)],
-    tree_status: TreeStatus,
 ) -> Vec<ChromeRenderElements<R>>
 where
     <R as RendererSuper>::TextureId: Clone + 'static,
@@ -146,9 +165,9 @@ where
         elements.extend(cursor_elements(
             chrome,
             renderer,
-            cursor_status,
-            cursor_location,
-            output.current_scale().fractional_scale(),
+            scene.cursor_status,
+            scene.cursor_location,
+            scene.output.current_scale().fractional_scale(),
         ));
     }
 
@@ -156,7 +175,8 @@ where
     // statusline bar spans the bottom of the output, the which-key overlay
     // floats top-left, and the welcome editor frame is centred.
     if let Some(chrome) = chrome {
-        let size = output
+        let size = scene
+            .output
             .current_mode()
             .map(|mode| mode.size)
             .unwrap_or_default();
@@ -164,16 +184,16 @@ where
         chrome.draw_statusline(
             size.w,
             size.h,
-            workspace,
-            focused_title,
-            tree_status,
+            scene.workspace,
+            scene.focused_title,
+            scene.tree_status,
             &mut batch,
         );
 
         let editor_mark = batch.mark();
         let frame_w = (size.w / 2).clamp(120, 360);
         let frame_h = (size.h / 2).clamp(80, 240);
-        let welcome: Vec<String> = WELCOME_BUFFER.iter().map(|line| line.to_string()).collect();
+        let welcome = welcome_buffer(scene.keybinds);
         chrome.draw_editor_frame(frame_w, frame_h, &welcome, "welcome", &mut batch);
         batch.translate_since(
             editor_mark,
@@ -181,19 +201,13 @@ where
             ((size.h - frame_h) / 2) as f32,
         );
 
-        chrome.draw_whichkey(
-            &WHICHKEY_BINDS
-                .iter()
-                .map(|(k, d)| (k.to_string(), d.to_string()))
-                .collect::<Vec<_>>(),
-            &mut batch,
-        );
+        chrome.draw_whichkey(&whichkey_rows(scene.keybinds), &mut batch);
 
         // Glyphs first, then panels. Within a panel the glyphs are drawn on top
         // of its background, and chrome panels never overlap each other, so
         // hoisting every glyph in front of every panel is equivalent to a strict
         // reverse of painter's order and saves interleaving the two lists.
-        let render_scale = output.current_scale().fractional_scale();
+        let render_scale = scene.output.current_scale().fractional_scale();
         elements.extend(
             glyph_elements(chrome, renderer, &batch.glyphs, render_scale)
                 .into_iter()
@@ -215,9 +229,9 @@ where
     // listed first below — ends up nearest the front; tiled windows do not
     // overlap, so the order only matters for the moment during a resize when
     // two rectangles briefly disagree.
-    let scale = Scale::from(output.current_scale().fractional_scale());
-    for (id, rect) in geometry.iter().rev() {
-        let Some(surface) = toplevels.get(id) else {
+    let scale = Scale::from(scene.output.current_scale().fractional_scale());
+    for (id, rect) in scene.geometry.iter().rev() {
+        let Some(surface) = scene.toplevels.get(id) else {
             continue;
         };
         let wl_surface = surface.wl_surface().clone();
@@ -367,6 +381,52 @@ pub fn send_frame_callbacks(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_overlay_advertises_the_binds_that_are_actually_in_force() {
+        // It used to be a hardcoded `M-t`/`M-S-q`, so a config that bound
+        // neither still had the overlay promising both — a panel whose entire
+        // job is to tell you what the keyboard does, lying about it.
+        let binds = vec![
+            ("M-o".to_string(), "focus left".to_string()),
+            ("M-e".to_string(), "workspace 2".to_string()),
+        ];
+        assert_eq!(whichkey_rows(&binds), binds);
+        assert!(
+            whichkey_rows(&[]).is_empty(),
+            "no binds, nothing to promise"
+        );
+    }
+
+    #[test]
+    fn the_overlay_stops_before_it_runs_off_the_screen() {
+        // The panel is fixed in the corner with no scrolling, and the shipped
+        // config alone is nearly forty binds.
+        let binds: Vec<(String, String)> = (0..40)
+            .map(|n| (format!("M-{n}"), format!("action {n}")))
+            .collect();
+        let rows = whichkey_rows(&binds);
+        assert_eq!(rows.len(), WHICHKEY_MAX_ROWS);
+        assert_eq!(rows[0], binds[0], "it keeps the first binds, in order");
+    }
+
+    #[test]
+    fn the_welcome_buffer_names_the_quit_bind_this_session_has() {
+        let binds = vec![("C-A-x".to_string(), "quit".to_string())];
+        let lines = welcome_buffer(&binds);
+        assert!(
+            lines.iter().any(|l| l.contains("C-A-x")),
+            "should name the configured quit bind, got {lines:?}"
+        );
+    }
+
+    #[test]
+    fn the_welcome_buffer_still_offers_a_way_out_with_no_config() {
+        // `M-S-q` quits whatever the config says, so naming it is true even
+        // here — and a screen with no way off it would be the worse failure.
+        let lines = welcome_buffer(&[]);
+        assert!(lines.iter().any(|l| l.contains("M-S-q")), "got {lines:?}");
+    }
 
     #[test]
     fn chrome_height_never_exceeds_output() {
