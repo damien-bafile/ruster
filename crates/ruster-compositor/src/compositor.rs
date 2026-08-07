@@ -157,6 +157,9 @@ impl<B: Backend + 'static> CompositorState<B> {
                 self.switch_workspace(n);
             }
             Action::Screenshot => self.screenshot_pending = true,
+            Action::Spawn(command) => {
+                crate::lua::spawn_command(&command, self.socket_name.as_deref())
+            }
             Action::Focus(dir) => {
                 if let Some(next) = focus
                     .and_then(|id| self.workspaces.tree().focus_target(id, dir, area))

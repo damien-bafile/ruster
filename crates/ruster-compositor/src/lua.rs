@@ -20,7 +20,7 @@ use ruster_shell::{Direction, Layout};
 /// Several carry an argument, which is what lets one action name cover a family
 /// — `focus left` and `focus right` are the same operation pointed differently,
 /// and spelling them as separate variants would mean four of everything.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Action {
     /// Shut the compositor down (Super+Shift+q by default).
     Quit,
@@ -42,6 +42,14 @@ pub enum Action {
     Workspace(u32),
     /// Send the focused window to a numbered workspace.
     MoveToWorkspace(u32),
+    /// Launch a program on the compositor's own Wayland socket.
+    ///
+    /// Without this there is no way to open a window from inside the session at
+    /// all: nested you can launch one from the host, but on DRM the compositor
+    /// *is* the display server, so the only windows that ever exist are the
+    /// startup clients — and the only way to get a second one is to type into
+    /// the first, which assumes the first is a terminal.
+    Spawn(String),
     /// Write the composited output to a PNG.
     ///
     /// The compositor implements no screencopy protocol, so on a real boot
@@ -224,6 +232,21 @@ fn install_wm_api(lua: &Lua, shell: &Rc<RefCell<LuaShell>>) -> mlua::Result<()> 
     Ok(())
 }
 
+/// `text` with a leading `verb` removed, if it starts with that word.
+///
+/// Matched case-insensitively on the verb alone so `Spawn foot` works, while
+/// everything after it is returned exactly as written.
+fn strip_verb<'a>(text: &'a str, verb: &str) -> Option<&'a str> {
+    let rest = text
+        .get(..verb.len())?
+        .eq_ignore_ascii_case(verb)
+        .then(|| &text[verb.len()..])?;
+    match rest.strip_prefix(|c: char| c.is_ascii_whitespace()) {
+        Some(rest) => Some(rest.trim()),
+        None => None,
+    }
+}
+
 /// A compass word as a [`Direction`], or `None` for anything else.
 fn direction(word: &str) -> Option<Direction> {
     match word {
@@ -288,7 +311,14 @@ impl Action {
     /// and case are all accepted so `cycle_workspace`, `cycle-workspace` and
     /// `Cycle Workspace` name the same thing.
     pub fn from_name(name: &str) -> Option<Action> {
-        let name = name.trim().to_ascii_lowercase().replace(['_', '-'], " ");
+        // Before normalising: a command line is not a keyword, and lowercasing
+        // it or turning its dashes into spaces would break `foot -e htop` and
+        // every program with a `-` or `_` in its name.
+        let trimmed = name.trim();
+        if let Some(rest) = strip_verb(trimmed, "spawn") {
+            return (!rest.is_empty()).then(|| Action::Spawn(rest.to_string()));
+        }
+        let name = trimmed.to_ascii_lowercase().replace(['_', '-'], " ");
         // Several actions take an argument, and it is always the last word, so
         // the verb is everything before it. Keeping the whole action in one
         // string is what lets the config stay `(binding, action)` pairs rather
@@ -359,6 +389,45 @@ pub fn apply_config_to_shell<B: Backend + 'static>(
 /// Launch each configured startup client with `WAYLAND_DISPLAY` pointing at our
 /// socket. Clients whose binary is not installed are skipped and a spawned
 /// child failing is ignored — a startup client can never crash the compositor.
+/// Launch `command` on the compositor's own Wayland socket.
+///
+/// Split on whitespace, so `foot -e htop` works but quoting does not — a config
+/// needing a shell can spawn one (`sh -c ...`) rather than have this grow a
+/// parser it would get subtly wrong.
+///
+/// Children are not reaped, so a spawned program that exits leaves a zombie
+/// until the compositor does. Startup clients have always behaved this way; a
+/// keybind makes it reachable more often, but the fix is a SIGCHLD handler on
+/// the event loop rather than anything here.
+pub fn spawn_command(command: &str, socket_name: Option<&str>) {
+    let Some(mut cmd) = build_command(command, socket_name) else {
+        return;
+    };
+    match cmd.spawn() {
+        Ok(child) => tracing::info!(%command, pid = child.id(), "spawned"),
+        Err(err) => tracing::warn!(%command, %err, "failed to spawn"),
+    }
+}
+
+/// The [`Command`] a spawn action describes, or `None` if it names no program.
+///
+/// Split out from the spawning so the part that can be silently wrong — which
+/// program, which arguments, and above all which display — is testable without
+/// running anything.
+fn build_command(command: &str, socket_name: Option<&str>) -> Option<Command> {
+    let mut parts = command.split_whitespace();
+    let program = parts.next()?;
+    let mut cmd = Command::new(program);
+    cmd.args(parts);
+    // Without this the child inherits the *host* socket when nested, and
+    // connects to the wrong compositor — its window opens outside the session
+    // that spawned it, which looks exactly like the spawn silently failing.
+    if let Some(socket) = socket_name {
+        cmd.env("WAYLAND_DISPLAY", socket);
+    }
+    Some(cmd)
+}
+
 pub fn spawn_startup_clients(clients: &[String], socket_name: &str) {
     for client in clients {
         if Command::new(client).arg("--version").output().is_err() {
@@ -504,6 +573,66 @@ mod tests {
             let chord = bind.to_ascii_lowercase();
             assert!(seen.insert(chord), "{bind:?} is bound twice");
         }
+    }
+
+    #[test]
+    fn a_spawned_program_is_pointed_at_this_compositor() {
+        // The failure this prevents is quiet and confusing: with no
+        // WAYLAND_DISPLAY the child inherits the host's, connects to the outer
+        // compositor, and its window opens *outside* the session that spawned
+        // it — which looks exactly like the keybind doing nothing.
+        let cmd = build_command("foot -e htop", Some("wayland-7")).unwrap();
+        assert_eq!(cmd.get_program(), "foot");
+        let args: Vec<_> = cmd.get_args().collect();
+        assert_eq!(args, ["-e", "htop"]);
+        let display = cmd
+            .get_envs()
+            .find(|(k, _)| *k == "WAYLAND_DISPLAY")
+            .and_then(|(_, v)| v);
+        assert_eq!(display, Some("wayland-7".as_ref()));
+    }
+
+    #[test]
+    fn a_spawn_with_no_socket_yet_still_runs() {
+        // The socket name is an Option on the compositor, and refusing to spawn
+        // without one would make the keybind dead rather than merely unpointed.
+        let cmd = build_command("foot", None).unwrap();
+        assert_eq!(cmd.get_program(), "foot");
+        assert!(cmd.get_envs().all(|(k, _)| k != "WAYLAND_DISPLAY"));
+        assert!(build_command("   ", Some("wayland-1")).is_none());
+    }
+
+    #[test]
+    fn a_spawn_keeps_its_command_line_exactly_as_written() {
+        // Everything else is normalised — lowercased, `_` and `-` turned into
+        // spaces — which would turn `foot -e htop` into `foot  e htop` and
+        // `Discord-canary` into something that is not a program.
+        assert_eq!(
+            Action::from_name("spawn foot"),
+            Some(Action::Spawn("foot".into()))
+        );
+        assert_eq!(
+            Action::from_name("spawn foot -e htop"),
+            Some(Action::Spawn("foot -e htop".into()))
+        );
+        assert_eq!(
+            Action::from_name("spawn Discord-canary"),
+            Some(Action::Spawn("Discord-canary".into()))
+        );
+        assert_eq!(
+            Action::from_name("  spawn   my_app  "),
+            Some(Action::Spawn("my_app".into()))
+        );
+    }
+
+    #[test]
+    fn spawn_needs_something_to_spawn() {
+        // Binding a key to a spawn with no command should bind nothing, rather
+        // than a key that runs the empty string every time it is pressed.
+        assert_eq!(Action::from_name("spawn"), None);
+        assert_eq!(Action::from_name("spawn   "), None);
+        // And a word that merely starts with "spawn" is not the spawn verb.
+        assert_eq!(Action::from_name("spawnfoot"), None);
     }
 
     #[test]

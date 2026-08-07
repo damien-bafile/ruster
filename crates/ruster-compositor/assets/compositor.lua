@@ -36,12 +36,18 @@
 --   split horizontal|vertical   re-divide this window's container that way,
 --                            which is also the axis the next window here uses
 --   toggle floating          float the focused window, or re-tile it
+--   spawn <command>          launch a program on this compositor's socket
 --   workspace <1-9>          show a numbered workspace
 --   move to workspace <1-9>  send the focused window there
 --
 -- <direction> is left, right, up or down (or h, l, k, j). Underscores and
 -- dashes work in place of spaces, so "move_to_workspace_3" is the same action
 -- as "move to workspace 3". An action that does not parse binds nothing.
+--
+-- `spawn` is the exception: everything after the word is taken as a command
+-- line exactly as written, so its case, dashes and underscores survive
+-- ("spawn foot -e htop"). It is split on whitespace and there is no quoting;
+-- for anything more, spawn a shell.
 --
 -- `screenshot` writes the composited output to $XDG_RUNTIME_DIR/ruster-shot-N.png
 -- (or /tmp when that is unset, as on a bare VT). It exists because the
@@ -77,6 +83,10 @@ return {
     { "M-b",   "split horizontal" },
     { "M-v",   "split vertical" },
     { "M-S-space", "toggle floating" },
+
+    -- Without a spawn bind there is no way to open a window from inside the
+    -- session: on DRM the only windows that exist are the startup clients.
+    { "M-Return", "spawn foot" },
 
     { "M-1",   "workspace 1" },
     { "M-2",   "workspace 2" },
