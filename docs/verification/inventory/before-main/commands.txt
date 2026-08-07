@@ -36,16 +36,12 @@ Diff
 diffview
 Diffview
 dired
-dired 
 Dired
-Dired 
 e
-e 
-echo 
-echoe 
-echom 
+echo
+echoe
+echom
 edit
-edit 
 emacs
 Empty command
 Ex
@@ -73,9 +69,7 @@ GitStaged
 gitstagehunk
 GitStageHunk
 h
-h 
 help
-help 
 Help
 history
 hover
@@ -89,18 +83,14 @@ mason
 Mason
 message
 messages
-messages 
 messages/
 mksession
 msgs
-msgs 
 msgs/
 n
 neovim
 noice
-noice 
 Noice
-Noice 
 No name given
 No path given
 No pattern given
@@ -114,30 +104,28 @@ push
 q
 q!
 quit
-rename 
-rg 
-Rg 
+rename
+rg
+Rg
 rusterconfig
 RusterConfig
 s
 screenshot
-screenshot 
 Screenshot
-Screenshot 
 sessionrestore
 SessionRestore
 sessionsave
 SessionSave
-set 
-set editmode 
+set
+set editmode
 settings
 sidebar
-sidebar resize 
+sidebar resize
 sp
 split
 staged
 stagehunk
-sym 
+sym
 syntax reload
 syntaxreload
 SyntaxReload
@@ -159,9 +147,7 @@ vs
 vsp
 vsplit
 w
-w 
 w!
 wq
 write
-write 
 x

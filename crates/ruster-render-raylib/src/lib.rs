@@ -615,7 +615,6 @@ impl Renderer for RaylibRenderer {
                                     color,
                                 );
                             };
-                        let _dimmer = Color::new(0, 0, 0, 0);
 
                         let title = format!("RUSTER  {}", welcome.version);
                         let tx = cx - (measure(&title) / 2.0) as i32;

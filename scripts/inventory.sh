@@ -43,9 +43,16 @@ capture() {
 
     # Commands the cmdline parser actually accepts. Deliberately looser than the
     # scrape in tests/docs_in_sync.rs, because this one has to survive a rewrap.
+    #
+    # Includes the prefix-matched family — `:set number` reaches the parser
+    # through `starts_with("set ")`, not a literal, so a scrape that only reads
+    # match arms would report `set` as the whole of it and never notice the
+    # branch being deleted.
     at "$REF" "$APP" \
         | awk '/fn parse_cmdline/{f=1} f&&/^    fn [a-z_]+\(/&&!/parse_cmdline/{exit} f' \
-        | grep -oE '"[A-Za-z][A-Za-z0-9 /!_-]*"' | tr -d '"' | sort -u > "$out/commands.txt"
+        | grep -oE '(starts_with|strip_prefix)\("[^"]+"\)|"[A-Za-z][A-Za-z0-9 /!_-]*"' \
+        | grep -oE '"[^"]+"' | tr -d '"' | sed 's/ *$//' | grep -v '^$' \
+        | sort -u > "$out/commands.txt"
 
     # The CmdAction enum: one variant per thing the editor can be told to do.
     at "$REF" "$APP" \

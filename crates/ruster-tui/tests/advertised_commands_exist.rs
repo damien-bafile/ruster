@@ -93,3 +93,93 @@ fn every_command_the_dashboard_advertises_is_one_the_parser_accepts() {
         missing.join("\n")
     );
 }
+
+/// The commands the `:`-Tab / `M-x` palette offers, as written there.
+///
+/// Kept as whole strings rather than first words: several are multi-word
+/// (`set number`), and truncating them to `set` would make the check pass for a
+/// palette entry of `set nonsense`.
+fn palette_commands() -> Vec<String> {
+    const SRC: &str = include_str!("../src/app.rs");
+    let start = SRC
+        .find("const PALETTE_COMMANDS")
+        .expect("PALETTE_COMMANDS exists");
+    let body = &SRC[start..];
+    let end = body.find("\n];").unwrap_or(body.len());
+    body[..end]
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("(\""))
+        .filter_map(|l| l.split_once('"'))
+        .map(|(cmd, _)| cmd.to_string())
+        .collect()
+}
+
+/// Whether `parse_cmdline` accepts `cmd`, including by prefix.
+///
+/// `:set number` is not a literal in the parser — it is reached through
+/// `starts_with("set ")`. So every prefix of the command is a candidate, longest
+/// first, which is also how the parser itself disambiguates
+/// `set editmode ` from the general `set `.
+///
+/// A prefix match alone is too weak for `set`: it would accept `set nonsense`,
+/// because the parser does route that to `parse_set_general` — which then
+/// rejects it at runtime against the settings schema. So `set <option>` is
+/// checked the way `parse_set_general` checks it, and the palette cannot
+/// advertise an option that does not exist.
+fn parser_accepts(body: &str, cmd: &str) -> bool {
+    let words: Vec<&str> = cmd.split_whitespace().collect();
+    let matched = (1..=words.len()).rev().find(|n| {
+        let prefix = words[..*n].join(" ");
+        body.contains(&format!("\"{prefix}\"")) || body.contains(&format!("\"{prefix} \""))
+    });
+    let Some(n) = matched else { return false };
+
+    // Landed on the generic `set ` branch: validate the option name itself.
+    if words[..n] == ["set"] && words.len() > 1 {
+        return option_exists(words[1]);
+    }
+    true
+}
+
+/// Whether `:set <tok>` names a real setting, mirroring `parse_set_general`:
+/// a `no` prefix negates a boolean, and `?`/`&`/`=value` suffixes query, reset
+/// or assign.
+fn option_exists(tok: &str) -> bool {
+    let k = tok
+        .split('=')
+        .next()
+        .unwrap_or(tok)
+        .trim_end_matches(['?', '&', '!']);
+    let k = k.strip_prefix("no").filter(|s| !s.is_empty()).unwrap_or(k);
+    ruster_lua::schema::spec_by_key(k).is_some() || ruster_lua::schema::spec_by_key(tok).is_some()
+}
+
+#[test]
+fn every_command_the_palette_offers_is_one_the_parser_accepts() {
+    // The palette is the discovery surface for anyone who does not already know
+    // a command's name — it is the only place the editor volunteers a command
+    // *with a description*. An entry the parser rejects answers "Unknown
+    // command" to a suggestion the editor itself made, which is exactly what
+    // :FuzzySearch did on the dashboard.
+    let body = parse_cmdline_body();
+    let commands = palette_commands();
+
+    assert!(
+        commands.len() > 10,
+        "palette scrape found {} commands — the scrape has broken, not the code",
+        commands.len()
+    );
+
+    let missing: Vec<String> = commands
+        .iter()
+        .filter(|c| !parser_accepts(body, c))
+        .map(|c| format!("  :{c}"))
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        "{} palette command(s) are offered but rejected by parse_cmdline:\n{}",
+        missing.len(),
+        missing.join("\n")
+    );
+}
