@@ -813,13 +813,22 @@ impl Renderer for RaylibRenderer {
                             sel.span_on(buffer_line, line.text.chars().count() as u16)
                         });
                         if line.highlights.is_empty() && sel_span.is_none() {
-                            s.draw_text_ex(
-                                font,
-                                &line.text,
-                                Vector2::new(text_x as f32, gy as f32),
-                                font_size as f32,
-                                1.0,
-                                default_color,
+                            // Per-cell even with nothing to colour. Drawing
+                            // the run in one call lets the font's advances plus
+                            // the 1px inter-glyph spacing accumulate, so the
+                            // text drifts away from the cursor block and the
+                            // selection quads, which sit at `col * char_w`. A
+                            // file with no grammar — plain text, an unknown
+                            // extension — has no highlights on any line, so the
+                            // whole buffer drifted.
+                            let plain: Vec<char> = line.text.chars().collect();
+                            let colors = vec![default_color; plain.len()];
+                            draw_text_cells(
+                                &mut s,
+                                metrics,
+                                (text_x as f32, gy as f32),
+                                &plain,
+                                &colors,
                             );
                             continue;
                         }
@@ -1210,14 +1219,9 @@ impl Renderer for RaylibRenderer {
                         continue;
                     }
                     if line.highlights.is_empty() {
-                        s.draw_text_ex(
-                            font,
-                            &line.text,
-                            Vector2::new(px as f32, ly as f32),
-                            font_size as f32,
-                            1.0,
-                            default_color,
-                        );
+                        let plain: Vec<char> = line.text.chars().collect();
+                        let colors = vec![default_color; plain.len()];
+                        draw_text_cells(&mut s, metrics, (px as f32, ly as f32), &plain, &colors);
                         continue;
                     }
                     let chars: Vec<char> = line.text.chars().collect();
@@ -1276,13 +1280,14 @@ impl Renderer for RaylibRenderer {
                 if ly + line_h > screen_h {
                     break;
                 }
-                s.draw_text_ex(
-                    font,
-                    &line.text,
-                    Vector2::new((panel_x + 6) as f32, ly as f32),
-                    font_size as f32,
-                    1.0,
-                    whichkey_fg,
+                let plain: Vec<char> = line.text.chars().collect();
+                let colors = vec![whichkey_fg; plain.len()];
+                draw_text_cells(
+                    &mut s,
+                    metrics,
+                    ((panel_x + 6) as f32, ly as f32),
+                    &plain,
+                    &colors,
                 );
             }
         }
@@ -1531,14 +1536,13 @@ impl Renderer for RaylibRenderer {
                     continue;
                 }
                 if line.highlights.is_empty() {
-                    s.draw_text_ex(
-                        font,
-                        &line.text,
-                        Vector2::new(ix as f32, ly as f32),
-                        font_size as f32,
-                        1.0,
-                        default_color,
-                    );
+                    // Per-cell: a run overhangs the cells the float was sized
+                    // for, and the scissor eats the tail. A hover of `p: Point`
+                    // lost its `t`, which reads as the box being too small
+                    // rather than the text being drawn too wide.
+                    let plain: Vec<char> = line.text.chars().collect();
+                    let colors = vec![default_color; plain.len()];
+                    draw_text_cells(&mut s, metrics, (ix as f32, ly as f32), &plain, &colors);
                     continue;
                 }
                 let chars: Vec<char> = line.text.chars().collect();

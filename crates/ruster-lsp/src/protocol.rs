@@ -153,7 +153,10 @@ mod tests {
     #[test]
     fn uri_has_file_scheme() {
         // Nonexistent: canonicalisation cannot apply, so the path is used as-is.
-        assert_eq!(uri_from_path(Path::new("/nonexistent-uri-test/x.rs")), "file:///nonexistent-uri-test/x.rs");
+        assert_eq!(
+            uri_from_path(Path::new("/nonexistent-uri-test/x.rs")),
+            "file:///nonexistent-uri-test/x.rs"
+        );
     }
 
     /// A workspace root and its documents must resolve to the same directory.
@@ -187,7 +190,11 @@ mod tests {
             "the document must sit inside the root it was opened from:\n  root {root_uri}\n  doc  {doc_uri}"
         );
         // And the root reached directly must name that same place.
-        assert_eq!(root_uri, uri_from_path(&real), "both routes name one directory");
+        assert_eq!(
+            root_uri,
+            uri_from_path(&real),
+            "both routes name one directory"
+        );
 
         let _ = std::fs::remove_dir_all(&base);
     }
