@@ -1,6 +1,6 @@
 # Phase 1 — Shell layout
 
-**Status:** in progress, started 2026-08-07.
+**Status:** tasks 1-7 complete, 2026-08-07. Not verified on hardware — see below.
 
 **Goal (from the design spec):** the i3 container-tree with editor-frames;
 workspaces; split/focus/resize/swap/floating; editor buffers as leaves;
@@ -71,6 +71,20 @@ last because everything else has to be right first.
 Workspace number, the focused window's title, and the focused container's layout
 direction — the three things you cannot infer from the screen once there is more
 than one window.
+
+## What landed
+
+All seven tasks. The container tree and its geometry (task 1), rendering every
+leaf (2), pointer hit-testing against it (3), directional focus/split/swap/resize
+(4), workspaces that hold windows (5), floating (6), and a statusline that
+reports the tree (7).
+
+Two things are deliberately not done, both deferred to Phase 2 with the control
+plane: **none of the tree operations are bound to a key** — `focus`, `split`,
+`swap`, `resize`, `toggle_floating` and `move_to_workspace` are public methods
+with tests and no keybinding — and **there is no server-side decoration**, so
+tiled windows are told `Tiled{Left,Right,Top,Bottom}` and draw their own borders
+if they insist.
 
 ## Constraints
 
