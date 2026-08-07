@@ -822,6 +822,14 @@ pub fn schema() -> Vec<SettingSpec> {
     );
     add(
         "colors",
+        "cmdline_accent",
+        "Cmdline prompt accent",
+        Text,
+        t(""),
+        "Override the colour of the cmdline's leading `:`, `/` or `?`",
+    );
+    add(
+        "colors",
         "cmdline_bg",
         "Cmdline background",
         Text,

@@ -407,6 +407,7 @@ impl LuaRuntime {
             whichkey_key: get("whichkey_key", accent),
             cmdline_bg: get("cmdline_bg", d.cmdline_bg),
             cmdline_fg: get("cmdline_fg", fg),
+            cmdline_accent: get("cmdline_accent", accent),
             mode_normal_bg: get("mode_normal_bg", d.mode_normal_bg),
             mode_normal_fg: get("mode_normal_fg", fg),
             mode_insert_bg: get("mode_insert_bg", d.mode_insert_bg),
@@ -442,6 +443,7 @@ impl LuaRuntime {
                 ("whichkey_fg".into(), roles.whichkey_fg),
                 ("cmdline_bg".into(), roles.cmdline_bg),
                 ("cmdline_fg".into(), roles.cmdline_fg),
+                ("cmdline_accent".into(), roles.cmdline_accent),
             ],
         };
         Some(Theme { palette, roles })

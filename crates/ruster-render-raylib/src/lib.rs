@@ -238,6 +238,18 @@ pub struct RaylibRenderer {
     screenshot_result: Option<Result<std::path::PathBuf, String>>,
 }
 
+/// Split cmdline text into its prompt sigil and the rest.
+///
+/// `:` is a command, `/` and `?` are searches. Anything else on this row is
+/// output — an echoed message, an error — and gets an empty sigil, so it draws
+/// in one colour exactly as before.
+pub fn split_prompt_sigil(text: &str) -> (&str, &str) {
+    match text.chars().next() {
+        Some(c @ (':' | '/' | '?')) => text.split_at(c.len_utf8()),
+        _ => ("", text),
+    }
+}
+
 /// Map a render-neutral color to a raylib color, using `fallback` for `Default`.
 fn to_raylib(c: ruster_render::Color, fallback: Color) -> Color {
     match c {
@@ -1064,10 +1076,27 @@ impl Renderer for RaylibRenderer {
             let rows = ((screen_h - pad_y) / line_h).max(1);
             let cmd_y = pad_y + (rows - 1) * line_h;
             d.draw_rectangle(0, cmd_y, screen_w, screen_h - cmd_y, cmdline_bg);
+            // Tint the leading sigil so a prompt is distinguishable from a
+            // message, which shares this row. Drawn as two runs because a glyph
+            // cannot carry two colours; the rest starts one cell in, which is
+            // the same fixed advance the rest of this renderer lays text on.
+            let (sigil, rest) = split_prompt_sigil(cmd);
+            let mut x = pad_x as f32;
+            if !sigil.is_empty() {
+                d.draw_text_ex(
+                    font,
+                    sigil,
+                    Vector2::new(x, cmd_y as f32),
+                    font_size as f32,
+                    1.0,
+                    to_raylib(theme.cmdline_accent, cmdline_fg),
+                );
+                x += char_w;
+            }
             d.draw_text_ex(
                 font,
-                cmd,
-                Vector2::new(pad_x as f32, cmd_y as f32),
+                rest,
+                Vector2::new(x, cmd_y as f32),
                 font_size as f32,
                 1.0,
                 cmdline_fg,
@@ -1667,6 +1696,29 @@ impl Renderer for RaylibRenderer {
 
 #[cfg(test)]
 mod tests {
+    /// The sigil split decides which cmdline rows get a tinted first glyph.
+    /// Getting it wrong either paints an echoed message as though it were a
+    /// prompt, or leaves a prompt looking like output.
+    #[test]
+    fn only_prompt_sigils_are_split_off() {
+        use super::split_prompt_sigil;
+        assert_eq!(split_prompt_sigil(":w"), (":", "w"));
+        assert_eq!(split_prompt_sigil("/needle"), ("/", "needle"));
+        assert_eq!(split_prompt_sigil("?needle"), ("?", "needle"));
+        // A bare sigil is still a prompt — it is what you see mid-keystroke.
+        assert_eq!(split_prompt_sigil(":"), (":", ""));
+        // Output, not a prompt.
+        assert_eq!(
+            split_prompt_sigil("written 3 lines"),
+            ("", "written 3 lines")
+        );
+        assert_eq!(
+            split_prompt_sigil("E486: pattern not found"),
+            ("", "E486: pattern not found")
+        );
+        assert_eq!(split_prompt_sigil(""), ("", ""));
+    }
+
     use super::{box_edges, RaylibRenderer};
 
     /// Metrics matching the shipped defaults, so the numbers below are the ones

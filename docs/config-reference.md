@@ -83,6 +83,10 @@ that cycles the **selected theme's named palette** (e.g. Catppuccin Mocha's `mau
 default". Changing the Theme row updates the color pickers live. These map to
 `ruster.config.colors.*` (stored as hex), and apply to the GUI live.
 
+`colors.cmdline_accent` colors the cmdline's leading `:`, `/` or `?` so a prompt reads
+differently from a message — the two share the bottom row. It defaults to the theme's
+accent; echoed messages and errors have no sigil and are left in `cmdline_fg`.
+
 Press **`dd`** (or **`Delete`**) on any Settings row to reset it to its default; for color
 rows that means "use the theme's color".
 

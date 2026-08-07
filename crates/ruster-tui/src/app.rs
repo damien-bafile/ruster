@@ -277,6 +277,7 @@ fn resolve_theme_colors(
     set(&ov.whichkey_bg, &mut colors.whichkey_bg);
     set(&ov.whichkey_fg, &mut colors.whichkey_fg);
     set(&ov.whichkey_key, &mut colors.whichkey_key);
+    set(&ov.cmdline_accent, &mut colors.cmdline_accent);
     set(&ov.cmdline_bg, &mut colors.cmdline_bg);
     set(&ov.cmdline_fg, &mut colors.cmdline_fg);
     set(&ov.mode_normal_bg, &mut colors.mode_normal_bg);
@@ -2106,6 +2107,7 @@ impl App {
                 whichkey_key: col(c.colors.whichkey_key),
                 cmdline_bg: col(c.colors.cmdline_bg),
                 cmdline_fg: col(c.colors.cmdline_fg),
+                cmdline_accent: col(c.colors.cmdline_accent),
             },
         }
     }
@@ -2142,6 +2144,7 @@ impl App {
             whichkey_key: col(c.colors.whichkey_key),
             cmdline_bg: col(c.colors.cmdline_bg),
             cmdline_fg: col(c.colors.cmdline_fg),
+            cmdline_accent: col(c.colors.cmdline_accent),
         }
     }
 
