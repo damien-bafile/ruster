@@ -503,14 +503,22 @@ pub struct StatuslineWidget {
 
 impl StatuslineWidget {
     pub fn new(view: StatuslineView) -> Self {
+        // Seeded from the default theme rather than written out. These were
+        // starship's greens and oranges, so an unthemed statusline rendered a
+        // different theme from every other widget, whose fallbacks come from
+        // `Theme::default()`. The single caller always calls `with_theme`, so
+        // this is only ever the shape of the fallback — but a fallback that
+        // disagrees with every other fallback is a bug waiting for the day
+        // somebody adds a second caller.
+        let d = ruster_render::Theme::default();
         StatuslineWidget {
             view,
-            bar_bg: Color::Rgb(17, 26, 17),
-            bar_fg: Color::White,
-            dim_bg: Color::Rgb(17, 26, 17),
-            dim_fg: Color::Gray,
-            mode_bg: Color::Rgb(255, 136, 0),
-            mode_fg: Color::Rgb(10, 14, 10),
+            bar_bg: ruster_render_color_to_tui(&d.statusline_bg),
+            bar_fg: ruster_render_color_to_tui(&d.statusline_fg),
+            dim_bg: ruster_render_color_to_tui(&d.statusline_bg),
+            dim_fg: ruster_render_color_to_tui(&d.gutter),
+            mode_bg: ruster_render_color_to_tui(&d.accent),
+            mode_fg: ruster_render_color_to_tui(&d.accent_fg),
         }
     }
 

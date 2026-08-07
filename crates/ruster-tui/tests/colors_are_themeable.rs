@@ -16,34 +16,47 @@
 //! records which is which, and why, so that adding a colour forces the same
 //! deliberate choice `commands_discoverable.rs` forces for keybindings.
 
-/// Files whose literals are all theme fallbacks, with the shape that makes them
-/// so. Listed per file rather than per line: line numbers rot, and every
-/// literal in each of these follows the same pattern.
-const FALLBACK_ONLY: &[(&str, &str)] = &[
-    (
-        "widgets/mod.rs",
-        "every literal is the `unwrap_or` arm of `c(fallback, |t| t.field)` or is \
-         overwritten wholesale by `with_theme` before the widget draws",
-    ),
-    (
-        "widgets/debug_overlay.rs",
-        "same `c(|t| t.field, fallback)` shape — the theme wins when there is one",
-    ),
-    (
-        "raylib/lib.rs",
-        "every literal is the second argument of `to_raylib(theme.field, fallback)`, \
-         so the theme wins whenever it carries that role",
-    ),
+/// The shapes that make a literal a *fallback* rather than a choice.
+///
+/// Each is a call that takes both a theme lookup and a literal, and prefers the
+/// theme whenever it has that role. A literal in one of these positions is a
+/// default; a literal anywhere else is a colour no theme can reach.
+///
+/// This used to be a list of whole files, which meant that once a file was on
+/// it, a genuinely hardcoded colour added to that file was waved through — and
+/// the three files on it are the three that draw almost everything. Matching the
+/// shape instead means the exemption travels with the pattern rather than the
+/// filename.
+const FALLBACK_SHAPES: &[&str] = &[
+    // `c(LITERAL, |t| t.field)` — the widget helper, literal first.
+    "c(Color::",
+    // `c(|t| t.field, LITERAL)` — the same helper, arguments the other way up.
+    "|t| t.",
+    // `to_raylib(theme.field, LITERAL)` — the raylib backend's conversion.
+    "to_raylib(theme.",
+    // `theme.map(..).unwrap_or(LITERAL)` and friends.
+    "unwrap_or(",
 ];
 
-/// Individual exceptions, none needed so far.
+/// Individual exceptions, none needed.
 ///
 /// `app.rs` and `renderer.rs` were listed here at first, for their colour
 /// parsing and conversion — `Color::Rgb(r, g, b)` forwarding a value from Lua
 /// config or the terminal's ANSI palette. The matcher already excludes those:
 /// it requires three *numeric* arguments, so a forwarded value is not a literal
-/// and never needed an exemption. The stale-entry check below is what said so.
+/// and never needed an exemption.
+///
+/// `StatuslineWidget::new` was the last thing that needed one: it wrote out
+/// starship's greens as its pre-theme defaults, so an unthemed statusline
+/// rendered a different theme from every other widget. It now seeds from
+/// `Theme::default()` like everything else, which removed the literals instead
+/// of excusing them.
 const ALLOWED: &[(&str, &str)] = &[];
+
+/// Whether this line puts its literal in a fallback position.
+fn is_fallback(line: &str) -> bool {
+    FALLBACK_SHAPES.iter().any(|shape| line.contains(shape))
+}
 
 /// Every `Rgb(1, 2, 3)` literal outside `#[cfg(test)]`, as (file, line, text).
 fn literals() -> Vec<(String, usize, String)> {
@@ -55,7 +68,7 @@ fn literals() -> Vec<(String, usize, String)> {
             if t.starts_with("//") || t.starts_with("///") {
                 continue;
             }
-            if has_rgb_literal(line) || has_rgba_literal(line) {
+            if (has_rgb_literal(line) || has_rgba_literal(line)) && !is_fallback(line) {
                 out.push((name.clone(), n + 1, t.to_string()));
             }
         }
@@ -171,11 +184,7 @@ fn has_rgba_literal(line: &str) -> bool {
 
 #[test]
 fn no_drawing_code_picks_a_colour_a_theme_cannot_reach() {
-    let allowed: Vec<&str> = FALLBACK_ONLY
-        .iter()
-        .chain(ALLOWED.iter())
-        .map(|(f, _)| *f)
-        .collect();
+    let allowed: Vec<&str> = ALLOWED.iter().map(|(f, _)| *f).collect();
     let offending: Vec<String> = literals()
         .into_iter()
         .filter(|(file, _, _)| !allowed.contains(&file.as_str()))
@@ -187,24 +196,62 @@ fn no_drawing_code_picks_a_colour_a_theme_cannot_reach() {
         "{} hardcoded colour(s) that no theme or `ruster.config.syntax.*` can reach:\n{}\n\n\
          Route it through a pseudo-language in `ruster-syntax` — `signs`, `dired`, \
          `flash` or `diff` — so it appears in the Settings syntax editor like every \
-         other group. If it is genuinely a theme fallback or a colour being parsed \
-         rather than chosen, add the file to ALLOWED in this test with the reason.",
+         other group. If it is genuinely a fallback, put it in one of the shapes \
+         this test recognises — `c(LITERAL, |t| t.field)`, `to_raylib(theme.field, \
+         LITERAL)`, `unwrap_or(LITERAL)` — so the theme wins whenever it has that \
+         role. Only add to ALLOWED when neither is true, with the reason.",
         offending.len(),
         offending.join("\n")
     );
 }
 
-/// The scrape must be able to see something, or the test above passes because
+/// The scrape must be able to see something, or the guard above passes because
 /// it is looking at nothing.
+///
+/// It counts *all* literals, before the fallback filter — the filtered list is
+/// meant to be empty, so counting that would assert the opposite of the point.
 #[test]
 fn the_scrape_still_finds_literals() {
-    let found = literals();
+    let mut total = 0;
+    for (_, src) in sources() {
+        let body = &src[..test_module_start(&src)];
+        total += body
+            .lines()
+            .filter(|l| {
+                let t = l.trim();
+                !t.starts_with("//") && (has_rgb_literal(l) || has_rgba_literal(l))
+            })
+            .count();
+    }
     assert!(
-        found.len() > 20,
-        "the scrape found only {} literals across {} files — it has broken, and the \
-         guard above is now vacuous",
-        found.len(),
+        total > 20,
+        "the scrape found only {total} literals across {} files — it has broken, and \
+         the guard above is now vacuous",
         sources().len()
+    );
+}
+
+/// Every fallback shape must still match something. A shape that matches nothing
+/// is either a pattern that has been refactored away — in which case it is
+/// silently excusing nothing — or a typo, in which case it is excusing nothing
+/// and the literals it was meant to cover are now failing the guard.
+#[test]
+fn every_fallback_shape_still_matches_something() {
+    let unused: Vec<&str> = FALLBACK_SHAPES
+        .iter()
+        .filter(|shape| {
+            !sources().iter().any(|(_, src)| {
+                let body = &src[..test_module_start(src)];
+                body.lines()
+                    .any(|l| l.contains(*shape) && (has_rgb_literal(l) || has_rgba_literal(l)))
+            })
+        })
+        .copied()
+        .collect();
+    assert!(
+        unused.is_empty(),
+        "these fallback shapes no longer match any literal, so they excuse nothing \
+         and should go: {unused:?}"
     );
 }
 
@@ -213,9 +260,8 @@ fn the_scrape_still_finds_literals() {
 #[test]
 fn the_allow_list_has_no_stale_entries() {
     let found = literals();
-    let stale: Vec<&str> = FALLBACK_ONLY
+    let stale: Vec<&str> = ALLOWED
         .iter()
-        .chain(ALLOWED.iter())
         .map(|(f, _)| *f)
         .filter(|f| !found.iter().any(|(file, _, _)| file == f))
         .collect();
@@ -228,7 +274,7 @@ fn the_allow_list_has_no_stale_entries() {
 
 #[test]
 fn every_allow_list_entry_explains_itself() {
-    for (file, why) in FALLBACK_ONLY.iter().chain(ALLOWED.iter()) {
+    for (file, why) in ALLOWED.iter() {
         assert!(
             why.len() > 20,
             "{file} is allow-listed without a real reason"
