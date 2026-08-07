@@ -155,8 +155,8 @@ ruster.lsp = {
 
 Configuration table. See [Config Reference](config-reference.md).
 
-Built-in themes: `default`, `gruvbox`, `tokyonight`, `nord`, `catppuccin-mocha`,
-`starship`. Set with `ruster.config.general.theme = "starship"`.
+Built-in themes: `default`, `gruvbox`, `tokyonight`, `nord`, `catppuccin-mocha`
+(the default), `starship`. Set with `ruster.config.general.theme = "starship"`.
 
 ```lua
 ruster.config.tabstop = 2

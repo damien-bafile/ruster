@@ -1,0 +1,6 @@
+:Dired
+:e
+:Files
+:help
+:term
+:w

@@ -334,7 +334,7 @@ pub fn schema() -> Vec<SettingSpec> {
         "theme",
         "Theme name",
         Text,
-        t("default"),
+        t("catppuccin-mocha"),
         "Named color theme",
     );
 
@@ -544,6 +544,7 @@ pub fn schema() -> Vec<SettingSpec> {
         e("insert"),
         "Initial mode for a new terminal",
     );
+    add("terminal", "escape", "Escape key", Text, t("<C-\\>"), "Key that leaves Terminal-Insert for Terminal-Normal; set to <Esc> for evil-style controls, at the cost of Esc no longer reaching programs in the shell");
 
     // --- dired ---
     add(
@@ -810,6 +811,14 @@ pub fn schema() -> Vec<SettingSpec> {
         Text,
         t(""),
         "Override the which-key panel text",
+    );
+    add(
+        "colors",
+        "whichkey_key",
+        "Which-key key accent",
+        Text,
+        t(""),
+        "Override the which-key key-letter accent",
     );
     add(
         "colors",

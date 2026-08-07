@@ -47,6 +47,8 @@ pub struct ThemeColors {
     pub whichkey_bg: Rgb,
     /// Which-key panel text.
     pub whichkey_fg: Rgb,
+    /// Which-key key-letter accent.
+    pub whichkey_key: Rgb,
     /// Cmdline / mini-buffer background.
     pub cmdline_bg: Rgb,
     /// Cmdline / mini-buffer text.
@@ -91,6 +93,7 @@ impl Default for ThemeColors {
             accent_fg: Rgb::new(30, 30, 30),
             whichkey_bg: Rgb::new(30, 30, 46),
             whichkey_fg: Rgb::new(205, 214, 244),
+            whichkey_key: Rgb::new(243, 139, 168),
             cmdline_bg: Rgb::new(30, 30, 30),
             cmdline_fg: Rgb::new(205, 214, 244),
             mode_normal_bg: Rgb::new(69, 71, 90),
@@ -131,7 +134,7 @@ impl Theme {
             "  bg = {:?}, fg = {:?}, gutter = {:?}, gutter_bg = {:?},\n  \
              cursor_bg = {:?}, selection_bg = {:?}, selection_fg = {:?}, cursor_fg = {:?},\n  \
              divider = {:?}, statusline_fg = {:?}, statusline_bg = {:?}, accent = {:?}, accent_fg = {:?},\n  \
-             whichkey_bg = {:?}, whichkey_fg = {:?}, cmdline_bg = {:?}, cmdline_fg = {:?},\n  \
+             whichkey_bg = {:?}, whichkey_fg = {:?}, whichkey_key = {:?}, cmdline_bg = {:?}, cmdline_fg = {:?},\n  \
              mode_normal_bg = {:?}, mode_normal_fg = {:?},\n  \
              mode_insert_bg = {:?}, mode_insert_fg = {:?},\n  \
              mode_visual_bg = {:?}, mode_visual_fg = {:?},\n  \
@@ -140,7 +143,7 @@ impl Theme {
             r.bg.to_hex(), r.fg.to_hex(), r.gutter.to_hex(), r.gutter_bg.to_hex(),
             r.cursor_bg.to_hex(), r.selection_bg.to_hex(), r.selection_fg.to_hex(), r.cursor_fg.to_hex(),
             r.divider.to_hex(), r.statusline_fg.to_hex(), r.statusline_bg.to_hex(), r.accent.to_hex(), r.accent_fg.to_hex(),
-            r.whichkey_bg.to_hex(), r.whichkey_fg.to_hex(),
+            r.whichkey_bg.to_hex(), r.whichkey_fg.to_hex(), r.whichkey_key.to_hex(),
             r.cmdline_bg.to_hex(), r.cmdline_fg.to_hex(),
             r.mode_normal_bg.to_hex(), r.mode_normal_fg.to_hex(),
             r.mode_insert_bg.to_hex(), r.mode_insert_fg.to_hex(),
@@ -220,6 +223,43 @@ const MOCHA: &[(&str, &str)] = &[
     ("mantle", "#181825"),
     ("crust", "#11111b"),
 ];
+
+/// The Catppuccin Mocha UI roles — what ruster looks like out of the box.
+///
+/// Shared between the `catppuccin-mocha` built-in and [`Config::default`], so
+/// the shipped default and the theme it names cannot drift apart.
+pub fn mocha_roles() -> ThemeColors {
+    ThemeColors {
+        bg: Rgb::new(30, 30, 46),
+        fg: Rgb::new(205, 214, 244),
+        gutter: Rgb::new(108, 112, 134),
+        gutter_bg: Rgb::new(30, 30, 46),
+        cursor_bg: Rgb::new(245, 224, 220),
+        cursor_fg: Rgb::new(30, 30, 46),
+        selection_bg: Rgb::new(88, 91, 112),
+        selection_fg: Rgb::new(205, 214, 244),
+        divider: Rgb::new(49, 50, 68),
+        statusline_fg: Rgb::new(205, 214, 244),
+        statusline_bg: Rgb::new(49, 50, 68),
+        accent: Rgb::new(203, 166, 247),
+        accent_fg: Rgb::new(30, 30, 46),
+        whichkey_bg: Rgb::new(30, 30, 46),
+        whichkey_fg: Rgb::new(205, 214, 244),
+        whichkey_key: Rgb::new(203, 166, 247),
+        cmdline_bg: Rgb::new(30, 30, 46),
+        cmdline_fg: Rgb::new(205, 214, 244),
+        mode_normal_bg: Rgb::new(49, 50, 68),
+        mode_normal_fg: Rgb::new(205, 214, 244),
+        mode_insert_bg: Rgb::new(30, 60, 45),
+        mode_insert_fg: Rgb::new(205, 214, 244),
+        mode_visual_bg: Rgb::new(55, 35, 70),
+        mode_visual_fg: Rgb::new(205, 214, 244),
+        mode_cmdline_bg: Rgb::new(49, 50, 68),
+        mode_cmdline_fg: Rgb::new(205, 214, 244),
+        mode_emacs_bg: Rgb::new(40, 45, 60),
+        mode_emacs_fg: Rgb::new(205, 214, 244),
+    }
+}
 
 const LATTE: &[(&str, &str)] = &[
     ("rosewater", "#dc8a78"),
@@ -343,6 +383,7 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                     accent_fg: Rgb::new(10, 14, 10),
                     whichkey_bg: Rgb::new(10, 14, 10),
                     whichkey_fg: Rgb::new(51, 255, 102),
+                    whichkey_key: Rgb::new(255, 136, 0),
                     cmdline_bg: Rgb::new(10, 14, 10),
                     cmdline_fg: Rgb::new(51, 255, 102),
                     mode_normal_bg: Rgb::new(17, 26, 17),
@@ -401,6 +442,7 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                     accent_fg: Rgb::new(40, 40, 40),
                     whichkey_bg: Rgb::new(40, 40, 40),
                     whichkey_fg: Rgb::new(235, 219, 178),
+                    whichkey_key: Rgb::new(250, 189, 47),
                     cmdline_bg: Rgb::new(40, 40, 40),
                     cmdline_fg: Rgb::new(235, 219, 178),
                     mode_normal_bg: Rgb::new(60, 56, 54),
@@ -454,6 +496,7 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                     accent_fg: Rgb::new(26, 27, 38),
                     whichkey_bg: Rgb::new(30, 30, 46),
                     whichkey_fg: Rgb::new(192, 202, 245),
+                    whichkey_key: Rgb::new(122, 162, 247),
                     cmdline_bg: Rgb::new(26, 27, 38),
                     cmdline_fg: Rgb::new(192, 202, 245),
                     mode_normal_bg: Rgb::new(65, 72, 104),
@@ -506,6 +549,7 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                     accent_fg: Rgb::new(46, 52, 64),
                     whichkey_bg: Rgb::new(46, 52, 64),
                     whichkey_fg: Rgb::new(216, 222, 233),
+                    whichkey_key: Rgb::new(136, 192, 208),
                     cmdline_bg: Rgb::new(46, 52, 64),
                     cmdline_fg: Rgb::new(216, 222, 233),
                     mode_normal_bg: Rgb::new(59, 66, 82),
@@ -525,35 +569,7 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
             "catppuccin-mocha",
             Theme {
                 palette: palette(MOCHA),
-                roles: ThemeColors {
-                    bg: Rgb::new(30, 30, 46),
-                    fg: Rgb::new(205, 214, 244),
-                    gutter: Rgb::new(108, 112, 134),
-                    gutter_bg: Rgb::new(30, 30, 46),
-                    cursor_bg: Rgb::new(245, 224, 220),
-                    cursor_fg: Rgb::new(30, 30, 46),
-                    selection_bg: Rgb::new(88, 91, 112),
-                    selection_fg: Rgb::new(205, 214, 244),
-                    divider: Rgb::new(49, 50, 68),
-                    statusline_fg: Rgb::new(205, 214, 244),
-                    statusline_bg: Rgb::new(49, 50, 68),
-                    accent: Rgb::new(203, 166, 247),
-                    accent_fg: Rgb::new(30, 30, 46),
-                    whichkey_bg: Rgb::new(30, 30, 46),
-                    whichkey_fg: Rgb::new(205, 214, 244),
-                    cmdline_bg: Rgb::new(30, 30, 46),
-                    cmdline_fg: Rgb::new(205, 214, 244),
-                    mode_normal_bg: Rgb::new(49, 50, 68),
-                    mode_normal_fg: Rgb::new(205, 214, 244),
-                    mode_insert_bg: Rgb::new(30, 60, 45),
-                    mode_insert_fg: Rgb::new(205, 214, 244),
-                    mode_visual_bg: Rgb::new(55, 35, 70),
-                    mode_visual_fg: Rgb::new(205, 214, 244),
-                    mode_cmdline_bg: Rgb::new(49, 50, 68),
-                    mode_cmdline_fg: Rgb::new(205, 214, 244),
-                    mode_emacs_bg: Rgb::new(40, 45, 60),
-                    mode_emacs_fg: Rgb::new(205, 214, 244),
-                },
+                roles: mocha_roles(),
             },
         ),
         (
@@ -576,6 +592,7 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                     accent_fg: Rgb::new(239, 241, 245),
                     whichkey_bg: Rgb::new(239, 241, 245),
                     whichkey_fg: Rgb::new(76, 79, 105),
+                    whichkey_key: Rgb::new(136, 57, 239),
                     cmdline_bg: Rgb::new(239, 241, 245),
                     cmdline_fg: Rgb::new(76, 79, 105),
                     mode_normal_bg: Rgb::new(230, 233, 239),
@@ -611,6 +628,7 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                     accent_fg: Rgb::new(48, 52, 70),
                     whichkey_bg: Rgb::new(48, 52, 70),
                     whichkey_fg: Rgb::new(198, 208, 245),
+                    whichkey_key: Rgb::new(202, 158, 230),
                     cmdline_bg: Rgb::new(48, 52, 70),
                     cmdline_fg: Rgb::new(198, 208, 245),
                     mode_normal_bg: Rgb::new(65, 69, 89),
@@ -646,6 +664,7 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                     accent_fg: Rgb::new(36, 39, 58),
                     whichkey_bg: Rgb::new(36, 39, 58),
                     whichkey_fg: Rgb::new(202, 211, 245),
+                    whichkey_key: Rgb::new(198, 160, 246),
                     cmdline_bg: Rgb::new(36, 39, 58),
                     cmdline_fg: Rgb::new(202, 211, 245),
                     mode_normal_bg: Rgb::new(54, 58, 79),
@@ -684,6 +703,7 @@ pub struct ColorOverrides {
     pub accent_fg: String,
     pub whichkey_bg: String,
     pub whichkey_fg: String,
+    pub whichkey_key: String,
     pub cmdline_bg: String,
     pub cmdline_fg: String,
     pub mode_normal_bg: String,
@@ -773,6 +793,8 @@ pub struct Config {
     pub terminal_scrollback: u32,
     /// Initial mode for a new terminal: "insert" or "normal".
     pub terminal_default_mode: String,
+    /// Key notation (`<C-\\>`, `<Esc>`, …) that leaves Terminal-Insert.
+    pub terminal_escape: String,
     /// Show dotfiles in dired by default.
     pub dired_show_hidden: bool,
     /// `git.signs` — show added/changed/removed markers in the gutter.
@@ -858,6 +880,7 @@ impl Config {
                 ("terminal", "default_mode"),
                 Enum(self.terminal_default_mode.clone()),
             ),
+            (("terminal", "escape"), Text(self.terminal_escape.clone())),
             (("dired", "show_hidden"), Bool(self.dired_show_hidden)),
             (("sidebar", "auto_open"), Bool(self.sidebar_auto_open)),
             (("session", "autoload"), Bool(self.session_autoload)),
@@ -915,6 +938,10 @@ impl Config {
             (
                 ("colors", "whichkey_fg"),
                 Text(self.color_overrides.whichkey_fg.clone()),
+            ),
+            (
+                ("colors", "whichkey_key"),
+                Text(self.color_overrides.whichkey_key.clone()),
             ),
             (
                 ("colors", "cmdline_bg"),
@@ -1028,6 +1055,9 @@ impl Config {
             terminal_scrollback: u("terminal", "scrollback", d.terminal_scrollback),
             terminal_default_mode: st("terminal", "default_mode")
                 .unwrap_or(d.terminal_default_mode),
+            terminal_escape: st("terminal", "escape")
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(d.terminal_escape),
             dired_show_hidden: bl("dired", "show_hidden", d.dired_show_hidden),
             git_signs: bl("git", "signs", d.git_signs),
             todo_keywords: st("todo", "keywords")
@@ -1058,6 +1088,7 @@ impl Config {
                 accent_fg: st("colors", "accent_fg").unwrap_or_default(),
                 whichkey_bg: st("colors", "whichkey_bg").unwrap_or_default(),
                 whichkey_fg: st("colors", "whichkey_fg").unwrap_or_default(),
+                whichkey_key: st("colors", "whichkey_key").unwrap_or_default(),
                 cmdline_bg: st("colors", "cmdline_bg").unwrap_or_default(),
                 cmdline_fg: st("colors", "cmdline_fg").unwrap_or_default(),
                 mode_normal_bg: st("colors", "mode_normal_bg").unwrap_or_default(),
@@ -1122,7 +1153,7 @@ impl Default for Config {
             line_ending: "lf".into(),
             number: false,
             relativenumber: false,
-            theme: "default".into(),
+            theme: "catppuccin-mocha".into(),
             gui_font: None,
             font_size: 20,
             line_height: 24,
@@ -1134,7 +1165,8 @@ impl Default for Config {
             cursor_kind: "block".into(),
             cursor_anim_enabled: true,
             cursor_anim_speed: 12.0,
-            colors: ThemeColors::default(),
+            // Matches `theme` above: the fallback and the named default agree.
+            colors: mocha_roles(),
             color_overrides: ColorOverrides::default(),
             timeoutlen: 300,
             whichkey_enabled: true,
@@ -1146,6 +1178,7 @@ impl Default for Config {
             terminal_shell: None,
             terminal_scrollback: 10000,
             terminal_default_mode: "insert".into(),
+            terminal_escape: "<C-\\>".into(),
             dired_show_hidden: false,
             git_signs: true,
             todo_keywords: ruster_syntax_default_todo_keywords(),
@@ -1190,4 +1223,46 @@ pub fn syntax_to_lua(
     }
     s.push_str("}\n");
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The shipped default, in three places that have to agree: the setting
+    /// schema (what `:settings` and a generated `config.lua` show), `Config`
+    /// itself, and a built-in theme actually named that.
+    #[test]
+    fn the_default_theme_is_catppuccin_mocha() {
+        assert_eq!(Config::default().theme, "catppuccin-mocha");
+
+        let schema_default = crate::schema::schema()
+            .into_iter()
+            .find(|s| s.group == "general" && s.key == "theme")
+            .map(|s| s.default)
+            .expect("general.theme is in the schema");
+        assert_eq!(
+            schema_default,
+            crate::schema::SettingValue::Text("catppuccin-mocha".into())
+        );
+
+        assert!(
+            builtin_themes()
+                .iter()
+                .any(|(n, _)| *n == "catppuccin-mocha"),
+            "the default has to name a theme that exists"
+        );
+    }
+
+    /// `resolve_theme_colors` only reaches `Config::default().colors` when no
+    /// theme file and no built-in match. Those colours should still be the
+    /// ones the default theme would have given, not a different palette.
+    #[test]
+    fn the_fallback_colours_match_the_default_theme() {
+        let (_, mocha) = builtin_themes()
+            .into_iter()
+            .find(|(n, _)| *n == "catppuccin-mocha")
+            .expect("built-in exists");
+        assert_eq!(Config::default().colors, mocha.roles);
+    }
 }

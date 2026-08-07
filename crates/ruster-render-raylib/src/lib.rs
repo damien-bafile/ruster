@@ -531,6 +531,7 @@ impl Renderer for RaylibRenderer {
         let statusline_bg = to_raylib(theme.statusline_bg, divider);
         let whichkey_bg = to_raylib(theme.whichkey_bg, Color::new(30, 30, 46, 255));
         let whichkey_fg = to_raylib(theme.whichkey_fg, default_color);
+        let whichkey_key = to_raylib(theme.whichkey_key, accent);
         let cmdline_bg = to_raylib(theme.cmdline_bg, bg);
         let cmdline_fg = to_raylib(theme.cmdline_fg, default_color);
 
@@ -642,7 +643,7 @@ impl Renderer for RaylibRenderer {
                         for (cmd, desc) in &[
                             (":e <path>", "Open file (Tab to complete)"),
                             (":Dired", "File Explorer"),
-                            (":FuzzySearch", "Find Files"),
+                            (":Files", "Find Files"),
                             (":term", "Terminal"),
                         ] {
                             let dl = measure(cmd) + 4.0;
@@ -1033,14 +1034,14 @@ impl Renderer for RaylibRenderer {
                 // Center section — neutral bg + statusline_fg (or gutter for inactive).
                 if !view.statusline.center.is_empty() {
                     let center_w = measure(&view.statusline.center);
-                    let center_x = px as f32 + (pw as f32 - center_w) / 2.0;
-                    let left_w_val = measure(&left);
                     let right_w = measure(&right);
-                    if pw as f32 > left_w_val + right_w + center_w {
+                    if let Some(off) =
+                        ruster_render::statusline_center_x(pw as f32, left_w, center_w, right_w)
+                    {
                         s.draw_text_ex(
                             font,
                             &view.statusline.center,
-                            Vector2::new(center_x, sl_y as f32),
+                            Vector2::new(px as f32 + off, sl_y as f32),
                             font_size as f32,
                             1.0,
                             right_fg,
@@ -1320,8 +1321,17 @@ impl Renderer for RaylibRenderer {
                 let ry = panel_top + 4 + (i as i32 + 1) * line_h;
                 s.draw_text_ex(
                     font,
-                    &format!("   {}", entry),
+                    &entry.key,
                     Vector2::new(pad_x as f32, ry as f32),
+                    font_size as f32,
+                    1.0,
+                    whichkey_key,
+                );
+                let kx = pad_x + 6 + font.measure_text(&entry.key, font_size as f32, 1.0).x as i32;
+                s.draw_text_ex(
+                    font,
+                    &entry.desc,
+                    Vector2::new(kx as f32, ry as f32),
                     font_size as f32,
                     1.0,
                     whichkey_fg,

@@ -1,5 +1,17 @@
 # Cursor Polish Implementation Plan
 
+> **Status:** delivered; boxes resolved 2026-08-07.
+>
+> This plan was executed but never ticked as it went, leaving 7 boxes
+> that read as outstanding work. They are **plain bullets now, not back-ticked**:
+> a box ticked long after the fact asserts a verification that did not happen,
+> and this tree has already been bitten by exactly that. The bullets stand as a
+> record of what was built.
+>
+> Evidence it shipped: all 8 identifiers this plan names in backticks exist in
+> the tree, and the smooth-cursor path is live (`gui.cursor_anim`/`cursor_anim_speed` in the schema, `CursorAnim` driven each frame) and visible in `docs/verification/editor-gui.png`.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Remove the blinking cursor system and make the cursor always-solid with mode-based shape (block Normal, bar Insert/Cmdline).
@@ -27,11 +39,11 @@
 - Consumes: `EditorState.cursor_kind: CursorKind`, `EditorState.cursor_visible: bool` from `ruster-render`
 - Produces: `BufferWidget` with `with_cursor_kind()` builder rendering Block/Bar shapes
 
-- [ ] **Step 1: Remove tachyonfx from Cargo.toml**
+- **Step 1: Remove tachyonfx from Cargo.toml**
 
 In `crates/ruster-tui/Cargo.toml`, remove the `tachyonfx = "0.25"` line. Keep all other deps.
 
-- [ ] **Step 2: Remove AnimationState and tachyonfx imports from app.rs**
+- **Step 2: Remove AnimationState and tachyonfx imports from app.rs**
 
 In `crates/ruster-tui/src/app.rs`:
 
@@ -62,11 +74,11 @@ to:
 cursor_visible: true,
 ```
 
-- [ ] **Step 3: Remove AnimationState test**
+- **Step 3: Remove AnimationState test**
 
 In `crates/ruster-tui/src/app.rs`, delete the `animation_state_cursor_toggles` test (lines 315-326).
 
-- [ ] **Step 4: Add cursor_kind to BufferWidget**
+- **Step 4: Add cursor_kind to BufferWidget**
 
 In `crates/ruster-tui/src/widgets.rs`:
 
@@ -118,7 +130,7 @@ if is_cursor_line && j as u16 == self.cursor.1 && self.cursor_visible {
 }
 ```
 
-- [ ] **Step 5: Wire cursor_kind through renderer**
+- **Step 5: Wire cursor_kind through renderer**
 
 In `crates/ruster-tui/src/renderer.rs`, chain the new builder:
 ```rust
@@ -131,7 +143,7 @@ let buf_widget = crate::widgets::BufferWidget::new(
 .with_cursor_kind(state.cursor_kind);
 ```
 
-- [ ] **Step 6: Build and test**
+- **Step 6: Build and test**
 
 ```bash
 cargo test --workspace 2>&1
@@ -139,7 +151,7 @@ cargo test --workspace 2>&1
 
 Expected: 85 tests passed (the removed animation_state_cursor_toggles drops the test count from 86). All existing tests pass.
 
-- [ ] **Step 7: Commit**
+- **Step 7: Commit**
 
 ```bash
 git add -A && git commit -m "feat: always-solid cursor with mode-based shape (Block/Bar)"

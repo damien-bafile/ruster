@@ -32,6 +32,18 @@ check:
 doc:
     cargo doc --no-deps
 
+# Capture a user-visible surface in both backends into docs/verification/.
+#
+#   just verify                 every surface, both backends
+#   just verify sidebar         one surface, both backends
+#   just verify "--gui hover"   one backend
+#   just verify --list          the surface names
+#
+# The GUI half needs an unlocked screen (macOS will not create a window for a
+# locked session); the script says so rather than letting raylib panic.
+verify surface="all":
+    ./scripts/verify-capture.sh {{surface}}
+
 release:
     cargo build --release
 

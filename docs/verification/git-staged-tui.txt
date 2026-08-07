@@ -1,0 +1,40 @@
+─ *git-staged* ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+diff --git a/demo.rs b/demo.rs
+index 6841e41..002eba5 100644
+--- a/demo.rs
++++ b/demo.rs
+@@ -60,3 +60,7 @@ fn main() {
+     let counts = tally(&points);
+     println!("{} distinct points, {} total", counts.len(), points.len());
+ }
++
++pub fn staged_addition() -> i32 {
++    41
++}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ -- NORMAL --  [repo] │*git-staged*                                                                             7%  1,1

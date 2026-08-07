@@ -1,0 +1,708 @@
+2026-07-20-cursor-polish.md	### 1. Remove AnimationSystem
+2026-07-20-cursor-polish.md	### 2. Cursor Always Visible
+2026-07-20-cursor-polish.md	### 3. BufferWidget Respects cursor_kind
+2026-07-20-cursor-polish.md	### 4. Wire cursor_kind Through Renderer
+2026-07-20-cursor-polish.md	### 5. Cargo.toml Cleanup
+2026-07-20-cursor-polish.md	## Changes
+2026-07-20-cursor-polish.md	# Cursor Polish Implementation Plan
+2026-07-20-cursor-polish.md	# Cursor Polish — Solid Cursor with Mode-Based Shape
+2026-07-20-cursor-polish.md	## Edge Cases
+2026-07-20-cursor-polish.md	## Files Touched
+2026-07-20-cursor-polish.md	## Global Constraints
+2026-07-20-cursor-polish.md	## Goal
+2026-07-20-cursor-polish.md	## Rationale
+2026-07-20-cursor-polish.md	### Task 1: Remove blink system, wire cursor_kind
+2026-07-20-cursor-polish.md	## Test Impact
+2026-07-20-lua-plugin-api.md	## API Surface
+2026-07-20-lua-plugin-api.md	## Architecture
+2026-07-20-lua-plugin-api.md	## Events
+2026-07-20-lua-plugin-api.md	## File Structure
+2026-07-20-lua-plugin-api.md	## Global Constraints
+2026-07-20-lua-plugin-api.md	## Goal
+2026-07-20-lua-plugin-api.md	## Implementation Plan
+2026-07-20-lua-plugin-api.md	### Keymap DSL
+2026-07-20-lua-plugin-api.md	### Keymap Priority
+2026-07-20-lua-plugin-api.md	# Lua Plugin API
+2026-07-20-lua-plugin-api.md	# Lua Plugin API Implementation Plan
+2026-07-20-lua-plugin-api.md	## Plugin Loading
+2026-07-20-lua-plugin-api.md	### Task 1: Crate setup, LuaRuntime, and basic API
+2026-07-20-lua-plugin-api.md	### Task 1: Crate setup, LuaRuntime, and basic API
+2026-07-20-lua-plugin-api.md	### Task 2: Buffer/cursor API and events
+2026-07-20-lua-plugin-api.md	### Task 2: Buffer/cursor API and events
+2026-07-20-lua-plugin-api.md	## Test Strategy
+2026-07-20-phase0-event-loop-animation-design.md	### 1. Event Channel
+2026-07-20-phase0-event-loop-animation-design.md	### 2. Blocking Reader
+2026-07-20-phase0-event-loop-animation-design.md	### 3. Main Loop (`App::async_run`)
+2026-07-20-phase0-event-loop-animation-design.md	### 4. Animation System (`AnimationState`)
+2026-07-20-phase0-event-loop-animation-design.md	### 5. Runtime
+2026-07-20-phase0-event-loop-animation-design.md	## Architecture
+2026-07-20-phase0-event-loop-animation-design.md	## Components
+2026-07-20-phase0-event-loop-animation-design.md	## Error Handling & Cleanup
+2026-07-20-phase0-event-loop-animation-design.md	## File Changes
+2026-07-20-phase0-event-loop-animation-design.md	# Phase 0: Async Event Loop & Animation System
+2026-07-20-phase0-event-loop-animation-design.md	### `ruster-bin/src/main.rs`
+2026-07-20-phase0-event-loop-animation-design.md	### `ruster-render/src/lib.rs`
+2026-07-20-phase0-event-loop-animation-design.md	### `ruster-tui/Cargo.toml`
+2026-07-20-phase0-event-loop-animation-design.md	### `ruster-tui/src/app.rs`
+2026-07-20-phase0-event-loop-animation-design.md	### `ruster-tui/src/widgets.rs`
+2026-07-20-phase0-event-loop-animation-design.md	## Summary
+2026-07-20-phase0-event-loop-animation-design.md	## Testing Strategy
+2026-07-20-phase0-event-loop-animation.md	## Global Constraints
+2026-07-20-phase0-event-loop-animation.md	# Phase 0 — Async Event Loop & Animation System
+2026-07-20-phase0-event-loop-animation.md	### Task 1: Dependencies + EditorState.cursor_visible
+2026-07-20-phase0-event-loop-animation.md	### Task 2: AnimationState + BufferWidget cursor_visible
+2026-07-20-phase0-event-loop-animation.md	### Task 3: Async event loop
+2026-07-20-phase0-event-loop-animation.md	### Task 4: Binary entry point
+2026-07-20-plan-a-core-engine.md	## Execution Handoff
+2026-07-20-plan-a-core-engine.md	## Execution Log (Post-Implementation Corrections)
+2026-07-20-plan-a-core-engine.md	## File Structure
+2026-07-20-plan-a-core-engine.md	## Global Constraints
+2026-07-20-plan-a-core-engine.md	# Ruster Core Engine Implementation Plan (Plan A)
+2026-07-20-plan-a-core-engine.md	## Self-Review (per writing-plans skill)
+2026-07-20-plan-a-core-engine.md	## Task 10: Dot-repeat
+2026-07-20-plan-a-core-engine.md	## Task 11: Visual mode (char-wise and line-wise) + operators on visual
+2026-07-20-plan-a-core-engine.md	## Task 12: Scenario test harness
+2026-07-20-plan-a-core-engine.md	## Task 13: Final crate-green gate
+2026-07-20-plan-a-core-engine.md	## Task 1: Workspace + ruster-core scaffold
+2026-07-20-plan-a-core-engine.md	## Task 2: Buffer + Change record
+2026-07-20-plan-a-core-engine.md	## Task 3: CursorSet with grapheme-aware movement
+2026-07-20-plan-a-core-engine.md	## Task 4: UndoStack (linear, batched)
+2026-07-20-plan-a-core-engine.md	## Task 5: KeyEvent + KeyTrie keymap engine
+2026-07-20-plan-a-core-engine.md	## Task 6: Action enum + Editor facade + command executor
+2026-07-20-plan-a-core-engine.md	## Task 7: VimState — Normal mode motions with counts
+2026-07-20-plan-a-core-engine.md	## Task 8: Operators d/y/c + operator-pending + motion composition
+2026-07-20-plan-a-core-engine.md	## Task 9: Text objects (iw aw i" i' i( i{)
+2026-07-20-plan-b-tui-shell.md	## File Structure
+2026-07-20-plan-b-tui-shell.md	## Global Constraints
+2026-07-20-plan-b-tui-shell.md	# Plan B: TUI Shell Implementation Plan
+2026-07-20-plan-b-tui-shell.md	### Task 1: Scaffold `ruster-render` crate
+2026-07-20-plan-b-tui-shell.md	### Task 2: Extend ruster-core for Cmdline mode
+2026-07-20-plan-b-tui-shell.md	### Task 3: Scaffold `ruster-tui` crate + key conversion + TuiRenderer
+2026-07-20-plan-b-tui-shell.md	### Task 4: ruster-tui widgets
+2026-07-20-plan-b-tui-shell.md	### Task 5: ruster-tui App + event loop + cmdline parsing + file I/O
+2026-07-20-plan-b-tui-shell.md	### Task 6: ruster-bin binary
+2026-07-20-plan-b-tui-shell.md	### Task 7: Wire workspace, fix imports, verify full build
+2026-07-20-plan-c-treesitter-design.md	### Approach
+2026-07-20-plan-c-treesitter-design.md	## Architecture
+2026-07-20-plan-c-treesitter-design.md	## Changes to Existing Crates
+2026-07-20-plan-c-treesitter-design.md	### Color
+2026-07-20-plan-c-treesitter-design.md	### Cycling palette
+2026-07-20-plan-c-treesitter-design.md	### Data flow
+2026-07-20-plan-c-treesitter-design.md	## Delivery Order
+2026-07-20-plan-c-treesitter-design.md	### EditorState change
+2026-07-20-plan-c-treesitter-design.md	## Error Handling
+2026-07-20-plan-c-treesitter-design.md	### File-based test
+2026-07-20-plan-c-treesitter-design.md	### Highlighting
+2026-07-20-plan-c-treesitter-design.md	### Integration
+2026-07-20-plan-c-treesitter-design.md	### Integration
+2026-07-20-plan-c-treesitter-design.md	### Integration tests in `ruster-tui`
+2026-07-20-plan-c-treesitter-design.md	## Language Detection
+2026-07-20-plan-c-treesitter-design.md	### Lifecycle
+2026-07-20-plan-c-treesitter-design.md	## Migration Path
+2026-07-20-plan-c-treesitter-design.md	### Missing grammar
+2026-07-20-plan-c-treesitter-design.md	### Missing highlight query
+2026-07-20-plan-c-treesitter-design.md	### New crate: `ruster-syntax`
+2026-07-20-plan-c-treesitter-design.md	### Parse errors
+2026-07-20-plan-c-treesitter-design.md	### Per-language query files
+2026-07-20-plan-c-treesitter-design.md	### Query files
+2026-07-20-plan-c-treesitter-design.md	## Rainbow Brackets
+2026-07-20-plan-c-treesitter-design.md	### Re-parse approach
+2026-07-20-plan-c-treesitter-design.md	### `ruster-bin`
+2026-07-20-plan-c-treesitter-design.md	### `ruster-core`
+2026-07-20-plan-c-treesitter-design.md	### `ruster-render`
+2026-07-20-plan-c-treesitter-design.md	### `ruster-syntax` (new crate)
+2026-07-20-plan-c-treesitter-design.md	# Ruster Tree-sitter Integration Design (Plan C1)
+2026-07-20-plan-c-treesitter-design.md	### `ruster-tui`
+2026-07-20-plan-c-treesitter-design.md	### StyledLine (replaces plain Vec<String> for lines)
+2026-07-20-plan-c-treesitter-design.md	## SyntaxEngine
+2026-07-20-plan-c-treesitter-design.md	### SyntaxStyle
+2026-07-20-plan-c-treesitter-design.md	### Targets
+2026-07-20-plan-c-treesitter-design.md	## Testing
+2026-07-20-plan-c-treesitter-design.md	## Textobjects
+2026-07-20-plan-c-treesitter-design.md	## Theme
+2026-07-20-plan-c-treesitter-design.md	## Types in `ruster-render`
+2026-07-20-plan-c-treesitter-design.md	### Unit tests in `ruster-syntax`
+2026-07-20-plan-c-treesitter.md	## File Structure
+2026-07-20-plan-c-treesitter.md	## Global Constraints
+2026-07-20-plan-c-treesitter.md	### Modified files
+2026-07-20-plan-c-treesitter.md	### New files
+2026-07-20-plan-c-treesitter.md	# Plan C1: Tree-sitter Integration Implementation Plan
+2026-07-20-plan-c-treesitter.md	### Task 1: ruster-render color types + StyledLine + EditorState update
+2026-07-20-plan-c-treesitter.md	### Task 2: ruster-syntax crate — highlight engine + theme
+2026-07-20-plan-c-treesitter.md	### Task 3: ruster-tui integration — colored rendering
+2026-07-20-plan-c-treesitter.md	### Task 4: Tree-sitter textobjects (Action::Textobject + VimState dispatch + queries)
+2026-07-20-plan-c-treesitter.md	### Task 5: Rainbow brackets — bracket depth integration in renderer
+2026-07-20-plan-c-treesitter.md	### Verification
+2026-07-20-ruster-core-slice-design.md	## 1. Context & Acceptance Criteria
+2026-07-20-ruster-core-slice-design.md	## 2. Architecture: Workspace & Crate Boundaries
+2026-07-20-ruster-core-slice-design.md	## 3. Core Engine (`ruster-core`)
+2026-07-20-ruster-core-slice-design.md	## 4. Keymap Engine & Dual Paradigms
+2026-07-20-ruster-core-slice-design.md	## 5. Rendering & Event Loop
+2026-07-20-ruster-core-slice-design.md	## 6. Lua API & Configuration
+2026-07-20-ruster-core-slice-design.md	## 7. Error Handling & Testing
+2026-07-20-ruster-core-slice-design.md	## 8. Explicitly Out of Scope (future spec cycles)
+2026-07-20-ruster-core-slice-design.md	### Decisions locked during brainstorming
+2026-07-20-ruster-core-slice-design.md	# Ruster — Core Slice Design (Phase 0 + Phase 1)
+2026-07-20-ruster-core-slice-design.md	### Spec corrections to `AGENTS.md` (apply to that doc when convenient)
+2026-07-20-tui-shell-design.md	### `action.rs`
+2026-07-20-tui-shell-design.md	### App struct
+2026-07-20-tui-shell-design.md	## Architecture
+2026-07-20-tui-shell-design.md	## Changes to `ruster-core`
+2026-07-20-tui-shell-design.md	### Cmdline parsing in App (`execute_cmd`)
+2026-07-20-tui-shell-design.md	## Crate: `ruster-bin`
+2026-07-20-tui-shell-design.md	## Crate: `ruster-render`
+2026-07-20-tui-shell-design.md	## Crate: `ruster-tui`
+2026-07-20-tui-shell-design.md	### `editor.rs`
+2026-07-20-tui-shell-design.md	## Error handling
+2026-07-20-tui-shell-design.md	### Event loop
+2026-07-20-tui-shell-design.md	### KeyEvent conversion
+2026-07-20-tui-shell-design.md	## Out of scope (for this plan)
+2026-07-20-tui-shell-design.md	# Ruster TUI Shell Design (Plan B)
+2026-07-20-tui-shell-design.md	### Screen layout
+2026-07-20-tui-shell-design.md	## Testing
+2026-07-20-tui-shell-design.md	### TuiRenderer
+2026-07-20-tui-shell-design.md	### `vim/mod.rs`
+2026-07-20-tui-shell-design.md	### Widgets
+2026-07-21-animation-system.md	## 1. Lua Frame Delta API
+2026-07-21-animation-system.md	## 2. Smooth Cursor Animation (GUI Only)
+2026-07-21-animation-system.md	### Animation Logic
+2026-07-21-animation-system.md	# Animation System — Frame Delta API + Smooth Cursor
+2026-07-21-animation-system.md	# Animation System Implementation Plan
+2026-07-21-animation-system.md	### API Surface
+2026-07-21-animation-system.md	## Edge Cases
+2026-07-21-animation-system.md	### EditorState changes
+2026-07-21-animation-system.md	## Files Touched
+2026-07-21-animation-system.md	## Global Constraints
+2026-07-21-animation-system.md	## Goal
+2026-07-21-animation-system.md	### Implementation
+2026-07-21-animation-system.md	### Lua Config
+2026-07-21-animation-system.md	### New Types
+2026-07-21-animation-system.md	### Raylib Renderer Changes
+2026-07-21-animation-system.md	### Render Changes
+2026-07-21-animation-system.md	## Success Criteria
+2026-07-21-animation-system.md	### Task 1: Lua Frame Delta API
+2026-07-21-animation-system.md	### Task 2: EditorState + CursorAnim + Frame Loop Wiring
+2026-07-21-animation-system.md	### Task 3: Raylib Renderer + main.rs Flag
+2026-07-21-animation-system.md	## Test Impact
+2026-07-21-lua-config-system.md	### 1. `ruster.config` table
+2026-07-21-lua-config-system.md	### 2. Rust `Config` struct
+2026-07-21-lua-config-system.md	### 3. Integration
+2026-07-21-lua-config-system.md	### 4. No new crate, no new dependencies
+2026-07-21-lua-config-system.md	# Config Reference
+2026-07-21-lua-config-system.md	## Deliverables
+2026-07-21-lua-config-system.md	## Design
+2026-07-21-lua-config-system.md	## Documentation Maintenance
+2026-07-21-lua-config-system.md	## Global Constraints
+2026-07-21-lua-config-system.md	# Lua Config System
+2026-07-21-lua-config-system.md	# Lua Config System Implementation Plan
+2026-07-21-lua-config-system.md	# Lua Scripting API
+2026-07-21-lua-config-system.md	## Namespace
+2026-07-21-lua-config-system.md	## Purpose
+2026-07-21-lua-config-system.md	### `ruster.api`
+2026-07-21-lua-config-system.md	### `ruster.cmd(command)`
+2026-07-21-lua-config-system.md	### `ruster.config`
+2026-07-21-lua-config-system.md	### `ruster.g`
+2026-07-21-lua-config-system.md	### `ruster.keymap.set(mode, key_sequence, callback)`
+2026-07-21-lua-config-system.md	### `ruster.mode`
+2026-07-21-lua-config-system.md	### `ruster.on(event, callback)`
+2026-07-21-lua-config-system.md	### `ruster.print(...)`
+2026-07-21-lua-config-system.md	## Settings
+2026-07-21-lua-config-system.md	### Task 1: Config struct + loading
+2026-07-21-lua-config-system.md	### Task 2: Documentation files
+2026-07-21-phase0-completion.md	## 1. Animation System (tachyonfx)
+2026-07-21-phase0-completion.md	## 2. Bugfix: Cursor Disappears on Empty Lines
+2026-07-21-phase0-completion.md	## 3. Raylib GUI Backend
+2026-07-21-phase0-completion.md	### Architecture
+2026-07-21-phase0-completion.md	### Components
+2026-07-21-phase0-completion.md	### Design
+2026-07-21-phase0-completion.md	### Drawing
+2026-07-21-phase0-completion.md	## Global Constraints
+2026-07-21-phase0-completion.md	### Integration
+2026-07-21-phase0-completion.md	# Phase 0 Completion: Animation System + Raylib GUI Backend
+2026-07-21-phase0-completion.md	# Phase 0 Completion Implementation Plan
+2026-07-21-phase0-completion.md	### Platform Support
+2026-07-21-phase0-completion.md	### Purpose
+2026-07-21-phase0-completion.md	### Purpose
+2026-07-21-phase0-completion.md	### Self-Review
+2026-07-21-phase0-completion.md	### Task 1: tachyonfx Animation Timer
+2026-07-21-phase0-completion.md	### Task 2: Raylib GUI Backend
+2026-07-21-phase0-completion.md	### Testing
+2026-07-21-phase1-features-design.md	## 1. Multi-Cursor
+2026-07-21-phase1-features-design.md	## 2. System Clipboard
+2026-07-21-phase1-features-design.md	## 3. Tabs & Indentation
+2026-07-21-phase1-features-design.md	## 4. EditorConfig
+2026-07-21-phase1-features-design.md	### Configuration
+2026-07-21-phase1-features-design.md	## Crate Changes Summary
+2026-07-21-phase1-features-design.md	### Data Model
+2026-07-21-phase1-features-design.md	### Dependency
+2026-07-21-phase1-features-design.md	### Edge Cases
+2026-07-21-phase1-features-design.md	### Edge Cases
+2026-07-21-phase1-features-design.md	### Edge Cases
+2026-07-21-phase1-features-design.md	### Edge Cases
+2026-07-21-phase1-features-design.md	### Editing with Multiple Cursors
+2026-07-21-phase1-features-design.md	### Indent Operators
+2026-07-21-phase1-features-design.md	### Integration
+2026-07-21-phase1-features-design.md	### Integration
+2026-07-21-phase1-features-design.md	### Keybindings
+2026-07-21-phase1-features-design.md	### Keybindings (GUI mode)
+2026-07-21-phase1-features-design.md	## Overview
+2026-07-21-phase1-features-design.md	### Parser
+2026-07-21-phase1-features-design.md	# Phase 1 Feature Completion: Multi-Cursor, Clipboard, Tabs, EditorConfig
+2026-07-21-phase1-features-design.md	### Supported Properties
+2026-07-21-phase1-features-design.md	### Tab Key in Insert Mode
+2026-07-21-phase1-features.md	### Final Verification
+2026-07-21-phase1-features.md	## Global Constraints
+2026-07-21-phase1-features.md	# Phase 1 Feature Completion — Implementation Plan
+2026-07-21-phase1-features.md	### Task 1: Multi-Cursor Data Model & Editing
+2026-07-21-phase1-features.md	### Task 2: Multi-Cursor Keybindings (Ctrl+D, Esc)
+2026-07-21-phase1-features.md	### Task 3: System Clipboard Integration
+2026-07-21-phase1-features.md	### Task 4: GUI Clipboard Bindings (Ctrl+C/Ctrl+V in Raylib)
+2026-07-21-phase1-features.md	### Task 5: Indent/Deindent Edit Ops, Tab Key, and `>>`/`<<` Operators
+2026-07-21-phase1-features.md	### Task 6: EditorConfig Parser
+2026-07-21-phase1-features.md	### Task 7: EditorConfig Integration — Apply on File Open
+2026-07-23-phase2-buffers-windows-design.md	## App integration — `ruster-tui/src/app.rs`
+2026-07-23-phase2-buffers-windows-design.md	### BufferStore — `ruster-core/src/workspace.rs` (new)
+2026-07-23-phase2-buffers-windows-design.md	## Core Data Model
+2026-07-23-phase2-buffers-windows-design.md	## Crate Changes Summary
+2026-07-23-phase2-buffers-windows-design.md	### Dired (file explorer)
+2026-07-23-phase2-buffers-windows-design.md	### Document (buffer) — `ruster-core/src/document.rs` (new)
+2026-07-23-phase2-buffers-windows-design.md	### Editing session — refactor of `Editor`
+2026-07-23-phase2-buffers-windows-design.md	## Feature specifics
+2026-07-23-phase2-buffers-windows-design.md	### FZF / Ripgrep
+2026-07-23-phase2-buffers-windows-design.md	### Gutter (line numbers)
+2026-07-23-phase2-buffers-windows-design.md	### Ibuffer (buffer list)
+2026-07-23-phase2-buffers-windows-design.md	### Mini-buffer & which-key
+2026-07-23-phase2-buffers-windows-design.md	## New dependencies
+2026-07-23-phase2-buffers-windows-design.md	## Non-goals (deferred)
+2026-07-23-phase2-buffers-windows-design.md	## Overview
+2026-07-23-phase2-buffers-windows-design.md	# Phase 2: Buffer, Window & File Management — Design
+2026-07-23-phase2-buffers-windows-design.md	## Rendering — `ruster-render` + backends
+2026-07-23-phase2-buffers-windows-design.md	### Statusline (lualine-style)
+2026-07-23-phase2-buffers-windows-design.md	### Toggle Fullscreen
+2026-07-23-phase2-buffers-windows-design.md	## UI Primitive: Picker (shared floating list)
+2026-07-23-phase2-buffers-windows-design.md	### Window Splits
+2026-07-23-phase2-buffers-windows-design.md	### Window tree — `ruster-core/src/windows.rs` (new)
+2026-07-23-phase2-buffers-windows.md	### Final Verification
+2026-07-23-phase2-buffers-windows.md	## Follow-up tasks (deferrals from Tasks 1–12)
+2026-07-23-phase2-buffers-windows.md	## Global Constraints
+2026-07-23-phase2-buffers-windows.md	# Phase 2: Buffer, Window & File Management — Implementation Plan
+2026-07-23-phase2-buffers-windows.md	## Status (updated 2026-07-23)
+2026-07-23-phase2-buffers-windows.md	### Task 10: FZF (`:Files`) & Ripgrep (`:Rg`)
+2026-07-23-phase2-buffers-windows.md	### Task 11: Mini-buffer completion & which-key
+2026-07-23-phase2-buffers-windows.md	### Task 12: Lua window/buffer API + docs sync
+2026-07-23-phase2-buffers-windows.md	### Task 13: GUI (raylib) multi-window, gutter & picker rendering — DONE (commit `3d41a31`)
+2026-07-23-phase2-buffers-windows.md	### Task 14: Async `:Rg` / `:Files` — DONE (commit `45843a4`)
+2026-07-23-phase2-buffers-windows.md	### Task 15: Dired file mutations — DONE (commit `102763c`)
+2026-07-23-phase2-buffers-windows.md	### Task 16: `timeoutlen`-based which-key timing — DONE (commit `45843a4`)
+2026-07-23-phase2-buffers-windows.md	### Task 1: Document + BufferStore (buffer registry)
+2026-07-23-phase2-buffers-windows.md	### Task 2: WindowTree (splits, focus, fullscreen, geometry)
+2026-07-23-phase2-buffers-windows.md	### Task 3: Multi-window App + multi-window render pipeline
+2026-07-23-phase2-buffers-windows.md	### Task 4: Split commands & Ctrl-w keybindings
+2026-07-23-phase2-buffers-windows.md	### Task 5: Gutter (line numbers: absolute / relative / hybrid)
+2026-07-23-phase2-buffers-windows.md	### Task 6: Extensible statusline (lualine-style)
+2026-07-23-phase2-buffers-windows.md	### Task 7: Picker primitive (shared floating list + fuzzy match)
+2026-07-23-phase2-buffers-windows.md	### Task 8: Ibuffer (buffer list)
+2026-07-23-phase2-buffers-windows.md	### Task 9: Dired (file explorer buffer)
+2026-07-23-phase3-code-intelligence-design.md	## App integration — `ruster-tui`
+2026-07-23-phase3-code-intelligence-design.md	### Client model — `ruster-lsp/src/client.rs`
+2026-07-23-phase3-code-intelligence-design.md	## Core: the LSP client (`ruster-lsp`, new crate)
+2026-07-23-phase3-code-intelligence-design.md	## Crate changes summary
+2026-07-23-phase3-code-intelligence-design.md	### Feature surface
+2026-07-23-phase3-code-intelligence-design.md	### Lifecycle
+2026-07-23-phase3-code-intelligence-design.md	## New dependencies
+2026-07-23-phase3-code-intelligence-design.md	## Non-goals (deferred)
+2026-07-23-phase3-code-intelligence-design.md	## Overview
+2026-07-23-phase3-code-intelligence-design.md	# Phase 3: Syntax & Code Intelligence — Design
+2026-07-23-phase3-code-intelligence-design.md	### Registry — `ruster-lsp/src/registry.rs`
+2026-07-23-phase3-code-intelligence-design.md	## Snippets — `ruster-core/src/snippets.rs` (new)
+2026-07-23-phase3-code-intelligence-design.md	### Transport & framing
+2026-07-23-phase3-code-intelligence-design.md	## Tree-sitter polish
+2026-07-23-phase3-code-intelligence-design.md	## What already exists (from Phase 0–2)
+2026-07-23-phase3-code-intelligence.md	### Final Verification
+2026-07-23-phase3-code-intelligence.md	## Global Constraints
+2026-07-23-phase3-code-intelligence.md	## Notes on verification limits
+2026-07-23-phase3-code-intelligence.md	# Phase 3: Syntax & Code Intelligence — Implementation Plan
+2026-07-23-phase3-code-intelligence.md	### Task 10: Snippet engine
+2026-07-23-phase3-code-intelligence.md	### Task 11: Lua API, config & docs
+2026-07-23-phase3-code-intelligence.md	### Task 1: Per-language tree-sitter queries + per-buffer syntax
+2026-07-23-phase3-code-intelligence.md	### Task 2: `ruster-lsp` crate — JSON-RPC transport & client
+2026-07-23-phase3-code-intelligence.md	### Task 3: Server registry, lifecycle & document sync
+2026-07-23-phase3-code-intelligence.md	### Task 4: Diagnostics
+2026-07-23-phase3-code-intelligence.md	### Task 5: Hover (`K`)
+2026-07-23-phase3-code-intelligence.md	### Task 6: Go-to-definition (`gd`)
+2026-07-23-phase3-code-intelligence.md	### Task 7: Find references (`gr`)
+2026-07-23-phase3-code-intelligence.md	### Task 8: Rename & formatting
+2026-07-23-phase3-code-intelligence.md	### Task 9: Document symbols → outline + workspace symbol search
+2026-07-25-phase4-embedded-terminal-design.md	## Architecture
+2026-07-25-phase4-embedded-terminal-design.md	## Constraints
+2026-07-25-phase4-embedded-terminal-design.md	## Cross-platform / Windows
+2026-07-25-phase4-embedded-terminal-design.md	# Phase 4: The Embedded Terminal — Design Spec
+2026-07-25-phase4-embedded-terminal-design.md	## Tech
+2026-07-25-phase4-embedded-terminal.md	## Global constraints
+2026-07-25-phase4-embedded-terminal.md	# Phase 4: The Embedded Terminal — Implementation Plan
+2026-07-25-phase4-embedded-terminal.md	### Task 1: `ruster-terminal` crate — PTY + VT grid core — DONE
+2026-07-25-phase4-embedded-terminal.md	### Task 2: Render contract — `TermGridView` — DONE
+2026-07-25-phase4-embedded-terminal.md	### Task 3: App integration — open, poll, focus — DONE
+2026-07-25-phase4-embedded-terminal.md	### Task 4: TUI rendering (ratatui) — DONE
+2026-07-25-phase4-embedded-terminal.md	### Task 5: GUI rendering (raylib) — DONE
+2026-07-25-phase4-embedded-terminal.md	### Task 6: Config, input polish, docs — DONE
+2026-07-25-phase4-embedded-terminal.md	### Task 7: CI + release — DONE
+2026-07-26-phase5-ide-tools-design.md	## Architecture notes
+2026-07-26-phase5-ide-tools-design.md	## Components
+2026-07-26-phase5-ide-tools-design.md	## Constraints
+2026-07-26-phase5-ide-tools-design.md	# Phase 5: IDE & Debugging Tools — Design Spec
+2026-07-26-phase5-ide-tools.md	## Global constraints
+2026-07-26-phase5-ide-tools.md	# Phase 5: IDE & Debugging Tools — Implementation Plan
+2026-07-26-phase5-ide-tools.md	## Suggested order
+2026-07-26-phase5-ide-tools.md	### Task 10: Config, docs, CI ✅
+2026-07-26-phase5-ide-tools.md	### Task 1: Project root + `ruster.toml` — new `ruster-project` crate ✅
+2026-07-26-phase5-ide-tools.md	### Task 2: Shared quickfix list + gutter sign column ✅
+2026-07-26-phase5-ide-tools.md	### Task 3: Build system runner ✅
+2026-07-26-phase5-ide-tools.md	### Task 4: Test runner ✅
+2026-07-26-phase5-ide-tools.md	### Task 5: Task runner ✅
+2026-07-26-phase5-ide-tools.md	### Task 6: File-explorer sidebar ✅
+2026-07-26-phase5-ide-tools.md	### Task 7: Project workspaces ✅
+2026-07-26-phase5-ide-tools.md	### Task 8: Multi-cursor polish ✅
+2026-07-26-phase5-ide-tools.md	### Task 9: DAP debugger — new `ruster-dap` crate ✅
+2026-07-28-cmdline-path-completion-design.md	### 1. Command Parsing
+2026-07-28-cmdline-path-completion-design.md	### 2. Path Resolution
+2026-07-28-cmdline-path-completion-design.md	### 3. Completion State Machine
+2026-07-28-cmdline-path-completion-design.md	### 4. Candidate Generation
+2026-07-28-cmdline-path-completion-design.md	### 5. Key Handling
+2026-07-28-cmdline-path-completion-design.md	### 6. Settings
+2026-07-28-cmdline-path-completion-design.md	### 7. Error Handling
+2026-07-28-cmdline-path-completion-design.md	## Dependencies
+2026-07-28-cmdline-path-completion-design.md	## Design
+2026-07-28-cmdline-path-completion-design.md	# `:e` Command & Cmdline Path Completion
+2026-07-28-cmdline-path-completion-design.md	## Files to Modify
+2026-07-28-cmdline-path-completion-design.md	## Goal
+2026-07-28-cmdline-path-completion-design.md	## Problem
+2026-07-28-cmdline-path-completion-design.md	## Testing
+2026-07-28-cmdline-path-completion.md	# `:e` Command & Cmdline Path Completion — Implementation Plan
+2026-07-28-cmdline-path-completion.md	## Global Constraints
+2026-07-28-cmdline-path-completion.md	# If changes are already committed in Task 1, skip. Otherwise:
+2026-07-28-cmdline-path-completion.md	### Task 10: Add cmdline completion settings (optional)
+2026-07-28-cmdline-path-completion.md	### Task 1: Add `CmdAction::OpenFile` variant and `:e`/`:edit` parsing
+2026-07-28-cmdline-path-completion.md	### Task 2: Implement `CmdAction::OpenFile` in `apply_cmd()`
+2026-07-28-cmdline-path-completion.md	### Task 3: Add `CmdlineCompletion` struct and state to `App`
+2026-07-28-cmdline-path-completion.md	### Task 4: Implement candidate generation and Tab cycling
+2026-07-28-cmdline-path-completion.md	### Task 5: Add `BackTab` import if needed
+2026-07-28-cmdline-path-completion.md	### Task 6: Handle Enter to accept completion and Esc to cancel
+2026-07-28-cmdline-path-completion.md	### Task 7: Wire up welcome screen hints
+2026-07-28-cmdline-path-completion.md	### Task 8: Add `:e` and `:edit` to command palette
+2026-07-28-cmdline-path-completion.md	### Task 9: Integration test
+2026-07-28-file-explorer-sidebar-design.md	## Architecture
+2026-07-28-file-explorer-sidebar-design.md	### Data model (existing, reused)
+2026-07-28-file-explorer-sidebar-design.md	# File-Explorer Sidebar — Design Spec
+2026-07-28-file-explorer-sidebar-design.md	## Follow active file
+2026-07-28-file-explorer-sidebar-design.md	## Keyboard navigation (sidebar focused)
+2026-07-28-file-explorer-sidebar-design.md	## Lua Config
+2026-07-28-file-explorer-sidebar-design.md	### State in App
+2026-07-28-file-explorer-sidebar-design.md	## Tests
+2026-07-28-file-explorer-sidebar-design.md	## Toggle & commands
+2026-07-28-file-explorer-sidebar-design.md	## Window layout
+2026-07-28-file-explorer-sidebar.md	# File-Explorer Sidebar — Implementation Plan
+2026-07-28-file-explorer-sidebar.md	## Global Constraints
+2026-07-28-file-explorer-sidebar.md	### Sidebar
+2026-07-28-file-explorer-sidebar.md	### Task 1: Render sidebar column
+2026-07-28-file-explorer-sidebar.md	### Task 2: Toggle sidebar command + binding + auto-open
+2026-07-28-file-explorer-sidebar.md	### Task 3: Keyboard navigation + focus
+2026-07-28-file-explorer-sidebar.md	### Task 4: Follow active file
+2026-07-28-file-explorer-sidebar.md	### Task 5: File operations (rename, delete, create)
+2026-07-28-file-explorer-sidebar.md	### Task 6: Update docs
+2026-07-28-static-dashboard-messages-buffer.md	## File Structure
+2026-07-28-static-dashboard-messages-buffer.md	## Global Constraints
+2026-07-28-static-dashboard-messages-buffer.md	### Modified files:
+2026-07-28-static-dashboard-messages-buffer.md	### New files:
+2026-07-28-static-dashboard-messages-buffer.md	# Static Dashboard & Messages Buffer Implementation Plan
+2026-07-28-static-dashboard-messages-buffer.md	### Task 1: Core — `pinned` flag + `SpecialKind` variants
+2026-07-28-static-dashboard-messages-buffer.md	### Task 2: Core — `BufferStore::close()` refuses pinned buffers
+2026-07-28-static-dashboard-messages-buffer.md	### Task 3: Core — `MessageLog` module
+2026-07-28-static-dashboard-messages-buffer.md	### Task 4: App — Dashboard as `Special(SpecialKind::Dashboard)` pinned buffer
+2026-07-28-static-dashboard-messages-buffer.md	### Task 5: App — Messages buffer integration
+2026-07-29-flash-jump-mode-design.md	### Cancel
+2026-07-29-flash-jump-mode-design.md	### Data flow
+2026-07-29-flash-jump-mode-design.md	### First keystroke (after `f`)
+2026-07-29-flash-jump-mode-design.md	# Flash Jump Mode — Design Spec
+2026-07-29-flash-jump-mode-design.md	### GUI renderer (Raylib)
+2026-07-29-flash-jump-mode-design.md	## Integration with Vim State
+2026-07-29-flash-jump-mode-design.md	## Interaction
+2026-07-29-flash-jump-mode-design.md	## Label Generation
+2026-07-29-flash-jump-mode-design.md	## Noice Integration
+2026-07-29-flash-jump-mode-design.md	## Overview
+2026-07-29-flash-jump-mode-design.md	## Rendering
+2026-07-29-flash-jump-mode-design.md	### Second keystroke
+2026-07-29-flash-jump-mode-design.md	## State
+2026-07-29-flash-jump-mode-design.md	## Testing
+2026-07-29-flash-jump-mode-design.md	## Trigger
+2026-07-29-flash-jump-mode-design.md	### TUI renderer
+2026-07-29-noice-design.md	### App Integration
+2026-07-29-noice-design.md	## Architecture
+2026-07-29-noice-design.md	### Config (Lua overrides)
+2026-07-29-noice-design.md	### Crate: `ruster-notify`
+2026-07-29-noice-design.md	### Default Routing
+2026-07-29-noice-design.md	### `:echo` Commands
+2026-07-29-noice-design.md	### Lua API
+2026-07-29-noice-design.md	# Noice — Modern Notification System
+2026-07-29-noice-design.md	### NotificationManager
+2026-07-29-noice-design.md	### Notification Model
+2026-07-29-noice-design.md	## Overview
+2026-07-29-noice-design.md	### Rendering
+2026-07-29-noice-design.md	### View Backends
+2026-07-29-noice.md	## Global Constraints
+2026-07-29-noice.md	# Noice Notification System Implementation Plan
+2026-07-29-noice.md	### Task 10: Wire startup message + clean up dead code
+2026-07-29-noice.md	### Task 11: Self-review and final verification
+2026-07-29-noice.md	### Task 1: Scaffold `ruster-notify` crate
+2026-07-29-noice.md	### Task 2: NotificationManager
+2026-07-29-noice.md	### Task 3: Stub backends + lib re-exports
+2026-07-29-noice.md	### Task 4: Config + NoiceConfig struct
+2026-07-29-noice.md	### Task 5: FrameState + ruster-tui integration
+2026-07-29-noice.md	### Task 6: Mini toast rendering
+2026-07-29-noice.md	### Task 7: Notify stack + Split backends
+2026-07-29-noice.md	### Task 8: Lua API + :echo commands
+2026-07-29-noice.md	### Task 9: Migrate all self.message sites
+2026-07-29-phase5-workspace-debugging-design.md	### Auto-record
+2026-07-29-phase5-workspace-debugging-design.md	### Bindings
+2026-07-29-phase5-workspace-debugging-design.md	### client.rs
+2026-07-29-phase5-workspace-debugging-design.md	### Config
+2026-07-29-phase5-workspace-debugging-design.md	### config.rs
+2026-07-29-phase5-workspace-debugging-design.md	### Crate
+2026-07-29-phase5-workspace-debugging-design.md	## Cross-cutting
+2026-07-29-phase5-workspace-debugging-design.md	### Ctrl+D implementation
+2026-07-29-phase5-workspace-debugging-design.md	### Event flow (stopped → pause)
+2026-07-29-phase5-workspace-debugging-design.md	### Keybindings
+2026-07-29-phase5-workspace-debugging-design.md	### Keybindings
+2026-07-29-phase5-workspace-debugging-design.md	# Phase 5: Workspace, Build, Debug — Design Spec
+2026-07-29-phase5-workspace-debugging-design.md	### :projects picker
+2026-07-29-phase5-workspace-debugging-design.md	### Quickfix integration
+2026-07-29-phase5-workspace-debugging-design.md	### session.rs
+2026-07-29-phase5-workspace-debugging-design.md	### Startup restore
+2026-07-29-phase5-workspace-debugging-design.md	### Statusline integration
+2026-07-29-phase5-workspace-debugging-design.md	### Statusline integration (build + debug)
+2026-07-29-phase5-workspace-debugging-design.md	### Status quo
+2026-07-29-phase5-workspace-debugging-design.md	### Status quo
+2026-07-29-phase5-workspace-debugging-design.md	### Status quo
+2026-07-29-phase5-workspace-debugging-design.md	## Track A — Build / Test / Task Runner UX
+2026-07-29-phase5-workspace-debugging-design.md	## Track B — Multi-cursor Keybindings
+2026-07-29-phase5-workspace-debugging-design.md	## Track C — Project Workspaces UI
+2026-07-29-phase5-workspace-debugging-design.md	## Track D — DAP Debugger
+2026-07-29-phase5-workspace-debugging-design.md	### transport.rs
+2026-07-29-phase5-workspace-debugging-design.md	### UI in ruster-tui
+2026-07-29-sidebar-completion.md	## Global Constraints
+2026-07-29-sidebar-completion.md	# Sidebar Completion Implementation Plan
+2026-07-29-sidebar-completion.md	### Task 1: Add `set_show_hidden` and `refresh` to `SidebarTree`
+2026-07-29-sidebar-completion.md	### Task 2: Add `sidebar_auto_open` Lua config option
+2026-07-29-sidebar-completion.md	### Task 3: Wire `gg`, `G`, `.`, `R` keys in sidebar
+2026-07-29-sidebar-completion.md	### Task 4: Add `:Sidebar resize N` command
+2026-07-29-sidebar-completion.md	### Task 5: Auto-refresh sidebar after file operations
+2026-07-29-sidebar-completion.md	### Task 6: Auto-open sidebar at startup
+2026-07-29-sidebar-completion.md	### Task 7: Update keybindings docs
+2026-07-29-track-a-build-test-task-ux.md	# Build/Test/Task UX — Implementation Plan
+2026-07-29-track-a-build-test-task-ux.md	## Global Constraints
+2026-07-29-track-a-build-test-task-ux.md	### Task 1: Wire F7/F6/F9 key dispatch
+2026-07-29-track-a-build-test-task-ux.md	### Task 2: Add runner status text to App
+2026-07-29-track-a-build-test-task-ux.md	### Task 3: Show runner status in statusline
+2026-07-29-track-a-build-test-task-ux.md	### Task 4: Auto-open quickfix on build errors
+2026-07-29-track-b-multi-cursor-keys.md	## Global Constraints
+2026-07-29-track-b-multi-cursor-keys.md	# Multi-Cursor Keybindings — Implementation Plan
+2026-07-29-track-b-multi-cursor-keys.md	### Task 1: Add Ctrl+D key dispatch for multi-cursor
+2026-07-29-track-b-multi-cursor-keys.md	### Task 2: Enable mouse capture and wire Alt+click
+2026-07-29-track-c-workspaces-ui.md	## Global Constraints
+2026-07-29-track-c-workspaces-ui.md	# Project Workspaces UI — Implementation Plan
+2026-07-29-track-c-workspaces-ui.md	### Task 1: Implement the :projects picker
+2026-07-29-track-c-workspaces-ui.md	### Task 2: Auto-record project on file operations
+2026-07-29-track-c-workspaces-ui.md	### Task 3: Restore last project on startup
+2026-07-29-track-d-dap-debugger.md	# DAP Debugger — Implementation Plan
+2026-07-29-track-d-dap-debugger.md	## Global Constraints
+2026-07-29-track-d-dap-debugger.md	### Task 1: Scaffold ruster-dap crate
+2026-07-29-track-d-dap-debugger.md	### Task 2: Implement transport.rs — JSON-RPC 2.0 framing
+2026-07-29-track-d-dap-debugger.md	### Task 3: Implement client.rs — DAP adapter process manager
+2026-07-29-track-d-dap-debugger.md	### Task 4: Implement session.rs — Debug session state machine
+2026-07-29-track-d-dap-debugger.md	### Task 5: Implement config.rs — debug adapter detection
+2026-07-29-track-d-dap-debugger.md	### Task 6: Wire ruster-dap into ruster-tui (debug session lifecycle)
+2026-07-29-track-d-dap-debugger.md	### Task 7: Add debug keybindings (F5, Shift+F5, F10, F11, Shift+F11, Ctrl+F8, K)
+2026-07-29-track-d-dap-debugger.md	### Task 8: Render breakpoint gutter signs
+2026-07-29-track-d-dap-debugger.md	### Task 9: Render debug toolbar and stack/variables overlay
+2026-07-29-track-flash-jump-mode.md	# Flash Jump Mode Implementation Plan
+2026-07-29-track-flash-jump-mode.md	## Global Constraints
+2026-07-29-track-flash-jump-mode.md	## Post-implementation review (2026-07-30)
+2026-07-29-track-flash-jump-mode.md	### Task 1: Core FlashState struct, App field, trigger + cancel
+2026-07-29-track-flash-jump-mode.md	### Task 2: Label generation for visible range
+2026-07-29-track-flash-jump-mode.md	### Task 3: First/second keystroke interaction
+2026-07-29-track-flash-jump-mode.md	### Task 4: Overlay rendering — WindowView field + TUI renderer
+2026-07-29-track-flash-jump-mode.md	### Task 5: (Optional) Raylib renderer support — DONE
+2026-08-01-phase6-advanced-ux.md	## Already delivered
+2026-08-01-phase6-advanced-ux.md	## Global constraints
+2026-08-01-phase6-advanced-ux.md	## Order of work
+2026-08-01-phase6-advanced-ux.md	## Out of scope, deliberately
+2026-08-01-phase6-advanced-ux.md	# Phase 6: Advanced UX & Ecosystem — Implementation Plan
+2026-08-01-phase6-advanced-ux.md	## Stage 0 — Loose ends
+2026-08-01-phase6-advanced-ux.md	## Stage 1 — Foundations
+2026-08-01-phase6-advanced-ux.md	## Stage 2 — Surfaces
+2026-08-01-phase6-advanced-ux.md	## Stage 3 — Ecosystem
+2026-08-01-phase6-advanced-ux.md	### Task 10: Todo comments ✅
+2026-08-01-phase6-advanced-ux.md	### Task 11: Theme live-preview picker ✅
+2026-08-01-phase6-advanced-ux.md	### Task 12: TUI widget layer ✅
+2026-08-01-phase6-advanced-ux.md	### Task 13: Mason-style tool installer ✅
+2026-08-01-phase6-advanced-ux.md	### Task 14: Diff viewer ✅
+2026-08-01-phase6-advanced-ux.md	### Task 15: Load highlight queries from a user directory ✅
+2026-08-01-phase6-advanced-ux.md	### Task 16: Load grammars at runtime ✅
+2026-08-01-phase6-advanced-ux.md	### Task 17: Config, docs, CI ✅
+2026-08-01-phase6-advanced-ux.md	### Task 1: Salvage `feat/starship-ui` ✅ (PR #26)
+2026-08-01-phase6-advanced-ux.md	### Task 2: Drop per-buffer caches on close ✅ (PR #26)
+2026-08-01-phase6-advanced-ux.md	### Task 3: Collapse the verbose notification call sites ✅ (PR #26)
+2026-08-01-phase6-advanced-ux.md	### Task 4: Verify the raylib GUI, and record how ✅
+2026-08-01-phase6-advanced-ux.md	### Task 5: Refresh the stale process docs ✅
+2026-08-01-phase6-advanced-ux.md	### Task 6 (historical note): why it was deferred
+2026-08-01-phase6-advanced-ux.md	### Task 6: Re-run graphify on a clean corpus ✅ (2026-08-01)
+2026-08-01-phase6-advanced-ux.md	### Task 7: Floating windows ✅ (one bullet outstanding)
+2026-08-01-phase6-advanced-ux.md	### Task 8: Git signs (gitsigns) ✅
+2026-08-01-phase6-advanced-ux.md	### Task 9: Trouble-style problem list ✅
+2026-08-02-phase10-verification.md	## Capture harness
+2026-08-02-phase10-verification.md	## Global constraints
+2026-08-02-phase10-verification.md	## Out of scope, deliberately
+2026-08-02-phase10-verification.md	# Phase 10 — Verification
+2026-08-02-phase10-verification.md	## Surface matrix
+2026-08-02-phase7-application-platform.md	## Global constraints (unchanged from Phase 6)
+2026-08-02-phase7-application-platform.md	## Out of scope, deliberately
+2026-08-02-phase7-application-platform.md	# Phase 7 — The "Emacs Extras" (Application Platform)
+2026-08-02-phase7-application-platform.md	## Stage 1 — The two that are clearly worth it
+2026-08-02-phase7-application-platform.md	## Stage 2 — Worth it, but a real project
+2026-08-02-phase7-application-platform.md	## Stage 3 — Recommend against, with reasons
+2026-08-02-phase7-application-platform.md	## Suggested order
+2026-08-02-phase7-application-platform.md	### Task 1: Session management ✅
+2026-08-02-phase7-application-platform.md	### Task 2: Help menu (`:help`) ✅
+2026-08-02-phase7-application-platform.md	### Task 3: Magit-style git porcelain ✅ — **planned separately**
+2026-08-02-phase7-application-platform.md	### Task 4: Music player — **declined 2026-08-07**
+2026-08-02-phase7-application-platform.md	### Task 5: Embedded web browser — **do not build**
+2026-08-02-phase7-application-platform.md	### Task 6: Email client — **defer, and reconsider the scope**
+2026-08-02-phase7-task3-magit.md	### 1.1 Parse `git status --porcelain=v2 --branch`
+2026-08-02-phase7-task3-magit.md	### 1.2 The `:Git` status buffer
+2026-08-02-phase7-task3-magit.md	### 2.1 Stage and unstage whole files ✅ (PR 2)
+2026-08-02-phase7-task3-magit.md	### 2.2 Stage and unstage *hunks* ✅ (PR 3 staged, PR 5 unstaged)
+2026-08-02-phase7-task3-magit.md	# branch.head main
+2026-08-02-phase7-task3-magit.md	# branch.oid 76fd70c99b302a57e5c24987709af4b683e9c72e
+2026-08-02-phase7-task3-magit.md	## Out of scope, deliberately
+2026-08-02-phase7-task3-magit.md	# Phase 7 Task 3 — Magit-style git porcelain
+2026-08-02-phase7-task3-magit.md	## Risks, named
+2026-08-02-phase7-task3-magit.md	## Stage 1 — Read-only status ✅ (PR 1)
+2026-08-02-phase7-task3-magit.md	## Stage 2 — Staging, and the part that is actually hard
+2026-08-02-phase7-task3-magit.md	## Stage 3 — Writing operations ✅ (PR 4) ✅ (PR 4)
+2026-08-02-phase7-task3-magit.md	## Suggested sequencing
+2026-08-02-phase7-task3-magit.md	## Two departures from the `AGENTS.md` line
+2026-08-02-phase7-task3-magit.md	## What already exists
+2026-08-02-phase8-finetuning.md	## Ordering principle
+2026-08-02-phase8-finetuning.md	## Out of scope, deliberately
+2026-08-02-phase8-finetuning.md	# Phase 8 — Finetuning
+2026-08-02-phase8-finetuning.md	## Stage 1 — Theming: colours no theme can reach
+2026-08-02-phase8-finetuning.md	## Stage 2 — Small things that are simply missing
+2026-08-02-phase8-finetuning.md	## Stage 3 — Performance, where it is actually spent
+2026-08-02-phase8-finetuning.md	## Stage 4 — The thing that is quietly getting worse
+2026-08-02-phase8-finetuning.md	## Stage 5 — Lua: let plugins react, not just run
+2026-08-02-phase8-finetuning.md	## Stage 6 — The application icon
+2026-08-02-phase8-finetuning.md	### Task 10: `App`
+2026-08-02-phase8-finetuning.md	### Task 14: The artwork ✅
+2026-08-02-phase8-finetuning.md	### Task 15: Wire it up per platform
+2026-08-02-phase8-finetuning.md	### Task 6: `:16` — goto line ✅
+2026-08-02-phase8-finetuning.md	### Task 7: `:hover` ✅
+2026-08-02-phase8-finetuning.md	### Task 8b: Which-key coverage ✅
+2026-08-02-phase8-finetuning.md	### Task 8: Two stale things in the render path ✅
+2026-08-02-phase8-finetuning.md	### Task 9b: Only highlight what is visible
+2026-08-02-phase8-finetuning.md	### Task 9: Incremental parsing — **measured; the guard landed first**
+2026-08-02-phase8-finetuning.md	### Tasks 11-13 ✅
+2026-08-02-phase8-finetuning.md	### Tasks 1-5 ✅
+2026-08-02-phase9-cleanup.md	## Global constraints (unchanged from Phases 6–8)
+2026-08-02-phase9-cleanup.md	## Out of scope, deliberately
+2026-08-02-phase9-cleanup.md	# Phase 9 — Cleanup
+2026-08-02-phase9-cleanup.md	## Task 1: Which-key key accent (`whichkey_key`)
+2026-08-02-phase9-cleanup.md	## Task 2: Re-introduce the notification popup backends
+2026-08-02-phase9-cleanup.md	## Task 3: `:hover` GUI capture
+2026-08-02-phase9-cleanup.md	## Task 4b: Defects the Phase 10 sweep found
+2026-08-02-phase9-cleanup.md	## Task 4: Verify the raylib GUI surfaces
+2026-08-02-phase9-cleanup.md	## Task 8: Doc hygiene
+2026-08-02-phase9-cleanup.md	## Tasks 5–7: declined, 2026-08-07
+config-reference.md	### Build, test & debug
+config-reference.md	### Choosing the escape key
+config-reference.md	# Config Reference
+config-reference.md	## Embedded terminal
+config-reference.md	### Events
+config-reference.md	## External tools (`:Mason`)
+config-reference.md	## GUI font & icons
+config-reference.md	## Highlight queries
+config-reference.md	## Language servers (LSP)
+config-reference.md	## Lua: reacting to the editor
+config-reference.md	### Notifications (noice)
+config-reference.md	### Read-only queries
+config-reference.md	### Recoloring individual elements
+config-reference.md	## Runtime grammars
+config-reference.md	## Sessions
+config-reference.md	## Settings
+config-reference.md	## Settings page
+config-reference.md	## Snippets
+config-reference.md	### Starship UI — panel chrome & welcome screen
+config-reference.md	### Syntax colors (per language)
+config-reference.md	## Themes
+config-reference.md	### Timers
+keybindings.md	### Build & quickfix
+keybindings.md	### Code (LSP)
+keybindings.md	## `:` commands
+keybindings.md	# Commands & Keybindings
+keybindings.md	### Debugger (DAP)
+keybindings.md	## Dired (file explorer)
+keybindings.md	### Editing
+keybindings.md	## Emacs mode
+keybindings.md	## Embedded terminal
+keybindings.md	### Files & quitting
+keybindings.md	### Function keys
+keybindings.md	### Git signs
+keybindings.md	## `g` menu (goto)
+keybindings.md	## Insert mode
+keybindings.md	## Modes
+keybindings.md	### Navigation
+keybindings.md	## Normal mode — editing
+keybindings.md	## Normal mode — motions
+keybindings.md	### Operators
+keybindings.md	## Pickers (ibuffer, files, references, symbols, command palette)
+keybindings.md	### Problem list (Trouble)
+keybindings.md	## Settings page
+keybindings.md	## Sidebar (file-explorer tree)
+keybindings.md	## Snippets
+keybindings.md	## Space leader (which-key)
+keybindings.md	### Text objects
+keybindings.md	### Themes
+keybindings.md	### TODO markers
+keybindings.md	## Visual mode
+keybindings.md	## Windows
+keybindings.md	### Windows & buffers
+lua-api.md	# Lua Scripting API
+lua-api.md	## Namespace
+lua-api.md	### `ruster.api`
+lua-api.md	### `ruster.cmd(command)`
+lua-api.md	### `ruster.config`
+lua-api.md	### `ruster.g`
+lua-api.md	### `ruster.keymap.set(mode, key_sequence, callback)`
+lua-api.md	### `ruster.lsp`
+lua-api.md	### `ruster.mode`
+lua-api.md	### `ruster.on(event, callback)`
+lua-api.md	### `ruster.print(...)`
+lua-api.md	### `ruster.statusline.section(pos, fn)`
+lua-api.md	## `ruster.ui.dialog(spec)`
+lua-api.md	#### Windows & buffers
+README.md	## How each half works
+README.md	## Running it
+README.md	## The surfaces
+README.md	## Three things the fixtures encode
+README.md	## Two ways a capture lies
+README.md	# Verification captures
+windows.md	## Building
+windows.md	## Config location
+windows.md	# Debug build
+windows.md	## Embedded terminal (`:term`)
+windows.md	# GUI (raylib) — the default frontend
+windows.md	## Line endings
+windows.md	# Optimized binary at target\release\ruster.exe
+windows.md	## Running
+windows.md	# Running ruster on Windows
+windows.md	## Runtime dependencies
+windows.md	# Terminal UI (crossterm) — best in Windows Terminal

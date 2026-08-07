@@ -1,5 +1,17 @@
 # Build/Test/Task UX — Implementation Plan
 
+> **Status:** delivered; boxes resolved 2026-08-07.
+>
+> This plan was executed but never ticked as it went, leaving 13 boxes
+> that read as outstanding work. They are **plain bullets now, not back-ticked**:
+> a box ticked long after the fact asserts a verification that did not happen,
+> and this tree has already been bitten by exactly that. The bullets stand as a
+> record of what was built.
+>
+> Evidence it shipped: all 12 identifiers this plan names in backticks exist in
+> the tree, and `:build`/`:test`/`:task` parse and route to the quickfix list, which `:Trouble` renders (`trouble-tui.txt`).
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Wire keybindings, statusline integration, and auto-quickfix for the existing build/test/task runner.
@@ -26,7 +38,7 @@
 - Consumes: `self.run_build()`, `self.run_test()`, `self.open_task_picker()` (all exist already)
 - Produces: None (adds side effects in key dispatch)
 
-- [ ] **Step 1: Add F-key dispatch to handle_key**
+- **Step 1: Add F-key dispatch to handle_key**
 
 In `app.rs`, in the `handle_key` method, before the "macro recording" / "Lua keymap hook" / "Vim state" dispatchers, add an F-key check block:
 
@@ -51,14 +63,14 @@ match ck.code {
 
 Note: match on `crossterm::event::KeyEvent`'s `code` field. The parameter type is `crossterm::event::KeyEvent` (passed as `ck`). Place this after the `Ctrl-w prefix` and Ctrl+h/j/k/l blocks, before the "K LSP hover" check.
 
-- [ ] **Step 2: Build to verify**
+- **Step 2: Build to verify**
 
 ```
 cargo build -p ruster-tui 2>&1 | tail -5
 ```
 Expected: clean build
 
-- [ ] **Step 3: Commit**
+- **Step 3: Commit**
 
 ```
 git add crates/ruster-tui/src/app.rs
@@ -75,7 +87,7 @@ git commit -m "feat(build): wire F7/F6/F9 for build/test/task"
 **Interfaces:**
 - Produces: `App::runner_status_text() -> Option<&'static str>`
 
-- [ ] **Step 1: Add method to App**
+- **Step 1: Add method to App**
 
 Add after `run_build()` / `run_test()` region:
 
@@ -92,13 +104,13 @@ pub fn runner_status_text(&self) -> Option<&'static str> {
 
 Where `Build`, `Test`, `Task` are the variants of `RunnerKind` (check exact type name in runner.rs — use the existing enum).
 
-- [ ] **Step 2: Build to verify**
+- **Step 2: Build to verify**
 
 ```
 cargo build -p ruster-tui 2>&1 | tail -5
 ```
 
-- [ ] **Step 3: Commit**
+- **Step 3: Commit**
 
 ```
 git add crates/ruster-tui/src/app.rs
@@ -116,7 +128,7 @@ git commit -m "feat(build): add runner_status_text to App"
 - Consumes: `app.runner_status_text()`
 - Modifies: `FrameState.windows[].statusline.center` or `.left`
 
-- [ ] **Step 1: Locate the statusline text construction in `App::render()`**
+- **Step 1: Locate the statusline text construction in `App::render()`**
 
 Find the section that builds `StatuslineView`. In the `render()` method (~line 3027), the statusline content is built per window. The center section shows the buffer name. When a runner is active, prepend the runner status.
 
@@ -135,20 +147,20 @@ let statusline_center = if let Some(msg) = runner_msg {
 };
 ```
 
-- [ ] **Step 2: Build to verify**
+- **Step 2: Build to verify**
 
 ```
 cargo build -p ruster-tui 2>&1 | tail -5
 ```
 
-- [ ] **Step 3: Run existing tests**
+- **Step 3: Run existing tests**
 
 ```
 cargo test -p ruster-tui 2>&1 | tail -5
 ```
 Expected: all passing
 
-- [ ] **Step 4: Commit**
+- **Step 4: Commit**
 
 ```
 git add crates/ruster-tui/src/app.rs
@@ -166,7 +178,7 @@ git commit -m "feat(build): show runner status in statusline"
 - Consumes: `self.quickfix.is_empty()`, `self.open_quickfix()`
 - Modifies: `finish_build` callback
 
-- [ ] **Step 1: Find where finish_build is defined**
+- **Step 1: Find where finish_build is defined**
 
 Search for `fn finish_build` or `finish_test` in app.rs. The runner drain/completion logic calls a finish method after the process exits.
 
@@ -178,13 +190,13 @@ if !self.quickfix.is_empty() {
 }
 ```
 
-- [ ] **Step 2: Build to verify**
+- **Step 2: Build to verify**
 
 ```
 cargo build -p ruster-tui 2>&1 | tail -5
 ```
 
-- [ ] **Step 3: Commit**
+- **Step 3: Commit**
 
 ```
 git add crates/ruster-tui/src/app.rs

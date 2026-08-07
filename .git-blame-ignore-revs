@@ -7,3 +7,10 @@
 
 # style: format the workspace with rustfmt
 5b0e7eb77051dc7db76848a4978de72ced17f6d6
+
+# Revert "style: format the workspace with rustfmt" — undone to merge Phase 9 on
+# a tree without rewrap noise, then re-applied in the next commit.
+f28af59c0c1cd448b0841b0abfb4148c79e9c31a
+
+# style: re-format the workspace after the Phase 9 merge
+1f124dc601e327bc31ab4c8ddbcf7f9db1185234

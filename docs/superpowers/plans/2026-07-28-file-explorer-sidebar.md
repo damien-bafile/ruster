@@ -1,5 +1,17 @@
 # File-Explorer Sidebar — Implementation Plan
 
+> **Status:** delivered; boxes resolved 2026-08-07.
+>
+> This plan was executed but never ticked as it went, leaving 31 boxes
+> that read as outstanding work. They are **plain bullets now, not back-ticked**:
+> a box ticked long after the fact asserts a verification that did not happen,
+> and this tree has already been bitten by exactly that. The bullets stand as a
+> record of what was built.
+>
+> Evidence it shipped: all 38 identifiers this plan names in backticks exist in
+> the tree, and `docs/verification/sidebar-{tui.txt,gui.png}` and `drive.rs::the_sidebar_opens_as_a_second_window`.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A persistent tree-view sidebar (Neo-tree / VS Code style) for browsing, opening, creating, renaming, and deleting files without switching buffers.
@@ -30,11 +42,11 @@
 
 **Goal:** When `self.sidebar.is_some()`, carve `self.sidebar_width` columns from the left of `buf_area`, build a `WindowView` for the sidebar with rows from `SidebarTree::rows()`, and add it to the frame. When hidden, nothing changes.
 
-- [ ] **Step 1: Locate the render method**
+- **Step 1: Locate the render method**
 
 The render method starts around line 2611 (`fn render(&mut self)`). The key section is where `buf_area` is defined and `compute_rects` is called. Find the exact line numbers.
 
-- [ ] **Step 2: Add `sidebar_width` field to App**
+- **Step 2: Add `sidebar_width` field to App**
 
 Replace the `SIDEBAR_WIDTH` const with a field on `App`:
 
@@ -46,7 +58,7 @@ sidebar_width: u16,
 
 Initialize to `30` in the constructor.
 
-- [ ] **Step 3: Carve sidebar area**
+- **Step 3: Carve sidebar area**
 
 After computing `buf_area` from the viewport, if `self.sidebar.is_some()`, split `buf_area` into `sidebar_area` (self.sidebar_width wide on the left) and `content_area` (the remainder). Pass `content_area` to `compute_rects` instead of `buf_area`.
 
@@ -61,7 +73,7 @@ let sidebar_rect = if self.sidebar.is_some() {
 };
 ```
 
-- [ ] **Step 4: Build sidebar WindowView**
+- **Step 4: Build sidebar WindowView**
 
 After the existing window loop, if `sidebar_rect.is_some()`, build a `WindowView`:
 
@@ -101,14 +113,14 @@ if let Some(srect) = sidebar_rect {
 
 Use `cursor_visible: false` to hide the cursor, no selection, no terminal.
 
-- [ ] **Step 4: Build and test**
+- **Step 4: Build and test**
 
 ```bash
 cargo build -p ruster-tui 2>&1 | tail -5
 cargo test -p ruster-tui 2>&1 | grep "test result"
 ```
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add crates/ruster-tui/src/app.rs
@@ -126,7 +138,7 @@ git commit -m "feat: render sidebar column carved from window area"
 - Consumes: `self.project_root: Option<PathBuf>`, `CmdAction`, `LeaderAction`, `OPEN_GROUP`
 - Produces: `CmdAction::Sidebar`, `LeaderAction::Sidebar`, `:Sidebar` parser, `SPC e` binding (replaces old explorer binding), auto-open at startup
 
-- [ ] **Step 1: Add `Sidebar` to `CmdAction` enum**
+- **Step 1: Add `Sidebar` to `CmdAction` enum**
 
 Find the `CmdAction` enum definition. It's near the top of `app.rs`. Add:
 
@@ -135,7 +147,7 @@ Sidebar,
 SidebarResize(u16),
 ```
 
-- [ ] **Step 2: Add `Sidebar` to `LeaderAction` enum**
+- **Step 2: Add `Sidebar` to `LeaderAction` enum**
 
 Find `LeaderAction` and add after the existing entries:
 
@@ -143,7 +155,7 @@ Find `LeaderAction` and add after the existing entries:
 Sidebar,
 ```
 
-- [ ] **Step 3: Parse `:sidebar` command**
+- **Step 3: Parse `:sidebar` command**
 
 Find the `parse_cmdline` function and add:
 
@@ -152,7 +164,7 @@ _ if trimmed == "sidebar" => Ok(CmdAction::Sidebar),
 _ if let Some(n) = trimmed.strip_prefix("sidebar resize ").and_then(|s| s.trim().parse::<u16>().ok()) => Ok(CmdAction::SidebarResize(n)),
 ```
 
-- [ ] **Step 4: Wire `SPC e` to toggle sidebar**
+- **Step 4: Wire `SPC e` to toggle sidebar**
 
 In `OPEN_GROUP`, change the existing `'e'` entry from explorer to sidebar:
 
@@ -168,7 +180,7 @@ In `FIND_GROUP`, also change `'e'`:
 ('e', LeaderNode::Action("sidebar", LeaderAction::Sidebar)),
 ```
 
-- [ ] **Step 5: Wire match arms in `apply_cmd` and `apply_leader_action`**
+- **Step 5: Wire match arms in `apply_cmd` and `apply_leader_action`**
 
 In `apply_cmd`:
 
@@ -186,7 +198,7 @@ In `apply_leader_action`:
 LeaderAction::Sidebar => self.toggle_sidebar(),
 ```
 
-- [ ] **Step 6: Implement `toggle_sidebar` method**
+- **Step 6: Implement `toggle_sidebar` method**
 
 ```rust
 fn toggle_sidebar(&mut self) {
@@ -203,7 +215,7 @@ fn toggle_sidebar(&mut self) {
 }
 ```
 
-- [ ] **Step 7: Auto-open sidebar at startup**
+- **Step 7: Auto-open sidebar at startup**
 
 In the startup initialization (where dashboard is created), after a project root is detected:
 
@@ -215,14 +227,14 @@ if self.project_root.is_some() {
 
 This should be after the Dashboard setup.
 
-- [ ] **Step 8: Build and test**
+- **Step 8: Build and test**
 
 ```bash
 cargo build -p ruster-tui 2>&1 | tail -5
 cargo test -p ruster-tui 2>&1 | grep "test result"
 ```
 
-- [ ] **Step 9: Write tests for sidebar toggle**
+- **Step 9: Write tests for sidebar toggle**
 
 Add tests in the `app.rs` test module:
 
@@ -242,7 +254,7 @@ fn sidebar_toggle_creates_tree() {
 cargo test -p ruster-tui -- sidebar_toggle --nocapture 2>&1
 ```
 
-- [ ] **Step 10: Commit**
+- **Step 10: Commit**
 
 ```bash
 git add crates/ruster-tui/src/app.rs
@@ -260,7 +272,7 @@ git commit -m "feat: :Sidebar command, SPC e toggle, and auto-open at startup"
 - Consumes: `self.sidebar.is_some() && self.sidebar_focused`
 - Produces: sidebar navigation (j/k/h/l/Enter/gg/G/Esc/Tab)
 
-- [ ] **Step 1: Add sidebar key route guard**
+- **Step 1: Add sidebar key route guard**
 
 In `handle_key`, before the main editor key handler, add:
 
@@ -273,7 +285,7 @@ if self.sidebar.is_some() && self.sidebar_focused {
 
 Place this near the existing guards (dired_prompt, picker, cmdline, etc.).
 
-- [ ] **Step 2: Implement `handle_sidebar_key`**
+- **Step 2: Implement `handle_sidebar_key`**
 
 ```rust
 fn handle_sidebar_key(&mut self, ck: crossterm::event::KeyEvent) {
@@ -339,7 +351,7 @@ fn handle_sidebar_key(&mut self, ck: crossterm::event::KeyEvent) {
 
 Note: `SidebarTree` needs `show_hidden` to be togglable. Check if it already is — if not, add a `set_show_hidden(&mut self, v: bool)` method in sidebar.rs.
 
-- [ ] **Step 3: Side quest — make `show_hidden` togglable on SidebarTree**
+- **Step 3: Side quest — make `show_hidden` togglable on SidebarTree**
 
 In `crates/ruster-core/src/sidebar.rs`, add:
 
@@ -349,7 +361,7 @@ pub fn set_show_hidden(&mut self, v: bool) {
 }
 ```
 
-- [ ] **Step 4: Build and test**
+- **Step 4: Build and test**
 
 ```bash
 cargo build 2>&1 | tail -5
@@ -357,7 +369,7 @@ cargo test -p ruster-core 2>&1 | grep "test result"
 cargo test -p ruster-tui 2>&1 | grep "test result"
 ```
 
-- [ ] **Step 5: Write tests for sidebar navigation**
+- **Step 5: Write tests for sidebar navigation**
 
 ```rust
 #[test]
@@ -375,7 +387,7 @@ fn sidebar_navigation_moves_selection() {
 cargo test -p ruster-tui -- sidebar_navigation --nocapture 2>&1
 ```
 
-- [ ] **Step 6: Commit**
+- **Step 6: Commit**
 
 ```bash
 git add crates/ruster-tui/src/app.rs crates/ruster-core/src/sidebar.rs
@@ -393,7 +405,7 @@ git commit -m "feat: sidebar keyboard navigation (j/k/h/l/Enter/gg/G/Esc)"
 - Consumes: `self.sidebar.as_mut().map(|t| t.reveal(path))`
 - Produces: sidebar auto-reveals the current file
 
-- [ ] **Step 1: Find where active buffer changes**
+- **Step 1: Find where active buffer changes**
 
 The method `set_active_buffer` in `app.rs` is where the active buffer is set. Also check `open_path` and `open_dired` — but those are entry points. The simplest approach: intercept in `open_path` after the file is opened, or in `handle_key` after `CmdAction::OpenPath` resolves.
 
@@ -413,14 +425,14 @@ if let Some(ref mut tree) = self.sidebar {
 }
 ```
 
-- [ ] **Step 2: Build and test**
+- **Step 2: Build and test**
 
 ```bash
 cargo build -p ruster-tui 2>&1 | tail -5
 cargo test -p ruster-tui 2>&1 | grep "test result"
 ```
 
-- [ ] **Step 3: Commit**
+- **Step 3: Commit**
 
 ```bash
 git add crates/ruster-tui/src/app.rs
@@ -438,7 +450,7 @@ git commit -m "feat: sidebar follows active file"
 - Consumes: `DiredPrompt`/`DiredPromptKind`, `handle_dired_prompt_key`, existing dired file ops
 - Produces: `r`, `d`, `a` keys in sidebar trigger dired prompts
 
-- [ ] **Step 1: Add r/d/a key handling in sidebar**
+- **Step 1: Add r/d/a key handling in sidebar**
 
 In `handle_sidebar_key`, add cases:
 
@@ -468,7 +480,7 @@ KeyCode::Char('R') => {
 }
 ```
 
-- [ ] **Step 2: Handle prompt completion in sidebar context**
+- **Step 2: Handle prompt completion in sidebar context**
 
 When a dired prompt completes (Enter is pressed), the existing code in `handle_dired_prompt_key` executes the operation. After it succeeds, refresh the sidebar tree to reflect file system changes.
 
@@ -489,14 +501,14 @@ if let Some(ref mut tree) = self.sidebar {
 }
 ```
 
-- [ ] **Step 3: Build and test**
+- **Step 3: Build and test**
 
 ```bash
 cargo build -p ruster-tui 2>&1 | tail -5
 cargo test -p ruster-tui 2>&1 | grep "test result"
 ```
 
-- [ ] **Step 4: Commit**
+- **Step 4: Commit**
 
 ```bash
 git add crates/ruster-tui/src/app.rs
@@ -510,7 +522,7 @@ git commit -m "feat: sidebar file operations (r/d/a/R keys)"
 **Files:**
 - Modify: `docs/keybindings.md`
 
-- [ ] **Step 1: Update keybindings.md**
+- **Step 1: Update keybindings.md**
 
 Add sidebar entries:
 
@@ -535,7 +547,7 @@ Add sidebar entries:
 
 Update the Space leader section to show `SPC e` → sidebar instead of explorer. Add `SPC e` to the OPEN_GROUP table.
 
-- [ ] **Step 2: Commit**
+- **Step 2: Commit**
 
 ```bash
 git add docs/keybindings.md

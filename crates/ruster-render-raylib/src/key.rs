@@ -64,6 +64,45 @@ pub fn modified_char_for_key(key: raylib::consts::KeyboardKey, shift: bool) -> O
             }
         }
         KEY_APOSTROPHE => '\'',
+        // The bracket family. Without these, a chord over any of them produced
+        // no event at all in the GUI — `Ctrl-\` is the embedded terminal's
+        // escape key, so leaving it unmapped meant the terminal could not be
+        // exited with a mouse or a keyboard.
+        KEY_BACKSLASH => {
+            if shift {
+                '|'
+            } else {
+                '\\'
+            }
+        }
+        KEY_LEFT_BRACKET => {
+            if shift {
+                '{'
+            } else {
+                '['
+            }
+        }
+        KEY_RIGHT_BRACKET => {
+            if shift {
+                '}'
+            } else {
+                ']'
+            }
+        }
+        KEY_GRAVE => {
+            if shift {
+                '~'
+            } else {
+                '`'
+            }
+        }
+        KEY_EQUAL => {
+            if shift {
+                '+'
+            } else {
+                '='
+            }
+        }
         _ => return None,
     };
     Some(c)
@@ -156,6 +195,14 @@ mod tests {
         assert_eq!(modified_char_for_key(KEY_COMMA, false), Some(','));
         // C-/ (undo).
         assert_eq!(modified_char_for_key(KEY_SLASH, false), Some('/'));
+        // `Ctrl-\` leaves the embedded terminal. While this returned None the
+        // chord produced no event at all and the terminal was a one-way door.
+        assert_eq!(modified_char_for_key(KEY_BACKSLASH, false), Some('\\'));
+        assert_eq!(modified_char_for_key(KEY_BACKSLASH, true), Some('|'));
+        assert_eq!(modified_char_for_key(KEY_LEFT_BRACKET, false), Some('['));
+        assert_eq!(modified_char_for_key(KEY_RIGHT_BRACKET, false), Some(']'));
+        assert_eq!(modified_char_for_key(KEY_GRAVE, false), Some('`'));
+        assert_eq!(modified_char_for_key(KEY_EQUAL, true), Some('+'));
     }
 
     #[test]

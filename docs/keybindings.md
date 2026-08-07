@@ -233,6 +233,7 @@ Press `g` in Normal mode; the which-key panel lists the goto commands (LazyVim-s
 | `:sidebar resize <N>` | Set the sidebar width to N columns |
 | `:Noice` `:noice` | Toggle the notification-stack panel |
 | `:Noice split` / `:Noice history` | Open the full notification history in a split |
+| `:Noice popup` | Raise a popup notification, floating above the editor |
 | `:echo <text>` | Show a message as a mini toast |
 | `:echom <text>` | Show a warning — mini toast *and* the notification panel |
 | `:echoe <text>` | Show an error in the notification panel |
@@ -519,17 +520,29 @@ It has two modes, like Neovim's terminal:
 | Key | Action |
 |-----|--------|
 | _any key_ | Forwarded to the shell (`Ctrl-C`, arrows, Tab-completion, …) |
-| `Ctrl-\` | Switch to Terminal-Normal |
+| `Ctrl-\` | Switch to Terminal-Normal (`Ctrl-4` too — the same byte) |
 
-**Terminal-Normal** — the visible output is mirrored into a read-only buffer, so the
-normal editor keys work over it:
+**Terminal-Normal** — the terminal's output is mirrored into a read-only buffer, so
+the normal editor keys work over it. The mirror covers the whole scrollback
+(`terminal.scrollback`, 10000 lines by default), so `gg` reaches output that has
+scrolled off the screen, and it keeps up with the shell while you read it:
 
 | Key | Action |
 |-----|--------|
 | `h j k l` `w` `b` `gg` `G` … | Move over the terminal output |
 | `v` / `V` then `y` | Visually select and yank terminal output |
 | `:` commands, `Ctrl-w` nav | Run commands / switch windows |
-| `i` `a` `Enter` | Resume Terminal-Insert (back to the shell) |
+| `i` `a` `I` `A` `Enter` | Resume Terminal-Insert (back to the shell) |
+
+For evil / emacs-libvterm style controls, make `Esc` the switch:
+
+```lua
+ruster.config.terminal = { escape = "<Esc>" }
+```
+
+The default is `Ctrl-\` so that `Esc` still reaches programs running inside the
+shell (vim, less, fzf); `terminal.escape` takes any key in the
+`ruster.keymap.set` notation. See [config-reference.md](config-reference.md).
 
 The terminal resizes to its window automatically and is closed when ruster quits.
 On Windows it needs ConPTY (Windows 10 1809+); see [windows.md](windows.md).

@@ -62,6 +62,10 @@ const TYPED_ONLY: &[(&str, &str)] = &[
         "NoiceSplit",
         "the panel is `SPC o n`; the split form is typed",
     ),
+    (
+        "NoicePopup",
+        "typed to raise a demo popup; the panel is `SPC o n`",
+    ),
     ("Dired", "`SPC o e`; the path form is typed"),
     ("Ibuffer", "`SPC b b`"),
     ("CallHierarchy", "`SPC c i` / `SPC c y`"),

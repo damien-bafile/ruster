@@ -1,0 +1,40 @@
+─ demo.rs ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  1  //! The fixture every capture opens.
+  1  //!
+  2  //! Small on purpose, but chosen so one file exercises most of what a frame is
+  3  //! supposed to show: keywords, strings, numbers and comments for the
+  4  //! highlighter; a TODO and a FIXME for the marker scanner and `:TodoList`; a
+  5  //! repeated identifier for multi-cursor; a two-character-prefix word for flash
+  6  //! jump; and enough lines that the gutter and the scroll offset are non-trivial.
+  7  //!
+  8  //! Capturing the same file every time is what makes two runs comparable.
+  9
+ 10  use std::collections::HashMap;
+ 11  use std::fmt;
+ 12
+ 13  /// A point in the plane.
+ 14  #╭─ TODO ───────────────────────────────────────────────────────────────────────────────────────────────────╮
+ 15  p│ >                                        │ //! Small on purpose, but chosen so one file exercises most of│
+ 16   │ I demo.rs:5:20  TODO: and a FIXME for the│ //! supposed to show: keywords, strings, numbers and comments │
+ 17   │ I demo.rs:5:31  FIXME: for the marker sca│ //! highlighter; a TODO and a FIXME for the marker scanner and│
+ 18  }│ I demo.rs:26:8  TODO: support translation│ //! repeated identifier for multi-cursor; a two-character-pref│
+ 19   │ I demo.rs:40:5  FIXME: this allocates a f│ //! jump; and enough lines that the gutter and the scroll offs│
+ 20  i│                                          │ //!                                                           │
+ 21   │                                          │ //! Capturing the same file every time is what makes two runs │
+ 22   │                                          │                                                               │
+ 23   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ 24
+ 25      // TODO: support translation by a vector rather than a scalar
+ 26      pub fn shifted(&self, by: i32) -> Self {
+ 27          Point { x: self.x + by, y: self.y + by }
+ 28      }
+ 29  }
+ 30
+ 31  impl fmt::Display for Point {
+ 32      fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+ 33          write!(f, "({}, {})", self.x, self.y)
+ 34      }
+ 35  }
+ 36
+ 37  /// Count how many times each point appears.
+ -- NORMAL --  [repo] │demo.rs                                                                                  1%  1,1

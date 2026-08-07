@@ -1,0 +1,16 @@
+# A real, tiny cargo project, so the surfaces that need a live service have
+# something coherent to point at.
+#
+# rust-analyzer roots itself at a project and answers `null` for anything
+# outside it (the bug fixed in 675f2cf), so a hover capture driven against a
+# loose file in a directory it does not own comes back empty and looks like a
+# broken feature. lldb-dap needs an actual binary to launch, which a library
+# crate cannot give it.
+[package]
+name = "demo-project"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "demo-project"
+path = "src/main.rs"

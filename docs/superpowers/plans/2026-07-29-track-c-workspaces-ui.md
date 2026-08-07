@@ -1,5 +1,17 @@
 # Project Workspaces UI — Implementation Plan
 
+> **Status:** delivered; boxes resolved 2026-08-07.
+>
+> This plan was executed but never ticked as it went, leaving 12 boxes
+> that read as outstanding work. They are **plain bullets now, not back-ticked**:
+> a box ticked long after the fact asserts a verification that did not happen,
+> and this tree has already been bitten by exactly that. The bullets stand as a
+> record of what was built.
+>
+> Evidence it shipped: all 8 identifiers this plan names in backticks exist in
+> the tree, and `docs/verification/projects-{tui.txt,gui.png}` shows the recent-project picker.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Wire a `:projects` picker for recent projects, auto-record projects on file opens, and restore the last project on startup.
@@ -25,7 +37,7 @@
 - Consumes: `ruster_project::recent_projects(dir)`, `PickerState`, `PickerAction::RunCmd(String)` for `:cd <path>`
 - Produces: `App::open_projects_picker()` wired to `CmdAction::Projects`
 
-- [ ] **Step 1: Check open_projects exists**
+- **Step 1: Check open_projects exists**
 
 Search for `fn open_projects` in app.rs. If it already exists (the exploration found it at line 4487), verify it's complete. If not, implement it:
 
@@ -50,7 +62,7 @@ fn open_projects_picker(&mut self) {
 }
 ```
 
-- [ ] **Step 2: Verify CmdAction::Projects already calls open_projects_picker**
+- **Step 2: Verify CmdAction::Projects already calls open_projects_picker**
 
 Search for `CmdAction::Projects` in the command dispatch in `execute_cmd()` or `parse_cmdline()`. If it calls `open_projects()` already, ensure the method body from Step 1 is filled in. If not, add the match arm:
 
@@ -61,13 +73,13 @@ CmdAction::Projects => {
 }
 ```
 
-- [ ] **Step 3: Build to verify**
+- **Step 3: Build to verify**
 
 ```
 cargo build -p ruster-tui 2>&1 | tail -5
 ```
 
-- [ ] **Step 4: Commit**
+- **Step 4: Commit**
 
 ```
 git add crates/ruster-tui/src/app.rs
@@ -85,7 +97,7 @@ git commit -m "feat(workspaces): implement :projects picker"
 - Consumes: `ruster_project::record_recent(state_dir, root, max)`
 - Produces: `App::record_current_project()` helper
 
-- [ ] **Step 1: Add record_current_project helper**
+- **Step 1: Add record_current_project helper**
 
 ```rust
 fn record_current_project(&self) {
@@ -103,7 +115,7 @@ fn record_current_project(&self) {
 }
 ```
 
-- [ ] **Step 2: Call it at project-anchored moments**
+- **Step 2: Call it at project-anchored moments**
 
 Add `self.record_current_project()` calls after:
 - `set_active_buffer` switches to a buffer whose path is under a project root
@@ -113,13 +125,13 @@ Add `self.record_current_project()` calls after:
 
 For each, just add the one-liner call after the relevant logic.
 
-- [ ] **Step 3: Build to verify**
+- **Step 3: Build to verify**
 
 ```
 cargo build -p ruster-tui 2>&1 | tail -5
 ```
 
-- [ ] **Step 4: Commit**
+- **Step 4: Commit**
 
 ```
 git add crates/ruster-tui/src/app.rs
@@ -137,7 +149,7 @@ git commit -m "feat(workspaces): auto-record project on file ops"
 - Consumes: `ruster_project::recent_projects(dir)`
 - Modifies: `App::new()` or startup init sequence
 
-- [ ] **Step 1: Add project restore at startup**
+- **Step 1: Add project restore at startup**
 
 In the `App::new()` or `init()` method, after setting the initial project_root (or as a replacement for it), read recent projects and restore the most recent one if it still exists:
 
@@ -158,13 +170,13 @@ if self.project_root.is_none() {
 
 Place this after the initial `project_root` detection (where it checks for root markers from the cwd).
 
-- [ ] **Step 2: Build to verify**
+- **Step 2: Build to verify**
 
 ```
 cargo build -p ruster-tui 2>&1 | tail -5
 ```
 
-- [ ] **Step 3: Run tests**
+- **Step 3: Run tests**
 
 ```
 cargo test -p ruster-tui 2>&1 | tail -5
@@ -172,7 +184,7 @@ cargo test -p ruster-tui 2>&1 | tail -5
 
 All existing tests should pass.
 
-- [ ] **Step 4: Commit**
+- **Step 4: Commit**
 
 ```
 git add crates/ruster-tui/src/app.rs

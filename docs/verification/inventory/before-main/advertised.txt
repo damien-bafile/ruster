@@ -1,0 +1,6 @@
+:Dired
+:e
+:FuzzySearch
+:help
+:term
+:w

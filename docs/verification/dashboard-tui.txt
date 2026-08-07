@@ -1,0 +1,40 @@
+─ Dashboard ────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+                                                      RUSTER  0.1.1
+  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                        DASHBOARD
+
+   ▌RECENT PROJECTS▐
+     1. /Users/daimyo/Dev/ruster/
+
+   ▌QUICK ACTIONS▐
+    :e <path>  Open file (Tab to complete)
+    :Dired  File Explorer
+    :Files  Find Files
+    :term  Terminal
+
+   ▌SYSTEM STATUS▐
+      LSP  ● Ready
+      Mode: Normal
+
+   ▌KEYBINDS▐
+      Ctrl+P      Fuzzy Finder
+      Ctrl+S      Save
+      Ctrl+W      Window Commands
+      :help       Help
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ -- NORMAL --  [ruster] │Dashboard                                                                            100%  1,1

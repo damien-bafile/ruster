@@ -1,5 +1,17 @@
 # Lua Plugin API Implementation Plan
 
+> **Status:** delivered; boxes resolved 2026-08-07.
+>
+> This plan was executed but never ticked as it went, leaving 15 boxes
+> that read as outstanding work. They are **plain bullets now, not back-ticked**:
+> a box ticked long after the fact asserts a verification that did not happen,
+> and this tree has already been bitten by exactly that. The bullets stand as a
+> record of what was built.
+>
+> Evidence it shipped: all 21 identifiers this plan names in backticks exist in
+> the tree, and `crates/ruster-tui/tests/drive.rs` drives the editor entirely through `ruster.cmd`, and `ruster.ui.dialog` is captured in `docs/verification/dialog-{tui.txt,gui.png}`.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Integrate a Lua scripting engine (`mlua`) providing the `ruster.*` plugin API for configuration, keymaps, commands, and event hooks.
@@ -35,7 +47,7 @@
 - Produces: `LuaRuntime` struct with `new()`, `load_init()`, `check_keymaps()`, `drain_actions()`
 - Produces: `LuaAction` enum: `Cmd(String)`, `Print(String)`
 
-- [ ] **Step 1: Create the crate skeleton**
+- **Step 1: Create the crate skeleton**
 
 Create `crates/ruster-lua/Cargo.toml`:
 ```toml
@@ -64,7 +76,7 @@ pub use keymap::{parse_lua_key, LuaKey, LuaKeymap};
 pub use runtime::{LuaAction, LuaRuntime};
 ```
 
-- [ ] **Step 2: Implement keymap parsing**
+- **Step 2: Implement keymap parsing**
 
 Create `crates/ruster-lua/src/keymap.rs`:
 ```rust
@@ -195,14 +207,14 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: Run tests to verify keymap parsing works**
+- **Step 3: Run tests to verify keymap parsing works**
 
 ```bash
 cargo test -p ruster-lua 2>&1
 ```
 Expected: 5 tests pass.
 
-- [ ] **Step 4: Implement LuaRuntime and basic API**
+- **Step 4: Implement LuaRuntime and basic API**
 
 Create `crates/ruster-lua/src/runtime.rs`:
 ```rust
@@ -340,7 +352,7 @@ fn format_value(v: &Value) -> String {
 }
 ```
 
-- [ ] **Step 5: Wire LuaRuntime into App**
+- **Step 5: Wire LuaRuntime into App**
 
 Add to `crates/ruster-tui/Cargo.toml`:
 ```toml
@@ -407,7 +419,7 @@ for action in self.lua.drain_actions() {
 }
 ```
 
-- [ ] **Step 6: Load init.lua in App::new() if it exists**
+- **Step 6: Load init.lua in App::new() if it exists**
 
 In `App::new()`, after creating the `LuaRuntime`:
 ```rust
@@ -422,7 +434,7 @@ if config_path.exists() {
 }
 ```
 
-- [ ] **Step 7: Build and test**
+- **Step 7: Build and test**
 
 ```bash
 cargo build --workspace 2>&1
@@ -434,7 +446,7 @@ cargo test --workspace 2>&1 | grep -E "^(test result:)"
 ```
 Expected: 85 + 5 = 90 tests pass (new ruster-lua tests)
 
-- [ ] **Step 8: Commit**
+- **Step 8: Commit**
 
 ```bash
 git add -A && git commit -m "feat: Lua plugin API with keymaps, cmd, print (ruster.* namespace)"
@@ -455,7 +467,7 @@ git add -A && git commit -m "feat: Lua plugin API with keymaps, cmd, print (rust
 - Produces: `ruster.api.*` functions, `ruster.on()` event system
 - Produces: Updated `App` that dispatches events to `LuaRuntime`
 
-- [ ] **Step 1: Add ruster.api.* functions**
+- **Step 1: Add ruster.api.* functions**
 
 In `crates/ruster-lua/src/api.rs`, after `ruster.mode` setup, add. Each closure receives `lua` (the `&Lua`) as its first argument, then the user-supplied args:
 
@@ -534,7 +546,7 @@ api.set("nvim_win_set_cursor", set_cursor)?;
 t.set("api", api)?;
 ```
 
-- [ ] **Step 2: Wire Editor callbacks into LuaRuntime**
+- **Step 2: Wire Editor callbacks into LuaRuntime**
 
 In `crates/ruster-lua/src/runtime.rs`, add callback fields:
 
@@ -569,7 +581,7 @@ pub fn set_buffer_callbacks(
 
 Update the `nvim_buf_get_lines` and similar API closures in `api.rs` to call these callbacks.
 
-- [ ] **Step 3: Implement event system**
+- **Step 3: Implement event system**
 
 Create `crates/ruster-lua/src/event.rs`:
 ```rust
@@ -617,7 +629,7 @@ let on_fn = runtime.lua.create_function(move |_, (event, func): (String, Functio
 t.set("on", on_fn)?;
 ```
 
-- [ ] **Step 4: Wire events into App**
+- **Step 4: Wire events into App**
 
 In `app.rs`, after `App::new()` initializes the LuaRuntime, emit `VimEnter`:
 ```rust
@@ -643,7 +655,7 @@ In `save_file()`, emit `BufWritePre` and `BufWritePost`.
 
 In `render()` or after cursor movement, emit `CursorMoved` if cursor changed.
 
-- [ ] **Step 5: Update LuaRuntime::new() to accept event bus initialization**
+- **Step 5: Update LuaRuntime::new() to accept event bus initialization**
 
 In `runtime.rs`, update `new()`:
 ```rust
@@ -668,7 +680,7 @@ pub fn new() -> mlua::Result<Self> {
 }
 ```
 
-- [ ] **Step 6: Build and test**
+- **Step 6: Build and test**
 
 ```bash
 cargo build --workspace 2>&1
@@ -680,7 +692,7 @@ cargo test --workspace 2>&1 | grep -E "^(test result:)"
 ```
 Expected: 90+ tests pass (existing 85 + 5 ruster-lua tests)
 
-- [ ] **Step 7: Commit**
+- **Step 7: Commit**
 
 ```bash
 git add -A && git commit -m "feat: Lua buffer/cursor API and event system (ruster.api.*, ruster.on)"

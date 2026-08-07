@@ -1,0 +1,332 @@
+<<<SETTINGS>>>
+-- ruster config — managed by the Settings page (:settings, save with :w).
+-- Safe to hand-edit; comments and layout are regenerated on save.
+-- Advanced scripting (keymaps, plugins) goes in init.lua, loaded after this.
+
+-- Editing, indentation, and paradigm
+ruster.config.general = {
+  tabstop = 4,  -- Spaces a tab represents
+  softtabstop = 4,  -- Spaces inserted on Tab
+  expandtab = true,  -- Insert spaces instead of tabs
+  shiftwidth = 4,  -- Spaces per indent step
+  editmode = "neovim",  -- Modal (neovim) or modeless (emacs)
+  editorconfig = true,  -- Apply project .editorconfig files
+  line_ending = "lf",  -- Line ending for new files
+  theme = "default",  -- Named color theme
+}
+
+-- GUI font, size, colors, and window
+ruster.config.gui = {
+  font = "",  -- Font file/path; empty = auto-detect a Nerd font
+  font_size = 20,  -- GUI glyph size in px
+  line_height = 24,  -- Row height in px
+  padding_x = 8,  -- Left padding in px
+  padding_y = 4,  -- Top padding in px
+  window_width = 800,  -- Initial window width
+  window_height = 600,  -- Initial window height
+  target_fps = 60,  -- Render loop frame cap
+  cursor_kind = "block",  -- Block or bar cursor
+  cursor_anim = true,  -- Animate cursor movement
+  cursor_anim_speed = 12.0,  -- Smooth-cursor easing speed
+}
+
+-- Line-number gutter
+ruster.config.gutter = {
+  number = false,  -- Show absolute line numbers
+  relativenumber = false,  -- Show relative line numbers
+}
+
+-- Which-key hint panel
+ruster.config.whichkey = {
+  enabled = true,  -- Show the which-key hint panel
+  timeoutlen = 300,  -- Delay before the panel appears
+  command_palette = "center",  -- Where the :-Tab command palette appears: a centered box or docked at the bottom
+}
+
+-- Language server features
+ruster.config.lsp = {
+  format_on_save = false,  -- Run LSP formatting on :w
+  diagnostics = true,  -- Show LSP diagnostics
+  hover = true,  -- Enable hover popups
+  autostart = true,  -- Launch a server when a file opens
+}
+
+-- Embedded terminal
+ruster.config.terminal = {
+  shell = "",  -- Program for :term; empty = platform default
+  scrollback = 10000,  -- Lines of history retained
+  default_mode = "insert",  -- Initial mode for a new terminal
+}
+
+-- File explorer
+ruster.config.dired = {
+  show_hidden = false,  -- Show dotfiles in the file explorer
+}
+
+-- Sidebar panel
+ruster.config.sidebar = {
+  auto_open = false,  -- Open the sidebar automatically on startup
+}
+
+-- Notifications and messages
+ruster.config.noice = {
+  mini = true,  -- Show transient toasts in the cmdline row
+  notify = true,  -- Show the stacking panel for warnings and errors
+  split = true,  -- Allow :Noice split to open the *noice* history buffer
+  info_timeout = 2000,  -- How long info toasts stay up
+  success_timeout = 2000,  -- How long success toasts stay up
+  warning_timeout = 5000,  -- How long warnings stay up; errors are persistent
+  max_history = 1000,  -- Messages retained for :messages and :Noice split
+}
+
+-- Git integration
+ruster.config.git = {
+  signs = true,  -- Mark added/changed/removed lines in the gutter
+}
+
+-- TODO comment markers
+ruster.config.todo = {
+  keywords = "TODO,FIXME,HACK,NOTE,XXX",  -- Comma-separated markers highlighted in comments; empty disables
+}
+
+-- Build command
+ruster.config.build = {
+  command = "",  -- Command for :build; empty = detect from the project type
+}
+
+-- Test command
+ruster.config.test = {
+  command = "",  -- Command for :test; empty = detect from the project type
+}
+
+-- Debug adapter
+ruster.config.dap = {
+  adapter = "",  -- Adapter program for :debug; empty = detect from the file's language
+}
+
+-- Saved sessions (open files and window layout)
+ruster.config.session = {
+  autoload = false,  -- Reopen the project's saved files and layout on startup
+  autosave = true,  -- Write the session when the editor exits
+}
+
+-- Per-element color overrides (empty = theme)
+ruster.config.colors = {
+  bg = "",  -- Override editor background
+  fg = "",  -- Override default text color
+  gutter = "",  -- Override line-number color
+  gutter_bg = "",  -- Override the gutter background
+  cursor_bg = "",  -- Block cursor background color
+  selection_bg = "",  -- Text selection highlight background
+  selection_fg = "",  -- Override text drawn over the selection
+  cursor_fg = "",  -- Override the glyph under the block cursor
+  divider = "",  -- Override window header lines and picker separators
+  statusline_fg = "",  -- Override statusline text color
+  statusline_bg = "",  -- Override statusline background
+  accent = "",  -- Override accent (titles, prompts)
+  accent_fg = "",  -- Override text drawn on accent bars
+  whichkey_bg = "",  -- Override the which-key panel background
+  whichkey_fg = "",  -- Override the which-key panel text
+  cmdline_bg = "",  -- Override the cmdline background
+  cmdline_fg = "",  -- Override the cmdline text
+  mode_normal_bg = "",  -- Statusline background in Normal mode
+  mode_normal_fg = "",  -- Statusline text color in Normal mode
+  mode_insert_bg = "",  -- Statusline background in Insert mode
+  mode_insert_fg = "",  -- Statusline text color in Insert mode
+  mode_visual_bg = "",  -- Statusline background in Visual mode
+  mode_visual_fg = "",  -- Statusline text color in Visual mode
+  mode_cmdline_bg = "",  -- Statusline background in Cmdline mode
+  mode_cmdline_fg = "",  -- Statusline text color in Cmdline mode
+  mode_emacs_bg = "",  -- Statusline background in Emacs mode
+  mode_emacs_fg = "",  -- Statusline text color in Emacs mode
+}
+
+<<<THEMES>>>
+starship	crt_black	Rgb { r: 10, g: 14, b: 10 }
+starship	phosphor_green	Rgb { r: 51, g: 255, b: 102 }
+starship	phosphor_dim	Rgb { r: 26, g: 102, b: 51 }
+starship	phosphor_bright	Rgb { r: 102, g: 255, b: 153 }
+starship	amber	Rgb { r: 255, g: 136, b: 0 }
+starship	amber_dim	Rgb { r: 102, g: 68, b: 0 }
+starship	panel_offwhite	Rgb { r: 204, g: 187, b: 170 }
+starship	panel_gray	Rgb { r: 34, g: 42, b: 34 }
+starship	stencil	Rgb { r: 136, g: 170, b: 136 }
+starship	hazard_red	Rgb { r: 255, g: 51, b: 51 }
+default	rosewater	Rgb { r: 245, g: 224, b: 220 }
+default	flamingo	Rgb { r: 242, g: 205, b: 205 }
+default	pink	Rgb { r: 245, g: 194, b: 231 }
+default	mauve	Rgb { r: 203, g: 166, b: 247 }
+default	red	Rgb { r: 243, g: 139, b: 168 }
+default	maroon	Rgb { r: 235, g: 160, b: 172 }
+default	peach	Rgb { r: 250, g: 179, b: 135 }
+default	yellow	Rgb { r: 249, g: 226, b: 175 }
+default	green	Rgb { r: 166, g: 227, b: 161 }
+default	teal	Rgb { r: 148, g: 226, b: 213 }
+default	sky	Rgb { r: 137, g: 220, b: 235 }
+default	sapphire	Rgb { r: 116, g: 199, b: 236 }
+default	blue	Rgb { r: 137, g: 180, b: 250 }
+default	lavender	Rgb { r: 180, g: 190, b: 254 }
+default	text	Rgb { r: 205, g: 214, b: 244 }
+default	subtext1	Rgb { r: 186, g: 194, b: 222 }
+default	subtext0	Rgb { r: 166, g: 173, b: 200 }
+default	overlay2	Rgb { r: 147, g: 153, b: 178 }
+default	overlay1	Rgb { r: 127, g: 132, b: 156 }
+default	overlay0	Rgb { r: 108, g: 112, b: 134 }
+default	surface2	Rgb { r: 88, g: 91, b: 112 }
+default	surface1	Rgb { r: 69, g: 71, b: 90 }
+default	surface0	Rgb { r: 49, g: 50, b: 68 }
+default	base	Rgb { r: 30, g: 30, b: 46 }
+default	mantle	Rgb { r: 24, g: 24, b: 37 }
+default	crust	Rgb { r: 17, g: 17, b: 27 }
+gruvbox	bg	Rgb { r: 40, g: 40, b: 40 }
+gruvbox	bg1	Rgb { r: 60, g: 56, b: 54 }
+gruvbox	bg2	Rgb { r: 80, g: 73, b: 69 }
+gruvbox	bg3	Rgb { r: 102, g: 92, b: 84 }
+gruvbox	bg4	Rgb { r: 124, g: 111, b: 100 }
+gruvbox	fg	Rgb { r: 235, g: 219, b: 178 }
+gruvbox	fg2	Rgb { r: 213, g: 196, b: 161 }
+gruvbox	gray	Rgb { r: 146, g: 131, b: 116 }
+gruvbox	red	Rgb { r: 251, g: 73, b: 52 }
+gruvbox	green	Rgb { r: 184, g: 187, b: 38 }
+gruvbox	yellow	Rgb { r: 250, g: 189, b: 47 }
+gruvbox	blue	Rgb { r: 131, g: 165, b: 152 }
+gruvbox	purple	Rgb { r: 211, g: 134, b: 155 }
+gruvbox	aqua	Rgb { r: 142, g: 192, b: 124 }
+gruvbox	orange	Rgb { r: 254, g: 128, b: 25 }
+tokyonight	bg	Rgb { r: 26, g: 27, b: 38 }
+tokyonight	bg_dark	Rgb { r: 22, g: 22, b: 30 }
+tokyonight	bg_highlight	Rgb { r: 41, g: 46, b: 66 }
+tokyonight	terminal_black	Rgb { r: 65, g: 72, b: 104 }
+tokyonight	fg	Rgb { r: 192, g: 202, b: 245 }
+tokyonight	fg_dark	Rgb { r: 169, g: 177, b: 214 }
+tokyonight	comment	Rgb { r: 86, g: 95, b: 137 }
+tokyonight	blue	Rgb { r: 122, g: 162, b: 247 }
+tokyonight	cyan	Rgb { r: 125, g: 207, b: 255 }
+tokyonight	blue1	Rgb { r: 42, g: 195, b: 222 }
+tokyonight	green	Rgb { r: 158, g: 206, b: 106 }
+tokyonight	teal	Rgb { r: 26, g: 188, b: 156 }
+tokyonight	red	Rgb { r: 247, g: 118, b: 142 }
+tokyonight	orange	Rgb { r: 255, g: 158, b: 100 }
+tokyonight	yellow	Rgb { r: 224, g: 175, b: 104 }
+tokyonight	magenta	Rgb { r: 187, g: 154, b: 247 }
+tokyonight	purple	Rgb { r: 157, g: 124, b: 216 }
+nord	nord0	Rgb { r: 46, g: 52, b: 64 }
+nord	nord1	Rgb { r: 59, g: 66, b: 82 }
+nord	nord2	Rgb { r: 67, g: 76, b: 94 }
+nord	nord3	Rgb { r: 76, g: 86, b: 106 }
+nord	nord4	Rgb { r: 216, g: 222, b: 233 }
+nord	nord5	Rgb { r: 229, g: 233, b: 240 }
+nord	nord6	Rgb { r: 236, g: 239, b: 244 }
+nord	nord7	Rgb { r: 143, g: 188, b: 187 }
+nord	nord8	Rgb { r: 136, g: 192, b: 208 }
+nord	nord9	Rgb { r: 129, g: 161, b: 193 }
+nord	nord10	Rgb { r: 94, g: 129, b: 172 }
+nord	nord11	Rgb { r: 191, g: 97, b: 106 }
+nord	nord12	Rgb { r: 208, g: 135, b: 112 }
+nord	nord13	Rgb { r: 235, g: 203, b: 139 }
+nord	nord14	Rgb { r: 163, g: 190, b: 140 }
+nord	nord15	Rgb { r: 180, g: 142, b: 173 }
+catppuccin-mocha	rosewater	Rgb { r: 245, g: 224, b: 220 }
+catppuccin-mocha	flamingo	Rgb { r: 242, g: 205, b: 205 }
+catppuccin-mocha	pink	Rgb { r: 245, g: 194, b: 231 }
+catppuccin-mocha	mauve	Rgb { r: 203, g: 166, b: 247 }
+catppuccin-mocha	red	Rgb { r: 243, g: 139, b: 168 }
+catppuccin-mocha	maroon	Rgb { r: 235, g: 160, b: 172 }
+catppuccin-mocha	peach	Rgb { r: 250, g: 179, b: 135 }
+catppuccin-mocha	yellow	Rgb { r: 249, g: 226, b: 175 }
+catppuccin-mocha	green	Rgb { r: 166, g: 227, b: 161 }
+catppuccin-mocha	teal	Rgb { r: 148, g: 226, b: 213 }
+catppuccin-mocha	sky	Rgb { r: 137, g: 220, b: 235 }
+catppuccin-mocha	sapphire	Rgb { r: 116, g: 199, b: 236 }
+catppuccin-mocha	blue	Rgb { r: 137, g: 180, b: 250 }
+catppuccin-mocha	lavender	Rgb { r: 180, g: 190, b: 254 }
+catppuccin-mocha	text	Rgb { r: 205, g: 214, b: 244 }
+catppuccin-mocha	subtext1	Rgb { r: 186, g: 194, b: 222 }
+catppuccin-mocha	subtext0	Rgb { r: 166, g: 173, b: 200 }
+catppuccin-mocha	overlay2	Rgb { r: 147, g: 153, b: 178 }
+catppuccin-mocha	overlay1	Rgb { r: 127, g: 132, b: 156 }
+catppuccin-mocha	overlay0	Rgb { r: 108, g: 112, b: 134 }
+catppuccin-mocha	surface2	Rgb { r: 88, g: 91, b: 112 }
+catppuccin-mocha	surface1	Rgb { r: 69, g: 71, b: 90 }
+catppuccin-mocha	surface0	Rgb { r: 49, g: 50, b: 68 }
+catppuccin-mocha	base	Rgb { r: 30, g: 30, b: 46 }
+catppuccin-mocha	mantle	Rgb { r: 24, g: 24, b: 37 }
+catppuccin-mocha	crust	Rgb { r: 17, g: 17, b: 27 }
+catppuccin-latte	rosewater	Rgb { r: 220, g: 138, b: 120 }
+catppuccin-latte	flamingo	Rgb { r: 221, g: 120, b: 120 }
+catppuccin-latte	pink	Rgb { r: 234, g: 118, b: 203 }
+catppuccin-latte	mauve	Rgb { r: 136, g: 57, b: 239 }
+catppuccin-latte	red	Rgb { r: 210, g: 15, b: 57 }
+catppuccin-latte	maroon	Rgb { r: 230, g: 69, b: 83 }
+catppuccin-latte	peach	Rgb { r: 254, g: 100, b: 11 }
+catppuccin-latte	yellow	Rgb { r: 223, g: 142, b: 29 }
+catppuccin-latte	green	Rgb { r: 64, g: 160, b: 43 }
+catppuccin-latte	teal	Rgb { r: 23, g: 146, b: 153 }
+catppuccin-latte	sky	Rgb { r: 4, g: 165, b: 229 }
+catppuccin-latte	sapphire	Rgb { r: 32, g: 159, b: 181 }
+catppuccin-latte	blue	Rgb { r: 30, g: 102, b: 245 }
+catppuccin-latte	lavender	Rgb { r: 114, g: 135, b: 253 }
+catppuccin-latte	text	Rgb { r: 76, g: 79, b: 105 }
+catppuccin-latte	subtext1	Rgb { r: 92, g: 95, b: 119 }
+catppuccin-latte	subtext0	Rgb { r: 108, g: 111, b: 133 }
+catppuccin-latte	overlay2	Rgb { r: 124, g: 127, b: 147 }
+catppuccin-latte	overlay1	Rgb { r: 140, g: 143, b: 161 }
+catppuccin-latte	overlay0	Rgb { r: 156, g: 160, b: 176 }
+catppuccin-latte	surface2	Rgb { r: 172, g: 176, b: 190 }
+catppuccin-latte	surface1	Rgb { r: 188, g: 192, b: 204 }
+catppuccin-latte	surface0	Rgb { r: 204, g: 208, b: 218 }
+catppuccin-latte	base	Rgb { r: 239, g: 241, b: 245 }
+catppuccin-latte	mantle	Rgb { r: 230, g: 233, b: 239 }
+catppuccin-latte	crust	Rgb { r: 220, g: 224, b: 232 }
+catppuccin-frappe	rosewater	Rgb { r: 242, g: 213, b: 207 }
+catppuccin-frappe	flamingo	Rgb { r: 238, g: 190, b: 190 }
+catppuccin-frappe	pink	Rgb { r: 244, g: 184, b: 228 }
+catppuccin-frappe	mauve	Rgb { r: 202, g: 158, b: 230 }
+catppuccin-frappe	red	Rgb { r: 231, g: 130, b: 132 }
+catppuccin-frappe	maroon	Rgb { r: 234, g: 153, b: 156 }
+catppuccin-frappe	peach	Rgb { r: 239, g: 159, b: 118 }
+catppuccin-frappe	yellow	Rgb { r: 229, g: 200, b: 144 }
+catppuccin-frappe	green	Rgb { r: 166, g: 209, b: 137 }
+catppuccin-frappe	teal	Rgb { r: 129, g: 200, b: 190 }
+catppuccin-frappe	sky	Rgb { r: 153, g: 209, b: 219 }
+catppuccin-frappe	sapphire	Rgb { r: 133, g: 193, b: 220 }
+catppuccin-frappe	blue	Rgb { r: 140, g: 170, b: 238 }
+catppuccin-frappe	lavender	Rgb { r: 186, g: 187, b: 241 }
+catppuccin-frappe	text	Rgb { r: 198, g: 208, b: 245 }
+catppuccin-frappe	subtext1	Rgb { r: 181, g: 191, b: 226 }
+catppuccin-frappe	subtext0	Rgb { r: 165, g: 173, b: 206 }
+catppuccin-frappe	overlay2	Rgb { r: 148, g: 156, b: 187 }
+catppuccin-frappe	overlay1	Rgb { r: 131, g: 139, b: 167 }
+catppuccin-frappe	overlay0	Rgb { r: 115, g: 121, b: 148 }
+catppuccin-frappe	surface2	Rgb { r: 98, g: 104, b: 128 }
+catppuccin-frappe	surface1	Rgb { r: 81, g: 87, b: 109 }
+catppuccin-frappe	surface0	Rgb { r: 65, g: 69, b: 89 }
+catppuccin-frappe	base	Rgb { r: 48, g: 52, b: 70 }
+catppuccin-frappe	mantle	Rgb { r: 41, g: 44, b: 60 }
+catppuccin-frappe	crust	Rgb { r: 35, g: 38, b: 52 }
+catppuccin-macchiato	rosewater	Rgb { r: 244, g: 219, b: 214 }
+catppuccin-macchiato	flamingo	Rgb { r: 240, g: 198, b: 198 }
+catppuccin-macchiato	pink	Rgb { r: 245, g: 189, b: 230 }
+catppuccin-macchiato	mauve	Rgb { r: 198, g: 160, b: 246 }
+catppuccin-macchiato	red	Rgb { r: 237, g: 135, b: 150 }
+catppuccin-macchiato	maroon	Rgb { r: 238, g: 153, b: 160 }
+catppuccin-macchiato	peach	Rgb { r: 245, g: 169, b: 127 }
+catppuccin-macchiato	yellow	Rgb { r: 238, g: 212, b: 159 }
+catppuccin-macchiato	green	Rgb { r: 166, g: 218, b: 149 }
+catppuccin-macchiato	teal	Rgb { r: 139, g: 213, b: 202 }
+catppuccin-macchiato	sky	Rgb { r: 145, g: 215, b: 227 }
+catppuccin-macchiato	sapphire	Rgb { r: 125, g: 196, b: 228 }
+catppuccin-macchiato	blue	Rgb { r: 138, g: 173, b: 244 }
+catppuccin-macchiato	lavender	Rgb { r: 183, g: 189, b: 248 }
+catppuccin-macchiato	text	Rgb { r: 202, g: 211, b: 245 }
+catppuccin-macchiato	subtext1	Rgb { r: 184, g: 192, b: 224 }
+catppuccin-macchiato	subtext0	Rgb { r: 165, g: 173, b: 203 }
+catppuccin-macchiato	overlay2	Rgb { r: 147, g: 154, b: 183 }
+catppuccin-macchiato	overlay1	Rgb { r: 128, g: 135, b: 162 }
+catppuccin-macchiato	overlay0	Rgb { r: 110, g: 115, b: 141 }
+catppuccin-macchiato	surface2	Rgb { r: 91, g: 96, b: 120 }
+catppuccin-macchiato	surface1	Rgb { r: 73, g: 77, b: 100 }
+catppuccin-macchiato	surface0	Rgb { r: 54, g: 58, b: 79 }
+catppuccin-macchiato	base	Rgb { r: 36, g: 39, b: 58 }
+catppuccin-macchiato	mantle	Rgb { r: 30, g: 32, b: 48 }
+catppuccin-macchiato	crust	Rgb { r: 24, g: 25, b: 38 }
