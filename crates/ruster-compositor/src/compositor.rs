@@ -121,6 +121,18 @@ impl<B: Backend + 'static> CompositorState<B> {
         Rect::new(0, 0, size.w, size.h)
     }
 
+    /// What the statusline should say about the layout: the axis of the split
+    /// holding the focused window, how many windows share the workspace, and
+    /// whether the focused one floats.
+    pub fn tree_status(&self) -> crate::chrome::TreeStatus {
+        let focus = self.shell.focus;
+        crate::chrome::TreeStatus {
+            layout: focus.and_then(|id| self.workspaces.layout_at(id)),
+            windows: self.workspaces.visible_count(),
+            floating: focus.is_some_and(|id| self.workspaces.is_floating(id)),
+        }
+    }
+
     /// Where each window on the active workspace sits, per its tree.
     ///
     /// This is the whole of "switching workspaces hides the rest": the

@@ -13,12 +13,46 @@ use ruster_render::Theme;
 use ruster_render_gles::atlas::{layout_text, Atlas};
 use ruster_render_gles::cursor::CursorBitmap;
 use ruster_render_gles::geometry::{rect_verts, rounded_rect_verts, GlyphQuad, Vertex};
+use ruster_shell::Layout;
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::solid::{SolidColorBuffer, SolidColorRenderElement};
 use smithay::backend::renderer::element::texture::TextureRenderElement;
 use smithay::backend::renderer::element::{Id, Kind};
 use smithay::backend::renderer::{Color32F, ImportMem, Renderer};
 use smithay::utils::{Physical, Point, Transform};
+
+/// What the statusline says about the container tree.
+///
+/// Passed in rather than reached for: `Chrome` draws, and giving it the shell
+/// to interrogate would make every statusline change a reason to touch the
+/// layout code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TreeStatus {
+    /// How the split holding the focused window divides its space, which is the
+    /// direction the next window will appear in.
+    pub layout: Option<Layout>,
+    /// Windows sharing the active workspace, floating included.
+    pub windows: usize,
+    /// Whether the focused window floats above the tiling.
+    pub floating: bool,
+}
+
+impl TreeStatus {
+    /// The short form drawn on the bar: an axis glyph, the window count, and a
+    /// marker when the focused window is floating.
+    ///
+    /// Deliberately terse — the statusline is one row and the title needs the
+    /// space. `|` and `-` read as the divider the split actually draws.
+    pub fn indicator(&self) -> String {
+        let axis = match self.layout {
+            Some(Layout::Horizontal) => "|",
+            Some(Layout::Vertical) => "-",
+            None => "·",
+        };
+        let float = if self.floating { " ~" } else { "" };
+        format!("{axis} {}{float}", self.windows)
+    }
+}
 
 /// One frame's worth of chrome geometry: solid quads and textured glyph quads,
 /// both in physical pixels with the origin at the output's top-left.
@@ -201,6 +235,7 @@ impl Chrome {
         h: i32,
         workspace: u32,
         focused_title: &str,
+        tree: TreeStatus,
         batch: &mut ChromeBatch,
     ) -> i32 {
         let bar_h = crate::render::chrome_height(h);
@@ -232,7 +267,17 @@ impl Chrome {
         };
         let cursor = mode_w + 12.0;
         let ws_w = self.text(&ws, 16, cursor, y + pad, fg, batch);
-        self.text(title, 16, cursor + ws_w + 20.0, y + pad, fg, batch);
+        let mut cursor = cursor + ws_w + 20.0;
+
+        // The layout the next window will use, and how many share the screen.
+        // Neither is inferable from the screen: two windows side by side look
+        // the same whether the next one lands beside them or under them, and a
+        // floating window looks like any other until it overlaps something.
+        let indicator = tree.indicator();
+        let ind_w = self.text(&indicator, 16, cursor, y + pad, accent, batch);
+        cursor += ind_w + 20.0;
+
+        self.text(title, 16, cursor, y + pad, fg, batch);
 
         bar_h
     }
@@ -388,11 +433,19 @@ mod tests {
         Theme::default()
     }
 
+    fn status() -> TreeStatus {
+        TreeStatus {
+            layout: Some(Layout::Horizontal),
+            windows: 2,
+            floating: false,
+        }
+    }
+
     #[test]
     fn statusline_emits_quads() {
         let mut chrome = Chrome::new(theme());
         let mut batch = ChromeBatch::default();
-        let h = chrome.draw_statusline(800, 600, 1, "foot", &mut batch);
+        let h = chrome.draw_statusline(800, 600, 1, "foot", status(), &mut batch);
         assert!(h > 0);
         assert!(batch.verts.len() >= 6);
         // every vertex within the bar band
@@ -402,13 +455,52 @@ mod tests {
     }
 
     #[test]
+    fn the_indicator_says_which_way_the_next_window_goes() {
+        // Two windows side by side look identical whether the next one lands
+        // beside them or under them, so the axis has to be stated.
+        let across = TreeStatus {
+            layout: Some(Layout::Horizontal),
+            windows: 2,
+            floating: false,
+        };
+        assert_eq!(across.indicator(), "| 2");
+
+        let down = TreeStatus {
+            layout: Some(Layout::Vertical),
+            ..across
+        };
+        assert_eq!(down.indicator(), "- 2");
+    }
+
+    #[test]
+    fn a_lone_window_has_no_split_to_report() {
+        let alone = TreeStatus {
+            layout: None,
+            windows: 1,
+            floating: false,
+        };
+        assert_eq!(alone.indicator(), "· 1");
+    }
+
+    #[test]
+    fn a_floating_window_is_marked() {
+        // A float looks like any other window until it overlaps something.
+        let floating = TreeStatus {
+            layout: None,
+            windows: 3,
+            floating: true,
+        };
+        assert_eq!(floating.indicator(), "· 3 ~");
+    }
+
+    #[test]
     fn statusline_draws_its_text_as_glyphs() {
         // The mode letter, the workspace label and the focused title all reach
         // the batch as glyph quads inside the bar — not as solid blocks, and not
         // dropped on the floor.
         let mut chrome = Chrome::new(theme());
         let mut batch = ChromeBatch::default();
-        let h = chrome.draw_statusline(800, 600, 1, "foot", &mut batch);
+        let h = chrome.draw_statusline(800, 600, 1, "foot", status(), &mut batch);
         assert!(
             batch.glyphs.len() >= "N".len() + "WS 1".len(),
             "expected a glyph per drawn character, got {}",
@@ -481,7 +573,7 @@ mod tests {
         // cells the draw actually produced.
         let mut chrome = Chrome::new(theme());
         let mut batch = ChromeBatch::default();
-        let _ = chrome.draw_statusline(800, 600, 1, "foot", &mut batch);
+        let _ = chrome.draw_statusline(800, 600, 1, "foot", status(), &mut batch);
         let quad = |i: usize| &batch.verts[i * 6..i * 6 + 6];
         assert!(
             quad(0).iter().all(|v| v[4] == 69.0 / 255.0),

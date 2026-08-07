@@ -84,6 +84,7 @@ fn run_winit() -> anyhow::Result<()> {
         // Read before `bind()` takes a mutable borrow of the backend for the
         // rest of the frame.
         let geometry = state.geometry();
+        let tree_status = state.tree_status();
         let render_res = state
             .backend_data
             .backend
@@ -110,6 +111,7 @@ fn run_winit() -> anyhow::Result<()> {
                     &cursor_status,
                     cursor_location,
                     &geometry,
+                    tree_status,
                 )
                 .map_err(|err| match err {
                     OutputDamageTrackerError::Rendering(err) => err.into(),

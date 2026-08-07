@@ -30,7 +30,7 @@ use smithay::utils::{
 use smithay::wayland::compositor::with_states;
 use smithay::wayland::shell::xdg::ToplevelSurface;
 
-use crate::chrome::{solid_elements_from_verts, Chrome, ChromeBatch};
+use crate::chrome::{solid_elements_from_verts, Chrome, ChromeBatch, TreeStatus};
 use ruster_render_gles::geometry::GlyphQuad;
 
 /// Background the compositor clears the output to each frame.
@@ -94,6 +94,7 @@ pub fn render_frame(
     cursor_status: &CursorImageStatus,
     cursor_location: Point<f64, Logical>,
     geometry: &[(WindowId, ruster_shell::Rect)],
+    tree_status: TreeStatus,
 ) -> Result<Option<Vec<Rectangle<i32, Physical>>>, RenderError> {
     let elements = collect_render_elements(
         focus,
@@ -106,6 +107,7 @@ pub fn render_frame(
         cursor_status,
         cursor_location,
         geometry,
+        tree_status,
     );
     let result =
         damage_tracker.render_output(renderer, framebuffer, age, &elements, CLEAR_COLOR)?;
@@ -132,6 +134,7 @@ pub fn collect_render_elements<R: Renderer + ImportAll + ImportMem>(
     cursor_status: &CursorImageStatus,
     cursor_location: Point<f64, Logical>,
     geometry: &[(WindowId, ruster_shell::Rect)],
+    tree_status: TreeStatus,
 ) -> Vec<ChromeRenderElements<R>>
 where
     <R as RendererSuper>::TextureId: Clone + 'static,
@@ -158,7 +161,14 @@ where
             .map(|mode| mode.size)
             .unwrap_or_default();
         let mut batch = ChromeBatch::default();
-        chrome.draw_statusline(size.w, size.h, workspace, focused_title, &mut batch);
+        chrome.draw_statusline(
+            size.w,
+            size.h,
+            workspace,
+            focused_title,
+            tree_status,
+            &mut batch,
+        );
 
         let editor_mark = batch.mark();
         let frame_w = (size.w / 2).clamp(120, 360);

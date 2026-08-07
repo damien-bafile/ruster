@@ -398,6 +398,7 @@ impl CompositorState<RusterUdevData> {
         // Read before the renderer is acquired: `single_renderer` borrows
         // `self` mutably for the rest of the frame.
         let geometry = self.geometry();
+        let tree_status = self.tree_status();
         let focused_title = self
             .shell
             .focused()
@@ -429,6 +430,7 @@ impl CompositorState<RusterUdevData> {
             &cursor_status,
             cursor_location,
             &geometry,
+            tree_status,
         );
         send_frame_callbacks(self.shell.focus, &self.toplevels, &output);
 

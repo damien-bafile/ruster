@@ -133,6 +133,24 @@ impl Workspaces {
         out
     }
 
+    /// How the split holding `window` divides its space — the direction the
+    /// next window inserted beside it will appear in. `None` when the window is
+    /// alone, floating, or absent, because then there is no split to report.
+    pub fn layout_at(&self, window: WindowId) -> Option<Layout> {
+        let tree = self.tree();
+        let leaf = tree.find(window)?;
+        let parent = tree.parent(leaf)?;
+        match tree.node(parent) {
+            Some(crate::tree::Node::Split { layout, .. }) => Some(*layout),
+            _ => None,
+        }
+    }
+
+    /// Windows on the active workspace, floating included.
+    pub fn visible_count(&self) -> usize {
+        self.tree().windows().len() + self.floating[(self.active - 1) as usize].len()
+    }
+
     /// Whether `window` floats above the tiling rather than sitting in it.
     pub fn is_floating(&self, window: WindowId) -> bool {
         self.floating
