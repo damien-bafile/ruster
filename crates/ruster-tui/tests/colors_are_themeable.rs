@@ -29,6 +29,11 @@ const FALLBACK_ONLY: &[(&str, &str)] = &[
         "widgets/debug_overlay.rs",
         "same `c(|t| t.field, fallback)` shape — the theme wins when there is one",
     ),
+    (
+        "raylib/lib.rs",
+        "every literal is the second argument of `to_raylib(theme.field, fallback)`, \
+         so the theme wins whenever it carries that role",
+    ),
 ];
 
 /// Individual exceptions, none needed so far.
@@ -44,14 +49,14 @@ const ALLOWED: &[(&str, &str)] = &[];
 fn literals() -> Vec<(String, usize, String)> {
     let mut out = Vec::new();
     for (name, src) in sources() {
-        let body = &src[..test_module_start(src)];
+        let body = &src[..test_module_start(&src)];
         for (n, line) in body.lines().enumerate() {
             let t = line.trim();
             if t.starts_with("//") || t.starts_with("///") {
                 continue;
             }
-            if has_rgb_literal(line) {
-                out.push((name.to_string(), n + 1, t.to_string()));
+            if has_rgb_literal(line) || has_rgba_literal(line) {
+                out.push((name.clone(), n + 1, t.to_string()));
             }
         }
     }
@@ -98,24 +103,70 @@ fn has_rgb_literal(line: &str) -> bool {
             .all(|a| !a.is_empty() && a.chars().all(|c| c.is_ascii_digit()))
 }
 
-fn sources() -> Vec<(&'static str, &'static str)> {
-    vec![
-        ("app.rs", include_str!("../src/app.rs")),
-        ("dired.rs", include_str!("../src/dired.rs")),
-        ("renderer.rs", include_str!("../src/renderer.rs")),
-        ("git_status.rs", include_str!("../src/git_status.rs")),
-        ("sidebar.rs", include_str!("../src/sidebar.rs")),
-        ("settings.rs", include_str!("../src/settings.rs")),
-        ("widgets/mod.rs", include_str!("../src/widgets/mod.rs")),
-        (
-            "widgets/debug_overlay.rs",
-            include_str!("../src/widgets/debug_overlay.rs"),
-        ),
-        (
-            "widgets/noice_toast.rs",
-            include_str!("../src/widgets/noice_toast.rs"),
-        ),
-    ]
+/// Every drawing source in both backends, found by walking rather than listed.
+///
+/// It was a hand-maintained list of nine `include_str!`s, which meant a new file
+/// was invisible to this guard until somebody remembered to add it — and
+/// remembering is exactly the thing the guard exists to not rely on. It also
+/// covered only `ruster-tui`, so the raylib backend, the one people mean when
+/// they say the GUI, was never checked at all.
+///
+/// Read at runtime from `CARGO_MANIFEST_DIR` because `include_str!` needs paths
+/// known at compile time, which is the whole problem.
+fn sources() -> Vec<(String, String)> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut out = Vec::new();
+    collect(&root.join("src"), "", &mut out);
+    collect(
+        &root.join("../ruster-render-raylib/src"),
+        "raylib/",
+        &mut out,
+    );
+    out.sort();
+    assert!(
+        out.len() >= 9,
+        "the walk found {} sources; it used to be a list of 9, so something is wrong \
+         with the traversal rather than the tree",
+        out.len()
+    );
+    out
+}
+
+/// Recursively read every `.rs` under `dir`, naming each relative to it.
+fn collect(dir: &std::path::Path, prefix: &str, out: &mut Vec<(String, String)>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        panic!("cannot read {} — the crate layout moved", dir.display());
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if path.is_dir() {
+            collect(&path, &format!("{prefix}{name}/"), out);
+        } else if name.ends_with(".rs") {
+            match std::fs::read_to_string(&path) {
+                Ok(src) => out.push((format!("{prefix}{name}"), src)),
+                Err(e) => panic!("cannot read {}: {e}", path.display()),
+            }
+        }
+    }
+}
+
+/// `Color::new(` followed by four numeric arguments — raylib's colour form.
+/// Same reasoning as [`has_rgb_literal`]: four *numbers*, so a forwarded value
+/// is not a literal.
+fn has_rgba_literal(line: &str) -> bool {
+    let Some(at) = line.find("Color::new(") else {
+        return false;
+    };
+    let rest = &line[at + "Color::new(".len()..];
+    let Some(close) = rest.find(')') else {
+        return false;
+    };
+    let args: Vec<&str> = rest[..close].split(',').map(str::trim).collect();
+    args.len() == 4
+        && args
+            .iter()
+            .all(|a| !a.is_empty() && a.chars().all(|c| c.is_ascii_digit()))
 }
 
 #[test]
