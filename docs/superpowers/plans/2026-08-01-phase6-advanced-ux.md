@@ -84,10 +84,11 @@ PR #24) and `widgets.rs` (now a `widgets/` directory).
       would leave a contradictory plan for a future agent, and that file opens with
       *"REQUIRED SUB-SKILL: use subagent-driven-development to implement this plan
       task-by-task."* They stay on the branch.
-- [ ] **Still open — decide, don't merge:** `WhichKeyEntry` + the `whichkey_key` accent
-      colour (55 lines, 7 files) is the one thing genuinely absent from `main`. It touches
-      `ruster-render`, so it needs both backends. Deferred to Task 11 as a deliberate visual
-      change; cherry-pick it there rather than merging the branch.
+- [x] **Decided and delivered.** `WhichKeyEntry` + the `whichkey_key` accent colour
+      (55 lines, 7 files) was the one thing genuinely absent from `main`. Reimplemented
+      against current `main` by Phase 9 Task 1 (`9cf2a8f`) rather than cherry-picked, as
+      this task recommended; both backends draw it, and
+      `docs/verification/whichkey-gui.png` shows the key letters taking the accent.
 - [x] **Archived, not deleted.** The branch was local-only, so deleting it would have
       destroyed the only copy. Pushed to `origin/feat/starship-ui` as a reference. It is not
       a merge candidate — leave it indefinitely; it costs nothing.
@@ -127,17 +128,25 @@ grew for the life of the session.
       reported inside a live `Ref` on `self.ws`, which the old single-field
       `self.notify.push` tolerated but a `&mut self` helper does not.
 
-### Task 4: Verify the raylib GUI, and record how
+### Task 4: Verify the raylib GUI, and record how ✅
 
 The one claim in PR #24 that rests on reasoning rather than observation: the sidebar
 reaches the GUI as an ordinary `WindowView`, and neither render crate was touched — but
 nobody has *looked* at it. macOS blocked synthetic keystrokes and screen capture in the
 agent environment.
 
-- [ ] Run `just gui`, open `:sidebar`, confirm the panel draws and the tree is navigable.
-- [ ] Do the same for the debugger overlay and a noice toast, which also changed in Phase 5.
-- [ ] If this keeps recurring, write a project skill under `.claude/skills/` that launches
+- [x] Run `just gui`, open `:sidebar`, confirm the panel draws and the tree is navigable.
+      Captured: `docs/verification/sidebar-gui.png` — the panel draws with its
+      `▸`/`▾` glyphs as a second window.
+- [x] Do the same for the debugger overlay and a noice toast, which also changed in Phase 5.
+      `docs/verification/debugger-gui.png` (toolbar, live lldb-dap call stack) and
+      `noice-toast-gui.png` (mini toast, top right).
+- [x] If this keeps recurring, write a project skill under `.claude/skills/` that launches
       the GUI and drives it, so the check is repeatable rather than manual.
+      `.claude/skills/gui-check/SKILL.md`, and Phase 10 went further:
+      `scripts/verify-capture.sh` + `just verify` drive **both** backends from one
+      per-surface spec, and `crates/ruster-tui/tests/drive.rs` asserts on the
+      frames headlessly.
 
 ### Task 5: Refresh the stale process docs ✅
 
@@ -191,21 +200,25 @@ so a single pass covers both the PR #24 extraction and the Stage 1 additions.
 The current `graphify-out/` is from 2026-07-30 and is stale by the whole `app.rs`
 extraction, so **treat its `App` metrics as historical**, not as a description of the tree.
 
-When it is run:
+When it is run — guidance, not outstanding work; Task 6 is done and these are
+notes for the *next* pass:
 
-- [ ] **There is no `--exclude` flag** — graphify narrows by the paths it is given. Pass an
+- **There is no `--exclude` flag** — graphify narrows by the paths it is given. Pass an
       include-list rather than the repo root:
       `crates docs .superpowers AGENTS.md DESIGN.md PRODUCT.md`.
       That drops `.impeccable/` and `.opencode/`, which contributed 5 files and generated
       three whole communities ("Starship Design Board", "Starship Hero Mock", "OpenCode
       Plugin Deps") unrelated to the editor.
-- [ ] Compare `App`'s betweenness against the previous **0.369** (next-highest was 0.127),
-      and its edge count against **215**. PR #24 took `App` from 78 fields to 57 and moved
-      ~640 non-test lines out of `app.rs`; this is the check on whether that actually
-      reduced its centrality or merely relocated code.
-- [ ] Also worth comparing: 2,415 nodes / 5,439 edges / 96 communities, and whether the
+- Compare `App`'s edge count against **215**. PR #24 took `App` from 78 fields to 57
+  and moved ~640 non-test lines out of `app.rs`; this is the check on whether that
+  actually reduced its centrality or merely relocated code.
+  **Do not read betweenness as the answer.** A later pass put `App` at 0.51 — higher
+  than before the extraction — because betweenness measures being on the shortest path
+  between other modules, which is what a composition root *is*. Count `impl App`
+  methods instead; that is the number the extraction was meant to move.
+- Also worth comparing: 2,415 nodes / 5,439 edges / 96 communities, and whether the
       **245 isolated nodes** shrank.
-- [ ] **Ignore the "Import Cycles" section.** All 20 entries are files cycling to themselves
+- **Ignore the "Import Cycles" section.** All 20 entries are files cycling to themselves
       (`buffer.rs -> buffer.rs`) — a graphify artifact, not real cycles. Recorded here so it
       is not investigated a third time.
 
@@ -223,8 +236,12 @@ Unblocks the three notification backends removed in PR #24 as uncompiled stubs
 - [x] Draw it in both `ruster-tui/src/renderer.rs` and `ruster-render-raylib`. The hover
       popup (`HoverWidget`) and which-key panel are the closest existing precedents; fold
       them onto the new primitive if it doesn't complicate them.
-- [ ] Re-introduce `BackendKind::{CmdlinePopup, Popup, Confirm}` in `ruster-notify` **only
+- [x] Re-introduce `BackendKind::{CmdlinePopup, Popup, Confirm}` in `ruster-notify` **only
       once they render** — they were removed precisely because they were unreachable.
+      Delivered by Phase 9 Task 2 (`b731b40`). Confirmed rendering 2026-08-07:
+      `:Noice popup` draws a bordered, titled float in both backends
+      (`docs/verification/noice-popup-{tui.txt,gui.png}`), and a `Confirm`
+      raises the modal dialog.
 - [x] Tests: z-ordering over window views; clamping at each screen edge.
 
 ### Task 8: Git signs (gitsigns) ✅
@@ -254,23 +271,34 @@ Unblocks the three notification backends removed in PR #24 as uncompiled stubs
 
 ### Task 10: Todo comments ✅
 
-- [ ] Highlight `TODO` / `FIXME` / `HACK` / `NOTE` / `XXX` in comments. `ruster-syntax`
-      already colours org-mode `TODO` keywords (`markup.rs:113-120`) — extend that rather
-      than adding a parallel scanner.
-- [ ] `:TodoList` feeds the Task 9 panel.
-- [ ] Config: `todo.keywords` (list) and per-keyword colours in the theme.
-- [ ] Tests: keyword detection inside comments only, not in string literals.
+Boxes ticked 2026-08-07 after confirming each against the code (Phase 9 Task 8).
+
+- [x] Highlight `TODO` / `FIXME` / `HACK` / `NOTE` / `XXX` in comments.
+      `DEFAULT_TODO_KEYWORDS` and `overlay_todo_highlights`/`all_todo_markers` in
+      `ruster-syntax/src/lib.rs`.
+- [x] `:TodoList` feeds the Task 9 panel. `open_todo_list` builds the quickfix
+      picker, and `collect_trouble` adds the same markers to `:Trouble` as
+      `TroubleSource::Todo`.
+- [x] Config: `todo.keywords` (`schema.rs`) and the theme colour via
+      `todo_style()` → `ruster_syntax::sign_style("todo")`.
+- [x] Tests: `todo_markers_come_from_comments_not_string_literals`, plus whole-word
+      matching, line/column reporting, block comments, the configured keyword set,
+      and the no-grammar case.
 
 ### Task 11: Theme live-preview picker ✅
 
-Completes the one partially-delivered Phase 6 item.
+Completes the one partially-delivered Phase 6 item. Boxes ticked 2026-08-07
+after confirming each against the code (Phase 9 Task 8); the `whichkey_key`
+bullet was delivered by Phase 9 Task 1 (`9cf2a8f`).
 
-- [ ] Extend the theme picker so moving the selection applies the theme live, and Esc
-      restores the previous one. `resolve_theme_colors` already exists; this is picker
-      wiring plus a restore path.
-- [ ] Ship the four Catppuccin variants (latte, frappe, macchiato, mocha) as `themes/*.lua`.
-      Mocha is already the built-in default palette.
-- [ ] Optionally add a `whichkey_key` accent colour: turn `WhichKeyView::rows` from
+- [x] Extend the theme picker so moving the selection applies the theme live, and Esc
+      restores the previous one. `App::theme_before_preview` holds the previous name
+      and the cancel path puts it back.
+- [x] Ship the four Catppuccin variants (latte, frappe, macchiato, mocha) as `themes/*.lua`.
+      All four are built in and written to `<config>/themes/` on first run. Mocha
+      became the *default* theme in Phase 9 (`8b6a361`), not merely the fallback
+      palette.
+- [x] Optionally add a `whichkey_key` accent colour: turn `WhichKeyView::rows` from
       `Vec<String>` into `Vec<WhichKeyEntry { key, desc }>` so the key letter can be
       coloured separately, and teach **both** backends to draw it.
 
@@ -280,7 +308,8 @@ Completes the one partially-delivered Phase 6 item.
       files, and a full merge conflicts in 10. The feature is 55 insertions across files
       both renderers have since changed, so writing it against current `main` is cheaper
       than untangling it. Verified 2026-08-01, 124 commits past the divergence.
-- [ ] Tests: preview applies and Esc restores; discovery finds user themes.
+- [x] Tests: `theme_picker_previews_on_move_and_restores_on_cancel`,
+      `accepting_a_theme_keeps_it`, `theme_discovery_lists_the_builtins`.
 
 ### Task 12: TUI widget layer ✅
 

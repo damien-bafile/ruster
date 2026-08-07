@@ -44,7 +44,10 @@ impl Source {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TroubleItem {
     pub path: PathBuf,
-    /// 0-based.
+    /// 0-based, matching LSP diagnostics and `TodoMarker`; the panel adds one
+    /// when it draws. Note this is the **opposite** of
+    /// [`crate::quickfix::QuickfixItem`], which is 1-based — copying between
+    /// them without converting put every quickfix entry a line too high.
     pub line: usize,
     /// 0-based.
     pub col: usize,

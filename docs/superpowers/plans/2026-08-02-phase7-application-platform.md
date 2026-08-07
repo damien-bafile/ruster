@@ -1,7 +1,8 @@
 # Phase 7 — The "Emacs Extras" (Application Platform)
 
-**Status:** planning, 2026-08-02. Phase 6 is 16/17 complete; only Task 4 (look at
-the raylib GUI) is outstanding, blocked on a locked screen rather than on code.
+**Status:** planning, 2026-08-02. Phase 6 is complete — Task 4 (look at the
+raylib GUI) was the last outstanding item and landed 2026-08-03; the artifacts
+are in `docs/verification/` and the check is repeatable via `just verify`.
 
 `AGENTS.md` lists six features for this phase. They are not comparable in value,
 risk, or fit, so this plan sequences them by that rather than by the order they

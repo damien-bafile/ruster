@@ -1,8 +1,11 @@
 # Phase 10 — Verification
 
-**Status:** harness built and the matrix captured, 2026-08-06. Seven defects
-found and routed to Phase 9 Task 4b. See `docs/verification/README.md` for the
-per-surface status table.
+**Status:** harness built and the matrix captured, 2026-08-06; findings
+adjudicated 2026-08-07. Seven defects were reported and routed to Phase 9 Task
+4b — **three of them were mis-diagnosed and have been retracted**, five real
+ones (plus one found underneath a false one) are fixed. See
+`docs/verification/README.md` for the per-surface status table and for the two
+ways a capture lies, which is what produced the false reports.
 
 Phases 0–9 built an editor, and every phase ended with tests that prove the
 code does what it claims. None of them proved it **looks** like anything. This

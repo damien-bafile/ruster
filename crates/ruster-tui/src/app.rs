@@ -6542,8 +6542,13 @@ impl App {
         for q in self.quickfix.items() {
             out.push(TroubleItem {
                 path: q.path.clone(),
-                line: q.line,
-                col: q.col,
+                // `QuickfixItem` is 1-based and `TroubleItem` is 0-based (the
+                // panel adds one when it draws). Copying across raw showed
+                // every quickfix entry — build errors, `:Rg` hits, anything
+                // routed through the list — one line too high, while the
+                // diagnostics and TODO entries beside them were right.
+                line: q.line.saturating_sub(1),
+                col: q.col.saturating_sub(1),
                 message: q.message.clone(),
                 severity: q.severity,
                 source: TroubleSource::Quickfix,
@@ -9856,6 +9861,49 @@ mod tests {
             a.handle_key(CtKey::new(KeyCode::Char(c), KeyModifiers::NONE));
             assert!(a.terminal_focused, "{c} re-focuses the terminal");
         }
+    }
+
+    /// All three sources feeding `:Trouble` must report the same line.
+    ///
+    /// `TroubleItem` is 0-based and the panel adds one when it draws;
+    /// `QuickfixItem` is 1-based. Copying between them raw showed every
+    /// quickfix entry a line too high, sitting next to diagnostics and TODO
+    /// entries that were right — the same class of fault as `:TodoList`, in the
+    /// opposite direction.
+    #[test]
+    fn trouble_reports_the_same_line_for_a_quickfix_entry_as_for_a_todo() {
+        let dir = shot_dir();
+        let path = dir.join("t.rs");
+        // The TODO is on line 3, one-based.
+        std::fs::write(&path, "fn a() {}\n\n// TODO: fix me\n").unwrap();
+
+        let mut a = App::new(std::fs::read_to_string(&path).unwrap(), path.clone());
+        // A quickfix entry pointing at the same line, in that list's own
+        // 1-based convention.
+        a.quickfix = crate::quickfix::QuickfixList::new(vec![crate::quickfix::QuickfixItem {
+            path: path.clone(),
+            line: 3,
+            col: 4,
+            message: "same line".into(),
+            severity: 1,
+        }]);
+
+        let items = a.collect_trouble();
+        let todo = items
+            .iter()
+            .find(|i| matches!(i.source, crate::trouble::Source::Todo))
+            .expect("a TODO item");
+        let qf = items
+            .iter()
+            .find(|i| matches!(i.source, crate::trouble::Source::Quickfix))
+            .expect("a quickfix item");
+        assert_eq!(
+            qf.line, todo.line,
+            "both point at line 3; the panel would draw {} and {}",
+            qf.line + 1,
+            todo.line + 1
+        );
+        assert_eq!(todo.line, 2, "0-based internally, drawn as line 3");
     }
 
     /// Terminal-Normal mirrors the whole scrollback, not one screenful.

@@ -1,6 +1,8 @@
 # Phase 9 — Cleanup
 
-**Status:** planning, 2026-08-02.
+**Status:** in progress. Tasks 1–4 and 8 are done, plus Task 4b (the defects the
+Phase 10 sweep found, and the three it only appeared to). Tasks 5 (`:Music`),
+6 (`:Browse`) and 7 (email compose) are open.
 
 Phases 6–8 deferred or parked a small set of items. None is a new capability —
 each is either work that could not be finished when the phase shipped (a
@@ -495,15 +497,36 @@ no inbox. Full IMAP stays a plugin concern.
 The plan tree has checked-in work with unticked boxes, and stale status
 headers. None of this changes code; all of it makes the plans honest.
 
-- [ ] **Step 1: Phase 6 Task 10 (todo comments)** — confirm the work exists
-      (`todo.keywords` in config, `:TodoList`, trouble panel), then tick the
-      boxes and note the confirmation.
-- [ ] **Step 2: Phase 6 Task 11 (theme live-preview)** — confirm
-      `theme_before_preview` / `:Themes` exist, tick the boxes.
-- [ ] **Step 3: Phase 6 Task 4** — mark verified once Task 4 above lands.
-- [ ] **Step 4: Phase 8 Task 7** — mark the GUI bullet verified once Task 3
-      above lands.
-- [ ] **Step 5: Commit**
+- [x] **Step 1: Phase 6 Task 10 (todo comments)** — confirmed all four bullets
+      against the code: `DEFAULT_TODO_KEYWORDS` + `overlay_todo_highlights`,
+      `:TodoList` feeding both the quickfix picker and `:Trouble` as
+      `TroubleSource::Todo`, the `todo.keywords` setting with `todo_style()`,
+      and six tests including the one this asked for
+      (`todo_markers_come_from_comments_not_string_literals`).
+- [x] **Step 2: Phase 6 Task 11 (theme live-preview)** — confirmed
+      `theme_before_preview` with its restore path, all four Catppuccin variants
+      written to `<config>/themes/` on first run, the `whichkey_key` accent
+      (Phase 9 Task 1), and three tests.
+- [x] **Step 3: Phase 6 Task 4** — verified; `sidebar-gui.png`,
+      `debugger-gui.png` and `noice-toast-gui.png` are the observations, and the
+      repeatable check the task asked for exists twice over (the `gui-check`
+      skill, then `just verify`).
+- [x] **Step 4: Phase 8 Task 7** — GUI bullet verified: `hover-gui.png`.
+- [x] **Step 5: Also cleared while confirming.** Phase 6 Task 1's "still
+      open — decide, don't merge" (delivered by Phase 9 Task 1) and Task 7's
+      outstanding notification-backend bullet (delivered by Phase 9 Task 2,
+      confirmed rendering). The four graphify bullets under Task 6 became plain
+      bullets — they are guidance for a future run, not pending work, and
+      checkbox syntax made a finished task look unfinished. Phase 6 and Phase 8
+      now have **zero** unticked boxes. Stale status headers refreshed across
+      Phases 7–10.
+- [x] **Step 6: A defect found while confirming, and fixed.** `:Trouble` shows
+      quickfix entries a line too high. `TroubleItem` is 0-based and the panel
+      adds one when it draws; `QuickfixItem` is documented 1-based;
+      `collect_trouble` copied between them raw. Diagnostics and TODO entries
+      were right, so the error only showed as two sources disagreeing in the
+      same panel. Same class as the `:TodoList` fault above, opposite direction.
+- [x] **Step 7: Commit**
 
 ---
 
