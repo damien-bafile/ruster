@@ -51,6 +51,27 @@ pub enum Layout {
     Vertical,
 }
 
+/// A direction to move focus, a window, or a split boundary in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+impl Direction {
+    /// The split axis this direction travels along. A split on the other axis
+    /// has no boundary to move in this direction, which is what makes an
+    /// across-the-grain resize a no-op rather than a surprise.
+    pub fn axis(self) -> Layout {
+        match self {
+            Direction::Left | Direction::Right => Layout::Horizontal,
+            Direction::Up | Direction::Down => Layout::Vertical,
+        }
+    }
+}
+
 /// Index into [`Tree`]'s arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NodeId(pub usize);
@@ -70,12 +91,20 @@ pub enum Node {
     Leaf(WindowId),
 }
 
+/// The smallest share of a split any one child may be squeezed to. Below a few
+/// percent a window is a sliver with no usable content and no edge wide enough
+/// to grab back, so a resize that would go further stops here instead.
+const MIN_RATIO: f32 = 0.05;
+
 /// A container tree with a single root.
 #[derive(Debug, Clone, Default)]
 pub struct Tree {
     nodes: Vec<Option<Node>>,
     parents: Vec<Option<NodeId>>,
     root: Option<NodeId>,
+    /// A [`Tree::split`] on a leaf that had no parent, waiting for the insert
+    /// that gives it one. See that method for why it cannot act immediately.
+    pending_split: Option<(WindowId, Layout)>,
 }
 
 impl Tree {
@@ -172,6 +201,7 @@ impl Tree {
             }
             // A tree exists but the caller named no neighbour: split the root.
             let old = self.root.take().expect("checked above");
+            let layout = self.take_pending_split(old, layout);
             let split = self.alloc(Node::Split {
                 layout,
                 children: vec![old, leaf],
@@ -192,6 +222,7 @@ impl Tree {
             // Different axis, or no parent: wrap the neighbour in a new split.
             _ => {
                 let parent = self.parent(near_id);
+                let layout = self.take_pending_split(near_id, layout);
                 let split = self.alloc(Node::Split {
                     layout,
                     children: vec![near_id, leaf],
@@ -217,6 +248,9 @@ impl Tree {
         let Some(leaf) = self.find(window) else {
             return;
         };
+        if matches!(self.pending_split, Some((w, _)) if w == window) {
+            self.pending_split = None;
+        }
         let parent = self.parent(leaf);
         self.free(leaf);
 
@@ -303,7 +337,151 @@ impl Tree {
             .map(|(w, _)| w)
     }
 
+    /// Where a directional focus move from `window` should land, if anywhere.
+    ///
+    /// Answered from the laid-out rectangles rather than from tree structure.
+    /// The tree's shape and the screen's do not always agree — a window's
+    /// left-hand neighbour can be several levels up and across the tree — and
+    /// what a user means by "focus left" is the thing that is drawn to the
+    /// left, so that is what is measured.
+    pub fn focus_target(&self, from: WindowId, dir: Direction, area: Rect) -> Option<WindowId> {
+        let rects = self.layout(area);
+        let (sx, sy) = centre(rects.iter().find(|(w, _)| *w == from)?.1);
+        rects
+            .iter()
+            .filter(|(w, _)| *w != from)
+            .filter_map(|(w, r)| {
+                let (cx, cy) = centre(*r);
+                let (along, across) = match dir {
+                    Direction::Left => (sx - cx, (cy - sy).abs()),
+                    Direction::Right => (cx - sx, (cy - sy).abs()),
+                    Direction::Up => (sy - cy, (cx - sx).abs()),
+                    Direction::Down => (cy - sy, (cx - sx).abs()),
+                };
+                (along > 0).then_some((along, across, *w))
+            })
+            // Nearest in the direction of travel wins; only an exact tie there
+            // is settled by how far off the row or column the candidate sits,
+            // so a grid steps to the window in line rather than the diagonal.
+            .min_by_key(|(along, across, _)| (*along, *across))
+            .map(|(_, _, w)| w)
+    }
+
+    /// Divide the split holding `window` along `layout` from now on.
+    ///
+    /// A leaf that is the whole tree has no split to set, and doing nothing
+    /// would make "split vertical, then open a terminal" — the ordinary way to
+    /// start a session — silently ignore the first half. So the intent is held
+    /// and spent by the insert that creates the split it was meant for.
+    pub fn split(&mut self, window: WindowId, layout: Layout) {
+        let Some(leaf) = self.find(window) else {
+            return;
+        };
+        self.pending_split = None;
+        match self.parent(leaf) {
+            Some(parent) => {
+                if let Some(Node::Split { layout: axis, .. }) =
+                    self.nodes.get_mut(parent.0).and_then(|n| n.as_mut())
+                {
+                    *axis = layout;
+                }
+            }
+            None => self.pending_split = Some((window, layout)),
+        }
+    }
+
+    /// Exchange the positions of two windows, leaving the tree's shape alone.
+    ///
+    /// Only the leaves' contents trade places, so both windows inherit the
+    /// other's rectangle exactly and every ratio, split and parent link is
+    /// untouched. Moving the nodes instead would have to reason about one
+    /// being an ancestor of the other.
+    pub fn swap(&mut self, a: WindowId, b: WindowId) {
+        let (Some(leaf_a), Some(leaf_b)) = (self.find(a), self.find(b)) else {
+            return;
+        };
+        if let Some(Some(Node::Leaf(w))) = self.nodes.get_mut(leaf_a.0) {
+            *w = b;
+        }
+        if let Some(Some(Node::Leaf(w))) = self.nodes.get_mut(leaf_b.0) {
+            *w = a;
+        }
+    }
+
+    /// Move the boundary on `window`'s `dir` side by `delta`, as a fraction of
+    /// the split that owns it.
+    ///
+    /// The boundary is rarely in the window's own parent: in a grid every leaf
+    /// sits in a column, and the edge between the columns belongs to the split
+    /// above. So this climbs until it finds an ancestor that has a neighbour on
+    /// this axis, and moves the ratio between that whole subtree and the
+    /// neighbour — which is what the user sees as dragging one edge.
+    ///
+    /// Whatever the subtree gains its neighbour loses, which is what keeps the
+    /// ratios summing to 1.0 — the invariant [`Tree::layout`] relies on to tile
+    /// without a seam. A window against the edge of the layout in `dir`, or on
+    /// an axis nothing splits along, has no boundary to move: nothing happens.
+    pub fn resize(&mut self, window: WindowId, dir: Direction, delta: f32) {
+        let Some(mut node) = self.find(window) else {
+            return;
+        };
+        while let Some(parent) = self.parent(node) {
+            if self.split_layout(parent) == Some(dir.axis()) {
+                if let Some(here) = self.child_index(parent, node) {
+                    if self.move_boundary(parent, here, dir, delta) {
+                        return;
+                    }
+                }
+            }
+            node = parent;
+        }
+    }
+
     // ---- internals -------------------------------------------------------
+
+    /// Shift `delta` from the child on the `dir` side of child `here` onto
+    /// `here`, reporting whether there was a child on that side at all.
+    fn move_boundary(&mut self, split: NodeId, here: usize, dir: Direction, delta: f32) -> bool {
+        let Some(Node::Split {
+            children, ratios, ..
+        }) = self.nodes.get_mut(split.0).and_then(|n| n.as_mut())
+        else {
+            return false;
+        };
+        let Some(neighbour) = (match dir {
+            Direction::Left | Direction::Up => here.checked_sub(1),
+            Direction::Right | Direction::Down => (here + 1 < children.len()).then_some(here + 1),
+        }) else {
+            return false;
+        };
+        let (Some(&mine), Some(&theirs)) = (ratios.get(here), ratios.get(neighbour)) else {
+            return false;
+        };
+        // The pair's combined share is fixed, so there has to be room in it for
+        // two of them before either can be clamped against the other.
+        let total = mine + theirs;
+        if total < 2.0 * MIN_RATIO {
+            return true;
+        }
+        let grown = (mine + delta).clamp(MIN_RATIO, total - MIN_RATIO);
+        ratios[here] = grown;
+        ratios[neighbour] = total - grown;
+        true
+    }
+
+    /// The axis a split newly wrapping `id` should use. A [`Tree::split`] on a
+    /// parentless leaf had no split to record itself in and was held instead;
+    /// this is where it is spent, and it beats the caller's default.
+    fn take_pending_split(&mut self, id: NodeId, fallback: Layout) -> Layout {
+        let Some((window, layout)) = self.pending_split else {
+            return fallback;
+        };
+        if self.node(id) == Some(&Node::Leaf(window)) {
+            self.pending_split = None;
+            return layout;
+        }
+        fallback
+    }
 
     fn split_layout(&self, id: NodeId) -> Option<Layout> {
         match self.node(id) {
@@ -362,6 +540,10 @@ impl Tree {
     }
 }
 
+fn centre(r: Rect) -> (i32, i32) {
+    (r.x + r.w / 2, r.y + r.h / 2)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,6 +557,78 @@ mod tests {
 
     fn w(n: u32) -> WindowId {
         WindowId(n)
+    }
+
+    /// Root split horizontal, each half split vertical: w1 w2 across the top,
+    /// w3 w4 below them. The smallest tree in which a directional move has a
+    /// wrong answer available to pick.
+    fn grid() -> Tree {
+        let mut t = Tree::new();
+        t.insert(w(1), None, Layout::Horizontal);
+        t.insert(w(2), Some(w(1)), Layout::Horizontal);
+        t.insert(w(3), Some(w(1)), Layout::Vertical);
+        t.insert(w(4), Some(w(2)), Layout::Vertical);
+        t
+    }
+
+    fn rect_of(t: &Tree, window: WindowId) -> Rect {
+        t.layout(OUTPUT)
+            .into_iter()
+            .find(|(id, _)| *id == window)
+            .map(|(_, r)| r)
+            .unwrap_or_else(|| panic!("{window:?} has no rect"))
+    }
+
+    /// Every split divides all of itself among its children and no more.
+    /// [`Tree::layout`] divides by these numbers without renormalising, so a
+    /// sum that has drifted shows up on screen as a gap or an overlap.
+    fn assert_ratios_sum_to_one(t: &Tree) {
+        for node in t.nodes.iter().flatten() {
+            if let Node::Split {
+                children, ratios, ..
+            } = node
+            {
+                assert_eq!(ratios.len(), children.len(), "one ratio per child");
+                let sum: f32 = ratios.iter().sum();
+                assert!((sum - 1.0).abs() < 1e-4, "ratios sum to {sum}, not 1.0");
+            }
+        }
+    }
+
+    /// The laid-out rectangles cover `area` once over: they fit inside it, they
+    /// do not overlap, and their areas add up to all of it — so there is no
+    /// gap. Checked from the output of `layout` rather than from the tree, so
+    /// it does not restate how `layout` divides.
+    fn assert_tiles_exactly(rects: &[(WindowId, Rect)], area: Rect) {
+        let covered: i64 = rects.iter().map(|(_, r)| r.w as i64 * r.h as i64).sum();
+        assert_eq!(
+            covered,
+            area.w as i64 * area.h as i64,
+            "rects cover {covered} of {area:?}"
+        );
+        for (i, (id, a)) in rects.iter().enumerate() {
+            assert!(
+                a.x >= area.x
+                    && a.y >= area.y
+                    && a.x + a.w <= area.x + area.w
+                    && a.y + a.h <= area.y + area.h,
+                "{id:?} at {a:?} escapes {area:?}"
+            );
+            for (other, b) in rects.iter().skip(i + 1) {
+                let overlaps =
+                    a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
+                assert!(!overlaps, "{id:?} at {a:?} overlaps {other:?} at {b:?}");
+            }
+        }
+    }
+
+    fn assert_each_window_once(t: &Tree, expected: usize) {
+        let rects = t.layout(OUTPUT);
+        let mut ids: Vec<_> = rects.iter().map(|(id, _)| *id).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), expected, "each window appears exactly once");
+        assert_eq!(rects.len(), expected);
     }
 
     #[test]
@@ -591,5 +845,330 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), 6, "each window appears exactly once");
         assert_eq!(rects.len(), 6);
+    }
+
+    // ---- directional focus ----------------------------------------------
+
+    #[test]
+    fn focus_moves_to_the_window_drawn_on_that_side() {
+        let mut t = Tree::new();
+        t.insert(w(1), None, Layout::Horizontal);
+        t.insert(w(2), Some(w(1)), Layout::Horizontal);
+        assert_eq!(t.focus_target(w(1), Direction::Right, OUTPUT), Some(w(2)));
+        assert_eq!(t.focus_target(w(2), Direction::Left, OUTPUT), Some(w(1)));
+    }
+
+    #[test]
+    fn focus_at_the_edge_of_the_layout_has_nowhere_to_go() {
+        let mut t = Tree::new();
+        t.insert(w(1), None, Layout::Horizontal);
+        t.insert(w(2), Some(w(1)), Layout::Horizontal);
+        assert_eq!(t.focus_target(w(1), Direction::Left, OUTPUT), None);
+        assert_eq!(t.focus_target(w(2), Direction::Right, OUTPUT), None);
+        // Nothing is above or below either of them, so the other axis is edge
+        // in both directions too.
+        assert_eq!(t.focus_target(w(1), Direction::Up, OUTPUT), None);
+        assert_eq!(t.focus_target(w(1), Direction::Down, OUTPUT), None);
+    }
+
+    #[test]
+    fn focus_takes_the_neighbour_in_line_not_the_diagonal() {
+        // In the grid, "right" from the top-left has two windows to its right.
+        // Picking the nearer-in-line one is what makes h/j/k/l feel like moving
+        // a cursor rather than cycling.
+        let t = grid();
+        assert_eq!(t.focus_target(w(1), Direction::Right, OUTPUT), Some(w(2)));
+        assert_eq!(t.focus_target(w(1), Direction::Down, OUTPUT), Some(w(3)));
+        assert_eq!(t.focus_target(w(4), Direction::Left, OUTPUT), Some(w(3)));
+        assert_eq!(t.focus_target(w(4), Direction::Up, OUTPUT), Some(w(2)));
+    }
+
+    #[test]
+    fn focus_crosses_the_tree_when_the_screen_says_to() {
+        // w(3) and w(2) are in different branches — their nearest common
+        // ancestor is the root — but on screen w(2) is directly above the
+        // right-hand neighbour of w(3), and left/up must still find each other.
+        let t = grid();
+        assert_eq!(t.focus_target(w(3), Direction::Right, OUTPUT), Some(w(4)));
+        assert_eq!(t.focus_target(w(2), Direction::Left, OUTPUT), Some(w(1)));
+    }
+
+    #[test]
+    fn focus_from_an_unknown_window_is_none() {
+        let t = grid();
+        assert_eq!(t.focus_target(w(99), Direction::Left, OUTPUT), None);
+        assert_eq!(
+            Tree::new().focus_target(w(1), Direction::Left, OUTPUT),
+            None
+        );
+    }
+
+    // ---- split -----------------------------------------------------------
+
+    #[test]
+    fn splitting_changes_the_axis_of_the_containing_split() {
+        let mut t = Tree::new();
+        t.insert(w(1), None, Layout::Horizontal);
+        t.insert(w(2), Some(w(1)), Layout::Horizontal);
+        t.split(w(1), Layout::Vertical);
+        assert_eq!(
+            t.layout(OUTPUT),
+            vec![
+                (w(1), Rect::new(0, 0, 1000, 400)),
+                (w(2), Rect::new(0, 400, 1000, 400)),
+            ]
+        );
+        assert_ratios_sum_to_one(&t);
+        assert_tiles_exactly(&t.layout(OUTPUT), OUTPUT);
+    }
+
+    #[test]
+    fn splitting_the_only_window_steers_the_next_insert() {
+        // There is no split yet to change, so the request has to survive until
+        // the insert that creates one — otherwise the first window on a fresh
+        // workspace can never be split before a second one exists.
+        let mut t = Tree::new();
+        t.insert(w(1), None, Layout::Horizontal);
+        t.split(w(1), Layout::Vertical);
+        t.insert(w(2), Some(w(1)), Layout::Horizontal);
+        assert_eq!(
+            t.layout(OUTPUT),
+            vec![
+                (w(1), Rect::new(0, 0, 1000, 400)),
+                (w(2), Rect::new(0, 400, 1000, 400)),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_held_split_is_spent_once() {
+        // The third window must land on the axis the caller asked for, not on
+        // the one a `split` two inserts ago wanted.
+        let mut t = Tree::new();
+        t.insert(w(1), None, Layout::Horizontal);
+        t.split(w(1), Layout::Vertical);
+        t.insert(w(2), Some(w(1)), Layout::Horizontal);
+        t.insert(w(3), Some(w(2)), Layout::Horizontal);
+        assert_eq!(
+            t.layout(OUTPUT),
+            vec![
+                (w(1), Rect::new(0, 0, 1000, 400)),
+                (w(2), Rect::new(0, 400, 500, 400)),
+                (w(3), Rect::new(500, 400, 500, 400)),
+            ]
+        );
+    }
+
+    #[test]
+    fn splitting_an_unknown_window_changes_nothing() {
+        let mut t = Tree::new();
+        t.insert(w(1), None, Layout::Horizontal);
+        t.split(w(99), Layout::Vertical);
+        t.insert(w(2), Some(w(1)), Layout::Horizontal);
+        assert_eq!(
+            t.layout(OUTPUT),
+            vec![
+                (w(1), Rect::new(0, 0, 500, 800)),
+                (w(2), Rect::new(500, 0, 500, 800)),
+            ]
+        );
+    }
+
+    // ---- swap ------------------------------------------------------------
+
+    #[test]
+    fn swapping_exchanges_two_windows_rectangles() {
+        let t0 = grid();
+        let (before1, before4) = (rect_of(&t0, w(1)), rect_of(&t0, w(4)));
+        let mut t = grid();
+        t.swap(w(1), w(4));
+        assert_eq!(rect_of(&t, w(4)), before1);
+        assert_eq!(rect_of(&t, w(1)), before4);
+    }
+
+    #[test]
+    fn swapping_leaves_the_tree_tiling_exactly() {
+        // Only the leaves' contents move, so the shape of the tree — and with
+        // it every ratio and every rectangle — has to come out identical.
+        let before = grid().layout(OUTPUT);
+        let mut t = grid();
+        t.swap(w(2), w(3));
+        assert_ratios_sum_to_one(&t);
+        assert_each_window_once(&t, 4);
+        assert_tiles_exactly(&t.layout(OUTPUT), OUTPUT);
+        let after = t.layout(OUTPUT);
+        let rects_before: Vec<_> = before.iter().map(|(_, r)| *r).collect();
+        let rects_after: Vec<_> = after.iter().map(|(_, r)| *r).collect();
+        assert_eq!(rects_after, rects_before, "the rectangles themselves stay");
+    }
+
+    #[test]
+    fn swapping_with_an_unknown_window_changes_nothing() {
+        let mut t = grid();
+        let before = t.layout(OUTPUT);
+        t.swap(w(1), w(99));
+        t.swap(w(99), w(1));
+        assert_eq!(t.layout(OUTPUT), before);
+    }
+
+    #[test]
+    fn swapping_a_window_with_itself_changes_nothing() {
+        let mut t = grid();
+        let before = t.layout(OUTPUT);
+        t.swap(w(2), w(2));
+        assert_eq!(t.layout(OUTPUT), before);
+    }
+
+    // ---- resize ----------------------------------------------------------
+
+    #[test]
+    fn resizing_moves_the_boundary_between_two_neighbours() {
+        let mut t = Tree::new();
+        t.insert(w(1), None, Layout::Horizontal);
+        t.insert(w(2), Some(w(1)), Layout::Horizontal);
+        t.resize(w(1), Direction::Right, 0.1);
+        assert_eq!(
+            t.layout(OUTPUT),
+            vec![
+                (w(1), Rect::new(0, 0, 600, 800)),
+                (w(2), Rect::new(600, 0, 400, 800)),
+            ]
+        );
+    }
+
+    #[test]
+    fn resizing_the_far_side_of_a_pair_moves_the_same_boundary() {
+        // Growing w(2) leftwards and growing w(1) rightwards are the same edge
+        // seen from either end.
+        let mut t = Tree::new();
+        t.insert(w(1), None, Layout::Horizontal);
+        t.insert(w(2), Some(w(1)), Layout::Horizontal);
+        t.resize(w(2), Direction::Left, 0.1);
+        assert_eq!(
+            t.layout(OUTPUT),
+            vec![
+                (w(1), Rect::new(0, 0, 400, 800)),
+                (w(2), Rect::new(400, 0, 600, 800)),
+            ]
+        );
+    }
+
+    #[test]
+    fn resizing_at_the_edge_of_the_layout_does_nothing() {
+        let mut t = Tree::new();
+        t.insert(w(1), None, Layout::Horizontal);
+        t.insert(w(2), Some(w(1)), Layout::Horizontal);
+        let before = t.layout(OUTPUT);
+        t.resize(w(1), Direction::Left, 0.1);
+        t.resize(w(2), Direction::Right, 0.1);
+        assert_eq!(t.layout(OUTPUT), before);
+    }
+
+    #[test]
+    fn resizing_across_the_axis_of_the_split_does_nothing() {
+        // Nothing in this tree splits vertically, so there is no horizontal
+        // boundary anywhere to move up or down.
+        let mut t = Tree::new();
+        t.insert(w(1), None, Layout::Horizontal);
+        t.insert(w(2), Some(w(1)), Layout::Horizontal);
+        let before = t.layout(OUTPUT);
+        t.resize(w(1), Direction::Down, 0.2);
+        t.resize(w(1), Direction::Up, 0.2);
+        assert_eq!(t.layout(OUTPUT), before);
+    }
+
+    #[test]
+    fn resizing_moves_the_column_edge_a_leaf_does_not_own() {
+        // Every leaf in the grid sits in a vertical column, so the edge between
+        // the columns belongs to the root, two levels up. Stopping at the leaf's
+        // own parent would make a horizontal resize impossible in a grid — the
+        // most ordinary layout there is.
+        let mut t = grid();
+        t.resize(w(1), Direction::Right, 0.1);
+        assert_eq!(rect_of(&t, w(1)), Rect::new(0, 0, 600, 400));
+        assert_eq!(rect_of(&t, w(3)), Rect::new(0, 400, 600, 400));
+        assert_eq!(rect_of(&t, w(2)), Rect::new(600, 0, 400, 400));
+        assert_eq!(rect_of(&t, w(4)), Rect::new(600, 400, 400, 400));
+        assert_ratios_sum_to_one(&t);
+        assert_tiles_exactly(&t.layout(OUTPUT), OUTPUT);
+    }
+
+    #[test]
+    fn resizing_past_the_outermost_split_does_nothing() {
+        // w(2) is in the right-hand column, so climbing for a right-hand
+        // boundary runs out of ancestors: it is against the edge of the output.
+        let mut t = grid();
+        let before = t.layout(OUTPUT);
+        t.resize(w(2), Direction::Right, 0.1);
+        t.resize(w(1), Direction::Left, 0.1);
+        assert_eq!(t.layout(OUTPUT), before);
+    }
+
+    #[test]
+    fn a_resize_cannot_squeeze_a_neighbour_out_of_existence() {
+        let mut t = Tree::new();
+        t.insert(w(1), None, Layout::Horizontal);
+        t.insert(w(2), Some(w(1)), Layout::Horizontal);
+        t.resize(w(1), Direction::Right, 10.0);
+        assert_eq!(rect_of(&t, w(2)), Rect::new(950, 0, 50, 800));
+        t.resize(w(1), Direction::Right, -10.0);
+        assert_eq!(rect_of(&t, w(1)), Rect::new(0, 0, 50, 800));
+        assert_ratios_sum_to_one(&t);
+    }
+
+    #[test]
+    fn a_resize_only_moves_the_one_boundary() {
+        // Three in a row: growing the middle one rightwards must come out of
+        // the right-hand window alone. Renormalising the whole split instead
+        // would shuffle the left-hand window that nobody touched.
+        let mut t = Tree::new();
+        t.insert(w(1), None, Layout::Horizontal);
+        t.insert(w(2), Some(w(1)), Layout::Horizontal);
+        t.insert(w(3), Some(w(2)), Layout::Horizontal);
+        let before = rect_of(&t, w(1));
+        t.resize(w(2), Direction::Right, 0.1);
+        assert_eq!(rect_of(&t, w(1)), before);
+        assert!(rect_of(&t, w(2)).w > rect_of(&t, w(3)).w);
+    }
+
+    #[test]
+    fn ratios_still_sum_to_one_after_a_resize() {
+        let mut t = grid();
+        t.resize(w(1), Direction::Right, 0.15);
+        t.resize(w(1), Direction::Down, -0.2);
+        t.resize(w(4), Direction::Up, 0.3);
+        t.resize(w(3), Direction::Right, -0.4);
+        assert_ratios_sum_to_one(&t);
+    }
+
+    #[test]
+    fn children_still_tile_their_parent_exactly_after_a_resize() {
+        // The property that survives arithmetic: whatever the ratios end up
+        // being, the rectangles still cover the output once each.
+        for width in [999, 1000, 1001, 1003, 7] {
+            let area = Rect::new(0, 0, width, 801);
+            let mut t = grid();
+            t.resize(w(1), Direction::Right, 0.17);
+            t.resize(w(3), Direction::Up, 0.23);
+            t.resize(w(2), Direction::Down, -0.11);
+            assert_each_window_once(&t, 4);
+            assert_tiles_exactly(&t.layout(area), area);
+        }
+    }
+
+    #[test]
+    fn resizing_an_unknown_window_changes_nothing() {
+        let mut t = grid();
+        let before = t.layout(OUTPUT);
+        t.resize(w(99), Direction::Right, 0.2);
+        assert_eq!(t.layout(OUTPUT), before);
+    }
+
+    #[test]
+    fn resizing_the_only_window_changes_nothing() {
+        let mut t = Tree::new();
+        t.insert(w(1), None, Layout::Horizontal);
+        t.resize(w(1), Direction::Right, 0.2);
+        assert_eq!(t.layout(OUTPUT), vec![(w(1), OUTPUT)]);
     }
 }

@@ -10,5 +10,5 @@ pub mod tree;
 pub mod window;
 
 pub use state::{next_workspace, ShellState, WORKSPACE_COUNT};
-pub use tree::{Layout, Node, NodeId, Rect, Tree};
+pub use tree::{Direction, Layout, Node, NodeId, Rect, Tree};
 pub use window::{ClientWindow, WindowId};
