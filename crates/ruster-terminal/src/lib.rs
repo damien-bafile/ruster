@@ -279,6 +279,38 @@ impl TerminalSession {
             cursor,
         }
     }
+
+    /// Every retained line — scrollback history followed by the visible screen —
+    /// as plain text, with the row the cursor sits on.
+    ///
+    /// [`Self::snapshot`] deliberately returns only the viewport, because that
+    /// is what the renderer draws. Terminal-Normal wants the other thing: the
+    /// grid keeps `terminal.scrollback` lines of history and nothing could
+    /// reach them, so the setting promised a scrollback the editor could not
+    /// show and output that scrolled off was gone for good.
+    ///
+    /// History lines are addressed with negative indices, `topmost_line()`
+    /// being `-history_size`.
+    pub fn scrollback_text(&self) -> (Vec<String>, usize) {
+        let Ok(term) = self.term.lock() else {
+            return (Vec::new(), 0);
+        };
+        let grid = term.grid();
+        let cols = grid.columns();
+        let top = grid.topmost_line().0;
+        let bottom = grid.bottommost_line().0;
+
+        let mut lines = Vec::with_capacity((bottom - top + 1).max(0) as usize);
+        for l in top..=bottom {
+            let row = &grid[Line(l)];
+            let text: String = (0..cols).map(|c| row[Column(c)].c).collect();
+            lines.push(text.trim_end().to_string());
+        }
+        // Rebase the cursor from grid coordinates (where 0 is the first visible
+        // row) onto the returned vector (where 0 is the oldest history line).
+        let cursor = (grid.cursor.point.line.0 - top).max(0) as usize;
+        (lines, cursor)
+    }
 }
 
 impl Drop for TerminalSession {
@@ -401,6 +433,86 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         grid
+    }
+
+    /// Output that has scrolled past the top of the screen must still be
+    /// reachable. The grid keeps `scrollback` lines of it; before
+    /// `scrollback_text` nothing could read them, so the setting promised a
+    /// history the editor had no way to show.
+    #[cfg(not(windows))]
+    #[test]
+    fn scrollback_reaches_output_that_has_scrolled_off_the_screen() {
+        // 200 lines through a 6-row window: all but the last few have scrolled.
+        let session = TerminalSession::spawn(
+            "sh",
+            &["-c".to_string(), "seq 1 200".to_string()],
+            40,
+            6,
+            1000,
+        )
+        .expect("spawn");
+
+        let mut lines = Vec::new();
+        for _ in 0..300 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            lines = session.scrollback_text().0;
+            if lines.iter().any(|l| l.trim() == "200") {
+                break;
+            }
+        }
+
+        let visible = session.snapshot();
+        assert!(
+            (0..visible.rows).all(|r| visible.row_text(r).trim() != "1"),
+            "line 1 should have scrolled off the 6-row screen"
+        );
+        assert!(
+            lines.iter().any(|l| l.trim() == "1"),
+            "but scrollback should still hold it; got {} lines",
+            lines.len()
+        );
+        assert!(
+            lines.iter().any(|l| l.trim() == "200"),
+            "and the newest line too"
+        );
+        assert!(
+            lines.len() > visible.rows,
+            "scrollback ({}) must exceed the {} visible rows",
+            lines.len(),
+            visible.rows
+        );
+    }
+
+    /// The cursor is reported in the returned vector's coordinates, not the
+    /// grid's — history lines are addressed negatively, so a raw grid row index
+    /// would point at the wrong line as soon as anything scrolled.
+    #[cfg(not(windows))]
+    #[test]
+    fn the_scrollback_cursor_is_rebased_onto_the_returned_lines() {
+        let session = TerminalSession::spawn(
+            "sh",
+            &["-c".to_string(), "seq 1 50".to_string()],
+            40,
+            6,
+            1000,
+        )
+        .expect("spawn");
+        for _ in 0..300 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            if session.scrollback_text().0.iter().any(|l| l.trim() == "50") {
+                break;
+            }
+        }
+        let (lines, cursor) = session.scrollback_text();
+        assert!(
+            cursor < lines.len(),
+            "cursor {cursor} is inside {} lines",
+            lines.len()
+        );
+        assert!(
+            cursor + 6 >= lines.len(),
+            "the cursor belongs on the visible screen, near the end of the history"
+        );
     }
 
     #[test]

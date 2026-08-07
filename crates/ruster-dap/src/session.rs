@@ -51,10 +51,19 @@ pub struct DebugSession {
     pub threads: HashMap<u64, Thread>,
     pub stack_frames: Vec<StackFrame>,
     pub scopes: Vec<Scope>,
-    pub variable_cache: HashMap<u64, Variable>,
+    /// Variables by the `variablesReference` they were fetched for. A scope's
+    /// reference names a whole list, not one variable.
+    pub variable_cache: HashMap<u64, Vec<Variable>>,
     pub stopped_thread: Option<u64>,
     pub variables: Vec<(String, Vec<(String, String)>)>,
     next_seq: i64,
+    /// `configurationDone` is sent once per session, whichever path gets there
+    /// first — see [`DebugSession::send_configuration_done`].
+    configuration_done: bool,
+    /// Request seq → the `variablesReference` it asked about. A `variables`
+    /// response carries no hint of which reference it answers, so the only way
+    /// to file it correctly is to remember what we asked.
+    pending_variables: HashMap<i64, u64>,
 }
 
 impl DebugSession {
@@ -71,6 +80,8 @@ impl DebugSession {
             stopped_thread: None,
             variables: Vec::new(),
             next_seq: 1,
+            configuration_done: false,
+            pending_variables: HashMap::new(),
         })
     }
 
@@ -94,7 +105,7 @@ impl DebugSession {
             let bps: Vec<SourceBreakpoint> = lines_usize
                 .iter()
                 .map(|&line| SourceBreakpoint {
-                    line: line as i64,
+                    line: to_dap_line(line),
                     column: None,
                     condition: None,
                     hit_condition: None,
@@ -157,6 +168,31 @@ impl DebugSession {
         Ok(())
     }
 
+    /// Tell the adapter configuration is finished and it may run the program.
+    ///
+    /// Not optional: an adapter that reports `supportsConfigurationDoneRequest`
+    /// holds the reply to `launch` until this arrives, so without it the target
+    /// is never started, never hits a breakpoint, and the UI sits on RUNNING
+    /// with no frames for as long as you care to wait.
+    ///
+    /// Sent eagerly, once the breakpoints are in, rather than in reply to the
+    /// `initialized` event — lldb-dap does not emit that event until *after*
+    /// this request, so waiting for it deadlocks the handshake. Adapters that
+    /// do emit it early are covered by the call in `handle_event`, and this is
+    /// idempotent so whichever arrives first is the one that counts.
+    pub fn send_configuration_done(&mut self) -> Result<()> {
+        if self.configuration_done {
+            return Ok(());
+        }
+        let req = Request {
+            seq: self.next_seq(),
+            command: Command::ConfigurationDone,
+        };
+        self.client.send_request(req)?;
+        self.configuration_done = true;
+        Ok(())
+    }
+
     pub fn set_breakpoints(&mut self, path: PathBuf, lines: &[usize]) -> Result<()> {
         let src = Source {
             name: Some(
@@ -173,7 +209,7 @@ impl DebugSession {
             .map(|&line| {
                 self.breakpoints.retain(|(p, _), _| p != &path);
                 SourceBreakpoint {
-                    line: line as i64,
+                    line: to_dap_line(line),
                     column: None,
                     condition: None,
                     hit_condition: None,
@@ -318,8 +354,10 @@ impl DebugSession {
             count: None,
             format: None,
         };
+        let seq = self.next_seq();
+        self.pending_variables.insert(seq, var_ref);
         let req = Request {
-            seq: self.next_seq(),
+            seq,
             command: Command::Variables(args),
         };
         self.client.send_request(req)?;
@@ -382,7 +420,29 @@ impl DebugSession {
         events
     }
 
-    fn handle_response(&mut self, _rsp: dap::responses::Response) {}
+    /// File a response into the state the UI reads.
+    ///
+    /// This used to be empty, so every reply the adapter sent was dropped on
+    /// the floor: the session stopped at a breakpoint, asked for the stack,
+    /// got it, and still rendered "(no frames)" because nothing ever stored
+    /// the answer.
+    fn handle_response(&mut self, rsp: dap::responses::Response) {
+        use dap::responses::ResponseBody;
+        let Some(body) = rsp.body else { return };
+        match body {
+            ResponseBody::StackTrace(b) => self.stack_frames = b.stack_frames,
+            ResponseBody::Scopes(b) => self.scopes = b.scopes,
+            ResponseBody::Variables(b) => {
+                if let Some(reference) = self.pending_variables.remove(&rsp.request_seq) {
+                    self.variable_cache.insert(reference, b.variables);
+                }
+            }
+            ResponseBody::Threads(b) => {
+                self.threads = b.threads.into_iter().map(|t| (t.id as u64, t)).collect();
+            }
+            _ => {}
+        }
+    }
 
     fn handle_event(&mut self, evt: dap::events::Event) -> Option<DapEvent> {
         use dap::events::Event;
@@ -459,9 +519,25 @@ impl DebugSession {
                 let pid = body.system_process_id.unwrap_or(0) as u64;
                 Some(DapEvent::Process { name, pid })
             }
+            // The adapter has finished initialising and is waiting to be told
+            // configuration is complete. This is the handshake step that
+            // actually starts the program; it is not surfaced to the UI.
+            Event::Initialized => {
+                self.send_configuration_done().ok();
+                None
+            }
             _ => None,
         }
     }
+}
+
+/// An editor row (0-based) as a DAP line number.
+///
+/// `initialize` advertises `linesStartAt1`, so the adapter reads what we send
+/// as 1-based. Passing the row straight through set every breakpoint one line
+/// above the one the user clicked.
+fn to_dap_line(row: usize) -> i64 {
+    row as i64 + 1
 }
 
 /// A DAP module id as a number.

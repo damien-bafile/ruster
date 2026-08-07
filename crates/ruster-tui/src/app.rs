@@ -116,6 +116,46 @@ fn highlight_code_block(code: &str, lang: &str) -> Vec<StyledLine> {
     }
 }
 
+/// The widest a hover box gets, regardless of how much room there is. Past
+/// roughly this measure prose stops being comfortable to read.
+const HOVER_MAX_COLS: u16 = 80;
+/// The tallest, as a fraction of the window — a hover that covers the code it
+/// describes is worse than one that is cut short.
+const HOVER_MAX_ROWS_FRACTION: f32 = 0.6;
+
+/// Fit hover content into a box that leaves the buffer visible.
+///
+/// A float is sized from its content and its lines are drawn as-is, so an
+/// unclamped hover for something like `String` — hundreds of lines of rustdoc,
+/// many of them long — filled the entire window and ran off the right edge,
+/// where the TUI clipped it and the GUI drew past the border. Wrapping first
+/// means long prose stays readable instead of being silently cut.
+fn clamp_hover_lines(lines: &[StyledLine], cols: u16, rows: u16) -> Vec<StyledLine> {
+    const BORDER: u16 = 2;
+    let width = HOVER_MAX_COLS.min(cols).saturating_sub(BORDER).max(1) as usize;
+    let max_rows = (((rows as f32) * HOVER_MAX_ROWS_FRACTION) as u16)
+        .min(rows.saturating_sub(BORDER))
+        .max(1) as usize;
+
+    let mut out: Vec<StyledLine> = Vec::new();
+    for line in lines {
+        for piece in line.wrap(width) {
+            if out.len() == max_rows {
+                // Replace the last line rather than growing past the cap, so
+                // the box never reports more rows than it may occupy.
+                let marker = StyledLine {
+                    text: "…".to_string(),
+                    highlights: vec![],
+                };
+                *out.last_mut().expect("max_rows >= 1") = marker;
+                return out;
+            }
+            out.push(piece);
+        }
+    }
+    out
+}
+
 /// Render LSP hover markdown into styled lines: fenced code blocks are
 /// tree-sitter highlighted, prose is shown plain (with fences/separators removed).
 fn build_hover_lines(markdown: &str) -> Vec<StyledLine> {
@@ -236,6 +276,7 @@ fn resolve_theme_colors(
     set(&ov.accent_fg, &mut colors.accent_fg);
     set(&ov.whichkey_bg, &mut colors.whichkey_bg);
     set(&ov.whichkey_fg, &mut colors.whichkey_fg);
+    set(&ov.whichkey_key, &mut colors.whichkey_key);
     set(&ov.cmdline_bg, &mut colors.cmdline_bg);
     set(&ov.cmdline_fg, &mut colors.cmdline_fg);
     set(&ov.mode_normal_bg, &mut colors.mode_normal_bg);
@@ -493,6 +534,60 @@ fn plain_lines(content: &str) -> Vec<StyledLine> {
 
 /// Map a crossterm key event onto a terminal `Key`/`Mods` for PTY encoding.
 /// Returns `None` for keys with no terminal representation.
+/// Whether a stack frame's `path:line` belongs to the language runtime or a
+/// dependency rather than to code the user is debugging.
+///
+/// Matched on the source path, because that is the one thing every adapter
+/// reports and it does not depend on demangled symbol shapes. A frame with no
+/// source at all (`?`) is runtime too: the user cannot open it.
+fn is_runtime_frame(loc: &str) -> bool {
+    if loc.starts_with("?:") || loc == "?" {
+        return true;
+    }
+    const RUNTIME: &[&str] = &[
+        "/rustc/",           // std shipped with the toolchain
+        "/.rustup/",         // a locally unpacked rust-src
+        "/.cargo/registry/", // dependencies
+        "/library/std/",
+        "/library/core/",
+        "/library/alloc/",
+        "/usr/lib/", // the dynamic loader — `dyld`start` is not the user's
+    ];
+    RUNTIME.iter().any(|m| loc.contains(m))
+}
+
+/// Whether `ck` is the key that leaves Terminal-Insert, per `terminal.escape`.
+///
+/// The `Ctrl-\` case is why this is a function rather than a `matches!`. A
+/// terminal in the legacy encoding sends `Ctrl-\` as the single byte `0x1C`,
+/// and crossterm decodes `0x1C..=0x1F` as `Ctrl-4`..`Ctrl-7`
+/// (`crossterm/src/event/sys/unix/parse.rs`) — so the event that arrives is
+/// `Char('4') + CONTROL` and a test for `Char('\\')` can never match. The two
+/// are the same byte on the wire and cannot be told apart, so both are
+/// accepted. Nothing here requests the kitty keyboard protocol, which is the
+/// only thing that would distinguish them.
+///
+/// This was not a theoretical gap: it made the embedded terminal a one-way
+/// door in both backends, while two unit tests asserted the escape worked by
+/// synthesising a `KeyEvent` neither backend can produce.
+fn is_terminal_escape(ck: crossterm::event::KeyEvent, escape: &str) -> bool {
+    let Some(want) = ruster_lua::parse_lua_key(escape) else {
+        return false;
+    };
+    let ctrl = ck.modifiers.contains(KeyModifiers::CONTROL);
+    match want {
+        ruster_lua::LuaKey::Ctrl('\\') => {
+            ctrl && matches!(ck.code, KeyCode::Char('\\') | KeyCode::Char('4'))
+        }
+        ruster_lua::LuaKey::Ctrl(c) => {
+            ctrl && matches!(ck.code, KeyCode::Char(got) if got.eq_ignore_ascii_case(&c))
+        }
+        ruster_lua::LuaKey::Esc => ck.code == KeyCode::Esc,
+        ruster_lua::LuaKey::Char(c) => !ctrl && matches!(ck.code, KeyCode::Char(got) if got == c),
+        other => ruster_lua::keymap::lua_key_to_crossterm(&other).code == ck.code,
+    }
+}
+
 fn term_key_from_crossterm(ck: crossterm::event::KeyEvent) -> Option<(TKey, TMods)> {
     let m = ck.modifiers;
     let mods = TMods {
@@ -720,6 +815,8 @@ enum CmdAction {
     NoicePanel,
     /// Open the Noice split history buffer (`:Noice split` / `:Noice history`).
     NoiceSplit,
+    /// Queue a popup notification (`:Noice popup`).
+    NoicePopup,
     /// Open a file by path (`:e path` / `:edit path`).
     OpenFile(String),
     /// Debug actions.
@@ -1244,7 +1341,7 @@ fn leader_children(seq: &[char]) -> Option<&'static [(char, LeaderNode)]> {
 
 /// Build the which-key content (title, formatted rows) for the current pending
 /// leader sequence, for the bottom sliding panel.
-fn leader_whichkey(seq: &[char]) -> Option<(String, Vec<String>)> {
+fn leader_whichkey(seq: &[char]) -> Option<(String, Vec<ruster_render::WhichKeyEntry>)> {
     let children = leader_children(seq)?;
     let mut title = String::from("SPC");
     for c in seq {
@@ -1258,23 +1355,30 @@ fn leader_whichkey(seq: &[char]) -> Option<(String, Vec<String>)> {
                 LeaderNode::Group(d, _) => format!("+{}", d),
                 LeaderNode::Action(d, _) => d.to_string(),
             };
-            format!("{}  {}", k, desc)
+            ruster_render::WhichKeyEntry {
+                key: k.to_string(),
+                desc,
+            }
         })
         .collect();
     Some((title, rows))
 }
 
 /// The which-key content for the `g` menu (LazyVim-style goto prefix).
-fn g_whichkey() -> (String, Vec<String>) {
+fn g_whichkey() -> (String, Vec<ruster_render::WhichKeyEntry>) {
+    let e = |key: &str, desc: &str| ruster_render::WhichKeyEntry {
+        key: key.to_string(),
+        desc: desc.to_string(),
+    };
     (
         "g".to_string(),
         vec![
-            "d  go to definition".to_string(),
-            "r  references".to_string(),
-            "h  hover".to_string(),
-            "g  top of buffer".to_string(),
-            "-  older change (undo-tree time)".to_string(),
-            "+  newer change (undo-tree time)".to_string(),
+            e("d", "go to definition"),
+            e("r", "references"),
+            e("h", "hover"),
+            e("g", "top of buffer"),
+            e("-", "older change (undo-tree time)"),
+            e("+", "newer change (undo-tree time)"),
         ],
     )
 }
@@ -1367,7 +1471,7 @@ pub struct App {
     /// Slide progress (0..1) of the bottom which-key panel, and the last content
     /// shown (kept while it slides back down). `anim_clock` measures frame dt.
     whichkey_anim: f32,
-    whichkey_cache: Option<(String, Vec<String>)>,
+    whichkey_cache: Option<(String, Vec<ruster_render::WhichKeyEntry>)>,
     anim_clock: std::time::Instant,
     /// When the current leader sequence started, so the which-key panel only
     /// pops after `Config.timeoutlen` (unless already visible).
@@ -1999,6 +2103,7 @@ impl App {
                 accent_fg: col(c.colors.accent_fg),
                 whichkey_bg: col(c.colors.whichkey_bg),
                 whichkey_fg: col(c.colors.whichkey_fg),
+                whichkey_key: col(c.colors.whichkey_key),
                 cmdline_bg: col(c.colors.cmdline_bg),
                 cmdline_fg: col(c.colors.cmdline_fg),
             },
@@ -2034,6 +2139,7 @@ impl App {
             accent_fg: col(c.colors.accent_fg),
             whichkey_bg: col(c.colors.whichkey_bg),
             whichkey_fg: col(c.colors.whichkey_fg),
+            whichkey_key: col(c.colors.whichkey_key),
             cmdline_bg: col(c.colors.cmdline_bg),
             cmdline_fg: col(c.colors.cmdline_fg),
         }
@@ -2128,16 +2234,32 @@ impl App {
         }
 
         // A focused embedded terminal forwards keys to its PTY. When unfocused,
-        // `i`/`a`/Enter re-enter it; anything else falls through to normal
-        // handling so window nav and `:` commands still work.
+        // `i`/`a`/`I`/`A`/Enter re-enter it; anything else falls through to
+        // normal handling so window nav and `:` commands still work.
+        //
+        // `is_normal_idle` is load-bearing, not defensive. Without it this
+        // check fires on any `i` the user types *anywhere* that is not already
+        // handled above — and the cmdline is not, because it is reached later
+        // in this function. Typing `:echo hi` in Terminal-Normal re-focused the
+        // terminal on the `i` of "hi" and sent `-from-cmdline` to the shell,
+        // which then reported `command not found`. `f`, `r` and a pending
+        // operator have the same shape: all leave the mode `Normal` while
+        // waiting for a character that may well be `i`.
         if let Some(bid) = self.active_terminal_buffer() {
             if self.terminal_focused {
                 self.handle_terminal_key(ck, bid);
                 return;
-            } else if matches!(
-                ck.code,
-                KeyCode::Char('i') | KeyCode::Char('a') | KeyCode::Enter
-            ) {
+            } else if self.vim.is_normal_idle()
+                && self.flash.is_none()
+                && matches!(
+                    ck.code,
+                    KeyCode::Char('i' | 'a' | 'I' | 'A') | KeyCode::Enter
+                )
+                && !ck.modifiers.contains(KeyModifiers::CONTROL)
+            {
+                // `I`/`A` alongside `i`/`a`: over a terminal mirror they all
+                // mean the same thing — hand the keyboard back to the shell —
+                // and a vim user reaches for whichever is in muscle memory.
                 self.terminal_focused = true;
                 return;
             }
@@ -3057,6 +3179,7 @@ impl App {
                 self.config.cursor_anim_speed,
             );
 
+            self.refresh_terminal_mirror();
             self.sync_diff_scroll();
             self.render();
             if self.should_quit {
@@ -3281,6 +3404,7 @@ impl App {
                 self.config.cursor_anim_enabled,
                 self.config.cursor_anim_speed,
             );
+            self.refresh_terminal_mirror();
             self.sync_diff_scroll();
             self.render();
             // Reported here rather than at the command, so the message reflects
@@ -3524,7 +3648,6 @@ impl App {
         if !self.config.lsp_autostart {
             return;
         }
-        let root = crate::lsp_state::LspState::<LspAction>::root();
         // Register / update the active buffer if it's a supported file.
         let active = self.ws.borrow().active_buffer();
         let info = {
@@ -3540,6 +3663,8 @@ impl App {
             })
         };
         if let Some((path, lang, text)) = info {
+            // Derived from the file, not the cwd: see `root_for`.
+            let root = crate::lsp_state::LspState::<LspAction>::root_for(&path);
             self.lsp.sync(active, &path, &lang, &text, &root);
         }
         // Drain and dispatch server messages.
@@ -3567,7 +3692,7 @@ impl App {
                     }
                 }
                 ServerMessage::Response { id, result, .. } => {
-                    if let Some(action) = self.lsp.take_pending(&routed.lang, id) {
+                    if let Some(action) = self.lsp.take_pending(&routed.key, id) {
                         self.handle_lsp_response(action, result);
                     }
                 }
@@ -3659,8 +3784,11 @@ impl App {
         })
     }
 
-    /// The active buffer's (lang, uri, cursor position) for an LSP request.
-    fn active_lsp_target(&self) -> Option<(String, String, LspPosition)> {
+    /// The active buffer's (server, uri, cursor position) for an LSP request.
+    ///
+    /// The server comes from the document rather than being re-derived, so a
+    /// request always goes to the process that was told about this file.
+    fn active_lsp_target(&self) -> Option<(ruster_lsp::ServerKey, String, LspPosition)> {
         let active = self.ws.borrow().active_buffer();
         let doc = self.lsp.doc(active)?;
         let (content, head) = {
@@ -3669,14 +3797,14 @@ impl App {
             (d.buffer.to_string(), w.primary_head())
         };
         let pos = ruster_lsp::offset_to_position(&content, head);
-        Some((doc.lang.clone(), doc.uri.clone(), pos))
+        Some((doc.key.clone(), doc.uri.clone(), pos))
     }
 
     /// Send an LSP request built from the active position and record its action.
     /// Returns whether the request was actually sent.
     fn lsp_request(&mut self, method: &str, params: serde_json::Value, action: LspAction) -> bool {
-        let lang = match self.active_lsp_target() {
-            Some((lang, _, _)) => lang,
+        let key = match self.active_lsp_target() {
+            Some((key, _, _)) => key,
             None => {
                 self.notify.push(Notification::new(
                     ruster_core::message::MessageLevel::Warning,
@@ -3686,7 +3814,7 @@ impl App {
                 return false;
             }
         };
-        if self.lsp.request(&lang, method, params, action) {
+        if self.lsp.request(&key, method, params, action) {
             true
         } else {
             self.notify.push(Notification::new(
@@ -4589,10 +4717,14 @@ impl App {
                 floats.push(ruster_render::FloatView::anchored(
                     RRect::new(0, 0, cols, rows),
                     ruster_render::FloatAnchor::Edge(ruster_render::FloatEdge::Top),
-                    lines.clone(),
+                    clamp_hover_lines(lines, cols, rows),
                 ));
             }
         }
+        // Notification popups float above the window views, one box per active
+        // notification. `CmdlinePopup` and `Popup` differ only in duration; a
+        // `Confirm` raises the modal dialog instead of drawing a float.
+        floats.extend(self.notification_floats(cols, rows));
         let state = FrameState {
             dialog: self.dialog.as_ref().map(|d| d.view()),
             floats,
@@ -4608,6 +4740,59 @@ impl App {
             debug_overlay: self.build_debug_overlay(),
         };
         self.renderer.render_frame(&state);
+    }
+
+    /// Build the floats raised by active popup notifications. `CmdlinePopup`
+    /// and `Popup` differ only in duration, so both render the same way: a
+    /// titled box centred on the window. A queued `Confirm` is handled here
+    /// too — it becomes the modal dialog, the same surface a plugin's `:dialog`
+    /// raises, so it draws last above every float.
+    fn notification_floats(&mut self, cols: u16, rows: u16) -> Vec<ruster_render::FloatView> {
+        let mut floats = Vec::new();
+        for (i, n) in self
+            .notify
+            .active(BackendKind::CmdlinePopup)
+            .into_iter()
+            .chain(self.notify.active(BackendKind::Popup))
+            .enumerate()
+        {
+            let style = match n.level {
+                ruster_core::message::MessageLevel::Error => SyntaxStyle::error(),
+                ruster_core::message::MessageLevel::Warning => SyntaxStyle::warning(),
+                _ => SyntaxStyle::info(),
+            };
+            let text = n.text.clone();
+            let len = text.len();
+            floats.push(
+                ruster_render::FloatView::anchored_titled(
+                    RRect::new(0, 0, cols, rows),
+                    ruster_render::FloatAnchor::Center,
+                    vec![StyledLine {
+                        text,
+                        highlights: vec![(0, len, style)],
+                    }],
+                    n.title.clone().or_else(|| Some("ruster".into())),
+                )
+                .with_z(5 + i as i32),
+            );
+        }
+        // A queued Confirm notification becomes a modal dialog. Only raise it
+        // when nothing else is already showing one — the dialog is exclusive.
+        if self.dialog.is_none() {
+            if let Some(n) = self.notify.active(BackendKind::Confirm).into_iter().next() {
+                let title = n.title.clone().unwrap_or_else(|| "Confirm".into());
+                let text = n.text.clone();
+                self.dialog = Some(crate::dialog::DialogState::new(
+                    title,
+                    vec![
+                        crate::dialog::Field::text("Message", &text),
+                        crate::dialog::Field::button("OK"),
+                        crate::dialog::Field::button("Cancel"),
+                    ],
+                ));
+            }
+        }
+        floats
     }
 
     fn cursor_line_col(&self) -> (u16, u16) {
@@ -4797,7 +4982,8 @@ impl App {
                     .to_string();
                 match sub.as_str() {
                     "split" | "history" => Ok(CmdAction::NoiceSplit),
-                    _ => Err(format!(":Noice subcommand '{}' unknown. Use :Noice (toggle panel) or :Noice split|history", sub)),
+                    "popup" => Ok(CmdAction::NoicePopup),
+                    _ => Err(format!(":Noice subcommand '{}' unknown. Use :Noice (toggle panel), :Noice split|history, or :Noice popup", sub)),
                 }
             }
             _ if trimmed.starts_with("set editmode ") => {
@@ -4872,10 +5058,28 @@ impl App {
                     self.settings = None;
                     return;
                 }
-                CmdAction::Quit | CmdAction::ForceQuit | CmdAction::Settings => {
+                // `:q` and `:Settings` close the page — leaving it is what the
+                // user is asking for. `:q!` is not that: it means quit the
+                // editor, forcefully, and swallowing it left no way to exit
+                // while the page was up. The capture harness found this by
+                // timing out on the one surface whose deferred `:q!` never
+                // took effect.
+                CmdAction::Quit | CmdAction::Settings => {
                     self.settings = None;
                     return;
                 }
+                CmdAction::ForceQuit => {
+                    self.settings = None;
+                    self.should_quit = true;
+                    return;
+                }
+                // Taking a picture of a page is not asking to leave it. This
+                // is the whole reason the settings page appeared broken in the
+                // GUI: the capture recipe queues `:screenshot`, which closed
+                // the page, and the shot two frames later showed a bare
+                // buffer — indistinguishable from a backend that cannot draw
+                // the overlay at all.
+                CmdAction::Screenshot(_) => {}
                 _ => self.settings = None,
             }
         }
@@ -5075,15 +5279,22 @@ impl App {
                     format!("{} = {} (default)", key, default.display()),
                 ));
             }
-            CmdAction::Echo(text, level) => {
-                self.notify.push(Notification::new(
-                    level,
-                    ruster_core::message::MessageSource::Echo,
-                    text,
-                ));
-            }
+            // Through `echo_at`, which records as well as shows — the same path
+            // every internal message takes, rather than a second copy of it.
+            CmdAction::Echo(text, level) => self.echo_at(level, text),
             CmdAction::NoicePanel => self.show_noice_panel = !self.show_noice_panel,
             CmdAction::NoiceSplit => self.open_noice_split(),
+            CmdAction::NoicePopup => {
+                self.notify.push_to(
+                    Notification::new(
+                        ruster_core::message::MessageLevel::Info,
+                        ruster_core::message::MessageSource::Echo,
+                        ":Noice popup — a popup notification.".to_string(),
+                    )
+                    .with_persistent(),
+                    BackendKind::Popup,
+                );
+            }
             CmdAction::OpenFile(path) => {
                 let base = self
                     .ws
@@ -5574,11 +5785,9 @@ impl App {
     /// Forward one key press to a focused terminal's PTY. `Ctrl-\` switches to
     /// Terminal-Normal mode (vim motions / visual / yank over the output).
     fn handle_terminal_key(&mut self, ck: crossterm::event::KeyEvent, bid: BufferId) {
-        if ck.modifiers.contains(KeyModifiers::CONTROL) {
-            if let KeyCode::Char('\\') = ck.code {
-                self.enter_terminal_normal(bid);
-                return;
-            }
+        if is_terminal_escape(ck, &self.config.terminal_escape) {
+            self.enter_terminal_normal(bid);
+            return;
         }
         if let Some((key, mods)) = term_key_from_crossterm(ck) {
             let bytes = encode_key(key, mods);
@@ -5592,25 +5801,7 @@ impl App {
     /// the (read-only) buffer so the vim layer's motions, visual selection and
     /// yank operate over the terminal's output. `i`/`a`/Enter resume insert.
     fn enter_terminal_normal(&mut self, bid: BufferId) {
-        if let Some(session) = self.terminals.get(&bid) {
-            let grid = session.snapshot();
-            let mut lines: Vec<String> = (0..grid.rows)
-                .map(|r| grid.row_text(r).trim_end().to_string())
-                .collect();
-            while lines.last().map(|l| l.is_empty()).unwrap_or(false) {
-                lines.pop();
-            }
-            let text = lines.join("\n");
-            let cursor_line = grid.cursor.0.min(lines.len().saturating_sub(1));
-            let mut w = self.ws.borrow_mut();
-            if let Some(doc) = w.buffers.get_mut(bid) {
-                doc.buffer = Buffer::from_str(&text);
-                let pos = doc.buffer.line_start_char(cursor_line);
-                if w.active_buffer() == bid {
-                    w.windows.active_window_mut().cursors = CursorSet::single(pos);
-                }
-            }
-        }
+        self.mirror_terminal(bid, true);
         self.terminal_focused = false;
         self.vim = VimState::new();
         self.notify.push(Notification::new(
@@ -5618,6 +5809,61 @@ impl App {
             ruster_core::message::MessageSource::System,
             "terminal: NORMAL — motions/visual/y to yank, i to resume".to_string(),
         ));
+    }
+
+    /// Copy the terminal's retained output into its buffer so the vim layer can
+    /// work over it. `move_cursor` places the caret at the shell's cursor —
+    /// wanted when entering Terminal-Normal, unwanted on the per-frame refresh,
+    /// which would otherwise drag the caret away from whatever the user is
+    /// reading every time a command printed a line.
+    ///
+    /// The whole scrollback, not the visible screen. Mirroring one screenful
+    /// made `terminal.scrollback` unreachable — the grid retained the history
+    /// and nothing could show it — and it is also what made a live refresh
+    /// unsafe: appending to the full history leaves earlier lines at the same
+    /// buffer positions, so the caret stays where it was put.
+    fn mirror_terminal(&mut self, bid: BufferId, move_cursor: bool) {
+        let Some(session) = self.terminals.get(&bid) else {
+            return;
+        };
+        let (mut lines, cursor_line) = session.scrollback_text();
+        while lines.last().map(|l| l.is_empty()).unwrap_or(false) {
+            lines.pop();
+        }
+        let text = lines.join("\n");
+
+        let mut w = self.ws.borrow_mut();
+        let Some(doc) = w.buffers.get_mut(bid) else {
+            return;
+        };
+        if doc.buffer.to_string() == text {
+            return; // Nothing new; leave the cursor and the undo history alone.
+        }
+        doc.buffer = Buffer::from_str(&text);
+        if move_cursor && w.active_buffer() == bid {
+            let line = cursor_line.min(lines.len().saturating_sub(1));
+            let pos = w
+                .buffers
+                .get(bid)
+                .map(|d| d.buffer.line_start_char(line))
+                .unwrap_or(0);
+            w.windows.active_window_mut().cursors = CursorSet::single(pos);
+        }
+    }
+
+    /// Keep the Terminal-Normal mirror current while the user reads it.
+    ///
+    /// Without this the buffer was a photograph taken on the way in: the shell
+    /// kept running behind it and anything it printed was invisible until the
+    /// user went back to insert and out again, with nothing on screen to say
+    /// the text had gone stale.
+    fn refresh_terminal_mirror(&mut self) {
+        if self.terminal_focused {
+            return;
+        }
+        if let Some(bid) = self.active_terminal_buffer() {
+            self.mirror_terminal(bid, false);
+        }
     }
 
     /// Handle a key in a dired buffer. Returns true if the key was consumed
@@ -6165,11 +6411,25 @@ impl App {
         self.echo_at(ruster_core::message::MessageLevel::Error, msg);
     }
 
+    /// Show a message and record it.
+    ///
+    /// Both stores, not just the toast. This is the choke point for all 90-odd
+    /// `echo`/`echo_warn`/`echo_error`/`echo_success` sites — "Session saved",
+    /// "No files open", every warning the editor raises about itself — and it
+    /// wrote only to the transient one, so all of it expired after a couple of
+    /// seconds and `:messages` had nothing to show. The surface whose entire
+    /// job is remembering was the one thing these never reached.
     fn echo_at(&mut self, level: ruster_core::message::MessageLevel, msg: impl Into<String>) {
+        let text = msg.into();
+        self.push_message(
+            level,
+            ruster_core::message::MessageSource::Echo,
+            text.clone(),
+        );
         self.notify.push(Notification::new(
             level,
             ruster_core::message::MessageSource::Echo,
-            msg.into(),
+            text,
         ));
     }
 
@@ -6891,8 +7151,13 @@ impl App {
         for q in self.quickfix.items() {
             out.push(TroubleItem {
                 path: q.path.clone(),
-                line: q.line,
-                col: q.col,
+                // `QuickfixItem` is 1-based and `TroubleItem` is 0-based (the
+                // panel adds one when it draws). Copying across raw showed
+                // every quickfix entry — build errors, `:Rg` hits, anything
+                // routed through the list — one line too high, while the
+                // diagnostics and TODO entries beside them were right.
+                line: q.line.saturating_sub(1),
+                col: q.col.saturating_sub(1),
                 message: q.message.clone(),
                 severity: q.severity,
                 source: TroubleSource::Quickfix,
@@ -7858,8 +8123,13 @@ impl App {
             .into_iter()
             .map(|(path, m)| QuickfixItem {
                 path,
-                line: m.line,
-                col: m.col,
+                // `TodoMarker` is 0-based; `QuickfixItem` is documented 1-based
+                // and `open_path` subtracts one when it jumps. Passing the
+                // marker through raw showed every entry one line and one column
+                // low and landed the cursor a line above the marker — while
+                // `:Trouble`, which converts, showed the same marker correctly.
+                line: m.line + 1,
+                col: m.col + 1,
                 message: if m.text.is_empty() {
                     m.keyword.clone()
                 } else {
@@ -8170,11 +8440,16 @@ impl App {
                 .iter()
                 .filter(|s| s.variables_reference > 0)
                 .map(|scope| {
+                    // One lookup: the reference keys the whole list of variables
+                    // in that scope, in the order the adapter sent them.
                     let pairs = cache
-                        .iter()
-                        .filter(|(&k, _)| k == scope.variables_reference as u64)
-                        .map(|(_, v)| (v.name.clone(), v.value.clone()))
-                        .collect();
+                        .get(&(scope.variables_reference as u64))
+                        .map(|vars| {
+                            vars.iter()
+                                .map(|v| (v.name.clone(), v.value.clone()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
                     (scope.name.clone(), pairs)
                 })
                 .collect()
@@ -8473,7 +8748,7 @@ impl App {
             "[Debug: {}] F5:Continue F10:Next F11:StepIn S-F5:Stop",
             status
         );
-        let stack: Vec<(u16, String, String)> = session
+        let all: Vec<(u16, String, String)> = session
             .stack_frames
             .iter()
             .enumerate()
@@ -8486,6 +8761,45 @@ impl App {
                 (i as u16, f.name.clone(), format!("{}:{}", loc, f.line))
             })
             .collect();
+        // Stopping in `main` of a trivial binary yields thirty-odd frames of
+        // `lang_start`, `catch_unwind` and friends, and the one frame the user
+        // wrote is the first line of a dock full of runtime. Hide those, but
+        // say how many — silently dropping frames from a call stack is its own
+        // way of lying, and the runtime frames matter when the fault is in an
+        // unwind or a thread spawn.
+        let hidden = all
+            .iter()
+            .filter(|(_, _, loc)| is_runtime_frame(loc))
+            .count();
+        let mut stack: Vec<(u16, String, String)> = all
+            .iter()
+            .filter(|(_, _, loc)| !is_runtime_frame(loc))
+            .cloned()
+            .collect();
+        if stack.is_empty() {
+            // Stopped entirely inside the runtime: showing nothing would be
+            // worse than showing everything.
+            stack = all;
+        } else if hidden > 0 {
+            // The kept frames keep their original depths, so the summary must
+            // carry the depth of the first frame it stands for. Numbering it
+            // by position instead put a `3` under frames 0, 14 and 15 — a
+            // number that looked like a frame and belonged to none.
+            let first_hidden = all
+                .iter()
+                .find(|(_, _, loc)| is_runtime_frame(loc))
+                .map(|(d, _, _)| *d)
+                .unwrap_or(0);
+            stack.push((
+                first_hidden,
+                "…".to_string(),
+                format!(
+                    "{hidden} runtime frame{} hidden",
+                    if hidden == 1 { "" } else { "s" }
+                ),
+            ));
+            stack.sort_by_key(|(d, _, _)| *d);
+        }
         let scopes: Vec<(String, Vec<(String, String)>)> = session
             .variables
             .iter()
@@ -8535,7 +8849,22 @@ impl App {
                 None => String::new(),
             }
         };
-        let cfg = ruster_dap::config::detect_config(&lang, root, None);
+        // The program to launch. Cargo projects can name theirs; when the
+        // binary has not been built yet, say so rather than handing the
+        // adapter a path to nothing.
+        let program = ruster_project::debug_binary(root);
+        if let Some(p) = program.as_deref() {
+            if !p.exists() {
+                self.notify.push(Notification::new(
+                    ruster_core::message::MessageLevel::Warning,
+                    ruster_core::message::MessageSource::System,
+                    format!("Nothing to debug at {} — build it first", p.display()),
+                ));
+                return;
+            }
+        }
+        let program = program.map(|p| p.to_string_lossy().into_owned());
+        let cfg = ruster_dap::config::detect_config(&lang, root, program.as_deref());
         let cfg = match cfg {
             Some(c) => c,
             None => {
@@ -8558,7 +8887,12 @@ impl App {
         match ruster_dap::session::DebugSession::start(&cfg, root) {
             Ok(mut session) => {
                 session.send_initialize().ok();
-                session.send_launch(serde_json::json!({})).ok();
+                // The detected config, not an empty object. `launch_config`
+                // is what carries `program`/`cwd`; sending `{}` handed the
+                // adapter a launch request naming nothing to launch, so the
+                // session reported RUNNING and never ran, never stopped, and
+                // never produced a frame.
+                session.send_launch(cfg.launch_config.clone()).ok();
                 // `start` pushes the breakpoint table. Before this, the
                 // session was merely stored and `toggle_breakpoint` only
                 // pushed when one was already running — so breakpoints placed
@@ -10074,6 +10408,69 @@ mod tests {
         assert_eq!(a.snippet_stops.len(), 2);
     }
 
+    /// rust-analyzer's hover for a std type is hundreds of long lines. Drawn
+    /// as-is it covered the whole editor and ran past the right border, so the
+    /// thing being hovered was the one thing you could no longer see.
+    #[test]
+    fn a_huge_hover_is_clamped_to_part_of_the_window() {
+        let long = "word ".repeat(200);
+        let lines: Vec<StyledLine> = (0..300)
+            .map(|_| StyledLine {
+                text: long.clone(),
+                highlights: vec![],
+            })
+            .collect();
+
+        let (cols, rows) = (120u16, 40u16);
+        let out = clamp_hover_lines(&lines, cols, rows);
+
+        let max_rows = ((rows as f32) * HOVER_MAX_ROWS_FRACTION) as usize;
+        assert_eq!(
+            out.len(),
+            max_rows,
+            "height is capped at a fraction of the window"
+        );
+        assert!(
+            out.iter()
+                .all(|l| l.text.chars().count() <= HOVER_MAX_COLS as usize - 2),
+            "no line may exceed the box's content width"
+        );
+        assert_eq!(
+            out.last().unwrap().text,
+            "…",
+            "truncation is shown, not silent"
+        );
+    }
+
+    /// The cap is a ceiling, not a target: a one-line hover stays one line.
+    #[test]
+    fn a_small_hover_is_left_alone() {
+        let lines = vec![StyledLine {
+            text: "let greeting: String".into(),
+            highlights: vec![],
+        }];
+        assert_eq!(clamp_hover_lines(&lines, 120, 40), lines);
+    }
+
+    /// A window too small for the fraction must still produce a drawable box
+    /// rather than a zero-row one.
+    #[test]
+    fn a_tiny_window_still_yields_at_least_one_row() {
+        let lines = vec![
+            StyledLine {
+                text: "aaaaaaaaaaaaaaaaaaaa".into(),
+                highlights: vec![],
+            },
+            StyledLine {
+                text: "bbbbbbbbbbbbbbbbbbbb".into(),
+                highlights: vec![],
+            },
+        ];
+        let out = clamp_hover_lines(&lines, 4, 2);
+        assert!(!out.is_empty());
+        assert!(out.iter().all(|l| l.text.chars().count() <= 2));
+    }
+
     #[test]
     fn hover_markdown_highlights_code_and_strips_fences() {
         let md = "```rust\npub struct Range {}\n```\n\n---\n\nsize = 16 (0x10)";
@@ -10119,8 +10516,8 @@ mod tests {
         ));
         let (title, rows) = leader_whichkey(&['c']).expect("code panel");
         assert_eq!(title, "SPC c");
-        assert!(rows.iter().any(|r| r.contains("hover")));
-        assert!(rows.iter().any(|r| r.contains("references")));
+        assert!(rows.iter().any(|r| r.desc.contains("hover")));
+        assert!(rows.iter().any(|r| r.desc.contains("references")));
     }
 
     #[test]
@@ -10316,13 +10713,13 @@ mod tests {
     fn leader_whichkey_shows_groups() {
         let (title, rows) = leader_whichkey(&[]).expect("root panel");
         assert_eq!(title, "SPC");
-        assert!(rows.iter().any(|r| r.contains("+windows")));
-        assert!(rows.iter().any(|r| r.contains("+quit")));
+        assert!(rows.iter().any(|r| r.desc.contains("+windows")));
+        assert!(rows.iter().any(|r| r.desc.contains("+quit")));
 
         let (wtitle, wrows) = leader_whichkey(&['w']).expect("window panel");
         assert_eq!(wtitle, "SPC w");
-        assert!(wrows.iter().any(|r| r.starts_with("h ")));
-        assert!(wrows.iter().any(|r| r.contains("focus left")));
+        assert!(wrows.iter().any(|r| r.key == "h"));
+        assert!(wrows.iter().any(|r| r.desc.contains("focus left")));
     }
 
     #[test]
@@ -10526,7 +10923,10 @@ mod tests {
         }
 
         // Ctrl-\ enters Terminal-Normal: the grid is mirrored into the buffer.
-        a.handle_key(CtKey::new(KeyCode::Char('\\'), KeyModifiers::CONTROL));
+        // Sent as `Char('4')`, which is what crossterm actually delivers for
+        // the 0x1C byte — see `is_terminal_escape`. Asserting on `Char('\\')`
+        // here is what let the escape stay broken in both backends.
+        a.handle_key(CtKey::new(KeyCode::Char('4'), KeyModifiers::CONTROL));
         assert!(!a.terminal_focused, "Ctrl-\\ leaves insert");
         let buf = a.ws.borrow().buffers.get(id).unwrap().buffer.to_string();
         assert!(
@@ -10556,11 +10956,474 @@ mod tests {
         );
         a.terminal_focused = true;
 
-        a.handle_key(CtKey::new(KeyCode::Char('\\'), KeyModifiers::CONTROL));
+        a.handle_key(CtKey::new(KeyCode::Char('4'), KeyModifiers::CONTROL));
         assert!(!a.terminal_focused, "Ctrl-\\ leaves terminal focus");
-        // `i` re-enters.
-        a.handle_key(CtKey::new(KeyCode::Char('i'), KeyModifiers::NONE));
-        assert!(a.terminal_focused, "i re-focuses the terminal");
+        // `i` re-enters, and so do `a`, `I`, `A` and Enter.
+        for c in ['i', 'a', 'I', 'A'] {
+            a.terminal_focused = false;
+            a.handle_key(CtKey::new(KeyCode::Char(c), KeyModifiers::NONE));
+            assert!(a.terminal_focused, "{c} re-focuses the terminal");
+        }
+    }
+
+    /// All three sources feeding `:Trouble` must report the same line.
+    ///
+    /// `TroubleItem` is 0-based and the panel adds one when it draws;
+    /// `QuickfixItem` is 1-based. Copying between them raw showed every
+    /// quickfix entry a line too high, sitting next to diagnostics and TODO
+    /// entries that were right — the same class of fault as `:TodoList`, in the
+    /// opposite direction.
+    #[test]
+    fn trouble_reports_the_same_line_for_a_quickfix_entry_as_for_a_todo() {
+        let dir = shot_dir();
+        let path = dir.join("t.rs");
+        // The TODO is on line 3, one-based.
+        std::fs::write(&path, "fn a() {}\n\n// TODO: fix me\n").unwrap();
+
+        let mut a = App::new(std::fs::read_to_string(&path).unwrap(), path.clone());
+        // A quickfix entry pointing at the same line, in that list's own
+        // 1-based convention.
+        a.quickfix = crate::quickfix::QuickfixList::new(vec![crate::quickfix::QuickfixItem {
+            path: path.clone(),
+            line: 3,
+            col: 4,
+            message: "same line".into(),
+            severity: 1,
+        }]);
+
+        let items = a.collect_trouble();
+        let todo = items
+            .iter()
+            .find(|i| matches!(i.source, crate::trouble::Source::Todo))
+            .expect("a TODO item");
+        let qf = items
+            .iter()
+            .find(|i| matches!(i.source, crate::trouble::Source::Quickfix))
+            .expect("a quickfix item");
+        assert_eq!(
+            qf.line,
+            todo.line,
+            "both point at line 3; the panel would draw {} and {}",
+            qf.line + 1,
+            todo.line + 1
+        );
+        assert_eq!(todo.line, 2, "0-based internally, drawn as line 3");
+    }
+
+    /// Terminal-Normal mirrors the whole scrollback, not one screenful.
+    ///
+    /// `terminal.scrollback` retains 10000 lines by default and nothing could
+    /// reach them: the mirror copied only the visible grid, so anything that
+    /// scrolled off was gone and the setting promised a history the editor
+    /// could not show.
+    #[cfg(not(windows))]
+    #[test]
+    fn terminal_normal_mirrors_the_scrollback_not_just_the_screen() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        let id =
+            a.ws.borrow_mut()
+                .buffers
+                .create_special(SpecialKind::Terminal, "*terminal*");
+        a.ws.borrow_mut().set_active_buffer(id);
+        // Six visible rows, 1000 of history; 200 lines overflow the screen.
+        a.terminals.insert(
+            id,
+            TerminalSession::spawn("sh", &["-c".into(), "seq 1 200".into()], 40, 6, 1000)
+                .expect("spawn"),
+        );
+        a.terminal_focused = true;
+
+        for _ in 0..300 {
+            std::thread::sleep(Duration::from_millis(10));
+            if a.terminals
+                .get(&id)
+                .unwrap()
+                .scrollback_text()
+                .0
+                .iter()
+                .any(|l| l.trim() == "200")
+            {
+                break;
+            }
+        }
+
+        a.handle_key(CtKey::new(KeyCode::Char('4'), KeyModifiers::CONTROL));
+        let buf = a.ws.borrow().buffers.get(id).unwrap().buffer.to_string();
+        assert!(
+            buf.lines().any(|l| l.trim() == "200"),
+            "the newest line is mirrored"
+        );
+        assert!(
+            buf.lines().any(|l| l.trim() == "1"),
+            "and so is the oldest, which scrolled off six rows ago"
+        );
+    }
+
+    /// The mirror keeps up with the shell instead of freezing on entry.
+    ///
+    /// It used to be a photograph taken on the way in: the shell kept running
+    /// behind it and anything printed afterwards was invisible, with nothing on
+    /// screen to say the text had gone stale.
+    #[cfg(not(windows))]
+    #[test]
+    fn the_terminal_normal_mirror_keeps_up_with_new_output() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        let id =
+            a.ws.borrow_mut()
+                .buffers
+                .create_special(SpecialKind::Terminal, "*terminal*");
+        a.ws.borrow_mut().set_active_buffer(id);
+        a.terminals.insert(
+            id,
+            TerminalSession::spawn("cat", &[], 40, 6, 1000).expect("spawn"),
+        );
+        a.terminal_focused = true;
+
+        // Something to see, then leave insert so the mirror is taken.
+        for c in "before".chars() {
+            a.handle_key(CtKey::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        a.handle_key(CtKey::new(KeyCode::Enter, KeyModifiers::NONE));
+        for _ in 0..200 {
+            std::thread::sleep(Duration::from_millis(10));
+            if a.terminals
+                .get(&id)
+                .unwrap()
+                .snapshot()
+                .row_text(0)
+                .contains("before")
+            {
+                break;
+            }
+        }
+        a.handle_key(CtKey::new(KeyCode::Char('4'), KeyModifiers::CONTROL));
+        assert!(!a.terminal_focused);
+
+        // The shell prints again while the user is reading the mirror.
+        a.terminals
+            .get(&id)
+            .unwrap()
+            .write_input(b"after\n")
+            .expect("write");
+        let mut caught = false;
+        for _ in 0..200 {
+            std::thread::sleep(Duration::from_millis(10));
+            a.refresh_terminal_mirror();
+            if a.ws
+                .borrow()
+                .buffers
+                .get(id)
+                .unwrap()
+                .buffer
+                .to_string()
+                .contains("after")
+            {
+                caught = true;
+                break;
+            }
+        }
+        assert!(
+            caught,
+            "output arriving during Terminal-Normal must reach the mirror"
+        );
+    }
+
+    /// The call stack shows the user's frames, not thirty of the runtime's.
+    ///
+    /// Stopping in `main` of a trivial binary yielded `demo_project::main`
+    /// followed by `lang_start`, `catch_unwind` and the rest filling the dock.
+    #[test]
+    fn runtime_frames_are_told_apart_from_the_users_own() {
+        assert!(is_runtime_frame("/rustc/abc123/library/std/src/rt.rs:165"));
+        assert!(is_runtime_frame(
+            "/Users/x/.cargo/registry/src/serde-1.0/lib.rs:42"
+        ));
+        assert!(is_runtime_frame(
+            "/Users/x/.rustup/toolchains/stable/lib/rs.rs:9"
+        ));
+        assert!(
+            is_runtime_frame("?"),
+            "a frame with no source cannot be opened"
+        );
+        assert!(is_runtime_frame("?:0"));
+
+        assert!(
+            is_runtime_frame("/usr/lib/dyld`start:1673"),
+            "the loader is not the user's"
+        );
+
+        assert!(!is_runtime_frame("/Users/x/Dev/demo/src/main.rs:31"));
+        assert!(!is_runtime_frame("/tmp/proj/src/lib.rs:1"));
+        // A project that merely has "library" in its path is still the user's.
+        assert!(!is_runtime_frame("/Users/x/Dev/library-app/src/main.rs:3"));
+    }
+
+    /// `:TodoList` and `:Trouble` must agree about where a marker is.
+    ///
+    /// `QuickfixItem` is documented 1-based (`quickfix.rs`) and `open_path`
+    /// subtracts one when it jumps, but `TodoMarker` is 0-based and the todo
+    /// list passed it through raw. Every entry displayed one line low and
+    /// landed the cursor a line above the marker, while `:Trouble` — which
+    /// converts — showed the same marker correctly.
+    #[test]
+    fn the_todo_list_reports_one_based_positions() {
+        let dir = shot_dir();
+        let path = dir.join("todo_fixture.rs");
+        // The marker is on line 3, column 4 counting from one.
+        std::fs::write(&path, "fn a() {}\n\n// TODO: fix me\n").unwrap();
+
+        let mut a = App::new(std::fs::read_to_string(&path).unwrap(), path.clone());
+        a.apply_cmd(CmdAction::TodoList);
+
+        let items = a.quickfix.items();
+        assert_eq!(items.len(), 1, "one marker in the fixture: {items:?}");
+        assert_eq!(items[0].line, 3, "the TODO is on line 3, one-based");
+        assert_eq!(items[0].col, 4, "and column 4, one-based");
+    }
+
+    /// `:q!` quits even with the settings page open.
+    ///
+    /// `:q` and `:Settings` close the page — leaving it is what is being asked
+    /// for — but `:q!` means quit the editor, and swallowing it left no way out
+    /// while the page was up. Found by the capture harness, whose deferred
+    /// `:q!` never took effect on that one surface and hit the timeout.
+    #[test]
+    fn force_quit_still_quits_with_the_settings_page_open() {
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::Settings);
+        assert!(a.settings.is_some());
+        a.apply_cmd(CmdAction::ForceQuit);
+        assert!(a.should_quit, "`:q!` means quit, page or no page");
+
+        // `:q` still just closes the page.
+        let mut b = App::new("x".into(), PathBuf::from("f.txt"));
+        b.apply_cmd(CmdAction::Settings);
+        b.apply_cmd(CmdAction::Quit);
+        assert!(b.settings.is_none(), "`:q` closes the page");
+        assert!(!b.should_quit, "and does not quit the editor");
+    }
+
+    /// Messages the editor raises about itself reach the log too, not only
+    /// `:echo`.
+    ///
+    /// `echo_at` is the choke point for ~90 `echo`/`echo_warn`/`echo_error`
+    /// sites — "Session saved", "No files open", every internal warning — and
+    /// it wrote to the toast alone, so all of it expired in seconds and
+    /// `:messages` had nothing. Fixing only the `:echo` command would have left
+    /// the other ninety.
+    #[test]
+    fn internal_messages_are_recorded_in_the_message_log() {
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.echo("saved something");
+        a.echo_warn("a warning".to_string());
+        a.echo_error("a failure".to_string());
+        a.apply_cmd(CmdAction::Messages);
+
+        let text = {
+            let w = a.ws.borrow();
+            w.buffers
+                .get(a.messages_buf.expect("messages buffer"))
+                .unwrap()
+                .buffer
+                .to_string()
+        };
+        for needle in ["saved something", "a warning", "a failure"] {
+            assert!(text.contains(needle), "the log kept {needle:?}: {text:?}");
+        }
+    }
+
+    /// `:echo` has to reach the log, not just the toast.
+    ///
+    /// The toast expires on `noice.info_timeout`; the log is what `:messages`
+    /// reads. Writing only the toast meant every echoed message vanished for
+    /// good and `:messages` opened an empty buffer.
+    #[test]
+    fn echo_is_recorded_in_the_message_log() {
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::Echo(
+            "first".into(),
+            ruster_core::message::MessageLevel::Info,
+        ));
+        a.apply_cmd(CmdAction::Echo(
+            "second".into(),
+            ruster_core::message::MessageLevel::Warning,
+        ));
+        a.apply_cmd(CmdAction::Messages);
+
+        let text = {
+            let w = a.ws.borrow();
+            w.buffers
+                .get(a.messages_buf.expect("messages buffer"))
+                .unwrap()
+                .buffer
+                .to_string()
+        };
+        assert!(
+            text.contains("first"),
+            "the log kept the first echo: {text:?}"
+        );
+        assert!(
+            text.contains("second"),
+            "the log kept the second echo: {text:?}"
+        );
+    }
+
+    /// `:screenshot` must not dismiss the thing being photographed.
+    ///
+    /// Every other command closes the settings page, deliberately — asking for
+    /// something else is a clear signal the page has served its purpose. A
+    /// screenshot is not asking for something else, and treating it as such is
+    /// what made the GUI look like it could not draw the settings overlay at
+    /// all: the capture queued `:screenshot`, that closed the page, and the
+    /// shot two frames later showed a bare buffer.
+    #[test]
+    fn a_screenshot_does_not_close_the_settings_page() {
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::Settings);
+        assert!(a.settings.is_some(), "the settings page opened");
+
+        a.apply_cmd(CmdAction::Screenshot(Some(
+            shot_dir().join("s.png").to_string_lossy().into_owned(),
+        )));
+        assert!(a.settings.is_some(), "the page survives being photographed");
+
+        // Anything else still closes it — that behaviour is intentional.
+        a.apply_cmd(CmdAction::Messages);
+        assert!(
+            a.settings.is_none(),
+            "another command still dismisses the page"
+        );
+    }
+
+    /// Typing a `:` command in Terminal-Normal must not be interrupted by the
+    /// letters in it.
+    ///
+    /// `i`/`a`/`I`/`A` return focus to the shell, and the cmdline is handled
+    /// *after* that check — so `:echo hi` re-focused the terminal on the `i` of
+    /// "hi" and sent the rest of the line to the shell, which answered
+    /// `command not found`.
+    #[cfg(not(windows))]
+    #[test]
+    fn letters_in_a_colon_command_do_not_refocus_the_terminal() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        let id =
+            a.ws.borrow_mut()
+                .buffers
+                .create_special(SpecialKind::Terminal, "*terminal*");
+        a.ws.borrow_mut().set_active_buffer(id);
+        a.terminals.insert(
+            id,
+            TerminalSession::spawn("cat", &[], 40, 6, 1000).expect("spawn"),
+        );
+        a.terminal_focused = false;
+
+        a.handle_key(CtKey::new(KeyCode::Char(':'), none));
+        for c in "echo hi".chars() {
+            a.handle_key(CtKey::new(KeyCode::Char(c), none));
+        }
+        assert!(
+            !a.terminal_focused,
+            "the `i` in \"hi\" must not reach the shell"
+        );
+        assert_eq!(
+            a.vim.cmdline_buffer(),
+            ":echo hi",
+            "the whole command reached the cmdline"
+        );
+    }
+
+    /// The same hazard, in the surface next door: `f` starts a flash jump and
+    /// waits for a label, which is App state rather than vim state — so
+    /// `is_normal_idle` alone does not cover it, and `fi` handed the keyboard
+    /// back to the shell instead of jumping.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_pending_flash_label_does_not_refocus_the_terminal() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        let id =
+            a.ws.borrow_mut()
+                .buffers
+                .create_special(SpecialKind::Terminal, "*terminal*");
+        a.ws.borrow_mut().set_active_buffer(id);
+        a.terminals.insert(
+            id,
+            TerminalSession::spawn("cat", &[], 40, 6, 1000).expect("spawn"),
+        );
+        a.terminal_focused = false;
+
+        // Flash labels come from the rendered layout, so the mirror needs both
+        // content and a frame before `f` has anything to label.
+        if let Some(doc) = a.ws.borrow_mut().buffers.get_mut(id) {
+            doc.buffer = Buffer::from_str("first line of output\nsecond line of output\n");
+        }
+        a.render();
+        a.handle_key(CtKey::new(KeyCode::Char('f'), none));
+        assert!(a.flash.is_some(), "`f` starts a flash jump over the mirror");
+        a.handle_key(CtKey::new(KeyCode::Char('i'), none));
+        assert!(
+            !a.terminal_focused,
+            "`fi` is a jump, not a request for the shell"
+        );
+    }
+
+    /// Both encodings of `Ctrl-\` are accepted, because a terminal in the
+    /// legacy mode sends one byte (0x1C) for both and crossterm reports it as
+    /// `Ctrl-4`. Testing only `Char('\\')` is what let the escape stay dead in
+    /// both backends while two tests claimed it worked.
+    #[test]
+    fn the_terminal_escape_accepts_what_the_backends_actually_send() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let ctrl = KeyModifiers::CONTROL;
+        let none = KeyModifiers::NONE;
+
+        assert!(is_terminal_escape(
+            CtKey::new(KeyCode::Char('4'), ctrl),
+            "<C-\\>"
+        ));
+        assert!(is_terminal_escape(
+            CtKey::new(KeyCode::Char('\\'), ctrl),
+            "<C-\\>"
+        ));
+        assert!(!is_terminal_escape(
+            CtKey::new(KeyCode::Char('4'), none),
+            "<C-\\>"
+        ));
+        assert!(!is_terminal_escape(
+            CtKey::new(KeyCode::Char('a'), ctrl),
+            "<C-\\>"
+        ));
+    }
+
+    /// `terminal.escape` is honoured, so an evil-style setup can bind Esc.
+    #[test]
+    fn the_terminal_escape_key_is_configurable() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let ctrl = KeyModifiers::CONTROL;
+        let none = KeyModifiers::NONE;
+
+        assert!(is_terminal_escape(CtKey::new(KeyCode::Esc, none), "<Esc>"));
+        assert!(!is_terminal_escape(
+            CtKey::new(KeyCode::Char('4'), ctrl),
+            "<Esc>"
+        ));
+
+        assert!(is_terminal_escape(
+            CtKey::new(KeyCode::Char('o'), ctrl),
+            "<C-o>"
+        ));
+        assert!(!is_terminal_escape(CtKey::new(KeyCode::Esc, none), "<C-o>"));
+
+        // Garbage in the setting must not silently swallow every key.
+        assert!(!is_terminal_escape(
+            CtKey::new(KeyCode::Char('4'), ctrl),
+            "nonsense"
+        ));
     }
 
     #[test]
@@ -12174,5 +13037,83 @@ index 1..2 100644
         assert_eq!(last.level, ruster_core::message::MessageLevel::Warning);
         assert!(last.text.contains("GUI backend"), "{:?}", last.text);
         assert!(!target.exists(), "nothing was written");
+    }
+
+    /// A popup notification becomes a titled float in the next frame, so both
+    /// backends — which draw whatever `FrameState` carries — render it.
+    #[test]
+    fn popup_notification_becomes_a_float() {
+        let mut a = App::new("content".into(), PathBuf::from("f.txt"));
+        a.notify.push_to(
+            Notification::new(
+                ruster_core::message::MessageLevel::Info,
+                ruster_core::message::MessageSource::Echo,
+                "pop",
+            )
+            .with_persistent(),
+            BackendKind::Popup,
+        );
+        let floats = a.notification_floats(80, 24);
+        assert_eq!(floats.len(), 1, "one popup → one float");
+        assert_eq!(
+            floats[0].title.as_deref(),
+            Some("ruster"),
+            "untitled popup takes the app name"
+        );
+    }
+
+    /// CmdlinePopup and Popup render identically (the difference is duration),
+    /// so a CmdlinePopup notification also lands as a float.
+    #[test]
+    fn cmdline_popup_notification_becomes_a_float() {
+        let mut a = App::new("d".into(), PathBuf::from("f.txt"));
+        a.notify.push_to(
+            Notification::new(
+                ruster_core::message::MessageLevel::Warning,
+                ruster_core::message::MessageSource::Echo,
+                "bad",
+            )
+            .with_persistent(),
+            BackendKind::CmdlinePopup,
+        );
+        let floats = a.notification_floats(80, 24);
+        assert_eq!(floats.len(), 1);
+    }
+
+    /// A Confirm notification raises the modal dialog — the dedicated confirm
+    /// surface — instead of a float.
+    #[test]
+    fn confirm_notification_raises_a_modal_not_a_float() {
+        let mut a = App::new("d".into(), PathBuf::from("f.txt"));
+        a.notify.push_to(
+            Notification::new(
+                ruster_core::message::MessageLevel::Info,
+                ruster_core::message::MessageSource::Echo,
+                "sure?",
+            )
+            .with_persistent(),
+            BackendKind::Confirm,
+        );
+        assert!(
+            a.dialog.is_none(),
+            "dialog not raised until the floats are built"
+        );
+        let floats = a.notification_floats(80, 24);
+        assert!(floats.is_empty(), "no float for a Confirm");
+        assert!(a.dialog.is_some(), "Confirm raises a modal dialog");
+    }
+
+    /// `:Noice popup` queues a Popup-kind notification rather than routing by
+    /// level, so it shows as a float instead of the mini toast.
+    #[test]
+    fn noice_popup_queues_a_popup_notification() {
+        let mut a = App::new("d".into(), PathBuf::from("f.txt"));
+        a.apply_cmd(CmdAction::NoicePopup);
+        assert_eq!(a.notify.active(BackendKind::Popup).len(), 1);
+        assert_eq!(
+            a.notify.active(BackendKind::Mini).len(),
+            0,
+            "no level-based toast"
+        );
     }
 }

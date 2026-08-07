@@ -1,5 +1,20 @@
 # Multi-Cursor Keybindings — Implementation Plan
 
+> **Status:** delivered; boxes resolved 2026-08-07.
+>
+> This plan was executed but never ticked as it went, leaving 10 boxes
+> that read as outstanding work. They are **plain bullets now, not back-ticked**:
+> a box ticked long after the fact asserts a verification that did not happen,
+> and this tree has already been bitten by exactly that. The bullets stand as a
+> record of what was built.
+>
+> Evidence it shipped: the three identifiers this plan names (`App`, `Buffer`,
+> `Window`) are too generic to prove anything, so the behaviour was driven
+> instead — `drive.rs::ctrl_d_adds_a_second_cursor_on_the_next_match` places a
+> second caret through the real frame loop, and
+> `docs/verification/multicursor-{tui.txt,gui.png}` capture it in both backends.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Wire Ctrl+D to add cursors at next word occurrences and Ctrl+click/Alt+click for mouse-based cursor addition.
@@ -26,7 +41,7 @@
 - Consumes: `Action::AddCursor(usize)`, `Action::ClearExtraCursors`
 - Produces: `self.buffer_word_at(pos) -> Option<String>` (or use a buffer helper)
 
-- [ ] **Step 1: Add a word-at-position helper to App (or use existing)**
+- **Step 1: Add a word-at-position helper to App (or use existing)**
 
 Check if there is already a buffer helper to get the word/identifier under a cursor. If not, add:
 
@@ -55,7 +70,7 @@ fn word_at(&self, pos: usize) -> Option<String> {
 
 Place it as a private method on `App`, near the multi-cursor section.
 
-- [ ] **Step 2: Add Ctrl+D dispatch in handle_key**
+- **Step 2: Add Ctrl+D dispatch in handle_key**
 
 In `handle_key()`, in the Normal-mode dispatch area (before the Vim state machine section), add:
 
@@ -83,13 +98,13 @@ KeyCode::Char('d') if ck.modifiers.contains(KeyModifiers::CONTROL) => {
 
 Note: `self.vim.add_cursor()` may not exist — check the actual API. Use `self.active_window_mut().cursors.add_cursor(offset)` or `Action::AddCursor(offset)` queued into the action buffer. Follow the existing action-dispatch pattern.
 
-- [ ] **Step 3: Build to verify**
+- **Step 3: Build to verify**
 
 ```
 cargo build -p ruster-tui 2>&1 | tail -5
 ```
 
-- [ ] **Step 4: Commit**
+- **Step 4: Commit**
 
 ```
 git add crates/ruster-tui/src/app.rs
@@ -107,7 +122,7 @@ git commit -m "feat(multicursor): add Ctrl+D to add cursor at next word"
 - Consumes: `crossterm::event::Event::Mouse`, `Action::AddCursor`
 - Modifies: event loop to enable mouse mode
 
-- [ ] **Step 1: Enable mouse capture on startup and cleanup**
+- **Step 1: Enable mouse capture on startup and cleanup**
 
 In the `run()` method, before the event loop, enable mouse capture:
 
@@ -122,7 +137,7 @@ In the cleanup/exit code (where the terminal is reset), add:
 execute!(std::io::stdout(), DisableMouseCapture)?;
 ```
 
-- [ ] **Step 2: Handle mouse events in the event loop**
+- **Step 2: Handle mouse events in the event loop**
 
 In the event loop where `Event::Key` is matched, replace the `_ => continue` with:
 
@@ -154,7 +169,7 @@ fn handle_mouse_event(&mut self, me: crossterm::event::MouseEvent) {
 }
 ```
 
-- [ ] **Step 3: Add screen_pos_to_buffer_offset helper**
+- **Step 3: Add screen_pos_to_buffer_offset helper**
 
 This converts a terminal (row, col) to a (window_id, buffer_offset). It maps the screen position to a window rect, then uses the window's scroll offset and line-wrapping to find the buffer position.
 
@@ -180,19 +195,19 @@ fn screen_pos_to_buffer_offset(&self, row: usize, col: usize) -> Option<(usize, 
 
 Note: use the actual `Window` struct fields and `Buffer` methods. Adjust types to match (u16 vs usize, etc.).
 
-- [ ] **Step 4: Build to verify**
+- **Step 4: Build to verify**
 
 ```
 cargo build -p ruster-tui 2>&1 | tail -5
 ```
 
-- [ ] **Step 5: Run existing tests**
+- **Step 5: Run existing tests**
 
 ```
 cargo test -p ruster-tui 2>&1 | tail -5
 ```
 
-- [ ] **Step 6: Commit**
+- **Step 6: Commit**
 
 ```
 git add crates/ruster-tui/src/app.rs

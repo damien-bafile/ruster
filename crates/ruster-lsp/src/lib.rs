@@ -13,7 +13,7 @@ pub mod results;
 pub mod transport;
 
 pub use client::LspClient;
-pub use manager::{LspManager, RoutedMessage};
+pub use manager::{LspManager, RoutedMessage, ServerKey};
 pub use position::{offset_to_position, position_to_offset, LspPosition};
 pub use registry::{default_server, language_id, ServerConfig};
 pub use results::{

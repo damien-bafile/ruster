@@ -1,0 +1,40 @@
+─ ruster-render ─────────────── script.rs ──────────────────────────────────────────────────────────────────────────────
+▸ src                         //! A headless renderer that plays a scripted key sequence into the real frame
+  Cargo.toml                  //! loop and records what each frame contained.
+                              //!
+                              //! [`Renderer`] already has the two seams this needs: `poll_input` is where the
+                              //! frame loop asks for a key, and `should_close` is how it is told to stop. A
+                              //! renderer that answers both from a script drives `App::run_gui` end to end —
+                              //! real key dispatch, real Lua drain, real event firing, real `render()` — with
+                              //! no window and no PTY. That is the only way to reach the key-driven surfaces
+                              //! (which-key, flash jump, multi-cursor, pickers, cmdline completion), because
+                              //! an `init.lua` queue can only send `:` commands.
+                              //!
+                              //! Recording the frames is the other half. `render_frame` receives the
+                              //! [`FrameState`] that *both* backends draw from, so a digest of it asserts on
+                              //! what a frame contains rather than merely that building it did not panic —
+                              //! which, until now, was the whole of this project's render coverage.
+
+                              use std::cell::RefCell;
+                              use std::collections::VecDeque;
+                              use std::rc::Rc;
+
+                              use crossterm::event::KeyEvent;
+
+                              use crate::{
+                                  DebugOverlayView, DialogView, FloatView, FrameState, PickerView, Rect, Renderer,
+                                  SelectionView, SettingsView, StatuslineView, StyledLine, TermGridView, WelcomeView,
+                                  WhichKeyView,
+                              };
+
+                              /// One window as it was handed to the renderer.
+                              ///
+                              /// [`crate::WindowView`] derives only `Default` (it is built field-by-field at
+                              /// several sites), so this owns a clone of the parts a check can be written
+                              /// against rather than borrowing the frame.
+                              #[derive(Debug, Clone, PartialEq)]
+                              pub struct WindowDigest {
+                                  pub rect: Rect,
+                                  pub header: String,
+                                  /// Buffer text with its highlight spans intact, so a check can assert that
+ Sidebar │            2 items  -- NORMAL --  [ruster-render] │script.rs                                         0%  1,1

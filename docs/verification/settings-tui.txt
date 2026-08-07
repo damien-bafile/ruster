@@ -1,0 +1,40 @@
+─ demo.rs ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+//! The fixture every capture opens.
+//!         ╭─ Settings ───────────────────────────────────────────────────────────────────────────────────╮
+//! Small on│── GENERAL                                                                                    │
+//! supposed│ Tab width                     4                                                              │
+//! highligh│ Soft tab stop                 4                                                              │
+//! repeated│ Expand tabs                   [x] on                                                         │
+//! jump; an│ Shift width                   4                                                              │
+//!         │ Editing paradigm              < neovim >                                                     │
+//! Capturin│ Honor .editorconfig           [x] on                                                         │
+            │ Default line ending           < lf (unix) >                                                  │
+use std::col│ Theme name                    < catppuccin-mocha >                                           │
+use std::fmt│── GUI                                                                                        │
+            │ Font                          <  >                                                           │
+/// A point │ Font size                     20                                                             │
+#[derive(Deb│ Line height                   24                                                             │
+pub struct P│ Horizontal padding            8                                                              │
+    pub x: i│ Vertical padding              4                                                              │
+    pub y: i│ Window width                  1200                                                           │
+}           │ Window height                 800                                                            │
+            │ Target FPS                    60                                                             │
+impl Point {│ Cursor shape                  < block >                                                      │
+    pub fn o│ Smooth cursor                 [x] on                                                         │
+        Poin│ Cursor speed                  12                                                             │
+    }       │── GUTTER                                                                                     │
+            │ Line numbers                  [ ] off                                                        │
+    // TODO:│ Relative numbers              [ ] off                                                        │
+    pub fn s│── WHICH-KEY                                                                                  │
+        Poin│ Enabled                       [x] on                                                         │
+    }       │ Timeout (ms)                  0                                                              │
+}           │ Command palette               < center >                                                     │
+            │── LSP                                                                                        │
+impl fmt::Di│ Format on save                [ ] off                                                        │
+    fn fmt(&│ Diagnostics                   [x] on                                                         │
+        writ│ Hover                         [x] on                                                         │
+    }       │ Auto-start servers            [x] on                                                         │
+}           │Spaces a tab represents                                                                       │
+             j/k move · gg/G top/bottom · Tab group · / filter · Space toggle/cycle · h/l adjust · Enter edi
+/// Count how many times each point appears.
+ -- NORMAL -- │demo.rs                                                                                          1%  1,1

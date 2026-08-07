@@ -1,5 +1,17 @@
 # Phase 0 Completion Implementation Plan
 
+> **Status:** delivered; boxes resolved 2026-08-07.
+>
+> This plan was executed but never ticked as it went, leaving 17 boxes
+> that read as outstanding work. They are **plain bullets now, not back-ticked**:
+> a box ticked long after the fact asserts a verification that did not happen,
+> and this tree has already been bitten by exactly that. The bullets stand as a
+> record of what was built.
+>
+> Evidence it shipped: all 9 identifiers this plan names in backticks exist in
+> the tree, and the frame loop it describes is what `ScriptedRenderer` drives in `drive.rs`.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Finish Phase 0: tachyonfx animation system, cursor-on-empty-line fix, and raylib GUI backend.
@@ -29,7 +41,7 @@
 - Consumes: `App` struct and `async_run` loop
 - Produces: `self.timer: tachyonfx::Timer` field; every frame calls `self.timer.tick()` returning frame delta `Duration`
 
-- [ ] **Step 1: Add tachyonfx dependency**
+- **Step 1: Add tachyonfx dependency**
 
 Edit `crates/ruster-tui/Cargo.toml`, add after line 13 (`ruster-lua`):
 
@@ -37,7 +49,7 @@ Edit `crates/ruster-tui/Cargo.toml`, add after line 13 (`ruster-lua`):
 tachyonfx = "0.2"
 ```
 
-- [ ] **Step 2: Add Timer field to App struct**
+- **Step 2: Add Timer field to App struct**
 
 In `crates/ruster-tui/src/app.rs`, add field to `App`:
 
@@ -62,7 +74,7 @@ Initialize in `App::new()` after `config` assignment, before return:
 let timer = tachyonfx::Timer::from_duration(Duration::from_secs_f64(1.0 / 60.0));
 ```
 
-- [ ] **Step 3: Wire timer tick in async_run**
+- **Step 3: Wire timer tick in async_run**
 
 In `async_run()` method (around line 227), after the `tokio::select!` block and before `self.render()`, add:
 
@@ -72,14 +84,14 @@ let _dt = self.timer.tick();
 
 Replace the old interval setup. The `mut interval` and `interval.tick().await` stay — they provide the async wakeup. The `tachyonfx::Timer` is ticked synchronously each frame for downstream animation effects.
 
-- [ ] **Step 4: Run tests**
+- **Step 4: Run tests**
 
 ```bash
 cargo test -p ruster-tui
 ```
 Expected: 14 passed, 0 failed.
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add -A && git commit -m "feat: add tachyonfx animation timer to frame loop"
@@ -104,7 +116,7 @@ git add -A && git commit -m "feat: add tachyonfx animation timer to frame loop"
 - Consumes: `Renderer` trait from `ruster-render`, `App::handle_key()`, `App::render()`
 - Produces: `Box<dyn Renderer>` passed to `App::new()`, CLI `--gui` flag
 
-- [ ] **Step 1: Add default methods to Renderer trait**
+- **Step 1: Add default methods to Renderer trait**
 
 First add crossterm dep to `crates/ruster-render/Cargo.toml`:
 ```toml
@@ -121,7 +133,7 @@ pub trait Renderer {
 }
 ```
 
-- [ ] **Step 2: Create ruster-render-raylib crate**
+- **Step 2: Create ruster-render-raylib crate**
 
 Create `crates/ruster-render-raylib/Cargo.toml`:
 
@@ -137,7 +149,7 @@ raylib = { version = "3.7", features = ["vendored"] }
 crossterm = "0.28"
 ```
 
-- [ ] **Step 3: Create key mapping module**
+- **Step 3: Create key mapping module**
 
 Create `crates/ruster-render-raylib/src/key.rs`:
 
@@ -215,7 +227,7 @@ pub fn map_raylib_key(key: raylib::consts::KeyboardKey) -> Option<KeyEvent> {
 }
 ```
 
-- [ ] **Step 4: Create RaylibRenderer**
+- **Step 4: Create RaylibRenderer**
 
 Create `crates/ruster-render-raylib/src/lib.rs`:
 
@@ -293,11 +305,11 @@ impl Renderer for RaylibRenderer {
 }
 ```
 
-- [ ] **Step 5: Update TUI renderer — no changes needed**
+- **Step 5: Update TUI renderer — no changes needed**
 
 The default trait methods for `poll_input()` and `should_close()` return `None` and `false`, so existing `TuiRenderer` is unaffected.
 
-- [ ] **Step 6: Modify App to use Box<dyn Renderer>**
+- **Step 6: Modify App to use Box<dyn Renderer>**
 
 In `crates/ruster-tui/src/app.rs`:
 
@@ -324,7 +336,7 @@ Update `run_async()`:
 self.renderer = Box::new(TuiRenderer::new()?);
 ```
 
-- [ ] **Step 7: Add run_gui to App**
+- **Step 7: Add run_gui to App**
 
 Add to `impl App` block in `crates/ruster-tui/src/app.rs`:
 
@@ -341,7 +353,7 @@ pub fn run_gui(&mut self) {
 }
 ```
 
-- [ ] **Step 8: Add crate to workspace and binary deps**
+- **Step 8: Add crate to workspace and binary deps**
 
 Edit `Cargo.toml` workspace members:
 ```toml
@@ -360,7 +372,7 @@ ruster-tui = { path = "../ruster-tui" }
 ruster-render-raylib = { path = "../ruster-render-raylib" }
 ```
 
-- [ ] **Step 9: Update main.rs**
+- **Step 9: Update main.rs**
 
 Replace `crates/ruster-bin/src/main.rs`:
 
@@ -409,11 +421,11 @@ fn main() {
 }
 ```
 
-- [ ] **Step 10: Export App from ruster-tui**
+- **Step 10: Export App from ruster-tui**
 
 Check `crates/ruster-tui/src/lib.rs` — ensure `pub mod app;` is present.
 
-- [ ] **Step 11: Build and test**
+- **Step 11: Build and test**
 
 ```bash
 cargo build 2>&1
@@ -425,7 +437,7 @@ cargo test 2>&1
 ```
 Expected: all tests pass.
 
-- [ ] **Step 12: Commit**
+- **Step 12: Commit**
 
 ```bash
 git add -A && git commit -m "feat: add raylib GUI backend with --gui flag"

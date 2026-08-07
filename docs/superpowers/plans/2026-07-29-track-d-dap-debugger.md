@@ -1,5 +1,17 @@
 # DAP Debugger — Implementation Plan
 
+> **Status:** delivered; boxes resolved 2026-08-07.
+>
+> This plan was executed but never ticked as it went, leaving 37 boxes
+> that read as outstanding work. They are **plain bullets now, not back-ticked**:
+> a box ticked long after the fact asserts a verification that did not happen,
+> and this tree has already been bitten by exactly that. The bullets stand as a
+> record of what was built.
+>
+> Evidence it shipped: all 17 identifiers this plan names in backticks exist in
+> the tree, and `docs/verification/debugger-{tui.txt,gui.png}` — a live lldb-dap session paused at a breakpoint with its call stack and scopes.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Build a full DAP debugger: new `ruster-dap` crate for protocol/client/session, and debug UI (toolbar, breakpoints, stack, variables, hover) in ruster-tui.
@@ -31,7 +43,7 @@
 **Interfaces:**
 - Produces: workspace crate `ruster-dap` with transport, client, session, config modules
 
-- [ ] **Step 1: Create cargo project structure**
+- **Step 1: Create cargo project structure**
 
 ```bash
 mkdir -p crates/ruster-dap/src
@@ -52,7 +64,7 @@ serde_json = "1"
 thiserror = "1"
 ```
 
-- [ ] **Step 2: Register in workspace**
+- **Step 2: Register in workspace**
 
 Add to `Cargo.toml` workspace members:
 
@@ -63,7 +75,7 @@ members = [
 ]
 ```
 
-- [ ] **Step 3: Commit**
+- **Step 3: Commit**
 
 ```
 git add Cargo.toml crates/ruster-dap/
@@ -82,7 +94,7 @@ git commit -m "feat(dap): scaffold ruster-dap crate"
 - `ServerMessage` enum: `Response(Response)`, `Event(Event)`, `Request(Request)`
 - `ClientMessage` enum: `Request(Request)`, `Response(Response)`
 
-- [ ] **Step 1: Implement Core types and read/write**
+- **Step 1: Implement Core types and read/write**
 
 ```rust
 use std::io::{BufRead, BufReader, Read, Write};
@@ -147,13 +159,13 @@ pub fn write_message<W: Write>(writer: &mut W, msg: &ClientMessage) -> Result<()
 }
 ```
 
-- [ ] **Step 2: Build to verify**
+- **Step 2: Build to verify**
 
 ```
 cargo build -p ruster-dap 2>&1 | tail -10
 ```
 
-- [ ] **Step 3: Commit**
+- **Step 3: Commit**
 
 ```
 git add crates/ruster-dap/src/transport.rs
@@ -175,7 +187,7 @@ git commit -m "feat(dap): implement JSON-RPC transport"
 - `DapClient::poll() -> Option<ServerMessage>`
 - `DapClient::shutdown() -> Result<()>`
 
-- [ ] **Step 1: Create client module**
+- **Step 1: Create client module**
 
 ```rust
 use std::io::{BufReader, BufWriter, Write};
@@ -283,13 +295,13 @@ impl DapClient {
 }
 ```
 
-- [ ] **Step 2: Build to verify**
+- **Step 2: Build to verify**
 
 ```
 cargo build -p ruster-dap 2>&1 | tail -10
 ```
 
-- [ ] **Step 3: Commit**
+- **Step 3: Commit**
 
 ```
 git add crates/ruster-dap/src/client.rs
@@ -315,7 +327,7 @@ git commit -m "feat(dap): implement DAP client"
 - `DebugSession::evaluate(expr, context) -> Result<String>`
 - `DebugSession::poll_events() -> Vec<DapEvent>` (parsed DAP events into simplified enum)
 
-- [ ] **Step 1: Implement DebugSession**
+- **Step 1: Implement DebugSession**
 
 ```rust
 use std::collections::HashMap;
@@ -701,13 +713,13 @@ impl DebugSession {
 }
 ```
 
-- [ ] **Step 2: Build to verify**
+- **Step 2: Build to verify**
 
 ```
 cargo build -p ruster-dap 2>&1 | tail -10
 ```
 
-- [ ] **Step 3: Commit**
+- **Step 3: Commit**
 
 ```
 git add crates/ruster-dap/src/session.rs crates/ruster-dap/src/lib.rs
@@ -724,7 +736,7 @@ git commit -m "feat(dap): implement DebugSession state machine"
 **Interfaces:**
 - Produces: `AdapterConfig`, `detect_config(language: &str, root: &Path) -> Option<AdapterConfig>`
 
-- [ ] **Step 1: Create config module**
+- **Step 1: Create config module**
 
 ```rust
 use std::path::Path;
@@ -787,7 +799,7 @@ pub fn detect_config(language: &str, root: &Path, program: Option<&str>) -> Opti
 }
 ```
 
-- [ ] **Step 2: Export from lib.rs**
+- **Step 2: Export from lib.rs**
 
 Add to `crates/ruster-dap/src/lib.rs`:
 
@@ -798,13 +810,13 @@ pub mod session;
 pub mod config;
 ```
 
-- [ ] **Step 3: Build to verify**
+- **Step 3: Build to verify**
 
 ```
 cargo build -p ruster-dap 2>&1 | tail -5
 ```
 
-- [ ] **Step 4: Commit**
+- **Step 4: Commit**
 
 ```
 git add crates/ruster-dap/src/config.rs crates/ruster-dap/src/lib.rs
@@ -823,7 +835,7 @@ git commit -m "feat(dap): add adapter config detection"
 - Consumes: `DebugSession`, `DapEvent`, `AdapterConfig`, `detect_config`
 - Modifies: `App` struct with `debug_session: Option<DebugSession>`
 
-- [ ] **Step 1: Add ruster-dap dependency**
+- **Step 1: Add ruster-dap dependency**
 
 Add to `crates/ruster-tui/Cargo.toml`:
 
@@ -831,7 +843,7 @@ Add to `crates/ruster-tui/Cargo.toml`:
 ruster-dap = { path = "../ruster-dap" }
 ```
 
-- [ ] **Step 2: Add debug_session field to App**
+- **Step 2: Add debug_session field to App**
 
 ```rust
 pub struct App {
@@ -842,7 +854,7 @@ pub struct App {
 
 Initialize as `debug_session: None` in the constructor.
 
-- [ ] **Step 3: Add debug start/stop methods**
+- **Step 3: Add debug start/stop methods**
 
 ```rust
 use ruster_dap::session::DebugSession;
@@ -914,7 +926,7 @@ fn detect_debug_program(&self, root: &Path) -> Option<String> {
 }
 ```
 
-- [ ] **Step 4: Poll debug events each frame**
+- **Step 4: Poll debug events each frame**
 
 In the main loop's per-frame update (or in `App::tick()` / `App::update()`), add:
 
@@ -942,13 +954,13 @@ if let Some(ref mut session) = self.debug_session {
 }
 ```
 
-- [ ] **Step 5: Build to verify**
+- **Step 5: Build to verify**
 
 ```
 cargo build -p ruster-tui 2>&1 | tail -10
 ```
 
-- [ ] **Step 6: Commit**
+- **Step 6: Commit**
 
 ```
 git add crates/ruster-tui/Cargo.toml crates/ruster-tui/src/app.rs
@@ -965,7 +977,7 @@ git commit -m "feat(dap): wire debug session lifecycle in App"
 **Interfaces:**
 - Consumes: `start_debugging()`, `stop_debugging()`, session step/continue methods
 
-- [ ] **Step 1: Add debug key dispatch to handle_key**
+- **Step 1: Add debug key dispatch to handle_key**
 
 In `handle_key()`, at the start of the dispatch chain (before other handlers), add:
 
@@ -1016,7 +1028,7 @@ match ck.code {
 }
 ```
 
-- [ ] **Step 2: Add toggle_breakpoint method**
+- **Step 2: Add toggle_breakpoint method**
 
 ```rust
 fn toggle_breakpoint(&mut self) {
@@ -1051,7 +1063,7 @@ fn toggle_breakpoint(&mut self) {
 }
 ```
 
-- [ ] **Step 3: Add K (hover evaluate) dispatch**
+- **Step 3: Add K (hover evaluate) dispatch**
 
 In the `handle_key` section where `K` is handled for LSP hover, add a check:
 
@@ -1094,13 +1106,13 @@ fn debug_hover(&mut self) {
 }
 ```
 
-- [ ] **Step 4: Build to verify**
+- **Step 4: Build to verify**
 
 ```
 cargo build -p ruster-tui 2>&1 | tail -10
 ```
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```
 git add crates/ruster-tui/src/app.rs
@@ -1119,7 +1131,7 @@ git commit -m "feat(dap): wire F5/S-F5/F10/F11/S-F11/Ctrl+F8/K for debug"
 - Consumes: `debug_session.breakpoints` keys
 - Modifies: `WindowView.signs` to include breakpoint markers
 
-- [ ] **Step 1: Add breakpoint signs to SignsView or gutter**
+- **Step 1: Add breakpoint signs to SignsView or gutter**
 
 In `App::render()`, when building `WindowView` for each window, check the current buffer path against `debug_session.breakpoints`:
 
@@ -1150,19 +1162,19 @@ pub struct GutterView {
 
 Initialize as `breakpoints: Vec::new()` where `GutterView` is constructed.
 
-- [ ] **Step 2: Render the breakpoint dots in the TUI renderer**
+- **Step 2: Render the breakpoint dots in the TUI renderer**
 
 In `crates/ruster-tui/src/renderer.rs`, in the gutter rendering section, for each line number, check if the line has a breakpoint. If so, draw a red `●` instead of the line number. Or draw it to the left of the line number in a separate column.
 
 Update the gutter rendering to check `gutter.breakpoints.contains(&line_no)` and render `●` with red styling.
 
-- [ ] **Step 3: Build to verify**
+- **Step 3: Build to verify**
 
 ```
 cargo build -p ruster-tui -p ruster-render 2>&1 | tail -5
 ```
 
-- [ ] **Step 4: Commit**
+- **Step 4: Commit**
 
 ```
 git add crates/ruster-render/src/lib.rs crates/ruster-tui/src/renderer.rs crates/ruster-tui/src/app.rs
@@ -1182,7 +1194,7 @@ git commit -m "feat(dap): render breakpoint dots in gutter"
 - Consumes: `App.debug_session`, `SessionState`, stack frames, scopes, variables
 - Produces: Rendered debug toolbar + stack + variables overlay
 
-- [ ] **Step 1: Create debug_ui.rs**
+- **Step 1: Create debug_ui.rs**
 
 ```rust
 use ratatui::{
@@ -1259,7 +1271,7 @@ fn render_stack_panel(f: &mut Frame, session: &DebugSession, area: Rect) {
 }
 ```
 
-- [ ] **Step 2: Wire into App::render()**
+- **Step 2: Wire into App::render()**
 
 In `App::render()`, after all windows are rendered, if `debug_session.is_some()`:
 
@@ -1270,7 +1282,7 @@ if self.debug_session.is_some() {
 }
 ```
 
-- [ ] **Step 3: Register module**
+- **Step 3: Register module**
 
 Add to `crates/ruster-tui/src/lib.rs`:
 
@@ -1278,19 +1290,19 @@ Add to `crates/ruster-tui/src/lib.rs`:
 pub mod debug_ui;
 ```
 
-- [ ] **Step 4: Build to verify**
+- **Step 4: Build to verify**
 
 ```
 cargo build -p ruster-tui 2>&1 | tail -5
 ```
 
-- [ ] **Step 5: Run tests**
+- **Step 5: Run tests**
 
 ```
 cargo test -p ruster-tui 2>&1 | tail -5
 ```
 
-- [ ] **Step 6: Commit**
+- **Step 6: Commit**
 
 ```
 git add crates/ruster-tui/src/debug_ui.rs crates/ruster-tui/src/lib.rs crates/ruster-tui/src/app.rs

@@ -1,0 +1,40 @@
+─ *diff HEAD: demo.rs* ────────────────────────────────────── *diff working: demo.rs* ──────────────────────────────────
+ 1 │ //! The fixture every capture opens.                    1 │ //! The fixture every capture opens.
+ 2 │ //!                                                     2 │ //!
+ 3 │ //! Small on purpose, but chosen so one file exercises  3 │ //! Small on purpose, but chosen so one file exercises
+ 4 │ //! supposed to show: keywords, strings, numbers and co 4 │ //! supposed to show: keywords, strings, numbers and co
+ 5 │ //! highlighter; a TODO and a FIXME for the marker scan 5 │ //! highlighter; a TODO and a FIXME for the marker scan
+ 6 │ //! repeated identifier for multi-cursor; a two-charact 6 │ //! repeated identifier for multi-cursor; a two-charact
+ 7 │ //! jump; and enough lines that the gutter and the scro 7 │ //! jump; and enough lines that the gutter and the scro
+ 8 │ //!                                                     8 │ //!
+ 9 │ //! Capturing the same file every time is what makes tw 9 │ //! Capturing the same file every time is what makes tw
+10 │                                                        10 │
+11 │ use std::collections::HashMap;                         11 │ use std::collections::HashMap;
+12 │ use std::fmt;                                          12 │ use std::fmt;
+13 │                                                        13 │
+14 │ /// A point in the plane.                              14 │ /// A point in the plane.
+15 │ #[derive(Debug, Clone, Copy, PartialEq)]               15 │ #[derive(Debug, Clone, Copy, PartialEq)]
+16 │ pub struct Point {                                     16 │ pub struct Point {
+17 │     pub x: i32,                                        17 │     pub x: i32,
+18 │     pub y: i32,                                        18 │     pub y: i32,
+19 │ }                                                      19 │ }
+20 │                                                        20 │
+21 │ impl Point {                                           21 │ impl Point {
+22 │     pub fn origin() -> Self {                          22 │     pub fn origin() -> Self {
+23 │         Point { x: 0, y: 0 }                           23 │         Point { x: 0, y: 0 }
+24 │     }                                                  24 │     }
+25 │                                                        25 │
+26 │     // TODO: support translation by a vector rather tha26 │     // TODO: support translation by a vector rather tha
+27 │     pub fn shifted(&self, by: i32) -> Self {           27 │     pub fn shifted(&self, by: i32) -> Self {
+28 │         Point { x: self.x + by, y: self.y + by }       28 │         Point { x: self.x + by, y: self.y + by }
+29 │     }                                                  29 │     }
+30 │ }                                                      30 │ }
+31 │                                                        31 │
+32 │ impl fmt::Display for Point {                          32 │ impl fmt::Display for Point {
+33 │     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::R33 │     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::R
+34 │         write!(f, "({}, {})", self.x, self.y)          34 │         write!(f, "({}, {})", self.x, self.y)
+35 │     }                                                  35 │     }
+36 │ }                                                      36 │ }
+37 │                                                        37 │
+38 │ /// Count how many times each point appears.           38 │ /// Count how many times each point appears.
+*diff HEAD: demo.rs*                                1%  1,1  -- NORMAL --  [repo] │*diff working: demo.rs*      1%  1,1

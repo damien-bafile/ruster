@@ -1,0 +1,11 @@
+BufEnter
+BufLeave
+BufWritePost
+BufWritePre
+CursorMoved
+FileType
+InsertEnter
+InsertLeave
+ModeChanged
+VimEnter
+WinEnter

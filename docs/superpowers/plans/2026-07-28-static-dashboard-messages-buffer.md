@@ -1,5 +1,17 @@
 # Static Dashboard & Messages Buffer Implementation Plan
 
+> **Status:** delivered; boxes resolved 2026-08-07.
+>
+> This plan was executed but never ticked as it went, leaving 27 boxes
+> that read as outstanding work. They are **plain bullets now, not back-ticked**:
+> a box ticked long after the fact asserts a verification that did not happen,
+> and this tree has already been bitten by exactly that. The bullets stand as a
+> record of what was built.
+>
+> Evidence it shipped: all 24 identifiers this plan names in backticks exist in
+> the tree, and `docs/verification/dashboard-*` and `messages-*`; the messages log gained its missing writer in Phase 10's final sweep.
+
+
 > **For agentic workers:** implement task-by-task; steps use checkbox (`- [ ]`) syntax.
 
 **Goal:** Make the Dashboard a non-closable static page and add a general-purpose messages buffer that captures build/test/task/LSP/echo output with color coding and filtering.
@@ -36,7 +48,7 @@
 - Consumes: `Document::scratch()`, `Document::special()`, `Document::from_file()`
 - Produces: `Document.pinned: bool`, `SpecialKind::Dashboard`, `SpecialKind::Message`
 
-- [ ] **Step 1: Add `pinned` field and new SpecialKind variants**
+- **Step 1: Add `pinned` field and new SpecialKind variants**
 
 In `crates/ruster-core/src/document.rs`, add to `SpecialKind`:
 ```rust
@@ -64,7 +76,7 @@ pub struct Document {
 
 Set `pinned: false` in `from_file()`, `scratch()`, and `special()`. The Dashboard and Message docs will set it to `true` at creation.
 
-- [ ] **Step 2: Run existing tests to verify**
+- **Step 2: Run existing tests to verify**
 
 ```bash
 cargo test -p ruster-core
@@ -72,7 +84,7 @@ cargo test -p ruster-core
 
 Expected: ALL existing tests pass.
 
-- [ ] **Step 3: Commit**
+- **Step 3: Commit**
 
 ```bash
 git add crates/ruster-core/src/document.rs
@@ -91,7 +103,7 @@ git commit -m "feat(core): add pinned field and SpecialKind::Dashboard/Message"
 - Consumes: `BufferStore::close(id) -> bool`
 - Produces: pinned buffers cannot be closed
 
-- [ ] **Step 1: Modify `BufferStore::close()` to refuse pinned**
+- **Step 1: Modify `BufferStore::close()` to refuse pinned**
 
 ```rust
 pub fn close(&mut self, id: BufferId) -> bool {
@@ -111,7 +123,7 @@ pub fn close(&mut self, id: BufferId) -> bool {
 }
 ```
 
-- [ ] **Step 2: Add tests for pinned close refusal**
+- **Step 2: Add tests for pinned close refusal**
 
 In the `tests` module of `workspace.rs`:
 ```rust
@@ -136,7 +148,7 @@ fn unpinned_document_can_still_be_closed() {
 }
 ```
 
-- [ ] **Step 3: Run tests**
+- **Step 3: Run tests**
 
 ```bash
 cargo test -p ruster-core
@@ -144,7 +156,7 @@ cargo test -p ruster-core
 
 Expected: ALL tests pass, including the two new ones.
 
-- [ ] **Step 4: Commit**
+- **Step 4: Commit**
 
 ```bash
 git add crates/ruster-core/src/workspace.rs
@@ -163,7 +175,7 @@ git commit -m "feat(core): BufferStore::close() refuses pinned documents"
 **Interfaces:**
 - Produces: `MessageLevel` (Info, Warning, Error, Success), `MessageSource` (Build, Test, Task, Lsp, Echo, System), `MessageEntry { level, source, text, count }`, `MessageLog { entries, push(), clear(), filtered() }`
 
-- [ ] **Step 1: Create `crates/ruster-core/src/message.rs`**
+- **Step 1: Create `crates/ruster-core/src/message.rs`**
 
 ```rust
 /// Severity level for a message log entry.
@@ -340,13 +352,13 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Add `pub mod message;` to `crates/ruster-core/src/lib.rs`**
+- **Step 2: Add `pub mod message;` to `crates/ruster-core/src/lib.rs`**
 
 ```rust
 pub mod message;
 ```
 
-- [ ] **Step 3: Run tests**
+- **Step 3: Run tests**
 
 ```bash
 cargo test -p ruster-core
@@ -354,7 +366,7 @@ cargo test -p ruster-core
 
 Expected: ALL tests pass, including the new message tests.
 
-- [ ] **Step 4: Commit**
+- **Step 4: Commit**
 
 ```bash
 git add crates/ruster-core/src/message.rs crates/ruster-core/src/lib.rs
@@ -369,7 +381,7 @@ git commit -m "feat(core): add MessageLog module"
 - Modify: `crates/ruster-tui/src/app.rs`
 - Modify: `crates/ruster-render/src/lib.rs`
 
-- [ ] **Step 1: Change `open_dashboard()` to create a pinned `Special(Dashboard)`**
+- **Step 1: Change `open_dashboard()` to create a pinned `Special(Dashboard)`**
 
 In `crates/ruster-tui/src/app.rs`, replace `open_dashboard()`:
 
@@ -392,7 +404,7 @@ fn open_dashboard(&mut self) {
 }
 ```
 
-- [ ] **Step 2: Update WelcomeView detection to also match `Special(Dashboard)`**
+- **Step 2: Update WelcomeView detection to also match `Special(Dashboard)`**
 
 In `crates/ruster-tui/src/app.rs`, replace the `is_scratch` block in the build_frame method (~line 2867):
 
@@ -408,7 +420,7 @@ let is_dashboard = {
 
 And rename the variable from `is_scratch` to `is_dashboard` wherever used below.
 
-- [ ] **Step 3: Also update the start-up scratch workspace to create a pinned Dashboard**
+- **Step 3: Also update the start-up scratch workspace to create a pinned Dashboard**
 
 In the app initialization, find where `Workspace::scratch()` is called and ensure the Dashboard buffer gets `pinned = true`:
 
@@ -426,7 +438,7 @@ if let Some(id) = ws.buffers.ids().first() {
 
 Actually, let me look at how the app initializes. Let me check the app startup code.
 
-- [ ] **Step 4: Run tests**
+- **Step 4: Run tests**
 
 ```bash
 cargo test -p ruster-tui -p ruster-core
@@ -434,7 +446,7 @@ cargo test -p ruster-tui -p ruster-core
 
 Expected: ALL tests pass.
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add crates/ruster-tui/src/app.rs crates/ruster-render/src/lib.rs
@@ -449,7 +461,7 @@ git commit -m "feat(ui): Dashboard as pinned Special(Dashboard) buffer"
 - Modify: `crates/ruster-tui/src/app.rs`
 - Modify: (eventually) `docs/keybindings.md`
 
-- [ ] **Step 1: Add `MessageLog` field and messages buffer id to App struct**
+- **Step 1: Add `MessageLog` field and messages buffer id to App struct**
 
 ```rust
 // In App struct fields:
@@ -457,14 +469,14 @@ messages: ruster_core::message::MessageLog,
 messages_buf: Option<BufferId>,
 ```
 
-- [ ] **Step 2: Initialize in App::new()**
+- **Step 2: Initialize in App::new()**
 
 ```rust
 messages: ruster_core::message::MessageLog::new(),
 messages_buf: None,
 ```
 
-- [ ] **Step 3: Add `ensure_messages_buffer()` method**
+- **Step 3: Add `ensure_messages_buffer()` method**
 
 ```rust
 /// Ensure the `*messages*` buffer exists, returning its id.
@@ -486,7 +498,7 @@ fn ensure_messages_buffer(&mut self) -> BufferId {
 }
 ```
 
-- [ ] **Step 4: Add `open_messages()` and `refresh_messages_buffer()` methods**
+- **Step 4: Add `open_messages()` and `refresh_messages_buffer()` methods**
 
 ```rust
 /// Open the messages buffer in the active window.
@@ -522,7 +534,7 @@ messages_filter_source: Option<ruster_core::message::MessageSource>,
 messages_filter_level: Option<ruster_core::message::MessageLevel>,
 ```
 
-- [ ] **Step 5: Wire echo messages into the log**
+- **Step 5: Wire echo messages into the log**
 
 Wherever `self.message = Some(...)` is set, also push to the message log. Add a helper:
 ```rust
@@ -538,7 +550,7 @@ self.push_message(MessageLevel::Info, MessageSource::Echo, "message text".into()
 self.message = Some("message text".to_string());
 ```
 
-- [ ] **Step 6: Wire build/test/task runner output into the log**
+- **Step 6: Wire build/test/task runner output into the log**
 
 In `drain_build_runner()`, after each `RunnerMsg::Line(l)` is appended to `self.runner_output`, also push:
 ```rust
@@ -559,7 +571,7 @@ let level = if code == Some(0) { MessageLevel::Success } else { MessageLevel::Er
 self.push_message(level, MessageSource::Build, format!("build exited with code {:?}", code));
 ```
 
-- [ ] **Step 7: Add `:messages` command and keybinding**
+- **Step 7: Add `:messages` command and keybinding**
 
 In `parse_cmdline()`:
 ```rust
@@ -588,7 +600,7 @@ In `apply_leader_action()`:
 LeaderAction::Messages => self.open_messages(),
 ```
 
-- [ ] **Step 8: Add messages filter command support**
+- **Step 8: Add messages filter command support**
 
 In the messages buffer, `:filter` or `:messages lsp` style filtering. Add parsing:
 ```rust
@@ -604,7 +616,7 @@ In the messages buffer, `:filter` or `:messages lsp` style filtering. Add parsin
 
 Add `CmdAction::MessagesFilter(String)` and handle it by setting `messages_filter_source`/`messages_filter_level` then refreshing.
 
-- [ ] **Step 9: Run tests**
+- **Step 9: Run tests**
 
 ```bash
 cargo build && cargo test
@@ -612,11 +624,11 @@ cargo build && cargo test
 
 Expected: Build and all tests pass.
 
-- [ ] **Step 10: Update keybindings docs**
+- **Step 10: Update keybindings docs**
 
 Update `docs/keybindings.md` and `docs/config-reference.md` with the new `:messages` command and `SPC o m` binding.
 
-- [ ] **Step 11: Commit**
+- **Step 11: Commit**
 
 ```bash
 git add crates/ruster-tui/src/app.rs docs/keybindings.md docs/config-reference.md

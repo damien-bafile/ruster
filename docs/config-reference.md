@@ -11,7 +11,7 @@ macOS** (or `$XDG_CONFIG_HOME/ruster/` if set), `%APPDATA%\ruster\` on Windows:
 
 ```lua
 -- config.lua (generated; grouped by area)
-ruster.config.general  = { tabstop = 4, editmode = "neovim", theme = "default" }
+ruster.config.general  = { tabstop = 4, editmode = "neovim", theme = "catppuccin-mocha" }
 ruster.config.gui      = { font_size = 20, cursor_kind = "block" }
 ruster.config.gutter   = { number = false, relativenumber = false }
 ruster.config.whichkey = { enabled = true, timeoutlen = 300 }
@@ -40,7 +40,8 @@ Launching `ruster <directory>` opens the file explorer (dired) at that location.
 
 Colors come from a **theme**, not individual settings. Built-in themes (`default`,
 `gruvbox`, `tokyonight`, `nord`, `catppuccin-mocha`, `starship`) are written to
-`~/.config/ruster/themes/<name>.lua` on first run; pick one with `general.theme = "gruvbox"`. Each theme file is a Lua chunk
+`~/.config/ruster/themes/<name>.lua` on first run. **`catppuccin-mocha` is the
+default**; pick another with `general.theme = "gruvbox"`. Each theme file is a Lua chunk
 returning a palette you can edit or copy:
 
 ```lua
@@ -141,7 +142,7 @@ Keys are addressed as `group.key`.
 | `general.editmode` | enum | "neovim" | Editing paradigm: `neovim` (modal) or `emacs` (modeless) |
 | `general.editorconfig` | boolean | true | Honor project `.editorconfig` files |
 | `general.line_ending` | enum | "lf" | Default line ending for new files: `lf` or `crlf` |
-| `general.theme` | string | "default" | Theme name (see [Themes](#themes)) |
+| `general.theme` | string | "catppuccin-mocha" | Theme name (see [Themes](#themes)) |
 | `gui.font` | string | _(auto)_ | GUI font: absolute path or a font-dir filename. Unset tries common Nerd/mono fonts. **A Nerd Font is required for icon glyphs** — see [GUI font & icons](#gui-font--icons) |
 | `gui.font_size` | integer | 20 | Glyph size in px |
 | `gui.line_height` | integer | 24 | Row height in px |
@@ -159,8 +160,9 @@ Keys are addressed as `group.key`.
 | `lsp.format_on_save` | boolean | false | Format via LSP before writing on `:w` |
 | `lsp.diagnostics` / `hover` / `autostart` | boolean | true | LSP feature toggles |
 | `terminal.shell` | string | _(platform)_ | `:term` program. Unset → `$SHELL` / `%COMSPEC%` (→ `/bin/sh` / `cmd.exe`) |
-| `terminal.scrollback` | integer | 10000 | Terminal scrollback lines |
+| `terminal.scrollback` | integer | 10000 | Lines of history retained; reachable in Terminal-Normal |
 | `terminal.default_mode` | enum | "insert" | New terminal starts in `insert` or `normal` |
+| `terminal.escape` | string | `<C-\>` | Key that leaves Terminal-Insert. `<Esc>` gives evil-style controls; see below |
 | `dired.show_hidden` | boolean | false | Show dotfiles in the file explorer |
 | `sidebar.auto_open` | boolean | false | Open the sidebar automatically on startup |
 | `noice.mini` | boolean | true | Show transient toasts in the cmdline row |
@@ -241,10 +243,29 @@ terminal emulator's font instead, not this setting.
 `:term` (or `:terminal`) opens a shell in the current window. It has two modes like
 Neovim's terminal: **Terminal-Insert** (keys go to the shell) and **Terminal-Normal**
 (`Ctrl-\`), where the output is mirrored into a read-only buffer so vim motions, visual
-selection and yank work over it; `i` / `a` / `Enter` resume the shell. The terminal
-resizes to its window automatically and is torn down on quit. See
+selection and yank work over it; `i` / `a` / `I` / `A` / `Enter` resume the shell. The
+terminal resizes to its window automatically and is torn down on quit. See
 [keybindings.md](keybindings.md) for the full key list and [windows.md](windows.md) for
 the Windows/ConPTY requirements.
+
+### Choosing the escape key
+
+`terminal.escape` names the key that leaves Terminal-Insert, in the same
+notation as `ruster.keymap.set`:
+
+```lua
+ruster.config.terminal = { escape = "<Esc>" }   -- evil / vterm-style
+```
+
+The default `<C-\>` keeps `Esc` available to programs running *inside* the
+shell — vim, less, fzf — which is why Neovim and emacs-libvterm both default
+away from `Esc`. Binding `<Esc>` gives you modal switching that matches the rest
+of the editor, at the cost of never being able to send an `Esc` to the shell.
+`<C-o>` and `<C-]>` are middle grounds.
+
+One quirk worth knowing: in a terminal, `Ctrl-\` and `Ctrl-4` are the *same
+byte* (`0x1C`), so both leave insert when `escape` is `<C-\>`. Nothing can tell
+them apart without the kitty keyboard protocol, which ruster does not request.
 
 > **Keys & commands:** all keybindings and `:` commands live in the
 > [Commands & Keybindings reference](keybindings.md). This page covers only the

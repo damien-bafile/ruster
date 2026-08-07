@@ -1,5 +1,17 @@
 # Animation System Implementation Plan
 
+> **Status:** delivered; boxes resolved 2026-08-07.
+>
+> This plan was executed but never ticked as it went, leaving 22 boxes
+> that read as outstanding work. They are **plain bullets now, not back-ticked**:
+> a box ticked long after the fact asserts a verification that did not happen,
+> and this tree has already been bitten by exactly that. The bullets stand as a
+> record of what was built.
+>
+> Evidence it shipped: all 15 identifiers this plan names in backticks exist in
+> the tree, and which-key's slide and the smooth cursor both animate from `FrameState`; `whichkey-gui.png` catches the panel mid-life.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Expose per-frame delta to Lua and add Neovide-style smooth cursor animation in GUI mode.
@@ -31,7 +43,7 @@
 - Produces: `ruster.on("Frame", function(dt) end)` — fires with dt
 - Produces: `Config.cursor_anim_enabled: bool`, `Config.cursor_anim_speed: f32`
 
-- [ ] **Step 1: Add config fields**
+- **Step 1: Add config fields**
 
 In `crates/ruster-lua/src/config.rs`, add to `Config`:
 ```rust
@@ -45,7 +57,7 @@ cursor_anim_enabled: true,
 cursor_anim_speed: 12.0,
 ```
 
-- [ ] **Step 2: Add current_dt + set_frame_dt to LuaRuntime**
+- **Step 2: Add current_dt + set_frame_dt to LuaRuntime**
 
 In `crates/ruster-lua/src/runtime.rs`, add field:
 ```rust
@@ -66,7 +78,7 @@ pub fn set_frame_dt(&self, dt: f64) {
 }
 ```
 
-- [ ] **Step 3: Add get_frame_delta to API table**
+- **Step 3: Add get_frame_delta to API table**
 
 In `crates/ruster-lua/src/api.rs`, inside the `api` table creation block (after `nvim_win_set_cursor`), add:
 ```rust
@@ -81,7 +93,7 @@ let get_frame_delta = runtime.lua.create_function(move |_, ()| {
 api.set("get_frame_delta", get_frame_delta)?;
 ```
 
-- [ ] **Step 4: Add config read for new fields**
+- **Step 4: Add config read for new fields**
 
 In `crates/ruster-lua/src/runtime.rs`, in the `config()` method, add after existing fields:
 ```rust
@@ -89,14 +101,14 @@ cursor_anim_enabled: cfg.get("cursor_anim_enabled").unwrap_or(defaults.cursor_an
 cursor_anim_speed: cfg.get("cursor_anim_speed").unwrap_or(defaults.cursor_anim_speed),
 ```
 
-- [ ] **Step 5: Run existing tests**
+- **Step 5: Run existing tests**
 
 ```bash
 cargo test -p ruster-lua
 ```
 Expected: all pass
 
-- [ ] **Step 6: Commit**
+- **Step 6: Commit**
 
 ```bash
 git add crates/ruster-lua/src/config.rs crates/ruster-lua/src/runtime.rs crates/ruster-lua/src/api.rs
@@ -118,7 +130,7 @@ git commit -m "feat: add frame delta API to Lua (get_frame_delta, Frame event, c
 - Produces: `App.cursor_anim: CursorAnim`
 - Produces: `App.has_smooth_cursor: bool`
 
-- [ ] **Step 1: Add cursor_smooth to EditorState**
+- **Step 1: Add cursor_smooth to EditorState**
 
 In `crates/ruster-render/src/lib.rs`, add to `EditorState` struct after `cursor_visible`:
 ```rust
@@ -127,7 +139,7 @@ pub cursor_smooth: Option<(f32, f32)>,
 
 Update the test in the same file to include `cursor_smooth: None` in the EditorState constructor.
 
-- [ ] **Step 2: Add CursorAnim struct and update method to app.rs**
+- **Step 2: Add CursorAnim struct and update method to app.rs**
 
 In `crates/ruster-tui/src/app.rs`, add after the `FrameTimer` struct:
 ```rust
@@ -162,7 +174,7 @@ impl CursorAnim {
 }
 ```
 
-- [ ] **Step 3: Add fields to App struct**
+- **Step 3: Add fields to App struct**
 
 Add to `App` struct:
 ```rust
@@ -184,7 +196,7 @@ has_smooth_cursor: false,
 cursor_anim,
 ```
 
-- [ ] **Step 4: Update render() to pass cursor_smooth**
+- **Step 4: Update render() to pass cursor_smooth**
 
 In `App::render()`, after computing `line` and `col` from `head`, add:
 ```rust
@@ -200,7 +212,7 @@ Add to `EditorState`:
 cursor_smooth,
 ```
 
-- [ ] **Step 5: Add cursor_line_col helper to App**
+- **Step 5: Add cursor_line_col helper to App**
 
 In `crates/ruster-tui/src/app.rs`, add method:
 ```rust
@@ -214,7 +226,7 @@ fn cursor_line_col(&self) -> (u16, u16) {
 }
 ```
 
-- [ ] **Step 6: Make has_smooth_cursor pub**
+- **Step 6: Make has_smooth_cursor pub**
 
 In the `App` struct, change:
 ```rust
@@ -225,7 +237,7 @@ to:
 pub has_smooth_cursor: bool,
 ```
 
-- [ ] **Step 7: Wire dt + cursor anim in run_gui()**
+- **Step 7: Wire dt + cursor anim in run_gui()**
 
 In `App::run_gui()`, add at top of the loop, before input polling:
 ```rust
@@ -241,7 +253,7 @@ let (line, col) = self.cursor_line_col();
 self.cursor_anim.update(dt, col, line, self.config.cursor_anim_enabled, self.config.cursor_anim_speed);
 ```
 
-- [ ] **Step 8: Wire dt + cursor anim in async_run()**
+- **Step 8: Wire dt + cursor anim in async_run()**
 
 In `App::async_run()`, find `let _dt = self.timer.tick();` and change to `let dt = self.timer.tick();`. After the tick and before `self.render()`, add:
 ```rust
@@ -252,7 +264,7 @@ let (line, col) = self.cursor_line_col();
 self.cursor_anim.update(dt, col, line, self.config.cursor_anim_enabled, self.config.cursor_anim_speed);
 ```
 
-- [ ] **Step 9: Wire dt in sync run()**
+- **Step 9: Wire dt in sync run()**
 
 In `App::run()`, add at top of the loop, before `self.render()`:
 ```rust
@@ -263,14 +275,14 @@ self.lua.set_frame_dt(secs);
 
 (No cursor anim in sync TUI mode, but dt should still flow to Lua.)
 
-- [ ] **Step 10: Run tests**
+- **Step 10: Run tests**
 
 ```bash
 cargo test
 ```
 Expected: all 100+ tests pass. (EditorState test now includes `cursor_smooth: None`.)
 
-- [ ] **Step 11: Commit**
+- **Step 11: Commit**
 
 ```bash
 git add crates/ruster-render/src/lib.rs crates/ruster-tui/src/app.rs
@@ -285,7 +297,7 @@ git commit -m "feat: add cursor_smooth to EditorState, CursorAnim, wire frame de
 - Modify: `crates/ruster-render-raylib/src/lib.rs` — use `cursor_smooth`
 - Modify: `crates/ruster-bin/src/main.rs` — set `has_smooth_cursor = true`
 
-- [ ] **Step 1: Offset cursor by cursor_smooth in raylib renderer**
+- **Step 1: Offset cursor by cursor_smooth in raylib renderer**
 
 In `crates/ruster-render-raylib/src/lib.rs`, in `render_frame()`, replace the cursor drawing section:
 
@@ -310,28 +322,28 @@ if state.cursor_visible {
 }
 ```
 
-- [ ] **Step 2: Set has_smooth_cursor in main.rs**
+- **Step 2: Set has_smooth_cursor in main.rs**
 
 In `crates/ruster-bin/src/main.rs`, after `app.renderer = renderer;`, add:
 ```rust
 app.has_smooth_cursor = true;
 ```
 
-- [ ] **Step 3: Check compile**
+- **Step 3: Check compile**
 
 ```bash
 cargo check
 ```
 Expected: no errors
 
-- [ ] **Step 4: Run tests**
+- **Step 4: Run tests**
 
 ```bash
 cargo test
 ```
 Expected: all pass
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add crates/ruster-render-raylib/src/lib.rs crates/ruster-bin/src/main.rs

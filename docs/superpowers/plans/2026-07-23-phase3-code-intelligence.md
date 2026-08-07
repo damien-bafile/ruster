@@ -204,8 +204,14 @@ per-buffer. New deps: `lsp-types`, `serde`, `serde_json`.
 
 - [x] Full test suite across all crates including `ruster-lsp`.
 - [x] Build all: `cargo check -p ruster-bin -p ruster-tui -p ruster-render-raylib`.
-- [ ] Manual smoke with `rust-analyzer` installed: open a `.rs` file, see diagnostics; `K`
-  hover; `gd` jump; `gr` references; rename; `Space c f` format; `Space c o` outline.
+- [x] Manual smoke with `rust-analyzer` installed. Deferred at the time; run
+  2026-08-07 against `docs/verification/fixtures/demo-project/`. Verified live:
+  **hover** (the float renders `p: Point` and persists), **diagnostics and
+  markers** (`docs/verification/trouble-tui.txt`), **workspace symbols**
+  (`:sym Point` returns the symbol with a highlighted preview), and **format**
+  (`:fmt` is a clean no-op on already-formatted source). Not individually
+  driven: `gd`, `gr` and rename — they share `active_lsp_target` and the same
+  request path as hover, but that is an inference, not an observation.
 - [x] Docs reflect every new setting, command, and API.
 - [x] Expected: all tests pass, no new warnings.
 

@@ -1,5 +1,17 @@
 # `:e` Command & Cmdline Path Completion — Implementation Plan
 
+> **Status:** delivered; boxes resolved 2026-08-07.
+>
+> This plan was executed but never ticked as it went, leaving 48 boxes
+> that read as outstanding work. They are **plain bullets now, not back-ticked**:
+> a box ticked long after the fact asserts a verification that did not happen,
+> and this tree has already been bitten by exactly that. The bullets stand as a
+> record of what was built.
+>
+> Evidence it shipped: all 22 identifiers this plan names in backticks exist in
+> the tree, and `docs/verification/cmdline-{tui.txt,gui.png}` show `:e /tmp/` Tab-completing, driven by real keystrokes in both backends.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Implement `:e <path>` / `:edit <path>` with Tab-based path autocompletion and Shift-Tab picker fallback in the cmdline.
@@ -23,7 +35,7 @@
 - Modify: `crates/ruster-tui/src/app.rs:3141-3233` (parse_cmdline)
 - Modify: `crates/ruster-tui/src/app.rs:563-586` (PALETTE_COMMANDS)
 
-- [ ] **Step 1: Add `OpenFile` variant to `CmdAction`**
+- **Step 1: Add `OpenFile` variant to `CmdAction`**
 
 In `crates/ruster-tui/src/app.rs`, add after the `Sidebar` variant (line 508):
 
@@ -32,7 +44,7 @@ In `crates/ruster-tui/src/app.rs`, add after the `Sidebar` variant (line 508):
     OpenFile(String),
 ```
 
-- [ ] **Step 2: Add `:e` and `:edit` to `parse_cmdline()`**
+- **Step 2: Add `:e` and `:edit` to `parse_cmdline()`**
 
 In the `parse_cmdline()` match block, add before the `_ => Err(...)` fallback (line 3231):
 
@@ -53,7 +65,7 @@ In the `parse_cmdline()` match block, add before the `_ => Err(...)` fallback (l
             }
 ```
 
-- [ ] **Step 3: Add `:e` and `:edit` to `PALETTE_COMMANDS`**
+- **Step 3: Add `:e` and `:edit` to `PALETTE_COMMANDS`**
 
 In `PALETTE_COMMANDS` (line 563), add:
 
@@ -62,12 +74,12 @@ In `PALETTE_COMMANDS` (line 563), add:
     ("edit", "open file by path (alias)"),
 ```
 
-- [ ] **Step 4: Verify it compiles**
+- **Step 4: Verify it compiles**
 
 Run: `cargo build -p ruster-tui 2>&1 | tail -5`
 Expected: compiles with "unused variant `OpenFile`" warning (handled in Task 2).
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add crates/ruster-tui/src/app.rs
@@ -82,7 +94,7 @@ git commit -m "feat: add :e/:edit command parsing with CmdAction::OpenFile"
 - Modify: `crates/ruster-tui/src/app.rs:3235-3314` (apply_cmd)
 - Modify: `crates/ruster-tui/src/app.rs:4680-4704` (open_path area)
 
-- [ ] **Step 1: Add `resolve_path()` helper**
+- **Step 1: Add `resolve_path()` helper**
 
 In `crates/ruster-tui/src/app.rs`, add near the `open_path()` function (around line 4678):
 
@@ -113,7 +125,7 @@ In `crates/ruster-tui/src/app.rs`, add near the `open_path()` function (around l
     }
 ```
 
-- [ ] **Step 2: Handle `CmdAction::OpenFile` in `apply_cmd()`**
+- **Step 2: Handle `CmdAction::OpenFile` in `apply_cmd()`**
 
 In the `apply_cmd()` match block, add after the `Sidebar` arm (line 3312):
 
@@ -124,12 +136,12 @@ In the `apply_cmd()` match block, add after the `Sidebar` arm (line 3312):
             }
 ```
 
-- [ ] **Step 3: Verify it compiles**
+- **Step 3: Verify it compiles**
 
 Run: `cargo build -p ruster-tui 2>&1 | tail -5`
 Expected: clean compile, no warnings.
 
-- [ ] **Step 4: Commit**
+- **Step 4: Commit**
 
 ```bash
 git add crates/ruster-tui/src/app.rs
@@ -144,7 +156,7 @@ git commit -m "feat: implement :e/:edit with resolve_path() helper"
 - Modify: `crates/ruster-tui/src/app.rs:881-999` (App struct)
 - Modify: `crates/ruster-tui/src/app.rs` (App::new or Default impl)
 
-- [ ] **Step 1: Define `CmdlineCompletion` struct**
+- **Step 1: Define `CmdlineCompletion` struct**
 
 In `crates/ruster-tui/src/app.rs`, add before the `App` struct (around line 879):
 
@@ -160,7 +172,7 @@ struct CmdlineCompletion {
 }
 ```
 
-- [ ] **Step 2: Add field to `App` struct**
+- **Step 2: Add field to `App` struct**
 
 In the `App` struct, add after the `pending_macro` field (line 960):
 
@@ -169,7 +181,7 @@ In the `App` struct, add after the `pending_macro` field (line 960):
     cmdline_completion: Option<CmdlineCompletion>,
 ```
 
-- [ ] **Step 3: Initialize in `App::new()`**
+- **Step 3: Initialize in `App::new()`**
 
 Find the `App::new()` function and add the field initialization. Search for `pending_macro:` in the struct literal and add after it:
 
@@ -177,12 +189,12 @@ Find the `App::new()` function and add the field initialization. Search for `pen
             cmdline_completion: None,
 ```
 
-- [ ] **Step 4: Verify it compiles**
+- **Step 4: Verify it compiles**
 
 Run: `cargo build -p ruster-tui 2>&1 | tail -5`
 Expected: clean compile.
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add crates/ruster-tui/src/app.rs
@@ -196,7 +208,7 @@ git commit -m "feat: add CmdlineCompletion state struct to App"
 **Files:**
 - Modify: `crates/ruster-tui/src/app.rs:1685-1696` (Tab handling in handle_key)
 
-- [ ] **Step 1: Add `generate_path_completions()` method**
+- **Step 1: Add `generate_path_completions()` method**
 
 In `crates/ruster-tui/src/app.rs`, add near the other helper methods:
 
@@ -248,7 +260,7 @@ In `crates/ruster-tui/src/app.rs`, add near the other helper methods:
     }
 ```
 
-- [ ] **Step 2: Add `apply_completion_candidate()` method**
+- **Step 2: Add `apply_completion_candidate()` method**
 
 ```rust
     /// Replace the path portion of the cmdline with the selected completion.
@@ -265,7 +277,7 @@ In `crates/ruster-tui/src/app.rs`, add near the other helper methods:
     }
 ```
 
-- [ ] **Step 3: Rework Tab handler in `handle_key()`**
+- **Step 3: Rework Tab handler in `handle_key()`**
 
 Replace the existing Tab handler (lines 1685-1696) with:
 
@@ -340,12 +352,12 @@ Replace the existing Tab handler (lines 1685-1696) with:
         }
 ```
 
-- [ ] **Step 4: Verify it compiles**
+- **Step 4: Verify it compiles**
 
 Run: `cargo build -p ruster-tui 2>&1 | tail -5`
 Expected: clean compile. Check that `BackTab` is a valid `KeyEvent` variant (it is in crossterm).
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add crates/ruster-tui/src/app.rs
@@ -359,13 +371,13 @@ git commit -m "feat: implement Tab cycling and Shift-Tab picker for :e path comp
 **Files:**
 - Modify: `crates/ruster-tui/src/app.rs` (imports)
 
-- [ ] **Step 1: Check if `BackTab` is imported**
+- **Step 1: Check if `BackTab` is imported**
 
 Run: `grep -n 'BackTab\|use crossterm' crates/ruster-tui/src/app.rs | head -10`
 
 If `BackTab` is not in scope, the crossterm `KeyCode::BackTab` needs to be mapped to a `ruster_key::KeyEvent`. Check how `crossterm_to_ruster_key` maps keys.
 
-- [ ] **Step 2: Add mapping if needed**
+- **Step 2: Add mapping if needed**
 
 Find the `crossterm_to_ruster_key` function and add:
 
@@ -375,12 +387,12 @@ Find the `crossterm_to_ruster_key` function and add:
 
 Check `crates/ruster-core/src/key.rs` for the `KeyEvent` enum to see if `BackTab` exists, or if it needs to be added.
 
-- [ ] **Step 3: Verify it compiles**
+- **Step 3: Verify it compiles**
 
 Run: `cargo build -p ruster-tui 2>&1 | tail -5`
 Expected: clean compile.
 
-- [ ] **Step 4: Commit**
+- **Step 4: Commit**
 
 ```bash
 git add crates/ruster-tui/src/app.rs crates/ruster-core/src/key.rs
@@ -394,7 +406,7 @@ git commit -m "feat: add BackTab key mapping for Shift-Tab path completion"
 **Files:**
 - Modify: `crates/ruster-tui/src/app.rs` (handle_key, in Cmdline mode)
 
-- [ ] **Step 1: Handle Enter in completion mode**
+- **Step 1: Handle Enter in completion mode**
 
 Find the existing Enter handler in `VimMode::Cmdline` (in the vim layer at `crates/ruster-core/src/vim/mod.rs` line 198). The `Action::CmdlineResult` is emitted and handled at app.rs line 1736. No changes needed for Enter — when the user presses Enter, `parse_cmdline` will parse the completed `:e <full-path>` and `apply_cmd` will open it. The `cmdline_completion` state will be cleared by the next keypress logic.
 
@@ -412,7 +424,7 @@ However, we should clear completion state when the cmdline result is processed. 
         }
 ```
 
-- [ ] **Step 2: Handle Esc in completion mode**
+- **Step 2: Handle Esc in completion mode**
 
 The existing Esc handler in the vim layer (`crates/ruster-core/src/vim/mod.rs` line 193) clears the cmdline and returns to Normal. We need to clear `cmdline_completion` when Esc is processed. Add at the beginning of the `VimMode::Cmdline` Esc handling in vim/mod.rs — but since we don't have direct access there, handle it in `handle_key` instead. When `vim.mode` transitions from Cmdline to Normal, clear the state.
 
@@ -428,12 +440,12 @@ A simpler approach: add a guard at the top of `handle_key` after `self.vim.handl
 
 Place this right after the `self.vim.handle(key, ...)` call (around line 1575).
 
-- [ ] **Step 3: Verify it compiles**
+- **Step 3: Verify it compiles**
 
 Run: `cargo build -p ruster-tui 2>&1 | tail -5`
 Expected: clean compile.
 
-- [ ] **Step 4: Commit**
+- **Step 4: Commit**
 
 ```bash
 git add crates/ruster-tui/src/app.rs
@@ -448,7 +460,7 @@ git commit -m "feat: clear cmdline completion state on Enter/Esc/leave"
 - Modify: `crates/ruster-tui/src/widgets.rs:604`
 - Modify: `crates/ruster-render-raylib/src/lib.rs:375`
 
-- [ ] **Step 1: Update TUI welcome screen**
+- **Step 1: Update TUI welcome screen**
 
 In `crates/ruster-tui/src/widgets.rs` line 604, change:
 
@@ -462,7 +474,7 @@ to:
             (":e <path>", "Open file (Tab to complete)"),
 ```
 
-- [ ] **Step 2: Update Raylib welcome screen**
+- **Step 2: Update Raylib welcome screen**
 
 In `crates/ruster-render-raylib/src/lib.rs` line 375, change:
 
@@ -476,12 +488,12 @@ to:
 (":e <path>", "Open file (Tab to complete)")
 ```
 
-- [ ] **Step 3: Verify it compiles**
+- **Step 3: Verify it compiles**
 
 Run: `cargo build -p ruster-tui -p ruster-render-raylib 2>&1 | tail -5`
 Expected: clean compile.
 
-- [ ] **Step 4: Commit**
+- **Step 4: Commit**
 
 ```bash
 git add crates/ruster-tui/src/widgets.rs crates/ruster-render-raylib/src/lib.rs
@@ -495,7 +507,7 @@ git commit -m "chore: update welcome screen hints for :e completion"
 **Files:**
 - Modify: `crates/ruster-tui/src/app.rs:563-586` (PALETTE_COMMANDS)
 
-- [ ] **Step 1: Verify palette entries**
+- **Step 1: Verify palette entries**
 
 Already added in Task 1 Step 3. Verify they're present:
 
@@ -504,7 +516,7 @@ Already added in Task 1 Step 3. Verify they're present:
     ("edit", "open file by path (alias)"),
 ```
 
-- [ ] **Step 2: Commit (if not already done)**
+- **Step 2: Commit (if not already done)**
 
 ```bash
 git diff --cached crates/ruster-tui/src/app.rs
@@ -520,39 +532,39 @@ git commit -m "chore: add :e/:edit to command palette"
 **Files:**
 - Test: manual or integration test
 
-- [ ] **Step 1: Build and run the editor**
+- **Step 1: Build and run the editor**
 
 ```bash
 cargo run -p ruster-tui
 ```
 
-- [ ] **Step 2: Test `:e` with a relative path**
+- **Step 2: Test `:e` with a relative path**
 
 Type `:e cr<Tab>` — should auto-complete to `crates/` (directory with trailing `/`).
 Type `:e crates/<Tab>` — should show contents of `crates/`.
 Type `:e crates/ruster-core/src/<Tab>` — should show files in that directory.
 
-- [ ] **Step 3: Test Shift-Tab**
+- **Step 3: Test Shift-Tab**
 
 Type `:e cr<Tab>`, then `<S-Tab>` — should open a picker with the completion candidates.
 
-- [ ] **Step 4: Test bare `:e`**
+- **Step 4: Test bare `:e`**
 
 Type `:e<Enter>` — should open the file picker.
 
-- [ ] **Step 5: Test Esc cancels**
+- **Step 5: Test Esc cancels**
 
 Type `:e cr<Tab>`, then `<Esc>` — should clear completion and return to Normal mode.
 
-- [ ] **Step 6: Test Enter accepts**
+- **Step 6: Test Enter accepts**
 
 Type `:e cr<Tab><Tab><Enter>` — should open the second matching file.
 
-- [ ] **Step 7: Test `~` expansion**
+- **Step 7: Test `~` expansion**
 
 Type `:e ~/D<Tab>` — should show files in `~/` starting with `D`.
 
-- [ ] **Step 8: Run existing tests**
+- **Step 8: Run existing tests**
 
 ```bash
 cargo test --workspace
@@ -560,7 +572,7 @@ cargo test --workspace
 
 Expected: all existing tests pass (no regressions).
 
-- [ ] **Step 9: Commit final state**
+- **Step 9: Commit final state**
 
 ```bash
 git add -A
@@ -578,7 +590,7 @@ git commit -m "feat: :e/:edit command with Tab path completion"
 
 This task adds configurable trigger keys for cmdline completion. Skip if you want to ship with hardcoded Tab/Shift-Tab.
 
-- [ ] **Step 1: Add schema entries**
+- **Step 1: Add schema entries**
 
 In `crates/ruster-lua/src/schema.rs`, add a new `cmdline` group after the `dired` section (line 248):
 
@@ -588,7 +600,7 @@ In `crates/ruster-lua/src/schema.rs`, add a new `cmdline` group after the `dired
     add("cmdline", "picker_trigger", "Picker key", Enum(&["shift-tab"]), e("shift-tab"), "Key to open completion picker in :e");
 ```
 
-- [ ] **Step 2: Add Config fields**
+- **Step 2: Add Config fields**
 
 In `crates/ruster-lua/src/config.rs`, add to the `Config` struct after `dired_show_hidden` (line 432):
 
@@ -599,7 +611,7 @@ In `crates/ruster-lua/src/config.rs`, add to the `Config` struct after `dired_sh
     pub cmdline_picker_trigger: String,
 ```
 
-- [ ] **Step 3: Add to `to_settings()`**
+- **Step 3: Add to `to_settings()`**
 
 In `Config::to_settings()`, add after the `dired_show_hidden` entry (line 478):
 
@@ -608,7 +620,7 @@ In `Config::to_settings()`, add after the `dired_show_hidden` entry (line 478):
             (("cmdline", "picker_trigger"), Enum(self.cmdline_picker_trigger.clone())),
 ```
 
-- [ ] **Step 4: Set defaults in Config loading**
+- **Step 4: Set defaults in Config loading**
 
 Find where `Config` is constructed from Lua (search for `dired_show_hidden` in config.rs) and add defaults:
 
@@ -617,12 +629,12 @@ Find where `Config` is constructed from Lua (search for `dired_show_hidden` in c
             cmdline_picker_trigger: "shift-tab".to_string(),
 ```
 
-- [ ] **Step 5: Verify it compiles**
+- **Step 5: Verify it compiles**
 
 Run: `cargo build -p ruster-tui 2>&1 | tail -5`
 Expected: clean compile.
 
-- [ ] **Step 6: Commit**
+- **Step 6: Commit**
 
 ```bash
 git add crates/ruster-lua/src/schema.rs crates/ruster-lua/src/config.rs

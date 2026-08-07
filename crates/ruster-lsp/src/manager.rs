@@ -3,7 +3,7 @@
 //! ready, and routes incoming messages.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
@@ -11,6 +11,28 @@ use crate::client::LspClient;
 use crate::protocol;
 use crate::registry::{default_server, ServerConfig};
 use crate::transport::ServerMessage;
+
+/// Identifies one server process: a language, in a project root.
+///
+/// The root is part of the identity, not a start-up detail. A server is
+/// initialised against exactly one workspace and answers `null` for anything
+/// outside it, so two projects open at once need two servers even when they
+/// share a language — keying on the language alone silently pointed the second
+/// project's files at the first project's server.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ServerKey {
+    pub lang: String,
+    pub root: PathBuf,
+}
+
+impl ServerKey {
+    pub fn new(lang: &str, root: &Path) -> Self {
+        ServerKey {
+            lang: lang.to_string(),
+            root: root.to_path_buf(),
+        }
+    }
+}
 
 enum State {
     /// Waiting for the response to the `initialize` request with this id.
@@ -27,15 +49,17 @@ struct Managed {
     queued: Vec<(String, Value)>,
 }
 
-/// A message from a server, tagged with the language whose server sent it.
+/// A message from a server, tagged with the server that sent it.
 pub struct RoutedMessage {
-    pub lang: String,
+    pub key: ServerKey,
     pub message: ServerMessage,
 }
 
 #[derive(Default)]
 pub struct LspManager {
-    clients: HashMap<String, Managed>,
+    clients: HashMap<ServerKey, Managed>,
+    /// Command overrides stay keyed by language: `ruster.lsp.servers` names a
+    /// program per language, not per project.
     overrides: HashMap<String, ServerConfig>,
 }
 
@@ -56,14 +80,16 @@ impl LspManager {
             .or_else(|| default_server(lang))
     }
 
-    pub fn has_client(&self, lang: &str) -> bool {
-        self.clients.contains_key(lang)
+    pub fn has_client(&self, key: &ServerKey) -> bool {
+        self.clients.contains_key(key)
     }
 
-    /// Ensure a server for `lang` is spawned and initializing. Returns whether a
-    /// client is now present (false if there's no server or spawning failed).
+    /// Ensure a server for `lang` rooted at `root` is spawned and initializing.
+    /// Returns whether a client is now present (false if there's no server for
+    /// the language or spawning failed).
     pub fn ensure(&mut self, lang: &str, root: &Path) -> bool {
-        if self.clients.contains_key(lang) {
+        let key = ServerKey::new(lang, root);
+        if self.clients.contains_key(&key) {
             return true;
         }
         let cfg = match self.server_for(lang) {
@@ -74,7 +100,7 @@ impl LspManager {
             Ok(mut client) => {
                 let init_id = client.request("initialize", protocol::initialize_params(root));
                 self.clients.insert(
-                    lang.to_string(),
+                    key,
                     Managed {
                         client,
                         state: State::Initializing { init_id },
@@ -88,8 +114,8 @@ impl LspManager {
     }
 
     /// Send a notification now if the server is ready, else queue it.
-    fn notify_or_queue(&mut self, lang: &str, method: &str, params: Value) {
-        if let Some(m) = self.clients.get_mut(lang) {
+    fn notify_or_queue(&mut self, key: &ServerKey, method: &str, params: Value) {
+        if let Some(m) = self.clients.get_mut(key) {
             match m.state {
                 State::Ready => m.client.notify(method, params),
                 State::Initializing { .. } => m.queued.push((method.to_string(), params)),
@@ -97,33 +123,40 @@ impl LspManager {
         }
     }
 
-    pub fn did_open(&mut self, lang: &str, uri: &str, language_id: &str, version: i64, text: &str) {
+    pub fn did_open(
+        &mut self,
+        key: &ServerKey,
+        uri: &str,
+        language_id: &str,
+        version: i64,
+        text: &str,
+    ) {
         self.notify_or_queue(
-            lang,
+            key,
             "textDocument/didOpen",
             protocol::did_open_params(uri, language_id, version, text),
         );
     }
 
-    pub fn did_change(&mut self, lang: &str, uri: &str, version: i64, text: &str) {
+    pub fn did_change(&mut self, key: &ServerKey, uri: &str, version: i64, text: &str) {
         self.notify_or_queue(
-            lang,
+            key,
             "textDocument/didChange",
             protocol::did_change_params(uri, version, text),
         );
     }
 
-    pub fn did_close(&mut self, lang: &str, uri: &str) {
+    pub fn did_close(&mut self, key: &ServerKey, uri: &str) {
         self.notify_or_queue(
-            lang,
+            key,
             "textDocument/didClose",
             protocol::did_close_params(uri),
         );
     }
 
-    /// Send a request to `lang`'s server if ready; returns the request id.
-    pub fn request(&mut self, lang: &str, method: &str, params: Value) -> Option<i64> {
-        let m = self.clients.get_mut(lang)?;
+    /// Send a request to that server if ready; returns the request id.
+    pub fn request(&mut self, key: &ServerKey, method: &str, params: Value) -> Option<i64> {
+        let m = self.clients.get_mut(key)?;
         if matches!(m.state, State::Ready) {
             Some(m.client.request(method, params))
         } else {
@@ -136,7 +169,7 @@ impl LspManager {
     /// requests and notifications like diagnostics) for the app to dispatch.
     pub fn poll(&mut self) -> Vec<RoutedMessage> {
         let mut out = Vec::new();
-        for (lang, m) in self.clients.iter_mut() {
+        for (key, m) in self.clients.iter_mut() {
             for msg in m.client.poll() {
                 match msg {
                     ServerMessage::Response { id, .. } if matches!(m.state, State::Initializing { init_id } if init_id == id) =>
@@ -155,7 +188,7 @@ impl LspManager {
                         // Not surfaced to the app.
                     }
                     other => out.push(RoutedMessage {
-                        lang: lang.clone(),
+                        key: key.clone(),
                         message: other,
                     }),
                 }
@@ -201,6 +234,37 @@ mod tests {
         let mut mgr = LspManager::new();
         // No default + no override for this language.
         assert!(!mgr.ensure("brainfuck", Path::new("/tmp")));
-        assert!(!mgr.has_client("brainfuck"));
+        assert!(!mgr.has_client(&ServerKey::new("brainfuck", Path::new("/tmp"))));
+    }
+
+    /// A server is identified by its root as well as its language: two
+    /// projects open in one session get one server each, and a file from the
+    /// second is no longer sent to the first — which answers `null` for
+    /// anything outside the workspace it loaded.
+    #[test]
+    fn the_same_language_in_two_projects_is_two_servers() {
+        let a = ServerKey::new("rust", Path::new("/a"));
+        let b = ServerKey::new("rust", Path::new("/b"));
+        assert_ne!(a, b);
+
+        let mut mgr = LspManager::new();
+        let (_tx, rx) = std::sync::mpsc::channel();
+        mgr.clients.insert(
+            a.clone(),
+            Managed {
+                client: LspClient::from_parts(Box::new(std::io::sink()), rx),
+                state: State::Ready,
+                queued: Vec::new(),
+            },
+        );
+        assert!(mgr.has_client(&a));
+        assert!(
+            !mgr.has_client(&b),
+            "the second project must not reuse the first's server"
+        );
+        assert!(
+            !mgr.has_client(&ServerKey::new("python", Path::new("/a"))),
+            "nor may another language in the same root"
+        );
     }
 }

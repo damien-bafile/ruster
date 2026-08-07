@@ -1,0 +1,72 @@
+LeaderNode::Action("buffers", LeaderAction::Buffers
+LeaderNode::Action("build", LeaderAction::Build
+LeaderNode::Action("close window", LeaderAction::CloseWindow
+LeaderNode::Action("commit", LeaderAction::GitCommit
+LeaderNode::Action("continue", LeaderAction::DebugContinue
+LeaderNode::Action("dashboard", LeaderAction::Dashboard
+LeaderNode::Action("delete buffer", LeaderAction::BufferDelete
+LeaderNode::Action("diagnostics", LeaderAction::Diagnostics
+LeaderNode::Action("diff vs HEAD", LeaderAction::Diffview
+LeaderNode::Action("document symbols", LeaderAction::DocumentSymbol
+LeaderNode::Action("explorer (dired)", LeaderAction::Explorer
+LeaderNode::Action("files", LeaderAction::Files
+LeaderNode::Action("focus down", LeaderAction::Focus
+LeaderNode::Action("focus left", LeaderAction::Focus
+LeaderNode::Action("focus right", LeaderAction::Focus
+LeaderNode::Action("focus up", LeaderAction::Focus
+LeaderNode::Action("format", LeaderAction::Format
+LeaderNode::Action("fullscreen", LeaderAction::Fullscreen
+LeaderNode::Action("go to definition", LeaderAction::Definition
+LeaderNode::Action("grep (ripgrep)", LeaderAction::Grep
+LeaderNode::Action("help", LeaderAction::Help
+LeaderNode::Action("hover", LeaderAction::Hover
+LeaderNode::Action("incoming calls", LeaderAction::IncomingCalls
+LeaderNode::Action("mason (tools)", LeaderAction::Mason
+LeaderNode::Action("messages", LeaderAction::Messages
+LeaderNode::Action("notifications", LeaderAction::NoicePanel
+LeaderNode::Action("only (close others)", LeaderAction::Only
+LeaderNode::Action("outgoing calls", LeaderAction::OutgoingCalls
+LeaderNode::Action("problem list", LeaderAction::Trouble
+LeaderNode::Action("pull", LeaderAction::GitPull
+LeaderNode::Action("push", LeaderAction::GitPush
+LeaderNode::Action("quit", LeaderAction::Quit
+LeaderNode::Action("references", LeaderAction::References
+LeaderNode::Action("rename", LeaderAction::Rename
+LeaderNode::Action("restore session", LeaderAction::SessionRestore
+LeaderNode::Action("run task", LeaderAction::Tasks
+LeaderNode::Action("save and quit", LeaderAction::SaveAndQuit
+LeaderNode::Action("save session", LeaderAction::SessionSave
+LeaderNode::Action("settings", LeaderAction::Settings
+LeaderNode::Action("split below", LeaderAction::Split
+LeaderNode::Action("split right", LeaderAction::Split
+LeaderNode::Action("staged diff", LeaderAction::GitStaged
+LeaderNode::Action("stage hunk", LeaderAction::GitStageHunk
+LeaderNode::Action("start debugging", LeaderAction::DebugStart
+LeaderNode::Action("status", LeaderAction::GitStatus
+LeaderNode::Action("step into", LeaderAction::DebugStepIn
+LeaderNode::Action("step out", LeaderAction::DebugStepOut
+LeaderNode::Action("step over", LeaderAction::DebugStepOver
+LeaderNode::Action("stop debugging", LeaderAction::DebugStop
+LeaderNode::Action("switch project", LeaderAction::Projects
+LeaderNode::Action("terminal", LeaderAction::Terminal
+LeaderNode::Action("test", LeaderAction::Test
+LeaderNode::Action("themes", LeaderAction::Themes
+LeaderNode::Action("todo markers", LeaderAction::TodoList
+LeaderNode::Action("toggle breakpoint", LeaderAction::DebugToggleBreakpoint
+LeaderNode::Action("toggle line numbers", LeaderAction::ToggleNumber
+LeaderNode::Action("toggle relative numbers", LeaderAction::ToggleRelative
+LeaderNode::Action("toggle sidebar", LeaderAction::Sidebar
+LeaderNode::Action("toggle signs", LeaderAction::GitsignsToggle
+LeaderNode::Group("buffers"
+LeaderNode::Group("code"
+LeaderNode::Group("debug"
+LeaderNode::Group("diagnostics"
+LeaderNode::Group("find"
+LeaderNode::Group("git"
+LeaderNode::Group("open"
+LeaderNode::Group("project"
+LeaderNode::Group("quit"
+LeaderNode::Group("search"
+LeaderNode::Group("session"
+LeaderNode::Group("ui / toggle"
+LeaderNode::Group("windows"

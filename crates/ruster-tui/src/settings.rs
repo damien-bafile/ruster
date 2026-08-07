@@ -708,9 +708,13 @@ mod tests {
     }
 
     fn state_with_syntax(syntax: SyntaxSeed) -> SettingsState {
+        // Named after whatever `Config::default()` actually selects: the colour
+        // rows are built from the *selected* theme's palette, so a fixture that
+        // hard-codes a theme name goes quietly empty when the default changes.
+        let selected = Config::default().theme;
         let palettes = vec![
             (
-                "default".to_string(),
+                selected.clone(),
                 vec![("mauve".to_string(), "#cba6f7".to_string())],
             ),
             (
@@ -725,7 +729,7 @@ mod tests {
             "general",
             "theme",
             vec![
-                ("default".to_string(), "default".to_string()),
+                (selected.clone(), selected),
                 ("gruvbox".to_string(), "gruvbox".to_string()),
             ],
         )];

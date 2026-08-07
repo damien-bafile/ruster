@@ -146,6 +146,34 @@ pub fn default_build_command(root: &Path) -> String {
     }
 }
 
+/// The executable a debug session should launch for `root`, where the project
+/// layout names one.
+///
+/// Cargo only: the `[package] name` from `Cargo.toml`, under `target/debug/`.
+/// The path is returned whether or not it exists — a caller that wants to say
+/// "build it first" needs the name to say it with, and that is a far better
+/// message than launching nothing.
+pub fn debug_binary(root: &Path) -> Option<PathBuf> {
+    /// Only the one field matters; a virtual workspace manifest has no
+    /// `[package]` at all, and everything else is ignored.
+    #[derive(Deserialize)]
+    struct Manifest {
+        package: Option<Package>,
+    }
+    #[derive(Deserialize)]
+    struct Package {
+        name: String,
+    }
+
+    let text = std::fs::read_to_string(root.join("Cargo.toml")).ok()?;
+    let manifest: Manifest = toml::from_str(&text).ok()?;
+    Some(
+        root.join("target")
+            .join("debug")
+            .join(manifest.package?.name),
+    )
+}
+
 /// A sensible default test command based on the project's marker files.
 pub fn default_test_command(root: &Path) -> String {
     if root.join("Cargo.toml").exists() {
@@ -208,6 +236,34 @@ mod tests {
             project_root(&file).unwrap().canonicalize().unwrap(),
             tmp.canonicalize().unwrap()
         );
+
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// `:debug` used to launch the literal path `target/debug/<binary>`, which
+    /// no adapter could resolve. The name has to come from the manifest.
+    #[test]
+    fn debug_binary_comes_from_the_cargo_package_name() {
+        let tmp = std::env::temp_dir().join(format!("ruster_dbgbin_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            tmp.join("Cargo.toml"),
+            "[package]\nname = \"widget\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            debug_binary(&tmp).unwrap(),
+            tmp.join("target").join("debug").join("widget")
+        );
+
+        // A manifest without a package (a virtual workspace) names nothing.
+        std::fs::write(tmp.join("Cargo.toml"), "[workspace]\nmembers = []\n").unwrap();
+        assert_eq!(debug_binary(&tmp), None);
+
+        // Neither does a non-Cargo project.
+        std::fs::remove_file(tmp.join("Cargo.toml")).unwrap();
+        assert_eq!(debug_binary(&tmp), None);
 
         std::fs::remove_dir_all(&tmp).ok();
     }

@@ -9,6 +9,12 @@ The TUI is easy to verify — `tmux capture-pane` gives you the screen as text.
 The GUI is not, and rediscovering how to drive it has cost multiple sessions.
 This is the working recipe.
 
+**For anything on the standard surface list, use the script instead:**
+`just verify <surface>` (or `scripts/verify-capture.sh --list`) captures both
+backends from one drive definition and writes the artifacts to
+`docs/verification/`. The rest of this page is what that script does, and what
+you need when the surface you want is not on the list.
+
 ## First: is the screen unlocked?
 
 ```bash
@@ -27,26 +33,34 @@ than interleaving long analysis between shots.
 
 ## Driving it
 
-There is no way to send keystrokes to the raylib window. Drive it with an
-`init.lua` instead: `ruster.cmd()` queues an ex command, and every queued action
-is applied before the first frame renders.
+`init.lua` is the control surface: `ruster.cmd()` queues an ex command, and
+every queued action is applied before the first frame renders.
 
 ```bash
 CFG=/tmp/guicheck; mkdir -p "$CFG/ruster"
 cat > "$CFG/ruster/init.lua" <<'EOF'
 ruster.cmd(":sidebar")
 ruster.cmd(":Git")
-ruster.cmd(":screenshot /tmp/shot.png")
+ruster.defer(1200, function() ruster.cmd(":screenshot /tmp/shot.png") end)
+ruster.defer(2100, function() ruster.cmd(":q!") end)
 EOF
 
 rm -f /tmp/shot.png
-XDG_CONFIG_HOME="$CFG" timeout 8 ./target/debug/ruster path/to/file.rs >/dev/null 2>&1
+XDG_CONFIG_HOME="$CFG" timeout 15 ./target/debug/ruster path/to/file.rs >/dev/null 2>&1
 ```
 
 Then look at it — `Read /tmp/shot.png` renders the image.
 
-`timeout` is how the run ends; the GUI has no way to quit itself. Exit code 124
-means it ran the full duration, which is success.
+**The GUI can quit itself.** `:q!` sets `should_quit` unconditionally and
+`run_gui` breaks on it, so a deferred quit ends the run with exit code 0. Keep
+`timeout` as a backstop, but treat 124 as a *failure* — it means the deferred
+quit never fired. (Use `:q!`, not `:q`: a plain `:q` closes a window first when
+a surface opened a second one, so it would not exit with the sidebar or a split
+on screen.)
+
+Put the shot on a `ruster.defer` rather than in the queue whenever the surface
+needs a round-trip — an LSP hover, a debugger launch, a terminal spawn. The
+queue is applied before the first frame, which is too early for any of those.
 
 For a modal dialog, `ruster.ui.dialog{...}` queues one the same way:
 
@@ -56,6 +70,21 @@ ruster.ui.dialog({ title = "Install?", fields = {
   { label = "Install", kind = "button" },
 }})
 ```
+
+## Sending real keystrokes
+
+Which-key, flash jump, multi-cursor and cmdline completion only exist *between*
+keystrokes, and no `init.lua` can produce them. Two ways in:
+
+- **`ScriptedRenderer`** (`crates/ruster-render/src/script.rs`) feeds a key
+  script through the real `run_gui` loop headlessly and records every frame.
+  This is what `crates/ruster-tui/tests/drive.rs` uses, and it is the reliable
+  option — prefer it whenever you are checking *behaviour*.
+- **`scripts/gui-keys.sh`** sends real keystrokes to the real window via macOS
+  System Events, for when the pixels are the point. It needs Accessibility
+  permission for whatever runs it; without that, System Events discards the keys
+  silently and you get a screenshot of an undriven surface, so the script
+  refuses up front rather than letting that happen.
 
 ## Two traps
 

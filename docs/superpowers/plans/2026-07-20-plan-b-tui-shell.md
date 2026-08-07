@@ -1,5 +1,17 @@
 # Plan B: TUI Shell Implementation Plan
 
+> **Status:** delivered; boxes resolved 2026-08-07.
+>
+> This plan was executed but never ticked as it went, leaving 36 boxes
+> that read as outstanding work. They are **plain bullets now, not back-ticked**:
+> a box ticked long after the fact asserts a verification that did not happen,
+> and this tree has already been bitten by exactly that. The bullets stand as a
+> record of what was built.
+>
+> Evidence it shipped: all 19 identifiers this plan names in backticks exist in
+> the tree, and every `docs/verification/*-tui.txt` is this shell rendering.
+
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Deliver a terminal-based editor binary (`ruster`) that opens a file, renders the buffer using ratatui, routes keyboard input through the existing `ruster-core` Vim engine, and supports save/quit via `:` cmdline.
@@ -57,7 +69,7 @@ crates/ruster-core/          — modified files
 - Consumes: nothing
 - Produces: `ruster_render::EditorState`, `ruster_render::CursorKind`, `ruster_render::Renderer` trait
 
-- [ ] **Step 1: Write the failing test**
+- **Step 1: Write the failing test**
 
 `crates/ruster-render/src/lib.rs`:
 ```rust
@@ -88,12 +100,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p ruster-render`
 Expected: error `package ruster-render does not exist`
 
-- [ ] **Step 3: Write minimal implementation**
+- **Step 3: Write minimal implementation**
 
 `Cargo.toml` (workspace root):
 ```toml
@@ -135,12 +147,12 @@ pub trait Renderer {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p ruster-render`
 Expected: test passes
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add Cargo.toml crates/ruster-render/
@@ -160,7 +172,7 @@ git commit -m "feat(render): add ruster-render crate with EditorState and Render
 - Consumes: existing `VimState`, `Action`, `Editor`, `KeyEvent`
 - Produces: `VimState::cmdline_buffer()` getter; `handle()` returns `Action::CmdlineResult(String)` on Enter in Cmdline mode
 
-- [ ] **Step 1: Write the failing test**
+- **Step 1: Write the failing test**
 
 Add to `crates/ruster-core/src/vim/mod.rs` tests:
 
@@ -198,12 +210,12 @@ fn cmdline_enter_emits_result_and_returns_to_normal() {
 
 Add the import for `VimMode::Cmdline` at the top of the test block if not already present.
 
-- [ ] **Step 2: Run test to verify it fails**
+- **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p ruster-core -- vim::tests::cmdline`
 Expected: compile error (`Action::CmdlineResult` not found) or test failure
 
-- [ ] **Step 3: Write minimal implementation**
+- **Step 3: Write minimal implementation**
 
 `crates/ruster-core/src/action.rs` — add to `Action` enum:
 ```rust
@@ -263,12 +275,12 @@ KeyEvent::Char(':') => {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p ruster-core`
 Expected: all tests pass (55 old + 3 new = 58)
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add crates/ruster-core/src/action.rs crates/ruster-core/src/editor.rs crates/ruster-core/src/vim/mod.rs
@@ -290,7 +302,7 @@ git commit -m "feat(core): Vim Cmdline mode with Action::CmdlineResult for :w/:q
 - Consumes: `ruster_core::KeyEvent`, `ruster_render::*`
 - Produces: `crossterm_to_ruster_key()`, `TuiRenderer` implementing `Renderer`
 
-- [ ] **Step 1: Write tests for key conversion + renderer module compilation**
+- **Step 1: Write tests for key conversion + renderer module compilation**
 
 Add to `ruster-tui/src/key.rs`:
 ```rust
@@ -359,12 +371,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run test — should fail to compile (no crate)**
+- **Step 2: Run test — should fail to compile (no crate)**
 
 Run: `cargo test -p ruster-tui`
 Expected: error `package ruster-tui does not exist`
 
-- [ ] **Step 3: Write minimal implementation**
+- **Step 3: Write minimal implementation**
 
 `Cargo.toml` (workspace root):
 ```toml
@@ -481,12 +493,12 @@ impl Renderer for TuiRenderer {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p ruster-tui`
 Expected: all tests pass
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add Cargo.toml crates/ruster-tui/
@@ -505,7 +517,7 @@ git commit -m "feat(tui): scaffold ruster-tui with key conversion and TuiRendere
 **Interfaces:**
 - Produces: `BufferWidget`, `StatuslineWidget`, `CmdlineWidget` — each implementing ratatui `Widget`
 
-- [ ] **Step 1: Write widget unit tests**
+- **Step 1: Write widget unit tests**
 
 Add to `widgets.rs`:
 ```rust
@@ -536,12 +548,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run test — should fail to compile**
+- **Step 2: Run test — should fail to compile**
 
 Run: `cargo test -p ruster-tui`
 Expected: compile error (no `widgets` module)
 
-- [ ] **Step 3: Write minimal implementation**
+- **Step 3: Write minimal implementation**
 
 `crates/ruster-tui/src/widgets.rs`:
 
@@ -732,12 +744,12 @@ fn render_frame(&mut self, state: &EditorState) {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p ruster-tui`
 Expected: all tests pass
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add crates/ruster-tui/src/widgets.rs crates/ruster-tui/src/lib.rs crates/ruster-tui/src/renderer.rs
@@ -752,7 +764,7 @@ git commit -m "feat(tui): BufferWidget, StatuslineWidget, CmdlineWidget for rata
 - Create: `crates/ruster-tui/src/app.rs`
 - Modify: `crates/ruster-tui/src/lib.rs` — add `pub mod app`
 
-- [ ] **Step 1: Write unit tests for cmdline parsing**
+- **Step 1: Write unit tests for cmdline parsing**
 
 ```rust
 #[cfg(test)]
@@ -806,12 +818,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run test — should fail to compile**
+- **Step 2: Run test — should fail to compile**
 
 Run: `cargo test -p ruster-tui`
 Expected: compile error (no `app` module)
 
-- [ ] **Step 3: Write minimal implementation**
+- **Step 3: Write minimal implementation**
 
 `crates/ruster-tui/src/app.rs`:
 
@@ -1005,12 +1017,12 @@ So `Motion` is at `ruster_core::action::Motion`. Let me fix the import.
 pub mod app;
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p ruster-tui`
 Expected: all tests pass
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add crates/ruster-tui/src/app.rs crates/ruster-tui/src/lib.rs
@@ -1026,7 +1038,7 @@ git commit -m "feat(tui): App with event loop, cmdline parsing, file save/quit"
 - Create: `crates/ruster-bin/src/main.rs`
 - Modify: `Cargo.toml` (workspace root) — add `ruster-bin` member
 
-- [ ] **Step 1: Write the test (compile check)**
+- **Step 1: Write the test (compile check)**
 
 Create a minimal integration that just verifies the binary crate compiles. Add a test file:
 
@@ -1046,12 +1058,12 @@ fn binary_prints_usage_without_args() {
 }
 ```
 
-- [ ] **Step 2: Run test — should fail (no crate)**
+- **Step 2: Run test — should fail (no crate)**
 
 Run: `cargo test -p ruster-bin`
 Expected: error `package ruster-bin does not exist`
 
-- [ ] **Step 3: Write minimal implementation**
+- **Step 3: Write minimal implementation**
 
 `Cargo.toml` (workspace root):
 ```toml
@@ -1123,12 +1135,12 @@ fn binary_prints_usage_without_args() {
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p ruster-bin`
 Expected: the CLI args test passes
 
-- [ ] **Step 5: Commit**
+- **Step 5: Commit**
 
 ```bash
 git add Cargo.toml crates/ruster-bin/
@@ -1144,38 +1156,38 @@ git commit -m "feat(bin): ruster binary with CLI arg parsing"
 - Verify `ruster-core` re-exports everything `ruster-tui` needs
 - Push to GitHub
 
-- [ ] **Step 1: Check ruster-core public API**
+- **Step 1: Check ruster-core public API**
 
 Ensure `ruster_core::action::Action`, `ruster_core::editor::Editor`, `ruster_core::key::KeyEvent`,
 `ruster_core::vim::{VimMode, VimState}` are re-exported or accessible.
 
 Check that `ruster_core::vim::VimMode` is `pub` and `VimState` is `pub` (they are).
 
-- [ ] **Step 2: Full workspace build**
+- **Step 2: Full workspace build**
 
 ```bash
 cargo build --workspace
 ```
 Expected: clean compile
 
-- [ ] **Step 3: Full workspace test**
+- **Step 3: Full workspace test**
 
 ```bash
 cargo test --workspace
 ```
 Expected: all tests pass
 
-- [ ] **Step 4: Fix any issues found**
+- **Step 4: Fix any issues found**
 
 Fix missing re-exports, import paths, or API mismatches.
 
-- [ ] **Step 5: Final commit**
+- **Step 5: Final commit**
 
 ```bash
 git add -A && git commit -m "chore: wire workspace for Plan B crates and fix imports"
 ```
 
-- [ ] **Step 6: Push to GitHub**
+- **Step 6: Push to GitHub**
 
 ```bash
 git push origin main
