@@ -356,6 +356,28 @@ one-line repro.
       `KEY_BACKSLASH` mapping it needed was unambiguously absent and is now
       present with tests, but a human keypress is the only proof.
 
+- [x] **Typing a `:` command in Terminal-Normal leaked into the shell.**
+      *(fixed)* The `i`/`a`/`I`/`A` re-focus check runs before the cmdline is
+      handled, so `:echo hi` re-focused the terminal on the `i` of "hi" and sent
+      `-from-cmdline` to zsh, which answered `command not found`. Now gated on
+      `vim.is_normal_idle()` and no pending flash jump — the same hazard covers
+      `r`, a pending operator, and a flash label, all of which leave the mode
+      `Normal` while waiting for a character that may be `i`. Found by driving
+      the terminal through a PTY, not by reading the code.
+
+- [ ] **Ctrl chords may not reach the GUI at all.** `Ctrl-w v` splits correctly
+      headlessly (`drive.rs::ctrl_w_v_splits_the_window`), so the app layer is
+      right, but the same chord sent to the raylib window leaves the editor in
+      VISUAL mode — the `v` lands, the `C-w` does not. Tried three ways:
+      `keystroke "w" using control down`, `key code 13 using control down`, and
+      `key down control` / `key code 13` / `key up control` with 150ms holds
+      (~9 frames at 60fps, so `is_key_down` cannot have missed it). All three
+      failed identically. Either GLFW/raylib drops Ctrl chords on macOS — which
+      would also kill `Ctrl-n`, `Ctrl-d`/`Ctrl-u` and every Emacs binding in the
+      GUI — or synthetic events cannot reproduce it. **Needs one human keypress
+      to settle**; no automated route can distinguish the two.
+      *Repro:* `just gui`, press `Ctrl-w` then `v`; two windows means fine.
+
 - [ ] **Terminal scrollback is retained and unreachable.** `terminal.scrollback`
       defaults to 10000 lines and alacritty_terminal keeps them, but
       `TerminalSession::snapshot` (`ruster-terminal/src/lib.rs:219`) reads only

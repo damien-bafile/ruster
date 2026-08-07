@@ -1989,16 +1989,25 @@ impl App {
         }
 
         // A focused embedded terminal forwards keys to its PTY. When unfocused,
-        // `i`/`a`/Enter re-enter it; anything else falls through to normal
-        // handling so window nav and `:` commands still work.
+        // `i`/`a`/`I`/`A`/Enter re-enter it; anything else falls through to
+        // normal handling so window nav and `:` commands still work.
+        //
+        // `is_normal_idle` is load-bearing, not defensive. Without it this
+        // check fires on any `i` the user types *anywhere* that is not already
+        // handled above — and the cmdline is not, because it is reached later
+        // in this function. Typing `:echo hi` in Terminal-Normal re-focused the
+        // terminal on the `i` of "hi" and sent `-from-cmdline` to the shell,
+        // which then reported `command not found`. `f`, `r` and a pending
+        // operator have the same shape: all leave the mode `Normal` while
+        // waiting for a character that may well be `i`.
         if let Some(bid) = self.active_terminal_buffer() {
             if self.terminal_focused {
                 self.handle_terminal_key(ck, bid);
                 return;
-            } else if matches!(
-                ck.code,
-                KeyCode::Char('i' | 'a' | 'I' | 'A') | KeyCode::Enter
-            ) && !ck.modifiers.contains(KeyModifiers::CONTROL)
+            } else if self.vim.is_normal_idle()
+                && self.flash.is_none()
+                && matches!(ck.code, KeyCode::Char('i' | 'a' | 'I' | 'A') | KeyCode::Enter)
+                && !ck.modifiers.contains(KeyModifiers::CONTROL)
             {
                 // `I`/`A` alongside `i`/`a`: over a terminal mirror they all
                 // mean the same thing — hand the keyboard back to the shell —
@@ -9752,6 +9761,59 @@ mod tests {
             a.handle_key(CtKey::new(KeyCode::Char(c), KeyModifiers::NONE));
             assert!(a.terminal_focused, "{c} re-focuses the terminal");
         }
+    }
+
+    /// Typing a `:` command in Terminal-Normal must not be interrupted by the
+    /// letters in it.
+    ///
+    /// `i`/`a`/`I`/`A` return focus to the shell, and the cmdline is handled
+    /// *after* that check — so `:echo hi` re-focused the terminal on the `i` of
+    /// "hi" and sent the rest of the line to the shell, which answered
+    /// `command not found`.
+    #[cfg(not(windows))]
+    #[test]
+    fn letters_in_a_colon_command_do_not_refocus_the_terminal() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        let id = a.ws.borrow_mut().buffers.create_special(SpecialKind::Terminal, "*terminal*");
+        a.ws.borrow_mut().set_active_buffer(id);
+        a.terminals.insert(id, TerminalSession::spawn("cat", &[], 40, 6, 1000).expect("spawn"));
+        a.terminal_focused = false;
+
+        a.handle_key(CtKey::new(KeyCode::Char(':'), none));
+        for c in "echo hi".chars() {
+            a.handle_key(CtKey::new(KeyCode::Char(c), none));
+        }
+        assert!(!a.terminal_focused, "the `i` in \"hi\" must not reach the shell");
+        assert_eq!(a.vim.cmdline_buffer(), ":echo hi", "the whole command reached the cmdline");
+    }
+
+    /// The same hazard, in the surface next door: `f` starts a flash jump and
+    /// waits for a label, which is App state rather than vim state — so
+    /// `is_normal_idle` alone does not cover it, and `fi` handed the keyboard
+    /// back to the shell instead of jumping.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_pending_flash_label_does_not_refocus_the_terminal() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("x".into(), PathBuf::from("f.txt"));
+        let id = a.ws.borrow_mut().buffers.create_special(SpecialKind::Terminal, "*terminal*");
+        a.ws.borrow_mut().set_active_buffer(id);
+        a.terminals.insert(id, TerminalSession::spawn("cat", &[], 40, 6, 1000).expect("spawn"));
+        a.terminal_focused = false;
+
+        // Flash labels come from the rendered layout, so the mirror needs both
+        // content and a frame before `f` has anything to label.
+        if let Some(doc) = a.ws.borrow_mut().buffers.get_mut(id) {
+            doc.buffer = Buffer::from_str("first line of output\nsecond line of output\n");
+        }
+        a.render();
+        a.handle_key(CtKey::new(KeyCode::Char('f'), none));
+        assert!(a.flash.is_some(), "`f` starts a flash jump over the mirror");
+        a.handle_key(CtKey::new(KeyCode::Char('i'), none));
+        assert!(!a.terminal_focused, "`fi` is a jump, not a request for the shell");
     }
 
     /// Both encodings of `Ctrl-\` are accepted, because a terminal in the

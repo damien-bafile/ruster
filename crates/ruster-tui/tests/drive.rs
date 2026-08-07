@@ -282,6 +282,20 @@ fn ctrl_d_adds_a_second_cursor_on_the_next_match() {
     );
 }
 
+/// `Ctrl-w` is a prefix, so this also pins that a chord and the key after it
+/// survive being served on separate frames.
+#[test]
+fn ctrl_w_v_splits_the_window() {
+    let log = Drive::new().content(DEMO).keys("<C-w>v").settle(6).run();
+    let frame = log.last();
+    assert_eq!(
+        frame.windows.len(),
+        2,
+        "C-w v should leave two windows:\n{}",
+        log.transcript()
+    );
+}
+
 #[test]
 fn typing_a_colon_command_shows_it_on_the_cmdline_before_it_runs() {
     let log = Drive::new().content(DEMO).keys(":sidebar").run();
