@@ -371,11 +371,16 @@ pub fn run_drm() -> anyhow::Result<()> {
     state.handle.insert_idle(|data| data.render_surface());
 
     while state.running.load(Ordering::SeqCst) {
-        let result = event_loop.dispatch(Some(Duration::from_millis(16)), &mut state);
-        if result.is_err() {
-            state.running.store(false, Ordering::SeqCst);
-        } else {
-            state.display_handle.flush_clients().unwrap();
+        // A dispatch failure used to drop out of the loop and return `Ok`,
+        // so the compositor exited 0 with nothing on stdout and no line in the
+        // log — indistinguishable from a clean quit, and impossible to
+        // diagnose from a VT where the screen is already gone.
+        if let Err(err) = event_loop.dispatch(Some(Duration::from_millis(16)), &mut state) {
+            error!("event loop dispatch failed: {err}");
+            return Err(anyhow::anyhow!("event loop dispatch failed: {err}"));
+        }
+        if let Err(err) = state.display_handle.flush_clients() {
+            error!("failed to flush wayland clients: {err}");
         }
     }
     info!("shutting down drm backend");
