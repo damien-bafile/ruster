@@ -40,11 +40,7 @@ impl Section {
 /// One rendered row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Row {
-    Section {
-        section: Section,
-        count: usize,
-        collapsed: bool,
-    },
+    Section { section: Section, count: usize, collapsed: bool },
     /// A file within a section, by index into that section's list.
     Entry { section: Section, index: usize },
 }
@@ -89,11 +85,7 @@ impl GitStatusState {
                 continue;
             }
             let collapsed = self.collapsed.contains(&section);
-            out.push(Row::Section {
-                section,
-                count,
-                collapsed,
-            });
+            out.push(Row::Section { section, count, collapsed });
             if !collapsed {
                 out.extend((0..count).map(|index| Row::Entry { section, index }));
             }
@@ -126,11 +118,7 @@ impl GitStatusState {
 
     /// The buffer text.
     pub fn render(&self, root: Option<&Path>) -> String {
-        self.layout(root)
-            .into_iter()
-            .map(|(text, _)| text)
-            .collect::<Vec<_>>()
-            .join("\n")
+        self.layout(root).into_iter().map(|(text, _)| text).collect::<Vec<_>>().join("\n")
     }
 
     /// The row a rendered line belongs to, or `None` for the branch header and
@@ -151,8 +139,7 @@ impl GitStatusState {
 
     /// Every rendered line, paired with the row index it represents.
     fn layout(&self, root: Option<&Path>) -> Vec<(String, Option<usize>)> {
-        let mut out: Vec<(String, Option<usize>)> =
-            vec![(self.header(), None), (String::new(), None)];
+        let mut out: Vec<(String, Option<usize>)> = vec![(self.header(), None), (String::new(), None)];
 
         if self.status.is_clean() {
             out.push(("Nothing to commit, working tree clean.".to_string(), None));
@@ -161,11 +148,7 @@ impl GitStatusState {
 
         for (row_index, row) in self.rows().into_iter().enumerate() {
             match row {
-                Row::Section {
-                    section,
-                    count,
-                    collapsed,
-                } => {
+                Row::Section { section, count, collapsed } => {
                     if !out.last().is_some_and(|(t, _)| t.is_empty()) {
                         out.push((String::new(), None));
                     }
@@ -180,13 +163,8 @@ impl GitStatusState {
                 }
                 Row::Entry { section, index } => {
                     let entries = self.entries(section);
-                    let Some(e) = entries.get(index) else {
-                        continue;
-                    };
-                    out.push((
-                        format!("    {}", entry_line(e, section, root)),
-                        Some(row_index),
-                    ));
+                    let Some(e) = entries.get(index) else { continue };
+                    out.push((format!("    {}", entry_line(e, section, root)), Some(row_index)));
                 }
             }
         }
@@ -227,10 +205,7 @@ fn entry_line(e: &StatusEntry, section: Section, root: Option<&Path>) -> String 
 }
 
 fn display_path(p: &Path, root: Option<&Path>) -> String {
-    root.and_then(|r| p.strip_prefix(r).ok())
-        .unwrap_or(p)
-        .display()
-        .to_string()
+    root.and_then(|r| p.strip_prefix(r).ok()).unwrap_or(p).display().to_string()
 }
 
 /// Colour a unified diff the way every other diff tool does: additions green,
@@ -263,10 +238,7 @@ pub fn diff_styled_lines(text: &str) -> Vec<StyledLine> {
                 Some(k) => vec![(0, line.chars().count(), ruster_syntax::diff_style(k))],
                 None => Vec::new(),
             };
-            StyledLine {
-                text: line.to_string(),
-                highlights,
-            }
+            StyledLine { text: line.to_string(), highlights }
         })
         .collect()
 }
@@ -351,15 +323,9 @@ index 1..2 100644
     fn sections_list_the_right_files() {
         let s = state();
         let names = |sec| {
-            s.entries(sec)
-                .iter()
-                .map(|e| e.path.display().to_string())
-                .collect::<Vec<_>>()
+            s.entries(sec).iter().map(|e| e.path.display().to_string()).collect::<Vec<_>>()
         };
-        assert_eq!(
-            names(Section::Staged),
-            ["added.txt", "both.txt", "new-name.txt"]
-        );
+        assert_eq!(names(Section::Staged), ["added.txt", "both.txt", "new-name.txt"]);
         assert_eq!(names(Section::Unstaged), ["both.txt", "edited.txt"]);
         assert_eq!(names(Section::Untracked), ["untracked.txt"]);
     }
@@ -375,10 +341,7 @@ index 1..2 100644
     #[test]
     fn the_header_shows_branch_upstream_and_divergence() {
         let h = state().render(None);
-        assert!(
-            h.starts_with("On branch main → origin/main (ahead 2, behind 1)"),
-            "{h}"
-        );
+        assert!(h.starts_with("On branch main → origin/main (ahead 2, behind 1)"), "{h}");
     }
 
     #[test]
@@ -388,13 +351,7 @@ index 1..2 100644
         s.toggle_at(0); // the Staged heading
         let rows = s.rows();
         assert_eq!(rows.len(), before - 3, "three staged files hidden");
-        assert!(matches!(
-            rows[0],
-            Row::Section {
-                collapsed: true,
-                ..
-            }
-        ));
+        assert!(matches!(rows[0], Row::Section { collapsed: true, .. }));
         s.toggle_at(0);
         assert_eq!(s.rows().len(), before, "unfolds again");
     }
@@ -403,13 +360,7 @@ index 1..2 100644
     fn folding_from_inside_a_section_collapses_that_section() {
         let mut s = state();
         s.toggle_at(1); // a file, not the heading
-        assert!(matches!(
-            s.rows()[0],
-            Row::Section {
-                collapsed: true,
-                ..
-            }
-        ));
+        assert!(matches!(s.rows()[0], Row::Section { collapsed: true, .. }));
     }
 
     /// Folds are per section and must survive a refresh, or every rebuild
@@ -434,23 +385,15 @@ index 1..2 100644
     #[test]
     fn a_rename_shows_both_names_in_the_staged_section() {
         let out = state().render(None);
-        let line = out
-            .lines()
-            .find(|l| l.contains("new-name.txt"))
-            .expect("listed");
-        assert!(
-            line.contains("old-name.txt"),
-            "shows where it came from: {line:?}"
-        );
+        let line = out.lines().find(|l| l.contains("new-name.txt")).expect("listed");
+        assert!(line.contains("old-name.txt"), "shows where it came from: {line:?}");
         assert!(line.contains('R'), "and that it is a rename: {line:?}");
     }
 
     #[test]
     fn an_empty_section_is_omitted_entirely() {
         let mut s = GitStatusState::new();
-        s.set_status(ruster_git::parse_status(
-            "# branch.head main\n? only-untracked.txt\n",
-        ));
+        s.set_status(ruster_git::parse_status("# branch.head main\n? only-untracked.txt\n"));
         let out = s.render(None);
         assert!(out.contains("Untracked"), "{out}");
         assert!(!out.contains("Staged"), "no empty heading: {out}");
@@ -468,9 +411,7 @@ index 1..2 100644
     #[test]
     fn paths_are_shown_relative_to_the_project_root() {
         let mut s = GitStatusState::new();
-        s.set_status(ruster_git::parse_status(
-            "# branch.head m\n? /proj/src/deep.rs\n",
-        ));
+        s.set_status(ruster_git::parse_status("# branch.head m\n? /proj/src/deep.rs\n"));
         let out = s.render(Some(Path::new("/proj")));
         assert!(out.contains("src/deep.rs"), "{out}");
         assert!(!out.contains("/proj/src"), "root stripped: {out}");

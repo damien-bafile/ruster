@@ -4,8 +4,5 @@ fn tui_flag_fails_without_terminal() {
         .args(["--tui", "Cargo.toml"])
         .output()
         .expect("failed to run ruster");
-    assert!(
-        !output.status.success(),
-        "expected failure without terminal"
-    );
+    assert!(!output.status.success(), "expected failure without terminal");
 }

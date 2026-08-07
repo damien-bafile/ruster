@@ -91,8 +91,8 @@ pub fn read_message(r: &mut impl BufRead) -> io::Result<Option<Value>> {
     };
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf)?;
-    let value =
-        serde_json::from_slice(&buf).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let value = serde_json::from_slice(&buf)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     Ok(Some(value))
 }
 

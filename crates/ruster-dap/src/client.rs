@@ -53,16 +53,18 @@ impl DapClient {
         });
 
         let msg_tx_clone = msg_tx.clone();
-        let reader_h = thread::spawn(move || loop {
-            match transport::read_message(&mut reader) {
-                Ok(msg) => {
-                    if msg_tx_clone.send(msg).is_err() {
+        let reader_h = thread::spawn(move || {
+            loop {
+                match transport::read_message(&mut reader) {
+                    Ok(msg) => {
+                        if msg_tx_clone.send(msg).is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("dap read error: {e}");
                         break;
                     }
-                }
-                Err(e) => {
-                    eprintln!("dap read error: {e}");
-                    break;
                 }
             }
         });
@@ -77,15 +79,11 @@ impl DapClient {
     }
 
     pub fn send_request(&self, req: dap::requests::Request) -> Result<()> {
-        self.tx
-            .send(ClientMessage::Request(req))
-            .map_err(|_| ClientError::ChannelClosed)
+        self.tx.send(ClientMessage::Request(req)).map_err(|_| ClientError::ChannelClosed)
     }
 
     pub fn send_response(&self, rsp: dap::responses::Response) -> Result<()> {
-        self.tx
-            .send(ClientMessage::Response(rsp))
-            .map_err(|_| ClientError::ChannelClosed)
+        self.tx.send(ClientMessage::Response(rsp)).map_err(|_| ClientError::ChannelClosed)
     }
 
     pub fn poll(&self) -> Option<ServerMessage> {

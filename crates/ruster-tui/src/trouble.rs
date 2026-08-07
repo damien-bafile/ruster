@@ -57,11 +57,7 @@ pub struct TroubleItem {
 /// One rendered row: either a file heading or an entry beneath one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Row {
-    Group {
-        path: PathBuf,
-        count: usize,
-        collapsed: bool,
-    },
+    Group { path: PathBuf, count: usize, collapsed: bool },
     /// Index into [`TroubleState::items`].
     Item(usize),
 }
@@ -95,20 +91,13 @@ impl TroubleState {
         // Highest-ranked source first at each position, so the dedupe below
         // keeps it and drops the quickfix copy of the same problem.
         items.sort_by(|a, b| {
-            (
-                &a.path,
-                a.line,
-                a.col,
-                std::cmp::Reverse(a.source.rank()),
-                &a.message,
-            )
-                .cmp(&(
-                    &b.path,
-                    b.line,
-                    b.col,
-                    std::cmp::Reverse(b.source.rank()),
-                    &b.message,
-                ))
+            (&a.path, a.line, a.col, std::cmp::Reverse(a.source.rank()), &a.message).cmp(&(
+                &b.path,
+                b.line,
+                b.col,
+                std::cmp::Reverse(b.source.rank()),
+                &b.message,
+            ))
         });
         items.dedup_by(|a, b| {
             a.path == b.path && a.line == b.line && a.col == b.col && a.message == b.message
@@ -125,16 +114,9 @@ impl TroubleState {
         let mut i = 0;
         while i < self.items.len() {
             let path = &self.items[i].path;
-            let count = self.items[i..]
-                .iter()
-                .take_while(|it| &it.path == path)
-                .count();
+            let count = self.items[i..].iter().take_while(|it| &it.path == path).count();
             let collapsed = self.collapsed.contains(path);
-            out.push(Row::Group {
-                path: path.clone(),
-                count,
-                collapsed,
-            });
+            out.push(Row::Group { path: path.clone(), count, collapsed });
             if !collapsed {
                 out.extend((i..i + count).map(Row::Item));
             }
@@ -176,22 +158,13 @@ impl TroubleState {
         self.rows()
             .iter()
             .map(|r| match r {
-                Row::Group {
-                    path,
-                    count,
-                    collapsed,
-                } => {
+                Row::Group { path, count, collapsed } => {
                     let name = root
                         .and_then(|r| path.strip_prefix(r).ok())
                         .unwrap_or(path)
                         .display()
                         .to_string();
-                    format!(
-                        "{} {} ({})",
-                        if *collapsed { '▸' } else { '▾' },
-                        name,
-                        count
-                    )
+                    format!("{} {} ({})", if *collapsed { '▸' } else { '▾' }, name, count)
                 }
                 Row::Item(i) => {
                     let it = &self.items[*i];
@@ -269,13 +242,7 @@ mod tests {
         t.toggle_at(0);
         let rows = t.rows();
         assert_eq!(rows.len(), 3, "a.rs collapsed to its heading");
-        assert!(matches!(
-            &rows[0],
-            Row::Group {
-                collapsed: true,
-                ..
-            }
-        ));
+        assert!(matches!(&rows[0], Row::Group { collapsed: true, .. }));
         // b.rs is untouched and still resolves.
         assert_eq!(t.target_at(2), Some((PathBuf::from("b.rs"), 5, 0)));
         t.toggle_at(0);
@@ -286,13 +253,7 @@ mod tests {
     fn folding_from_inside_a_group_collapses_that_group() {
         let mut t = state();
         t.toggle_at(1); // an entry, not the heading
-        assert!(matches!(
-            &t.rows()[0],
-            Row::Group {
-                collapsed: true,
-                ..
-            }
-        ));
+        assert!(matches!(&t.rows()[0], Row::Group { collapsed: true, .. }));
     }
 
     /// Folds are keyed by path, so a refresh must not silently expand
@@ -302,18 +263,9 @@ mod tests {
         let mut t = state();
         t.toggle_at(0);
         assert_eq!(t.rows().len(), 3);
-        t.set_items(vec![
-            item("a.rs", 2, Source::Diagnostic),
-            item("b.rs", 5, Source::Todo),
-        ]);
+        t.set_items(vec![item("a.rs", 2, Source::Diagnostic), item("b.rs", 5, Source::Todo)]);
         assert!(
-            matches!(
-                &t.rows()[0],
-                Row::Group {
-                    collapsed: true,
-                    ..
-                }
-            ),
+            matches!(&t.rows()[0], Row::Group { collapsed: true, .. }),
             "a.rs stays folded across a rebuild"
         );
     }
@@ -329,10 +281,7 @@ mod tests {
         td.message = "TODO: thing".into();
         t.set_items(vec![q, td]);
         assert_eq!(t.len(), 1, "deduplicated");
-        assert!(
-            t.render(None).contains('T'),
-            "kept the Todo tag, not the Quickfix one"
-        );
+        assert!(t.render(None).contains('T'), "kept the Todo tag, not the Quickfix one");
 
         // A diagnostic outranks both.
         let mut t2 = TroubleState::new();

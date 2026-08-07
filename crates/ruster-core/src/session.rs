@@ -63,11 +63,8 @@ impl Session {
         }
 
         let rest: Vec<&str> = lines.collect();
-        let files: Vec<PathBuf> = rest
-            .iter()
-            .filter_map(|l| l.strip_prefix("buf "))
-            .map(PathBuf::from)
-            .collect();
+        let files: Vec<PathBuf> =
+            rest.iter().filter_map(|l| l.strip_prefix("buf ")).map(PathBuf::from).collect();
         let mut nodes = rest.iter().copied().skip_while(|l| l.starts_with("buf "));
         let layout = read_node(&mut nodes)?;
         // Trailing junk means the file is not what we think it is.
@@ -84,23 +81,10 @@ impl Session {
 
 fn write_node(node: &LayoutSnapshot, out: &mut String) {
     match node {
-        LayoutSnapshot::Leaf {
-            buffer,
-            cursor,
-            scroll,
-            active,
-        } => {
-            out.push_str(&format!(
-                "leaf {buffer} {cursor} {scroll} {}\n",
-                u8::from(*active)
-            ));
+        LayoutSnapshot::Leaf { buffer, cursor, scroll, active } => {
+            out.push_str(&format!("leaf {buffer} {cursor} {scroll} {}\n", u8::from(*active)));
         }
-        LayoutSnapshot::Split {
-            dir,
-            ratio,
-            first,
-            second,
-        } => {
+        LayoutSnapshot::Split { dir, ratio, first, second } => {
             let d = if *dir == SplitDir::Vertical { 'v' } else { 'h' };
             out.push_str(&format!("split {d} {ratio:.4}\n"));
             write_node(first, out);
@@ -132,12 +116,7 @@ fn read_node<'a>(lines: &mut impl Iterator<Item = &'a str>) -> Option<LayoutSnap
             // Preorder: both children follow immediately.
             let first = Box::new(read_node(lines)?);
             let second = Box::new(read_node(lines)?);
-            Some(LayoutSnapshot::Split {
-                dir,
-                ratio,
-                first,
-                second,
-            })
+            Some(LayoutSnapshot::Split { dir, ratio, first, second })
         }
         _ => None,
     }
@@ -163,9 +142,7 @@ pub fn session_path(state_dir: &Path, root: &Path) -> PathBuf {
         hash ^= u64::from(*b);
         hash = hash.wrapping_mul(0x1000_0000_01b3);
     }
-    state_dir
-        .join("sessions")
-        .join(format!("{hash:016x}.session"))
+    state_dir.join("sessions").join(format!("{hash:016x}.session"))
 }
 
 /// Write a session, creating the directory if needed. Errors are returned so the
@@ -188,12 +165,7 @@ mod tests {
     use super::*;
 
     fn leaf(buffer: usize, active: bool) -> LayoutSnapshot {
-        LayoutSnapshot::Leaf {
-            buffer,
-            cursor: buffer * 10,
-            scroll: buffer,
-            active,
-        }
+        LayoutSnapshot::Leaf { buffer, cursor: buffer * 10, scroll: buffer, active }
     }
 
     fn nested() -> Session {
@@ -221,10 +193,7 @@ mod tests {
 
     #[test]
     fn a_single_window_round_trips() {
-        let s = Session {
-            files: vec!["/p/only.rs".into()],
-            layout: leaf(0, true),
-        };
+        let s = Session { files: vec!["/p/only.rs".into()], layout: leaf(0, true) };
         assert_eq!(Session::decode(&s.encode()), Some(s));
     }
 
@@ -246,16 +215,8 @@ mod tests {
         let right = nested().layout; // the same three leaves, nested the other way
         assert_ne!(left, right);
         let files = vec!["/a".into(), "/b".into(), "/c".into()];
-        let a = Session {
-            files: files.clone(),
-            layout: left,
-        }
-        .encode();
-        let b = Session {
-            files,
-            layout: right,
-        }
-        .encode();
+        let a = Session { files: files.clone(), layout: left }.encode();
+        let b = Session { files, layout: right }.encode();
         assert_ne!(a, b);
     }
 
@@ -263,11 +224,7 @@ mod tests {
     fn a_file_that_is_not_a_session_is_refused() {
         assert_eq!(Session::decode(""), None);
         assert_eq!(Session::decode("hello\nworld\n"), None);
-        assert_eq!(
-            Session::decode("ruster-session 99\nbuf /a\nleaf 0 0 0 1\n"),
-            None,
-            "version"
-        );
+        assert_eq!(Session::decode("ruster-session 99\nbuf /a\nleaf 0 0 0 1\n"), None, "version");
         assert_eq!(Session::decode("ruster-session\n"), None, "no version");
     }
 
@@ -276,27 +233,16 @@ mod tests {
     #[test]
     fn a_truncated_or_corrupt_layout_is_refused() {
         // A split promising two children but supplying one.
-        assert_eq!(
-            Session::decode("ruster-session 1\nbuf /a\nsplit v 0.5\nleaf 0 0 0 1\n"),
-            None
-        );
+        assert_eq!(Session::decode("ruster-session 1\nbuf /a\nsplit v 0.5\nleaf 0 0 0 1\n"), None);
         // A leaf pointing past the end of the file list.
-        assert_eq!(
-            Session::decode("ruster-session 1\nbuf /a\nleaf 7 0 0 1\n"),
-            None
-        );
+        assert_eq!(Session::decode("ruster-session 1\nbuf /a\nleaf 7 0 0 1\n"), None);
         // Junk after a complete tree.
-        assert_eq!(
-            Session::decode("ruster-session 1\nbuf /a\nleaf 0 0 0 1\nwat\n"),
-            None
-        );
+        assert_eq!(Session::decode("ruster-session 1\nbuf /a\nleaf 0 0 0 1\nwat\n"), None);
         // An unknown node keyword.
         assert_eq!(Session::decode("ruster-session 1\nbuf /a\nfrob 0\n"), None);
         // A nonsense ratio.
         assert_eq!(
-            Session::decode(
-                "ruster-session 1\nbuf /a\nbuf /b\nsplit v 9.9\nleaf 0 0 0 1\nleaf 1 0 0 0\n"
-            ),
+            Session::decode("ruster-session 1\nbuf /a\nbuf /b\nsplit v 9.9\nleaf 0 0 0 1\nleaf 1 0 0 0\n"),
             None
         );
     }
@@ -322,11 +268,7 @@ mod tests {
         let a = session_path(dir, Path::new("/home/me/one"));
         let b = session_path(dir, Path::new("/home/me/two"));
         assert_ne!(a, b, "different projects do not collide");
-        assert_eq!(
-            a,
-            session_path(dir, Path::new("/home/me/one")),
-            "and the name is stable"
-        );
+        assert_eq!(a, session_path(dir, Path::new("/home/me/one")), "and the name is stable");
         assert!(a.to_string_lossy().ends_with(".session"));
         assert!(a.starts_with("/state/sessions"));
     }

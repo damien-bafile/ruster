@@ -23,15 +23,9 @@ pub trait EditorView {
 }
 
 impl EditorView for Editor {
-    fn buffer(&self) -> &Buffer {
-        &self.buffer
-    }
-    fn primary_head(&self) -> usize {
-        self.cursors.head()
-    }
-    fn cursors(&self) -> &CursorSet {
-        &self.cursors
-    }
+    fn buffer(&self) -> &Buffer { &self.buffer }
+    fn primary_head(&self) -> usize { self.cursors.head() }
+    fn cursors(&self) -> &CursorSet { &self.cursors }
 }
 
 /// A transient editing session over borrowed state.
@@ -55,12 +49,7 @@ impl<'a> EditSession<'a> {
         undo: &'a mut UndoStack,
         indent: &'a str,
     ) -> Self {
-        EditSession {
-            buffer,
-            cursors,
-            undo,
-            indent,
-        }
+        EditSession { buffer, cursors, undo, indent }
     }
 
     fn cursor_line(&self) -> usize {
@@ -108,11 +97,7 @@ impl<'a> EditSession<'a> {
                 let line = self.cursor_line();
                 let start = self.buffer.line_start_char(line);
                 let content = self.buffer.line_to_string(line);
-                let to_remove = content
-                    .chars()
-                    .take_while(|c| *c == ' ')
-                    .take(self.indent.len())
-                    .count();
+                let to_remove = content.chars().take_while(|c| *c == ' ').take(self.indent.len()).count();
                 if to_remove > 0 {
                     let ch = self.buffer.delete(start..start + to_remove);
                     self.undo.push(ch);
@@ -235,35 +220,20 @@ impl Editor {
         }
     }
 
-    pub fn buffer(&self) -> &Buffer {
-        &self.buffer
-    }
-    pub fn buffer_mut(&mut self) -> &mut Buffer {
-        &mut self.buffer
-    }
-    pub fn cursors(&self) -> &CursorSet {
-        &self.cursors
-    }
-    pub fn primary_head(&self) -> usize {
-        self.cursors.head()
-    }
+    pub fn buffer(&self) -> &Buffer { &self.buffer }
+    pub fn buffer_mut(&mut self) -> &mut Buffer { &mut self.buffer }
+    pub fn cursors(&self) -> &CursorSet { &self.cursors }
+    pub fn primary_head(&self) -> usize { self.cursors.head() }
 
-    pub fn char_to_line(&self, char_idx: usize) -> usize {
-        self.buffer.char_to_line(char_idx)
-    }
+    pub fn char_to_line(&self, char_idx: usize) -> usize { self.buffer.char_to_line(char_idx) }
 
     pub fn set_config_indent(&mut self, tabstop: u32) {
         self.indent = " ".repeat(tabstop as usize);
     }
 
     pub fn execute(&mut self, action: Action) {
-        EditSession::new(
-            &mut self.buffer,
-            &mut self.cursors,
-            &mut self.undo,
-            &self.indent,
-        )
-        .execute(action);
+        EditSession::new(&mut self.buffer, &mut self.cursors, &mut self.undo, &self.indent)
+            .execute(action);
     }
 }
 

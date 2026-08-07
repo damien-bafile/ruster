@@ -18,10 +18,7 @@ pub fn offset_to_position(text: &str, char_offset: usize) -> LspPosition {
     let mut utf16 = 0u32;
     for (i, ch) in text.chars().enumerate() {
         if i == char_offset {
-            return LspPosition {
-                line,
-                character: utf16,
-            };
+            return LspPosition { line, character: utf16 };
         }
         if ch == '\n' {
             line += 1;
@@ -31,10 +28,7 @@ pub fn offset_to_position(text: &str, char_offset: usize) -> LspPosition {
         }
     }
     // At or past end of text.
-    LspPosition {
-        line,
-        character: utf16,
-    }
+    LspPosition { line, character: utf16 }
 }
 
 /// Convert an LSP position in `text` back to a char offset.

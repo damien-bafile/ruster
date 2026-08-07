@@ -24,11 +24,7 @@ fn read(name: &str) -> Vec<u8> {
 #[test]
 fn the_png_master_is_a_png() {
     let bytes = read("icon.png");
-    assert!(
-        bytes.len() > 1024,
-        "icon.png is {} bytes — truncated?",
-        bytes.len()
-    );
+    assert!(bytes.len() > 1024, "icon.png is {} bytes — truncated?", bytes.len());
     assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "icon.png is not a PNG");
 }
 
@@ -38,11 +34,7 @@ fn the_embedded_icon_is_the_master() {
     // the build breaks in a way that looks like a compiler problem rather than
     // a missing asset, so pin the relationship here too.
     const EMBEDDED: &[u8] = include_bytes!("../../../assets/icon.png");
-    assert_eq!(
-        EMBEDDED,
-        read("icon.png").as_slice(),
-        "the embedded icon is not the master"
-    );
+    assert_eq!(EMBEDDED, read("icon.png").as_slice(), "the embedded icon is not the master");
 }
 
 #[test]
@@ -71,16 +63,8 @@ fn the_linux_hicolor_sizes_are_all_present() {
     // 16px scaled from 512 is exactly where this icon stopped being legible.
     for size in [16, 32, 48, 64, 128, 256, 512] {
         let bytes = read(&format!("hicolor/ruster-{size}.png"));
-        assert_eq!(
-            &bytes[..8],
-            b"\x89PNG\r\n\x1a\n",
-            "hicolor/ruster-{size}.png is not a PNG"
-        );
-        assert!(
-            bytes.len() > 100,
-            "hicolor/ruster-{size}.png is {} bytes",
-            bytes.len()
-        );
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n", "hicolor/ruster-{size}.png is not a PNG");
+        assert!(bytes.len() > 100, "hicolor/ruster-{size}.png is {} bytes", bytes.len());
     }
 }
 
@@ -95,10 +79,7 @@ fn the_desktop_entry_declares_what_a_launcher_needs() {
         "Icon=ruster",
         "Terminal=false",
     ] {
-        assert!(
-            text.contains(required),
-            "ruster.desktop has no {required:?}"
-        );
+        assert!(text.contains(required), "ruster.desktop has no {required:?}");
     }
     // `Icon=` must name the installed icon, not a path into the source tree:
     // the entry is copied to ~/.local/share and the repo may not be there.
@@ -108,10 +89,7 @@ fn the_desktop_entry_declares_what_a_launcher_needs() {
     );
     // `%F` not `%f`: ruster takes several paths, and a file manager passing two
     // files should open both rather than launching twice.
-    assert!(
-        text.contains("Exec=ruster %F"),
-        "Exec should take multiple files with %F"
-    );
+    assert!(text.contains("Exec=ruster %F"), "Exec should take multiple files with %F");
 }
 
 #[test]
@@ -125,9 +103,7 @@ fn the_windows_resource_script_points_at_the_icon() {
         .split('"')
         .nth(1)
         .expect("the .rc names a file in quotes");
-    let resolved = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../ruster-bin")
-        .join(referenced);
+    let resolved = Path::new(env!("CARGO_MANIFEST_DIR")).join("../ruster-bin").join(referenced);
     assert!(
         resolved.exists(),
         "ruster.rc points at {referenced}, which does not exist relative to the crate. \

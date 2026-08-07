@@ -78,11 +78,8 @@ impl MessageLog {
         if self.entries.len() >= self.max_entries {
             self.entries.remove(0);
         }
-        self.entries.push(MessageEntry {
-            level,
-            source,
-            text,
-        });
+        self.entries
+            .push(MessageEntry { level, source, text });
     }
 
     /// Clear all entries.

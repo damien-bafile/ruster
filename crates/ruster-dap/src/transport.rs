@@ -45,8 +45,7 @@ pub fn read_message<R: Read>(reader: &mut R) -> Result<ServerMessage> {
             content_length = rest.trim().parse::<usize>().ok();
         }
     }
-    let len =
-        content_length.ok_or_else(|| TransportError::Protocol("Missing Content-Length".into()))?;
+    let len = content_length.ok_or_else(|| TransportError::Protocol("Missing Content-Length".into()))?;
     let mut buf = vec![0u8; len];
     buf_reader.read_exact(&mut buf)?;
     let val: serde_json::Value = serde_json::from_slice(&buf)?;
@@ -65,9 +64,7 @@ pub fn read_message<R: Read>(reader: &mut R) -> Result<ServerMessage> {
             let evt: dap::events::Event = serde_json::from_value(val)?;
             Ok(ServerMessage::Event(evt))
         }
-        _ => Err(TransportError::Protocol(format!(
-            "Unknown message type: {type_field}"
-        ))),
+        _ => Err(TransportError::Protocol(format!("Unknown message type: {type_field}"))),
     }
 }
 

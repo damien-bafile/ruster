@@ -1,15 +1,12 @@
+use std::path::PathBuf;
+use ruster_tui::app::App;
 use ruster_render::Renderer;
 use ruster_render_raylib::RaylibRenderer;
-use ruster_tui::app::App;
-use std::path::PathBuf;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let tui = args.iter().any(|a| a == "--tui");
-    let path = args
-        .iter()
-        .skip(1)
-        .find(|a| !a.starts_with('-'))
+    let path = args.iter().skip(1).find(|a| !a.starts_with('-'))
         .map(PathBuf::from)
         .unwrap_or_default();
 

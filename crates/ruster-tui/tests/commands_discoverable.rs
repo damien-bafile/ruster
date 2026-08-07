@@ -31,10 +31,7 @@ const TYPED_ONLY: &[(&str, &str)] = &[
     ("OpenFile", "takes a path"),
     ("Substitute", "`:s/a/b/`, takes a pattern"),
     ("Echo", "takes the text to show"),
-    (
-        "GotoLine",
-        "`:16` — the line number *is* the command; `gg`/`G` cover the ends",
-    ),
+    ("GotoLine", "`:16` — the line number *is* the command; `gg`/`G` cover the ends"),
     // Argument-taking: a keypress cannot supply the value.
     ("SetNamed", "`:set <opt>=<val>`"),
     ("ShowSetting", "`:set <opt>?`"),
@@ -45,10 +42,7 @@ const TYPED_ONLY: &[(&str, &str)] = &[
     ("Rg", "takes a pattern"),
     ("Screenshot", "takes an optional path"),
     ("Help", "bound as `SPC o h`; the argument form is typed"),
-    (
-        "Hover",
-        "`K` and `SPC c k`; the `:` form exists so a float can be raised on demand",
-    ),
+    ("Hover", "`K` and `SPC c k`; the `:` form exists so a float can be raised on demand"),
     // Reached by a dedicated key rather than the leader tree.
     ("QuickfixNext", "`]q`"),
     ("QuickfixPrev", "`[q`"),
@@ -58,10 +52,7 @@ const TYPED_ONLY: &[(&str, &str)] = &[
     // Maintenance commands, run deliberately and rarely.
     ("ConfigErrors", "diagnostic, run when something is wrong"),
     ("SyntaxReload", "run after editing a query by hand"),
-    (
-        "NoiceSplit",
-        "the panel is `SPC o n`; the split form is typed",
-    ),
+    ("NoiceSplit", "the panel is `SPC o n`; the split form is typed"),
     ("Dired", "`SPC o e`; the path form is typed"),
     ("Ibuffer", "`SPC b b`"),
     ("CallHierarchy", "`SPC c i` / `SPC c y`"),
@@ -91,12 +82,7 @@ fn command_actions() -> Vec<String> {
             let t = l.trim();
             // `Variant,` or `Variant(..)` or `Variant {`, skipping doc comments.
             (!t.starts_with("//") && t.starts_with(|c: char| c.is_ascii_uppercase()))
-                .then(|| {
-                    t.trim_end_matches(',')
-                        .split(['(', ' ', '{'])
-                        .next()
-                        .unwrap_or(t)
-                })
+                .then(|| t.trim_end_matches(',').split(['(', ' ', '{']).next().unwrap_or(t))
                 .map(str::to_string)
         })
         .collect()
@@ -118,12 +104,7 @@ fn leader_actions() -> Vec<String> {
         .filter(|l| l.contains("LeaderNode::Action("))
         .filter_map(|l| {
             let at = l.find("LeaderAction::")? + "LeaderAction::".len();
-            Some(
-                l[at..]
-                    .chars()
-                    .take_while(|c| c.is_alphanumeric() || *c == '_')
-                    .collect(),
-            )
+            Some(l[at..].chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect())
         })
         .collect()
 }
@@ -131,25 +112,15 @@ fn leader_actions() -> Vec<String> {
 #[test]
 fn every_command_is_bound_or_declared_typed_only() {
     let commands = command_actions();
-    assert!(
-        commands.len() > 40,
-        "the scrape found only {} — it has broken",
-        commands.len()
-    );
+    assert!(commands.len() > 40, "the scrape found only {} — it has broken", commands.len());
     let leader = leader_actions();
-    assert!(
-        leader.len() > 20,
-        "the leader scrape found only {} — it has broken",
-        leader.len()
-    );
+    assert!(leader.len() > 20, "the leader scrape found only {} — it has broken", leader.len());
 
     // A command counts as reachable when a LeaderAction shares its name, which
     // is the convention every existing binding follows.
     let typed: Vec<&str> = TYPED_ONLY.iter().map(|(n, _)| *n).collect();
     let aliased = |c: &str| {
-        ALIASES
-            .iter()
-            .any(|(cmd, leader_name)| *cmd == c && leader.iter().any(|l| l == leader_name))
+        ALIASES.iter().any(|(cmd, leader_name)| *cmd == c && leader.iter().any(|l| l == leader_name))
     };
     let missing: Vec<&String> = commands
         .iter()
@@ -162,11 +133,7 @@ fn every_command_is_bound_or_declared_typed_only() {
          Either add a leader binding, or add it to TYPED_ONLY in this file with \
          the reason it is typed. A feature nobody can find may as well not exist.",
         missing.len(),
-        missing
-            .iter()
-            .map(|m| format!("  CmdAction::{m}"))
-            .collect::<Vec<_>>()
-            .join("\n")
+        missing.iter().map(|m| format!("  CmdAction::{m}")).collect::<Vec<_>>().join("\n")
     );
 }
 

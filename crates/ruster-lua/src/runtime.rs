@@ -1,22 +1,19 @@
+use std::cell::RefCell;
+use std::path::Path;
+use mlua::{Function, Lua, RegistryKey};
 use crate::config::Config;
 use crate::event::EventBus;
 use crate::keymap::LuaKeymap;
-use mlua::{Function, Lua, RegistryKey};
-use std::cell::RefCell;
-use std::path::Path;
 
 #[derive(Debug)]
 pub enum LuaAction {
     Cmd(String),
     Print(String),
-    Notify(u8, String), // 0=Info, 1=Success, 2=Warning, 3=Error
+    Notify(u8, String),  // 0=Info, 1=Success, 2=Warning, 3=Error
     /// Show a modal form. Fields are `(label, kind, value, options)` where kind
     /// is one of `toggle`/`text`/`number`/`select`; the app owns the widgets, so
     /// Lua describes the form rather than drawing it.
-    Dialog {
-        title: String,
-        fields: Vec<(String, String, String, Vec<String>)>,
-    },
+    Dialog { title: String, fields: Vec<(String, String, String, Vec<String>)> },
 }
 
 /// Callbacks the app installs so Lua can query and manipulate buffers and
@@ -180,9 +177,7 @@ impl LuaRuntime {
     /// submitted with Enter. The callback is consumed either way — a dialog is
     /// shown once.
     pub fn fire_dialog_submit(&self, values: &[(String, String)], button: Option<&str>) {
-        let Some(key) = self.shared.dialog_cb.borrow_mut().take() else {
-            return;
-        };
+        let Some(key) = self.shared.dialog_cb.borrow_mut().take() else { return };
         if let Ok(func) = self.lua.registry_value::<Function>(&key) {
             let table = match self.lua.create_table() {
                 Ok(t) => t,
@@ -263,8 +258,7 @@ impl LuaRuntime {
     }
 
     pub fn fire_event_str(&self, name: &str, string_args: &[&str]) {
-        let vals: Vec<mlua::Value> = string_args
-            .iter()
+        let vals: Vec<mlua::Value> = string_args.iter()
             .map(|s| mlua::Value::String(self.lua.create_string(s).unwrap()))
             .collect();
         self.fire_event(name, &vals);
@@ -272,12 +266,7 @@ impl LuaRuntime {
 
     /// The `ruster.config` table, if present.
     fn config_table(&self) -> Option<mlua::Table> {
-        self.lua
-            .globals()
-            .get::<mlua::Table>("ruster")
-            .ok()?
-            .get::<mlua::Table>("config")
-            .ok()
+        self.lua.globals().get::<mlua::Table>("ruster").ok()?.get::<mlua::Table>("config").ok()
     }
 
     /// The typed config (validation errors discarded — see `config_validated`).
@@ -307,13 +296,8 @@ impl LuaRuntime {
 
         // Validated grouped read: every schema value defaults, then override with
         // valid entries; type/range failures are collected, not fatal.
-        let mut vals: std::collections::HashMap<
-            (&'static str, &'static str),
-            crate::schema::SettingValue,
-        > = crate::schema::schema()
-            .iter()
-            .map(|s| ((s.group, s.key), s.default.clone()))
-            .collect();
+        let mut vals: std::collections::HashMap<(&'static str, &'static str), crate::schema::SettingValue> =
+            crate::schema::schema().iter().map(|s| ((s.group, s.key), s.default.clone())).collect();
         let mut errors = Vec::new();
         for spec in crate::schema::schema() {
             let gt = match cfg.get::<Option<mlua::Table>>(spec.group).ok().flatten() {
@@ -446,12 +430,8 @@ impl LuaRuntime {
     }
 
     pub fn load_init(&mut self, path: &Path) -> Result<(), String> {
-        let code = std::fs::read_to_string(path)
-            .map_err(|e| format!("Cannot read {}: {}", path.display(), e))?;
-        self.lua
-            .load(&code)
-            .exec()
-            .map_err(|e| format!("Lua error in {}: {}", path.display(), e))
+        let code = std::fs::read_to_string(path).map_err(|e| format!("Cannot read {}: {}", path.display(), e))?;
+        self.lua.load(&code).exec().map_err(|e| format!("Lua error in {}: {}", path.display(), e))
     }
 
     pub fn drain_actions(&self) -> Vec<LuaAction> {
@@ -462,12 +442,8 @@ impl LuaRuntime {
     /// Returns true if matched (consumed the key).
     pub fn handle_key(&self, mode: &str, ck: &crossterm::event::KeyEvent) -> bool {
         for km in self.shared.keymaps.borrow().iter() {
-            if km.mode != mode {
-                continue;
-            }
-            if km.keys.len() != 1 {
-                continue;
-            } // multi-keys in future
+            if km.mode != mode { continue; }
+            if km.keys.len() != 1 { continue; } // multi-keys in future
             let expected = crate::keymap::lua_key_to_crossterm(&km.keys[0]);
             if expected == *ck {
                 if let Ok(func) = self.lua.registry_value::<Function>(&km.callback) {
@@ -493,23 +469,13 @@ fn config_flat(cfg: &mlua::Table, defaults: &Config) -> Config {
     c.number = cfg.get("number").unwrap_or(defaults.number);
     c.relativenumber = cfg.get("relativenumber").unwrap_or(defaults.relativenumber);
     c.theme = cfg.get("theme").unwrap_or_else(|_| defaults.theme.clone());
-    c.gui_font = cfg
-        .get("gui_font")
-        .unwrap_or_else(|_| defaults.gui_font.clone());
-    c.cursor_anim_enabled = cfg
-        .get("cursor_anim_enabled")
-        .unwrap_or(defaults.cursor_anim_enabled);
-    c.cursor_anim_speed = cfg
-        .get("cursor_anim_speed")
-        .unwrap_or(defaults.cursor_anim_speed);
+    c.gui_font = cfg.get("gui_font").unwrap_or_else(|_| defaults.gui_font.clone());
+    c.cursor_anim_enabled = cfg.get("cursor_anim_enabled").unwrap_or(defaults.cursor_anim_enabled);
+    c.cursor_anim_speed = cfg.get("cursor_anim_speed").unwrap_or(defaults.cursor_anim_speed);
     c.timeoutlen = cfg.get("timeoutlen").unwrap_or(defaults.timeoutlen);
     c.format_on_save = cfg.get("format_on_save").unwrap_or(defaults.format_on_save);
-    c.terminal_shell = cfg
-        .get("terminal_shell")
-        .unwrap_or_else(|_| defaults.terminal_shell.clone());
-    c.terminal_scrollback = cfg
-        .get("terminal_scrollback")
-        .unwrap_or(defaults.terminal_scrollback);
+    c.terminal_shell = cfg.get("terminal_shell").unwrap_or_else(|_| defaults.terminal_shell.clone());
+    c.terminal_scrollback = cfg.get("terminal_scrollback").unwrap_or(defaults.terminal_scrollback);
     c
 }
 
@@ -519,10 +485,7 @@ fn config_from_grouped(
     vals: &std::collections::HashMap<(&'static str, &'static str), crate::schema::SettingValue>,
     _defaults: &Config,
 ) -> Config {
-    let slice: Vec<_> = vals
-        .iter()
-        .map(|((g, k), v)| ((*g, *k), v.clone()))
-        .collect();
+    let slice: Vec<_> = vals.iter().map(|((g, k), v)| ((*g, *k), v.clone())).collect();
     Config::from_settings(&slice)
 }
 
@@ -573,10 +536,7 @@ fn get_opt<T: mlua::FromLua>(tbl: &mlua::Table, key: &str) -> Result<Option<T>, 
 fn raw_display(tbl: &mlua::Table, key: &str) -> String {
     match tbl.get::<mlua::Value>(key) {
         Ok(mlua::Value::Nil) => "nil".into(),
-        Ok(mlua::Value::String(s)) => format!(
-            "{:?}",
-            s.to_str().map(|x| x.to_string()).unwrap_or_default()
-        ),
+        Ok(mlua::Value::String(s)) => format!("{:?}", s.to_str().map(|x| x.to_string()).unwrap_or_default()),
         Ok(mlua::Value::Integer(i)) => i.to_string(),
         Ok(mlua::Value::Number(n)) => n.to_string(),
         Ok(mlua::Value::Boolean(b)) => b.to_string(),
@@ -623,12 +583,8 @@ mod config_tests {
         let (cfg, errors) = rt.config_validated();
         assert_eq!(errors.len(), 2, "{errors:?}");
         assert_eq!(cfg.tabstop, 4, "invalid tabstop falls back to default");
-        assert!(errors
-            .iter()
-            .any(|e| e.key == "font_size" && e.group == "gui"));
-        assert!(errors
-            .iter()
-            .any(|e| e.key == "tabstop" && e.group == "general"));
+        assert!(errors.iter().any(|e| e.key == "font_size" && e.group == "gui"));
+        assert!(errors.iter().any(|e| e.key == "tabstop" && e.group == "general"));
     }
 
     #[test]
@@ -652,38 +608,20 @@ mod config_tests {
         "##,
         );
         let (cfg, _errors) = rt.config_validated();
-        assert_eq!(
-            cfg.syntax_overrides["rust"]
-                .get("keyword")
-                .map(String::as_str),
-            Some("#ff00ff")
-        );
+        assert_eq!(cfg.syntax_overrides["rust"].get("keyword").map(String::as_str), Some("#ff00ff"));
         // Non-hex values are dropped.
         assert!(!cfg.syntax_overrides["rust"].contains_key("string"));
-        assert_eq!(
-            cfg.syntax_overrides["python"]
-                .get("comment")
-                .map(String::as_str),
-            Some("#123456")
-        );
+        assert_eq!(cfg.syntax_overrides["python"].get("comment").map(String::as_str), Some("#123456"));
     }
 
     #[test]
     fn syntax_to_lua_round_trips_through_the_parser() {
         use std::collections::HashMap;
         let mut map: HashMap<String, HashMap<String, String>> = HashMap::new();
-        map.insert(
-            "rust".into(),
-            HashMap::from([("keyword".to_string(), "#abcdef".to_string())]),
-        );
+        map.insert("rust".into(), HashMap::from([("keyword".to_string(), "#abcdef".to_string())]));
         let lua = crate::config::syntax_to_lua(&map);
         let rt = rt_with(&lua);
         let (cfg, _) = rt.config_validated();
-        assert_eq!(
-            cfg.syntax_overrides["rust"]
-                .get("keyword")
-                .map(String::as_str),
-            Some("#abcdef")
-        );
+        assert_eq!(cfg.syntax_overrides["rust"].get("keyword").map(String::as_str), Some("#abcdef"));
     }
 }

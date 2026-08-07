@@ -60,10 +60,7 @@ pub struct DiredState {
 impl DiredState {
     /// `show_hidden` seeds from `dired.show_hidden`.
     pub fn new(show_hidden: bool) -> Self {
-        Self {
-            show_hidden,
-            ..Default::default()
-        }
+        Self { show_hidden, ..Default::default() }
     }
 
     // --- queries ---
@@ -89,10 +86,7 @@ impl DiredState {
 
     /// The directory the active dired buffer lists, for resolving a prompt.
     pub fn active_dir(&self, ws: &Workspace) -> PathBuf {
-        self.dirs
-            .get(&ws.active_buffer())
-            .cloned()
-            .unwrap_or_default()
+        self.dirs.get(&ws.active_buffer()).cloned().unwrap_or_default()
     }
 
     /// The `(path, name)` under the cursor, or `None` for `..` / an empty
@@ -113,9 +107,7 @@ impl DiredState {
     /// Create a dired buffer for `path` and make it active.
     pub fn open(&mut self, ws: &mut Workspace, path: PathBuf) {
         let path = path.canonicalize().unwrap_or(path);
-        let id = ws
-            .buffers
-            .create_special(SpecialKind::Dired, &path.to_string_lossy());
+        let id = ws.buffers.create_special(SpecialKind::Dired, &path.to_string_lossy());
         ws.set_active_buffer(id);
         self.refresh(ws, id, path);
     }
@@ -274,10 +266,7 @@ impl DiredState {
                 echo(
                     notify,
                     MessageLevel::Info,
-                    format!(
-                        "Hidden files {}",
-                        if self.show_hidden { "shown" } else { "hidden" }
-                    ),
+                    format!("Hidden files {}", if self.show_hidden { "shown" } else { "hidden" }),
                 );
                 DiredResponse::Handled
             }
@@ -318,9 +307,7 @@ impl DiredState {
 
     fn go_up(&mut self, ws: &mut Workspace) {
         let id = ws.active_buffer();
-        let Some(dir) = self.dirs.get(&id).cloned() else {
-            return;
-        };
+        let Some(dir) = self.dirs.get(&id).cloned() else { return };
         if core::is_drives_view(&dir) {
             return; // already at the top
         }
@@ -335,7 +322,12 @@ impl DiredState {
     }
 
     /// Record the entry under the cursor for a later paste. `cut` moves on paste.
-    fn yank_under_cursor(&mut self, ws: &Workspace, notify: &mut NotificationManager, cut: bool) {
+    fn yank_under_cursor(
+        &mut self,
+        ws: &Workspace,
+        notify: &mut NotificationManager,
+        cut: bool,
+    ) {
         match self.current_target(ws) {
             Some((path, name)) => {
                 self.clipboard = Some((path, cut));
@@ -345,11 +337,7 @@ impl DiredState {
                     format!("{} '{}'", if cut { "Cut" } else { "Copied" }, name),
                 );
             }
-            None => echo(
-                notify,
-                MessageLevel::Warning,
-                "Nothing selected".to_string(),
-            ),
+            None => echo(notify, MessageLevel::Warning, "Nothing selected".to_string()),
         }
     }
 
@@ -360,12 +348,8 @@ impl DiredState {
             return;
         };
         let id = ws.active_buffer();
-        let Some(dir) = self.dirs.get(&id).cloned() else {
-            return;
-        };
-        let Some(name) = src.file_name().map(|n| n.to_os_string()) else {
-            return;
-        };
+        let Some(dir) = self.dirs.get(&id).cloned() else { return };
+        let Some(name) = src.file_name().map(|n| n.to_os_string()) else { return };
         let dest = dir.join(&name);
         if dest.exists() {
             echo(
@@ -401,11 +385,7 @@ impl DiredState {
                 echo(
                     notify,
                     MessageLevel::Info,
-                    format!(
-                        "{} '{}'",
-                        if cut { "Moved" } else { "Pasted" },
-                        name.to_string_lossy()
-                    ),
+                    format!("{} '{}'", if cut { "Moved" } else { "Pasted" }, name.to_string_lossy()),
                 );
                 if cut {
                     self.clipboard = None; // a cut is consumed by the paste
@@ -446,11 +426,7 @@ pub fn styled_lines(entries: &[core::DirEntry]) -> Vec<StyledLine> {
     entries
         .iter()
         .map(|e| {
-            let text = if e.is_dir {
-                format!("{}/", e.name)
-            } else {
-                e.name.clone()
-            };
+            let text = if e.is_dir { format!("{}/", e.name) } else { e.name.clone() };
             let s = if e.is_symlink {
                 ruster_syntax::dired_style("symlink")
             } else if e.is_dir {
@@ -461,11 +437,7 @@ pub fn styled_lines(entries: &[core::DirEntry]) -> Vec<StyledLine> {
                 SyntaxStyle::default()
             };
             let len = text.chars().count();
-            let highlights = if matches!(s.fg, Color::Default) {
-                Vec::new()
-            } else {
-                vec![(0, len, s)]
-            };
+            let highlights = if matches!(s.fg, Color::Default) { Vec::new() } else { vec![(0, len, s)] };
             StyledLine { text, highlights }
         })
         .collect()
@@ -489,15 +461,9 @@ pub fn help_lines() -> Vec<StyledLine> {
         ": commands   run any :command",
         "g?           this help",
     ];
-    std::iter::once(StyledLine {
-        text: " dired keys".to_string(),
-        highlights: vec![],
-    })
-    .chain(entries.iter().map(|e| StyledLine {
-        text: format!("  {}", e),
-        highlights: vec![],
-    }))
-    .collect()
+    std::iter::once(StyledLine { text: " dired keys".to_string(), highlights: vec![] })
+        .chain(entries.iter().map(|e| StyledLine { text: format!("  {}", e), highlights: vec![] }))
+        .collect()
 }
 
 #[cfg(test)]
@@ -705,10 +671,7 @@ mod tests {
         let mut n = notify();
         for c in [':', '/', 'n', ' ', 'N'] {
             assert!(
-                matches!(
-                    d.handle_key(key(c), &mut ws, &mut n),
-                    DiredResponse::Ignored
-                ),
+                matches!(d.handle_key(key(c), &mut ws, &mut n), DiredResponse::Ignored),
                 "{c:?} must reach the main handler"
             );
         }
@@ -727,18 +690,11 @@ mod tests {
 
         for c in ['h', 'l', 'd', 'w', 'u'] {
             assert!(
-                matches!(
-                    d.handle_key(ctrl(c), &mut ws, &mut n),
-                    DiredResponse::Ignored
-                ),
+                matches!(d.handle_key(ctrl(c), &mut ws, &mut n), DiredResponse::Ignored),
                 "C-{c} must reach the main handler"
             );
         }
-        assert_eq!(
-            d.dir_of(ws.active_buffer()),
-            Some(&root),
-            "C-h did not ascend"
-        );
+        assert_eq!(d.dir_of(ws.active_buffer()), Some(&root), "C-h did not ascend");
 
         // C-n / C-p remain dired's own line motions.
         assert!(matches!(
@@ -759,4 +715,5 @@ mod tests {
         assert!(d.dir_of(id).is_none());
         std::fs::remove_dir_all(&root).ok();
     }
+
 }

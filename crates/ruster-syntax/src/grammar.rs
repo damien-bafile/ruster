@@ -45,11 +45,7 @@ pub enum GrammarError {
     /// wrong file, or a language name that does not match the file name.
     MissingSymbol(String),
     /// Built against an incompatible tree-sitter. Refused deliberately.
-    AbiMismatch {
-        found: usize,
-        min: usize,
-        max: usize,
-    },
+    AbiMismatch { found: usize, min: usize, max: usize },
 }
 
 impl std::fmt::Display for GrammarError {
@@ -98,19 +94,12 @@ pub fn library_names(lang: &str) -> Vec<String> {
     } else {
         "so"
     };
-    vec![
-        format!("libtree-sitter-{lang}.{ext}"),
-        format!("tree-sitter-{lang}.{ext}"),
-        format!("{lang}.{ext}"),
-    ]
+    vec![format!("libtree-sitter-{lang}.{ext}"), format!("tree-sitter-{lang}.{ext}"), format!("{lang}.{ext}")]
 }
 
 /// The first candidate library for `lang` that exists in `dir`.
 pub fn find_library(dir: &Path, lang: &str) -> Option<PathBuf> {
-    library_names(lang)
-        .into_iter()
-        .map(|n| dir.join(n))
-        .find(|p| p.is_file())
+    library_names(lang).into_iter().map(|n| dir.join(n)).find(|p| p.is_file())
 }
 
 /// Load the grammar for `lang` from `dir`, refusing anything whose ABI this
@@ -142,9 +131,8 @@ fn language_from_library(lib: libloading::Library, lang: &str) -> Result<Languag
     // grammar exports exactly `const TSLanguage *tree_sitter_NAME(void)`. If the
     // symbol is absent this errors instead of calling anything.
     let language = unsafe {
-        let entry: libloading::Symbol<unsafe extern "C" fn() -> *const std::ffi::c_void> = lib
-            .get(symbol.as_bytes())
-            .map_err(|_| GrammarError::MissingSymbol(symbol.clone()))?;
+        let entry: libloading::Symbol<unsafe extern "C" fn() -> *const std::ffi::c_void> =
+            lib.get(symbol.as_bytes()).map_err(|_| GrammarError::MissingSymbol(symbol.clone()))?;
         // Calling the entry point only returns a pointer to a static descriptor;
         // it does not interpret it. The ABI check below happens before anything
         // else reads through that pointer.
@@ -189,17 +177,12 @@ mod tests {
     /// The gate that stops a mismatched grammar from segfaulting the editor.
     #[test]
     fn only_abi_versions_this_build_supports_are_accepted() {
-        let (min, max) = (
-            tree_sitter::MIN_COMPATIBLE_LANGUAGE_VERSION,
-            tree_sitter::LANGUAGE_VERSION,
-        );
+        let (min, max) =
+            (tree_sitter::MIN_COMPATIBLE_LANGUAGE_VERSION, tree_sitter::LANGUAGE_VERSION);
         assert!(abi_supported(min), "the floor is usable");
         assert!(abi_supported(max), "so is the current version");
         assert!(!abi_supported(min - 1), "one below the floor is refused");
-        assert!(
-            !abi_supported(max + 1),
-            "and so is anything newer than we know"
-        );
+        assert!(!abi_supported(max + 1), "and so is anything newer than we know");
         assert!(!abi_supported(0), "a zeroed or garbage version is refused");
     }
 
@@ -207,9 +190,7 @@ mod tests {
     /// check is calibrated wrongly and would reject valid user grammars too.
     #[test]
     fn the_builtin_grammars_satisfy_their_own_abi_check() {
-        for ext in [
-            "rs", "py", "js", "ts", "c", "json", "toml", "yaml", "lua", "scm", "just",
-        ] {
+        for ext in ["rs", "py", "js", "ts", "c", "json", "toml", "yaml", "lua", "scm", "just"] {
             let lang = crate::language_for_ext(ext).expect("built in");
             assert!(
                 abi_supported(lang.abi_version()),
@@ -284,9 +265,7 @@ mod tests {
     #[test]
     fn the_entry_point_name_is_c_identifier_safe() {
         let exe = std::env::current_exe().expect("the test binary");
-        let Ok(lib) = (unsafe { libloading::Library::new(&exe) }) else {
-            return;
-        };
+        let Ok(lib) = (unsafe { libloading::Library::new(&exe) }) else { return };
         match language_from_library(lib, "some-lang") {
             Err(GrammarError::MissingSymbol(s)) => assert_eq!(s, "tree_sitter_some_lang"),
             other => panic!("expected a missing symbol, got {other:?}"),
@@ -295,16 +274,9 @@ mod tests {
 
     #[test]
     fn errors_say_what_to_do_about_them() {
-        let e = GrammarError::AbiMismatch {
-            found: 99,
-            min: 13,
-            max: 15,
-        };
+        let e = GrammarError::AbiMismatch { found: 99, min: 13, max: 15 };
         let msg = e.to_string();
-        assert!(
-            msg.contains("99") && msg.contains("13") && msg.contains("15"),
-            "{msg}"
-        );
+        assert!(msg.contains("99") && msg.contains("13") && msg.contains("15"), "{msg}");
         assert!(msg.contains("rebuild"), "tells the user the fix: {msg}");
     }
 

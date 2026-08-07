@@ -135,10 +135,8 @@ fn the_groups_within_a_language_are_distinguishable() {
     let _g = exclusive();
     for (lang, style_of) in accessors() {
         let groups = ruster_syntax::groups_for_lang(lang);
-        let distinct: std::collections::BTreeSet<String> = groups
-            .iter()
-            .map(|g| format!("{:?}", style_of(g).fg))
-            .collect();
+        let distinct: std::collections::BTreeSet<String> =
+            groups.iter().map(|g| format!("{:?}", style_of(g).fg)).collect();
         assert!(
             distinct.len() > 1,
             "every group in {lang} draws the same colour ({} groups, {} distinct)",

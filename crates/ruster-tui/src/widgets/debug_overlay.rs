@@ -31,9 +31,7 @@ impl Widget for DebugOverlayWidget<'_> {
             return;
         }
         let c = |pick: fn(&Theme) -> ruster_render::Color, fallback: Color| {
-            self.theme
-                .map(|t| ruster_render_color_to_tui(&pick(t)))
-                .unwrap_or(fallback)
+            self.theme.map(|t| ruster_render_color_to_tui(&pick(t))).unwrap_or(fallback)
         };
         let panel_bg = c(|t| t.whichkey_bg, Color::Rgb(30, 30, 46));
         let panel_fg = c(|t| t.whichkey_fg, Color::Rgb(205, 214, 244));
@@ -100,11 +98,7 @@ mod tests {
     /// Read one row of a rendered buffer back as text.
     fn row(buf: &Buffer, y: u16, area: Rect) -> String {
         (area.left()..area.right())
-            .map(|x| {
-                buf.cell((x, y))
-                    .map(|c| c.symbol().to_string())
-                    .unwrap_or_default()
-            })
+            .map(|x| buf.cell((x, y)).map(|c| c.symbol().to_string()).unwrap_or_default())
             .collect::<String>()
             .trim_end()
             .to_string()
@@ -116,10 +110,7 @@ mod tests {
         let mut buf = Buffer::empty(area);
         DebugOverlayWidget::new(&view()).render(area, &mut buf);
 
-        assert!(
-            row(&buf, 0, area).contains("Debug: PAUSED"),
-            "toolbar on the first row"
-        );
+        assert!(row(&buf, 0, area).contains("Debug: PAUSED"), "toolbar on the first row");
         assert_eq!(row(&buf, 1, area), "Call stack");
         assert!(row(&buf, 2, area).contains("main") && row(&buf, 2, area).contains("main.rs:12"));
         assert_eq!(row(&buf, 4, area), "Locals");

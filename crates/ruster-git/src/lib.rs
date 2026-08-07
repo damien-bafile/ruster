@@ -134,9 +134,7 @@ pub fn file_at_head(root: &Path, path: &Path) -> Option<String> {
         .arg(format!("HEAD:{}", rel.to_str()?.replace('\\', "/")))
         .output()
         .ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Parse the hunk headers out of `git diff --no-color -U0` output.
@@ -159,28 +157,16 @@ impl From<DiffHunk> for Hunk {
     /// Reduce a two-sided hunk to the gutter's one-sided view.
     fn from(h: DiffHunk) -> Hunk {
         if h.old_count == 0 {
-            Hunk {
-                kind: HunkKind::Added,
-                start: h.new_start,
-                count: h.new_count,
-            }
+            Hunk { kind: HunkKind::Added, start: h.new_start, count: h.new_count }
         } else if h.new_count == 0 {
             // A deletion leaves no lines to mark, so the sign goes on the line
             // above the gap. `new_start` is where the removed lines *would* have
             // sat, so stepping back one both lands on the preceding line and
             // keeps a deletion at end-of-file inside the buffer, instead of one
             // line past it where it would never render.
-            Hunk {
-                kind: HunkKind::Removed,
-                start: h.new_start.saturating_sub(1),
-                count: 0,
-            }
+            Hunk { kind: HunkKind::Removed, start: h.new_start.saturating_sub(1), count: 0 }
         } else {
-            Hunk {
-                kind: HunkKind::Modified,
-                start: h.new_start,
-                count: h.new_count,
-            }
+            Hunk { kind: HunkKind::Modified, start: h.new_start, count: h.new_count }
         }
     }
 }
@@ -210,9 +196,7 @@ fn raw_diff(root: &Path, path: &Path) -> Option<String> {
         .arg(path)
         .output()
         .ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// [`diff_hunks`] in raw two-sided coordinates, for the side-by-side view.
@@ -326,9 +310,7 @@ impl Status {
 pub fn parse_status(text: &str) -> Status {
     let mut out = Status::default();
     for line in text.lines() {
-        let Some((kind, rest)) = line.split_once(' ') else {
-            continue;
-        };
+        let Some((kind, rest)) = line.split_once(' ') else { continue };
         match kind {
             "#" => parse_header(rest, &mut out),
             "1" => {
@@ -366,9 +348,7 @@ pub fn parse_status(text: &str) -> Status {
 }
 
 fn parse_header(rest: &str, out: &mut Status) {
-    let Some((key, value)) = rest.split_once(' ') else {
-        return;
-    };
+    let Some((key, value)) = rest.split_once(' ') else { return };
     match key {
         "branch.head" if value != "(detached)" => out.branch = Some(value.to_string()),
         "branch.upstream" => out.upstream = Some(value.to_string()),
@@ -452,10 +432,7 @@ pub fn status(root: &Path) -> Option<Status> {
 /// git's own editor flow treats them the same way. An empty result means the
 /// commit should be abandoned, exactly as `git commit` does.
 pub fn clean_commit_message(text: &str) -> String {
-    let body: Vec<&str> = text
-        .lines()
-        .filter(|l| !l.trim_start().starts_with('#'))
-        .collect();
+    let body: Vec<&str> = text.lines().filter(|l| !l.trim_start().starts_with('#')).collect();
     body.join("\n").trim().to_string()
 }
 
@@ -486,9 +463,7 @@ pub fn commit(root: &Path, message: &str) -> Result<String, String> {
         .ok_or("no stdin")?
         .write_all(message.as_bytes())
         .map_err(|e| format!("could not write the message: {e}"))?;
-    let out = child
-        .wait_with_output()
-        .map_err(|e| format!("git commit failed: {e}"))?;
+    let out = child.wait_with_output().map_err(|e| format!("git commit failed: {e}"))?;
     if out.status.success() {
         return Ok(String::from_utf8_lossy(&out.stdout).trim().to_string());
     }
@@ -499,11 +474,7 @@ pub fn commit(root: &Path, message: &str) -> Result<String, String> {
     } else {
         err
     };
-    Err(if msg.is_empty() {
-        "git commit failed".to_string()
-    } else {
-        msg
-    })
+    Err(if msg.is_empty() { "git commit failed".to_string() } else { msg })
 }
 
 /// Split a unified diff into one self-contained patch per hunk.
@@ -594,9 +565,7 @@ pub fn diff_text(root: &Path, path: &Path, staged: bool) -> Option<String> {
         cmd.arg("--cached");
     }
     let out = cmd.arg("--").arg(path).output().ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// The whole staged diff (`git diff --cached -U3`), for a view to point at.
@@ -607,9 +576,7 @@ pub fn staged_diff(root: &Path) -> Option<String> {
         .args(["diff", "--no-color", "--cached", "-U3"])
         .output()
         .ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Apply `patch` to the **index only**.
@@ -622,9 +589,7 @@ pub fn apply_to_index(root: &Path, patch: &str, reverse: bool) -> Result<(), Str
     use std::process::Stdio;
 
     let mut cmd = Command::new("git");
-    cmd.arg("-C")
-        .arg(root)
-        .args(["apply", "--cached", "--unidiff-zero"]);
+    cmd.arg("-C").arg(root).args(["apply", "--cached", "--unidiff-zero"]);
     if reverse {
         cmd.arg("--reverse");
     }
@@ -641,18 +606,12 @@ pub fn apply_to_index(root: &Path, patch: &str, reverse: bool) -> Result<(), Str
         .ok_or("no stdin")?
         .write_all(patch.as_bytes())
         .map_err(|e| format!("could not write patch: {e}"))?;
-    let out = child
-        .wait_with_output()
-        .map_err(|e| format!("git apply failed: {e}"))?;
+    let out = child.wait_with_output().map_err(|e| format!("git apply failed: {e}"))?;
     if out.status.success() {
         return Ok(());
     }
     let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-    Err(if err.is_empty() {
-        "git apply refused the patch".to_string()
-    } else {
-        err
-    })
+    Err(if err.is_empty() { "git apply refused the patch".to_string() } else { err })
 }
 
 /// The index of the hunk covering `line` (0-based, working-file coordinates),
@@ -698,11 +657,7 @@ fn run_git(root: &Path, args: &[&str], path: &Path) -> Result<(), String> {
         return Ok(());
     }
     let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-    Err(if err.is_empty() {
-        "git failed".to_string()
-    } else {
-        err
-    })
+    Err(if err.is_empty() { "git failed".to_string() } else { err })
 }
 
 /// The top level of the working tree containing `from`, or `None` when it is
@@ -743,19 +698,12 @@ pub fn is_repo(root: &Path) -> bool {
 /// The next hunk strictly after `line`, wrapping to the first. `None` when
 /// there are no hunks.
 pub fn next_hunk(hunks: &[Hunk], line: u32) -> Option<&Hunk> {
-    hunks
-        .iter()
-        .find(|h| h.start > line)
-        .or_else(|| hunks.first())
+    hunks.iter().find(|h| h.start > line).or_else(|| hunks.first())
 }
 
 /// The previous hunk strictly before `line`, wrapping to the last.
 pub fn prev_hunk(hunks: &[Hunk], line: u32) -> Option<&Hunk> {
-    hunks
-        .iter()
-        .rev()
-        .find(|h| h.start < line)
-        .or_else(|| hunks.last())
+    hunks.iter().rev().find(|h| h.start < line).or_else(|| hunks.last())
 }
 
 #[cfg(test)]
@@ -785,106 +733,45 @@ index 83db48f..bf269f4 100644
         let h = parse_hunks(SAMPLE);
         assert_eq!(h.len(), 3);
         // `@@ -12 +12 @@` — one line replaced one line.
-        assert_eq!(
-            h[0],
-            Hunk {
-                kind: HunkKind::Modified,
-                start: 11,
-                count: 1
-            }
-        );
+        assert_eq!(h[0], Hunk { kind: HunkKind::Modified, start: 11, count: 1 });
         // `@@ -20,0 +21,3 @@` — three lines added, nothing replaced.
-        assert_eq!(
-            h[1],
-            Hunk {
-                kind: HunkKind::Added,
-                start: 20,
-                count: 3
-            }
-        );
+        assert_eq!(h[1], Hunk { kind: HunkKind::Added, start: 20, count: 3 });
         // `@@ -30,2 +32,0 @@` — two lines deleted; the sign sits on the line above.
-        assert_eq!(
-            h[2],
-            Hunk {
-                kind: HunkKind::Removed,
-                start: 31,
-                count: 0
-            }
-        );
+        assert_eq!(h[2], Hunk { kind: HunkKind::Removed, start: 31, count: 0 });
     }
 
     #[test]
     fn an_absent_count_means_one_line() {
         let h = parse_hunks("@@ -5 +5 @@\n");
-        assert_eq!(
-            h,
-            [Hunk {
-                kind: HunkKind::Modified,
-                start: 4,
-                count: 1
-            }]
-        );
+        assert_eq!(h, [Hunk { kind: HunkKind::Modified, start: 4, count: 1 }]);
     }
 
     #[test]
     fn a_new_file_is_all_additions() {
         // What git emits for a file that did not exist before.
         let h = parse_hunks("@@ -0,0 +1,717 @@\n");
-        assert_eq!(
-            h,
-            [Hunk {
-                kind: HunkKind::Added,
-                start: 0,
-                count: 717
-            }]
-        );
+        assert_eq!(h, [Hunk { kind: HunkKind::Added, start: 0, count: 717 }]);
     }
 
     #[test]
     fn a_fully_deleted_file_marks_the_top() {
         let h = parse_hunks("@@ -1,40 +0,0 @@\n");
-        assert_eq!(
-            h,
-            [Hunk {
-                kind: HunkKind::Removed,
-                start: 0,
-                count: 0
-            }]
-        );
+        assert_eq!(h, [Hunk { kind: HunkKind::Removed, start: 0, count: 0 }]);
     }
 
     #[test]
     fn a_shrinking_change_is_modified_over_the_lines_that_remain() {
         // Five lines became two: still a modification of those two.
         let h = parse_hunks("@@ -10,5 +10,2 @@\n");
-        assert_eq!(
-            h,
-            [Hunk {
-                kind: HunkKind::Modified,
-                start: 9,
-                count: 2
-            }]
-        );
+        assert_eq!(h, [Hunk { kind: HunkKind::Modified, start: 9, count: 2 }]);
     }
 
     #[test]
     fn hunk_lines_covers_the_run_and_a_deletion_covers_nothing() {
-        let added = Hunk {
-            kind: HunkKind::Added,
-            start: 20,
-            count: 3,
-        };
+        let added = Hunk { kind: HunkKind::Added, start: 20, count: 3 };
         assert_eq!(added.lines().collect::<Vec<_>>(), vec![20, 21, 22]);
-        let removed = Hunk {
-            kind: HunkKind::Removed,
-            start: 32,
-            count: 0,
-        };
-        assert_eq!(
-            removed.lines().count(),
-            0,
-            "a deletion has no lines of its own"
-        );
+        let removed = Hunk { kind: HunkKind::Removed, start: 32, count: 0 };
+        assert_eq!(removed.lines().count(), 0, "a deletion has no lines of its own");
     }
 
     /// Non-`@@` lines include `+++ b/file` and `--- a/file`, which start with
@@ -902,11 +789,7 @@ index 1..2 100644
 @@ malformed
 @@ -1 +1 @@
 ";
-        assert_eq!(
-            parse_hunks(noise).len(),
-            1,
-            "only the well-formed header counts"
-        );
+        assert_eq!(parse_hunks(noise).len(), 1, "only the well-formed header counts");
     }
 
     #[test]
@@ -916,21 +799,9 @@ index 1..2 100644
 
     fn hunks() -> Vec<Hunk> {
         vec![
-            Hunk {
-                kind: HunkKind::Added,
-                start: 5,
-                count: 1,
-            },
-            Hunk {
-                kind: HunkKind::Modified,
-                start: 20,
-                count: 2,
-            },
-            Hunk {
-                kind: HunkKind::Removed,
-                start: 40,
-                count: 0,
-            },
+            Hunk { kind: HunkKind::Added, start: 5, count: 1 },
+            Hunk { kind: HunkKind::Modified, start: 20, count: 2 },
+            Hunk { kind: HunkKind::Removed, start: 40, count: 0 },
         ]
     }
 
@@ -941,25 +812,14 @@ index 1..2 100644
         // Captured from a 7-line working file (0-based 0..=6) whose final line
         // was deleted.
         let h = parse_hunks("@@ -6 +7,0 @@ five\n");
-        assert_eq!(
-            h,
-            [Hunk {
-                kind: HunkKind::Removed,
-                start: 6,
-                count: 0
-            }]
-        );
+        assert_eq!(h, [Hunk { kind: HunkKind::Removed, start: 6, count: 0 }]);
     }
 
     #[test]
     fn next_hunk_advances_then_wraps() {
         let h = hunks();
         assert_eq!(next_hunk(&h, 0).unwrap().start, 5);
-        assert_eq!(
-            next_hunk(&h, 5).unwrap().start,
-            20,
-            "strictly after the current line"
-        );
+        assert_eq!(next_hunk(&h, 5).unwrap().start, 20, "strictly after the current line");
         assert_eq!(next_hunk(&h, 39).unwrap().start, 40);
         assert_eq!(next_hunk(&h, 999).unwrap().start, 5, "wraps to the first");
     }
@@ -968,11 +828,7 @@ index 1..2 100644
     fn prev_hunk_retreats_then_wraps() {
         let h = hunks();
         assert_eq!(prev_hunk(&h, 999).unwrap().start, 40);
-        assert_eq!(
-            prev_hunk(&h, 20).unwrap().start,
-            5,
-            "strictly before the current line"
-        );
+        assert_eq!(prev_hunk(&h, 20).unwrap().start, 5, "strictly before the current line");
         assert_eq!(prev_hunk(&h, 0).unwrap().start, 40, "wraps to the last");
     }
 
@@ -1005,13 +861,7 @@ u UU N... 100644 100644 100644 100644 df967b9 ba2906d e45c9c2 conflict.txt
     #[test]
     fn xy_splits_into_staged_and_unstaged() {
         let s = parse_status(STATUS);
-        let by = |n: &str| {
-            s.entries
-                .iter()
-                .find(|e| e.path.ends_with(n))
-                .unwrap()
-                .clone()
-        };
+        let by = |n: &str| s.entries.iter().find(|e| e.path.ends_with(n)).unwrap().clone();
 
         // `A.` — staged addition, nothing unstaged.
         let a = by("staged.txt");
@@ -1039,11 +889,7 @@ u UU N... 100644 100644 100644 100644 df967b9 ba2906d e45c9c2 conflict.txt
     #[test]
     fn a_rename_keeps_both_paths() {
         let s = parse_status(STATUS);
-        let r = s
-            .entries
-            .iter()
-            .find(|e| e.staged == Some(FileStatus::Renamed))
-            .expect("a rename");
+        let r = s.entries.iter().find(|e| e.staged == Some(FileStatus::Renamed)).expect("a rename");
         assert_eq!(r.path, PathBuf::from("moved.txt"));
         assert_eq!(r.orig_path, Some(PathBuf::from("tracked-old.txt")));
     }
@@ -1056,16 +902,9 @@ u UU N... 100644 100644 100644 100644 df967b9 ba2906d e45c9c2 conflict.txt
         assert_eq!(u[0].path, PathBuf::from("untracked.txt"));
         // An untracked file is not "unstaged" — `git add` means something
         // different for it, so it gets its own section.
-        assert!(s
-            .unstaged()
-            .iter()
-            .all(|e| !e.path.ends_with("untracked.txt")));
+        assert!(s.unstaged().iter().all(|e| !e.path.ends_with("untracked.txt")));
 
-        let c = s
-            .entries
-            .iter()
-            .find(|e| e.path.ends_with("conflict.txt"))
-            .unwrap();
+        let c = s.entries.iter().find(|e| e.path.ends_with("conflict.txt")).unwrap();
         assert_eq!(c.staged, Some(FileStatus::Unmerged));
         assert_eq!(c.unstaged, Some(FileStatus::Unmerged));
     }
@@ -1118,13 +957,7 @@ u UU N... 100644 100644 100644 100644 df967b9 ba2906d e45c9c2 conflict.txt
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).ok()?;
         let git = |args: &[&str]| {
-            Command::new("git")
-                .arg("-C")
-                .arg(&dir)
-                .args(args)
-                .output()
-                .ok()
-                .filter(|o| o.status.success())
+            Command::new("git").arg("-C").arg(&dir).args(args).output().ok().filter(|o| o.status.success())
         };
         git(&["init", "-q", "."])?;
         git(&["config", "user.email", "t@e.st"])?;
@@ -1137,58 +970,39 @@ u UU N... 100644 100644 100644 100644 df967b9 ba2906d e45c9c2 conflict.txt
 
     #[test]
     fn staging_moves_a_file_from_unstaged_to_staged() {
-        let Some(dir) = scratch_repo("stage") else {
-            return;
-        };
+        let Some(dir) = scratch_repo("stage") else { return };
         std::fs::write(dir.join("tracked.txt"), "one\ntwo\n").unwrap();
 
         let before = status(&dir).expect("status");
-        assert!(before
-            .unstaged()
-            .iter()
-            .any(|e| e.path.ends_with("tracked.txt")));
+        assert!(before.unstaged().iter().any(|e| e.path.ends_with("tracked.txt")));
         assert!(before.staged().is_empty());
 
         stage(&dir, Path::new("tracked.txt")).expect("staged");
         let after = status(&dir).expect("status");
-        assert!(after
-            .staged()
-            .iter()
-            .any(|e| e.path.ends_with("tracked.txt")));
+        assert!(after.staged().iter().any(|e| e.path.ends_with("tracked.txt")));
         assert!(after.unstaged().is_empty(), "nothing left unstaged");
 
         // And back again.
         unstage(&dir, Path::new("tracked.txt")).expect("unstaged");
         let back = status(&dir).expect("status");
         assert!(back.staged().is_empty(), "unstaged again");
-        assert!(back
-            .unstaged()
-            .iter()
-            .any(|e| e.path.ends_with("tracked.txt")));
+        assert!(back.unstaged().iter().any(|e| e.path.ends_with("tracked.txt")));
 
         // The round trip must not have touched the file itself.
-        assert_eq!(
-            std::fs::read_to_string(dir.join("tracked.txt")).unwrap(),
-            "one\ntwo\n"
-        );
+        assert_eq!(std::fs::read_to_string(dir.join("tracked.txt")).unwrap(), "one\ntwo\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn staging_an_untracked_file_adds_it() {
-        let Some(dir) = scratch_repo("untracked") else {
-            return;
-        };
+        let Some(dir) = scratch_repo("untracked") else { return };
         std::fs::write(dir.join("new.txt"), "hello\n").unwrap();
         assert_eq!(status(&dir).unwrap().untracked().len(), 1);
 
         stage(&dir, Path::new("new.txt")).expect("staged");
         let s = status(&dir).unwrap();
         assert!(s.untracked().is_empty(), "no longer untracked");
-        assert_eq!(
-            s.staged().first().map(|e| e.staged),
-            Some(Some(FileStatus::Added))
-        );
+        assert_eq!(s.staged().first().map(|e| e.staged), Some(Some(FileStatus::Added)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1196,30 +1010,20 @@ u UU N... 100644 100644 100644 100644 df967b9 ba2906d e45c9c2 conflict.txt
     /// shows `.D` entries, so `s` on one has to mean this.
     #[test]
     fn staging_a_deletion_stages_the_deletion() {
-        let Some(dir) = scratch_repo("deleted") else {
-            return;
-        };
+        let Some(dir) = scratch_repo("deleted") else { return };
         std::fs::remove_file(dir.join("tracked.txt")).unwrap();
         stage(&dir, Path::new("tracked.txt")).expect("staged");
         let s = status(&dir).unwrap();
-        assert_eq!(
-            s.staged().first().map(|e| e.staged),
-            Some(Some(FileStatus::Deleted))
-        );
+        assert_eq!(s.staged().first().map(|e| e.staged), Some(Some(FileStatus::Deleted)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_failing_git_command_reports_its_error() {
-        let Some(dir) = scratch_repo("missing") else {
-            return;
-        };
+        let Some(dir) = scratch_repo("missing") else { return };
         let err = stage(&dir, Path::new("does-not-exist.txt")).unwrap_err();
         assert!(!err.is_empty(), "git said something");
-        assert!(
-            err.contains("did not match") || err.contains("pathspec"),
-            "{err}"
-        );
+        assert!(err.contains("did not match") || err.contains("pathspec"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1256,11 +1060,7 @@ index c4352f8..2966adb 100644
             // Each part must stand alone: header, then exactly one hunk.
             assert!(p.starts_with("diff --git a/f.txt b/f.txt\n"), "{p}");
             assert!(p.contains("--- a/f.txt\n+++ b/f.txt\n"), "{p}");
-            assert_eq!(
-                p.matches("\n@@").count() + usize::from(p.starts_with("@@")),
-                1,
-                "{p}"
-            );
+            assert_eq!(p.matches("\n@@").count() + usize::from(p.starts_with("@@")), 1, "{p}");
         }
         assert!(parts[0].contains("CHANGED 3") && !parts[0].contains("CHANGED 16"));
         assert!(parts[1].contains("CHANGED 16") && !parts[1].contains("CHANGED 3"));
@@ -1272,11 +1072,7 @@ index c4352f8..2966adb 100644
     fn each_patch_keeps_its_own_hunk_header() {
         let parts = split_hunks(TWO_HUNKS);
         assert!(parts[0].contains("@@ -1,6 +1,6 @@"), "{}", parts[0]);
-        assert!(
-            parts[1].contains("@@ -13,7 +13,7 @@ line 12"),
-            "{}",
-            parts[1]
-        );
+        assert!(parts[1].contains("@@ -13,7 +13,7 @@ line 12"), "{}", parts[1]);
     }
 
     /// Context is what `git apply` anchors on, so it must survive splitting.
@@ -1332,35 +1128,17 @@ diff --git a/f b/f
 ";
         let parts = split_hunks(d);
         assert_eq!(parts.len(), 1);
-        assert!(
-            parts[0].contains("\\ No newline at end of file"),
-            "{}",
-            parts[0]
-        );
+        assert!(parts[0].contains("\\ No newline at end of file"), "{}", parts[0]);
     }
 
     #[test]
     fn the_hunk_under_the_cursor_is_found_by_line() {
         let hunks = vec![
-            DiffHunk {
-                old_start: 2,
-                old_count: 1,
-                new_start: 2,
-                new_count: 3,
-            },
-            DiffHunk {
-                old_start: 10,
-                old_count: 2,
-                new_start: 12,
-                new_count: 0,
-            },
+            DiffHunk { old_start: 2, old_count: 1, new_start: 2, new_count: 3 },
+            DiffHunk { old_start: 10, old_count: 2, new_start: 12, new_count: 0 },
         ];
         assert_eq!(hunk_index_at(&hunks, 2), Some(0));
-        assert_eq!(
-            hunk_index_at(&hunks, 4),
-            Some(0),
-            "the last line of the run"
-        );
+        assert_eq!(hunk_index_at(&hunks, 4), Some(0), "the last line of the run");
         assert_eq!(hunk_index_at(&hunks, 5), None, "past it");
         assert_eq!(hunk_index_at(&hunks, 0), None, "before any hunk");
         // A deletion covers no lines of its own; match the boundary it sits on.
@@ -1371,18 +1149,11 @@ diff --git a/f b/f
     /// exactly that hunk, leaving the other unstaged and the file untouched.
     #[test]
     fn staging_one_hunk_leaves_the_other_unstaged() {
-        let Some(dir) = scratch_repo("hunk") else {
-            return;
-        };
+        let Some(dir) = scratch_repo("hunk") else { return };
         let original: String = (1..=20).map(|i| format!("line {i}\n")).collect();
         std::fs::write(dir.join("f.txt"), &original).unwrap();
         let git = |args: &[&str]| {
-            Command::new("git")
-                .arg("-C")
-                .arg(&dir)
-                .args(args)
-                .output()
-                .unwrap()
+            Command::new("git").arg("-C").arg(&dir).args(args).output().unwrap()
         };
         git(&["add", "-A"]);
         git(&["commit", "-qm", "twenty"]);
@@ -1415,15 +1186,8 @@ diff --git a/f b/f
 
         // Reversing the same patch against the index puts it back.
         apply_to_index(&dir, &parts[0], true).expect("unstaged the hunk");
-        assert!(
-            status(&dir).unwrap().staged().is_empty(),
-            "nothing staged again"
-        );
-        assert_eq!(
-            std::fs::read_to_string(dir.join("f.txt")).unwrap(),
-            edited,
-            "file still intact"
-        );
+        assert!(status(&dir).unwrap().staged().is_empty(), "nothing staged again");
+        assert_eq!(std::fs::read_to_string(dir.join("f.txt")).unwrap(), edited, "file still intact");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1431,9 +1195,7 @@ diff --git a/f b/f
     /// A patch that does not apply must fail loudly rather than half-apply.
     #[test]
     fn a_patch_that_does_not_apply_is_refused() {
-        let Some(dir) = scratch_repo("badpatch") else {
-            return;
-        };
+        let Some(dir) = scratch_repo("badpatch") else { return };
         let bogus = "\
 diff --git a/tracked.txt b/tracked.txt
 --- a/tracked.txt
@@ -1462,9 +1224,7 @@ diff --git a/tracked.txt b/tracked.txt
 
     #[test]
     fn committing_writes_the_message_and_clears_the_index() {
-        let Some(dir) = scratch_repo("commit") else {
-            return;
-        };
+        let Some(dir) = scratch_repo("commit") else { return };
         std::fs::write(dir.join("tracked.txt"), "changed\n").unwrap();
         stage(&dir, Path::new("tracked.txt")).unwrap();
 
@@ -1472,11 +1232,7 @@ diff --git a/tracked.txt b/tracked.txt
         assert!(status(&dir).unwrap().is_clean(), "index cleared");
 
         let log = Command::new("git")
-            .arg("-C")
-            .arg(&dir)
-            .args(["log", "-1", "--pretty=%B"])
-            .output()
-            .unwrap();
+            .arg("-C").arg(&dir).args(["log", "-1", "--pretty=%B"]).output().unwrap();
         let body = String::from_utf8_lossy(&log.stdout);
         assert!(body.contains("A real message"), "{body}");
         assert!(body.contains("With a body"), "the body survives: {body}");
@@ -1487,29 +1243,21 @@ diff --git a/tracked.txt b/tracked.txt
     /// on stdin precisely so it is never quoted into a shell.
     #[test]
     fn a_message_with_quotes_and_dollars_survives() {
-        let Some(dir) = scratch_repo("quoting") else {
-            return;
-        };
+        let Some(dir) = scratch_repo("quoting") else { return };
         std::fs::write(dir.join("tracked.txt"), "x\n").unwrap();
         stage(&dir, Path::new("tracked.txt")).unwrap();
 
         let tricky = "fix \"quoted\" $HOME and `backticks`";
         commit(&dir, tricky).expect("committed");
         let log = Command::new("git")
-            .arg("-C")
-            .arg(&dir)
-            .args(["log", "-1", "--pretty=%s"])
-            .output()
-            .unwrap();
+            .arg("-C").arg(&dir).args(["log", "-1", "--pretty=%s"]).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&log.stdout).trim(), tricky);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn an_empty_message_refuses_to_commit() {
-        let Some(dir) = scratch_repo("emptymsg") else {
-            return;
-        };
+        let Some(dir) = scratch_repo("emptymsg") else { return };
         std::fs::write(dir.join("tracked.txt"), "x\n").unwrap();
         stage(&dir, Path::new("tracked.txt")).unwrap();
         let err = commit(&dir, "   \n").unwrap_err();
@@ -1520,9 +1268,7 @@ diff --git a/tracked.txt b/tracked.txt
 
     #[test]
     fn committing_nothing_reports_gits_own_complaint() {
-        let Some(dir) = scratch_repo("nothing") else {
-            return;
-        };
+        let Some(dir) = scratch_repo("nothing") else { return };
         let err = commit(&dir, "nothing staged").unwrap_err();
         assert!(!err.is_empty(), "git said something: {err}");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1532,9 +1278,7 @@ diff --git a/tracked.txt b/tracked.txt
     /// to run from the working tree — not from a crate directory inside it.
     #[test]
     fn the_repo_root_is_the_working_tree_not_the_subdirectory() {
-        let Some(dir) = scratch_repo("reporoot") else {
-            return;
-        };
+        let Some(dir) = scratch_repo("reporoot") else { return };
         let sub = dir.join("crates").join("inner");
         std::fs::create_dir_all(&sub).unwrap();
         std::fs::write(sub.join("f.txt"), "x\n").unwrap();
@@ -1554,10 +1298,7 @@ diff --git a/tracked.txt b/tracked.txt
         std::fs::write(dir.join("tracked.txt"), "changed\n").unwrap();
         let from_root = status(&from_top).unwrap();
         assert!(
-            from_root
-                .unstaged()
-                .iter()
-                .all(|e| !e.path.to_string_lossy().contains("..")),
+            from_root.unstaged().iter().all(|e| !e.path.to_string_lossy().contains("..")),
             "no parent-relative paths: {:?}",
             from_root.unstaged()
         );
@@ -1590,20 +1331,14 @@ diff --git a/tracked.txt b/tracked.txt
         assert_eq!(map[first_at], Some(0));
         assert_eq!(map[first_at + 1], Some(0), "context after the header");
         assert_eq!(map[second_at], Some(1));
-        assert_eq!(
-            map[lines.len() - 1],
-            Some(1),
-            "the last line is in the last hunk"
-        );
+        assert_eq!(map[lines.len() - 1], Some(1), "the last line is in the last hunk");
     }
 
     /// The indices have to line up with `split_hunks`, or the cursor picks one
     /// hunk and the patch applies another.
     #[test]
     fn line_map_indices_match_the_split_patches() {
-        for diff in [
-            TWO_HUNKS,
-            "\
+        for diff in [TWO_HUNKS, "\
 diff --git a/one.txt b/one.txt
 --- a/one.txt
 +++ b/one.txt
@@ -1616,27 +1351,17 @@ diff --git a/two.txt b/two.txt
 @@ -5 +5 @@
 -c
 +d
-",
-        ] {
+"] {
             let patches = split_hunks(diff);
             let map = hunk_of_line(diff);
-            let highest = map
-                .iter()
-                .flatten()
-                .copied()
-                .max()
-                .map(|m| m + 1)
-                .unwrap_or(0);
+            let highest = map.iter().flatten().copied().max().map(|m| m + 1).unwrap_or(0);
             assert_eq!(highest, patches.len(), "one index per patch");
 
             // The line carrying each `@@` must map to the patch containing it.
             for (i, line) in diff.lines().enumerate() {
                 if line.starts_with("@@") {
                     let h = map[i].expect("a hunk");
-                    assert!(
-                        patches[h].contains(line),
-                        "line {i} maps to the wrong patch"
-                    );
+                    assert!(patches[h].contains(line), "line {i} maps to the wrong patch");
                 }
             }
         }
@@ -1645,29 +1370,17 @@ diff --git a/two.txt b/two.txt
     #[test]
     fn a_diff_with_no_hunks_maps_nothing() {
         assert!(hunk_of_line("").is_empty());
-        assert_eq!(
-            hunk_of_line("diff --git a/f b/f\n--- a/f\n"),
-            vec![None, None]
-        );
+        assert_eq!(hunk_of_line("diff --git a/f b/f\n--- a/f\n"), vec![None, None]);
     }
 
     /// The end-to-end claim for unstaging: with two hunks staged, reversing one
     /// leaves the other staged and never touches the working tree.
     #[test]
     fn unstaging_one_staged_hunk_leaves_the_other_staged() {
-        let Some(dir) = scratch_repo("unstagehunk") else {
-            return;
-        };
+        let Some(dir) = scratch_repo("unstagehunk") else { return };
         let original: String = (1..=20).map(|i| format!("line {i}\n")).collect();
         std::fs::write(dir.join("f.txt"), &original).unwrap();
-        let git = |args: &[&str]| {
-            Command::new("git")
-                .arg("-C")
-                .arg(&dir)
-                .args(args)
-                .output()
-                .unwrap()
-        };
+        let git = |args: &[&str]| Command::new("git").arg("-C").arg(&dir).args(args).output().unwrap();
         git(&["add", "-A"]);
         git(&["commit", "-qm", "twenty"]);
 
@@ -1685,10 +1398,7 @@ diff --git a/two.txt b/two.txt
         apply_to_index(&dir, &patches[0], true).expect("unstaged the first hunk");
 
         let staged = String::from_utf8_lossy(&git(&["show", ":f.txt"]).stdout).into_owned();
-        assert!(
-            !staged.contains("CHANGED 3"),
-            "the first hunk is no longer staged"
-        );
+        assert!(!staged.contains("CHANGED 3"), "the first hunk is no longer staged");
         assert!(staged.contains("CHANGED 16"), "the second still is");
         assert_eq!(
             std::fs::read_to_string(dir.join("f.txt")).unwrap(),
@@ -1709,46 +1419,19 @@ diff --git a/two.txt b/two.txt
         let h = parse_diff_hunks(SAMPLE);
         assert_eq!(h.len(), 3);
         // `@@ -12 +12 @@` — one line replaced one, both 1-based.
-        assert_eq!(
-            h[0],
-            DiffHunk {
-                old_start: 11,
-                old_count: 1,
-                new_start: 11,
-                new_count: 1
-            }
-        );
+        assert_eq!(h[0], DiffHunk { old_start: 11, old_count: 1, new_start: 11, new_count: 1 });
         // `@@ -20,0 +21,3 @@` — the old side is empty, so its position is as
         // reported rather than one less.
-        assert_eq!(
-            h[1],
-            DiffHunk {
-                old_start: 20,
-                old_count: 0,
-                new_start: 20,
-                new_count: 3
-            }
-        );
+        assert_eq!(h[1], DiffHunk { old_start: 20, old_count: 0, new_start: 20, new_count: 3 });
         // `@@ -30,2 +32,0 @@` — and the new side is the empty one here.
-        assert_eq!(
-            h[2],
-            DiffHunk {
-                old_start: 29,
-                old_count: 2,
-                new_start: 32,
-                new_count: 0
-            }
-        );
+        assert_eq!(h[2], DiffHunk { old_start: 29, old_count: 2, new_start: 32, new_count: 0 });
     }
 
     /// An unchanged file is one row per line, both sides in step.
     #[test]
     fn align_pairs_unchanged_lines_one_to_one() {
         let rows = align(&[], 3, 3);
-        assert_eq!(
-            rows,
-            [(Some(0), Some(0)), (Some(1), Some(1)), (Some(2), Some(2))]
-        );
+        assert_eq!(rows, [(Some(0), Some(0)), (Some(1), Some(1)), (Some(2), Some(2))]);
     }
 
     /// The case the panes have to survive: a hunk that removes two lines and
@@ -1757,19 +1440,10 @@ diff --git a/two.txt b/two.txt
     #[test]
     fn align_pads_the_short_side_of_an_unbalanced_hunk() {
         // 6-line old file, 9-line new file: lines 2-3 became lines 2-6.
-        let h = DiffHunk {
-            old_start: 2,
-            old_count: 2,
-            new_start: 2,
-            new_count: 5,
-        };
+        let h = DiffHunk { old_start: 2, old_count: 2, new_start: 2, new_count: 5 };
         let rows = align(&[h], 6, 9);
 
-        assert_eq!(
-            &rows[..2],
-            &[(Some(0), Some(0)), (Some(1), Some(1))],
-            "context before"
-        );
+        assert_eq!(&rows[..2], &[(Some(0), Some(0)), (Some(1), Some(1))], "context before");
         assert_eq!(
             &rows[2..7],
             &[
@@ -1791,26 +1465,13 @@ diff --git a/two.txt b/two.txt
     #[test]
     fn align_handles_a_pure_addition_and_a_pure_deletion() {
         // Three lines added after the first: the old side pads.
-        let add = DiffHunk {
-            old_start: 1,
-            old_count: 0,
-            new_start: 1,
-            new_count: 3,
-        };
+        let add = DiffHunk { old_start: 1, old_count: 0, new_start: 1, new_count: 3 };
         let rows = align(&[add], 1, 4);
         assert_eq!(rows[0], (Some(0), Some(0)));
-        assert_eq!(
-            &rows[1..],
-            &[(None, Some(1)), (None, Some(2)), (None, Some(3))]
-        );
+        assert_eq!(&rows[1..], &[(None, Some(1)), (None, Some(2)), (None, Some(3))]);
 
         // Two lines deleted: the new side pads instead.
-        let del = DiffHunk {
-            old_start: 1,
-            old_count: 2,
-            new_start: 1,
-            new_count: 0,
-        };
+        let del = DiffHunk { old_start: 1, old_count: 2, new_start: 1, new_count: 0 };
         let rows = align(&[del], 3, 1);
         assert_eq!(rows, [(Some(0), Some(0)), (Some(1), None), (Some(2), None)]);
     }
@@ -1820,65 +1481,29 @@ diff --git a/two.txt b/two.txt
     #[test]
     fn align_never_loses_or_repeats_a_line() {
         let hunks = [
-            DiffHunk {
-                old_start: 1,
-                old_count: 2,
-                new_start: 1,
-                new_count: 1,
-            },
-            DiffHunk {
-                old_start: 6,
-                old_count: 0,
-                new_start: 5,
-                new_count: 3,
-            },
+            DiffHunk { old_start: 1, old_count: 2, new_start: 1, new_count: 1 },
+            DiffHunk { old_start: 6, old_count: 0, new_start: 5, new_count: 3 },
         ];
         let (old_len, new_len) = (9, 11);
         let rows = align(&hunks, old_len, new_len);
         let olds: Vec<u32> = rows.iter().filter_map(|r| r.0).collect();
         let news: Vec<u32> = rows.iter().filter_map(|r| r.1).collect();
-        assert_eq!(
-            olds,
-            (0..old_len).collect::<Vec<_>>(),
-            "old side complete and in order"
-        );
-        assert_eq!(
-            news,
-            (0..new_len).collect::<Vec<_>>(),
-            "new side complete and in order"
-        );
+        assert_eq!(olds, (0..old_len).collect::<Vec<_>>(), "old side complete and in order");
+        assert_eq!(news, (0..new_len).collect::<Vec<_>>(), "new side complete and in order");
     }
 
     #[test]
     fn align_handles_empty_files() {
         assert!(align(&[], 0, 0).is_empty());
-        assert_eq!(
-            align(&[], 0, 2),
-            [(None, Some(0)), (None, Some(1))],
-            "a new file"
-        );
-        assert_eq!(
-            align(&[], 2, 0),
-            [(Some(0), None), (Some(1), None)],
-            "a deleted file"
-        );
+        assert_eq!(align(&[], 0, 2), [(None, Some(0)), (None, Some(1))], "a new file");
+        assert_eq!(align(&[], 2, 0), [(Some(0), None), (Some(1), None)], "a deleted file");
     }
 
     /// Hunks arrive in order from git, but alignment must not depend on it.
     #[test]
     fn align_sorts_hunks_before_walking_them() {
-        let a = DiffHunk {
-            old_start: 0,
-            old_count: 1,
-            new_start: 0,
-            new_count: 2,
-        };
-        let b = DiffHunk {
-            old_start: 4,
-            old_count: 1,
-            new_start: 5,
-            new_count: 1,
-        };
+        let a = DiffHunk { old_start: 0, old_count: 1, new_start: 0, new_count: 2 };
+        let b = DiffHunk { old_start: 4, old_count: 1, new_start: 5, new_count: 1 };
         assert_eq!(align(&[a, b], 6, 7), align(&[b, a], 6, 7));
     }
 }

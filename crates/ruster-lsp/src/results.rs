@@ -21,10 +21,7 @@ pub struct LspPositionEq {
 
 impl From<LspPositionEq> for LspPosition {
     fn from(p: LspPositionEq) -> Self {
-        LspPosition {
-            line: p.line,
-            character: p.character,
-        }
+        LspPosition { line: p.line, character: p.character }
     }
 }
 
@@ -96,17 +93,11 @@ pub fn parse_locations(v: &Value) -> Vec<Location> {
         // LocationLink uses targetUri/targetRange; Location uses uri/range.
         if let Some(uri) = v.get("uri").and_then(|x| x.as_str()) {
             let start = pos_from(&v["range"]["start"]);
-            return Some(Location {
-                uri: strip_file_uri(uri),
-                start,
-            });
+            return Some(Location { uri: strip_file_uri(uri), start });
         }
         if let Some(uri) = v.get("targetUri").and_then(|x| x.as_str()) {
             let start = pos_from(&v["targetSelectionRange"]["start"]);
-            return Some(Location {
-                uri: strip_file_uri(uri),
-                start,
-            });
+            return Some(Location { uri: strip_file_uri(uri), start });
         }
         None
     }
@@ -151,15 +142,8 @@ pub fn parse_call_hierarchy_calls(v: &Value, incoming: bool) -> Vec<CallEntry> {
             // Prefer the selection range (the name) over the full range.
             let range = item.get("selectionRange").or_else(|| item.get("range"))?;
             Some(CallEntry {
-                name: item
-                    .get("name")
-                    .and_then(|x| x.as_str())
-                    .unwrap_or("?")
-                    .to_string(),
-                detail: item
-                    .get("detail")
-                    .and_then(|x| x.as_str())
-                    .map(str::to_string),
+                name: item.get("name").and_then(|x| x.as_str()).unwrap_or("?").to_string(),
+                detail: item.get("detail").and_then(|x| x.as_str()).map(str::to_string),
                 uri: strip_file_uri(uri),
                 start: pos_from(&range["start"]),
             })
@@ -183,11 +167,7 @@ pub fn parse_diagnostics(params: &Value) -> (String, Vec<Diagnostic>) {
                     start: pos_from(&d["range"]["start"]),
                     end: pos_from(&d["range"]["end"]),
                     severity: d.get("severity").and_then(|s| s.as_u64()).unwrap_or(1) as u8,
-                    message: d
-                        .get("message")
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("")
-                        .to_string(),
+                    message: d.get("message").and_then(|m| m.as_str()).unwrap_or("").to_string(),
                 })
                 .collect()
         })
@@ -205,11 +185,7 @@ pub fn parse_document_symbols(v: &Value) -> Vec<SymbolEntry> {
     };
     // Hierarchical entries have "selectionRange"/"children"; flat ones have "location".
     fn walk(node: &Value, depth: u16, out: &mut Vec<SymbolEntry>) {
-        let name = node
-            .get("name")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
+        let name = node.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string();
         let kind = node.get("kind").and_then(|x| x.as_u64()).unwrap_or(0) as u8;
         if let Some(loc) = node.get("location") {
             // SymbolInformation
@@ -222,13 +198,7 @@ pub fn parse_document_symbols(v: &Value) -> Vec<SymbolEntry> {
             });
         } else {
             let start = pos_from(&node["selectionRange"]["start"]);
-            out.push(SymbolEntry {
-                name,
-                kind,
-                start,
-                uri: None,
-                depth,
-            });
+            out.push(SymbolEntry { name, kind, start, uri: None, depth });
             if let Some(children) = node.get("children").and_then(|c| c.as_array()) {
                 for child in children {
                     walk(child, depth + 1, out);
@@ -250,11 +220,7 @@ pub fn parse_workspace_symbols(v: &Value) -> Vec<SymbolEntry> {
                 .filter_map(|s| {
                     let loc = s.get("location")?;
                     Some(SymbolEntry {
-                        name: s
-                            .get("name")
-                            .and_then(|x| x.as_str())
-                            .unwrap_or("")
-                            .to_string(),
+                        name: s.get("name").and_then(|x| x.as_str()).unwrap_or("").to_string(),
                         kind: s.get("kind").and_then(|x| x.as_u64()).unwrap_or(0) as u8,
                         start: pos_from(&loc["range"]["start"]),
                         uri: loc.get("uri").and_then(|x| x.as_str()).map(strip_file_uri),
@@ -274,11 +240,7 @@ pub fn parse_text_edits(v: &Value) -> Vec<TextEdit> {
                 .map(|e| TextEdit {
                     start: pos_from(&e["range"]["start"]),
                     end: pos_from(&e["range"]["end"]),
-                    new_text: e
-                        .get("newText")
-                        .and_then(|x| x.as_str())
-                        .unwrap_or("")
-                        .to_string(),
+                    new_text: e.get("newText").and_then(|x| x.as_str()).unwrap_or("").to_string(),
                 })
                 .collect()
         })
@@ -295,11 +257,7 @@ pub fn parse_workspace_edit(v: &Value) -> Vec<(String, Vec<TextEdit>)> {
         }
     } else if let Some(doc_changes) = v.get("documentChanges").and_then(|c| c.as_array()) {
         for dc in doc_changes {
-            if let Some(uri) = dc
-                .get("textDocument")
-                .and_then(|t| t.get("uri"))
-                .and_then(|u| u.as_str())
-            {
+            if let Some(uri) = dc.get("textDocument").and_then(|t| t.get("uri")).and_then(|u| u.as_str()) {
                 let edits = dc.get("edits").cloned().unwrap_or(Value::Null);
                 out.push((strip_file_uri(uri), parse_text_edits(&edits)));
             }
@@ -341,14 +299,8 @@ mod tests {
 
     fn edit(sl: u32, sc: u32, el: u32, ec: u32, t: &str) -> TextEdit {
         TextEdit {
-            start: LspPositionEq {
-                line: sl,
-                character: sc,
-            },
-            end: LspPositionEq {
-                line: el,
-                character: ec,
-            },
+            start: LspPositionEq { line: sl, character: sc },
+            end: LspPositionEq { line: el, character: ec },
             new_text: t.to_string(),
         }
     }
@@ -389,24 +341,12 @@ mod tests {
         let locs = parse_locations(&single);
         assert_eq!(locs.len(), 1);
         assert_eq!(locs[0].uri, "/a.rs");
-        assert_eq!(
-            locs[0].start,
-            LspPositionEq {
-                line: 2,
-                character: 4
-            }
-        );
+        assert_eq!(locs[0].start, LspPositionEq { line: 2, character: 4 });
 
         let link = json!([{"targetUri": "file:///b.rs", "targetSelectionRange": {"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 3}}}]);
         let locs = parse_locations(&link);
         assert_eq!(locs[0].uri, "/b.rs");
-        assert_eq!(
-            locs[0].start,
-            LspPositionEq {
-                line: 1,
-                character: 0
-            }
-        );
+        assert_eq!(locs[0].start, LspPositionEq { line: 1, character: 0 });
 
         assert!(parse_locations(&Value::Null).is_empty());
     }
@@ -433,13 +373,7 @@ mod tests {
         assert_eq!(calls[0].name, "caller");
         assert_eq!(calls[0].detail.as_deref(), Some("mod::caller"));
         assert_eq!(calls[0].uri, "/b.rs");
-        assert_eq!(
-            calls[0].start,
-            LspPositionEq {
-                line: 9,
-                character: 4
-            }
-        );
+        assert_eq!(calls[0].start, LspPositionEq { line: 9, character: 4 });
 
         // Outgoing calls read the callee under `to`.
         let outgoing = json!([{
@@ -451,13 +385,7 @@ mod tests {
         assert_eq!(calls[0].name, "callee");
         assert_eq!(calls[0].uri, "/c.rs");
         // Falls back to `range` when selectionRange is absent.
-        assert_eq!(
-            calls[0].start,
-            LspPositionEq {
-                line: 3,
-                character: 0
-            }
-        );
+        assert_eq!(calls[0].start, LspPositionEq { line: 3, character: 0 });
 
         assert!(parse_call_hierarchy_calls(&Value::Null, true).is_empty());
     }
@@ -497,13 +425,7 @@ mod tests {
         ]);
         let syms = parse_document_symbols(&flat);
         assert_eq!(syms[0].name, "g");
-        assert_eq!(
-            syms[0].start,
-            LspPositionEq {
-                line: 3,
-                character: 0
-            }
-        );
+        assert_eq!(syms[0].start, LspPositionEq { line: 3, character: 0 });
     }
 
     #[test]

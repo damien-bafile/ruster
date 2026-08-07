@@ -74,11 +74,7 @@ pub fn expand(body: &str) -> Expansion {
                 }
                 if let Ok(index) = num.parse::<u32>() {
                     let pos = text.chars().count();
-                    stops.push(Tabstop {
-                        index,
-                        start: pos,
-                        end: pos,
-                    });
+                    stops.push(Tabstop { index, start: pos, end: pos });
                     i = j;
                     continue;
                 }
@@ -172,10 +168,7 @@ mod tests {
         // stop 1 covers "name", stop 0 is the body position, visited last.
         assert_eq!(e.stops.len(), 2);
         assert_eq!(e.stops[0].index, 1);
-        assert_eq!(
-            &e.text.chars().collect::<String>()[e.stops[0].start..e.stops[0].end],
-            "name"
-        );
+        assert_eq!(&e.text.chars().collect::<String>()[e.stops[0].start..e.stops[0].end], "name");
         assert_eq!(e.stops[1].index, 0);
     }
 

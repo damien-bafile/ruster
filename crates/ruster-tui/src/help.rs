@@ -70,10 +70,7 @@ pub fn resolve(doc: &str, query: &str) -> Option<usize> {
     }
     // A setting row is `group.key`, likewise in backticks.
     let setting = format!("`{q}`");
-    if let Some(line) = doc
-        .lines()
-        .position(|l| l.to_lowercase().contains(&setting))
-    {
+    if let Some(line) = doc.lines().position(|l| l.to_lowercase().contains(&setting)) {
         return Some(line);
     }
     doc.lines().position(|l| l.to_lowercase().contains(&q))
@@ -95,15 +92,9 @@ mod tests {
     #[test]
     fn the_document_embeds_both_manuals() {
         let d = document();
-        assert!(
-            d.contains("Commands & Keybindings"),
-            "keybindings.md is in there"
-        );
+        assert!(d.contains("Commands & Keybindings"), "keybindings.md is in there");
         assert!(d.contains("Config Reference"), "config-reference.md too");
-        assert!(
-            d.starts_with("# ruster help"),
-            "with a preamble saying how to use it"
-        );
+        assert!(d.starts_with("# ruster help"), "with a preamble saying how to use it");
     }
 
     /// The whole point: help is generated from the files CI already keeps in
@@ -112,13 +103,7 @@ mod tests {
     #[test]
     fn help_covers_commands_that_shipped_recently() {
         let d = document();
-        for cmd in [
-            ":Mason",
-            ":Diffview",
-            ":SyntaxReload",
-            ":Trouble",
-            ":SessionSave",
-        ] {
+        for cmd in [":Mason", ":Diffview", ":SyntaxReload", ":Trouble", ":SessionSave"] {
             assert!(d.contains(cmd), "{cmd} is missing from help");
         }
     }
@@ -153,11 +138,7 @@ mod tests {
     fn a_command_resolves_with_or_without_its_colon() {
         let d = document();
         let by_colon = resolve(&d, ":Mason").expect("found");
-        assert_eq!(
-            resolve(&d, "Mason"),
-            Some(by_colon),
-            "the colon is optional"
-        );
+        assert_eq!(resolve(&d, "Mason"), Some(by_colon), "the colon is optional");
         assert!(d.lines().nth(by_colon).unwrap().contains("Mason"));
     }
 
@@ -165,21 +146,14 @@ mod tests {
     #[test]
     fn a_short_command_does_not_match_a_longer_one() {
         let d = "| `:wq` | write and quit |\n| `:w` | write |\n";
-        assert_eq!(
-            resolve(d, ":w"),
-            Some(1),
-            "the `:w` row, not the `:wq` row above it"
-        );
+        assert_eq!(resolve(d, ":w"), Some(1), "the `:w` row, not the `:wq` row above it");
     }
 
     #[test]
     fn a_setting_resolves_to_its_row() {
         let d = document();
         let line = resolve(&d, "session.autoload").expect("documented");
-        assert!(
-            d.lines().nth(line).unwrap().contains("session.autoload"),
-            "lands on the row"
-        );
+        assert!(d.lines().nth(line).unwrap().contains("session.autoload"), "lands on the row");
     }
 
     #[test]

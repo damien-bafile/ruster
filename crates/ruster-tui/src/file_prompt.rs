@@ -53,34 +53,19 @@ pub enum PromptStep {
 
 impl FilePrompt {
     pub fn create(dir: PathBuf, origin: PromptOrigin) -> Self {
-        Self {
-            kind: FilePromptKind::Create,
-            dir,
-            origin,
-            input: String::new(),
-        }
+        Self { kind: FilePromptKind::Create, dir, origin, input: String::new() }
     }
 
     pub fn rename(dir: PathBuf, old: String, origin: PromptOrigin) -> Self {
         // Seed the input with the old name so it can be edited in place.
-        Self {
-            kind: FilePromptKind::Rename(old.clone()),
-            dir,
-            origin,
-            input: old,
-        }
+        Self { kind: FilePromptKind::Rename(old.clone()), dir, origin, input: old }
     }
 
     /// `dir` is taken from `path`'s parent, so the refresh lands where the
     /// deleted entry was.
     pub fn delete(path: PathBuf, origin: PromptOrigin) -> Self {
         let dir = path.parent().unwrap_or(Path::new("")).to_path_buf();
-        Self {
-            kind: FilePromptKind::Delete(path),
-            dir,
-            origin,
-            input: String::new(),
-        }
+        Self { kind: FilePromptKind::Delete(path), dir, origin, input: String::new() }
     }
 
     /// The line shown in the mini-buffer.
@@ -156,11 +141,7 @@ pub fn commit(prompt: &FilePrompt) -> Option<(MessageLevel, String)> {
             Some(match result {
                 Ok(()) => (
                     MessageLevel::Success,
-                    format!(
-                        "Created {} '{}'",
-                        if is_dir { "directory" } else { "file" },
-                        name
-                    ),
+                    format!("Created {} '{}'", if is_dir { "directory" } else { "file" }, name),
                 ),
                 Err(e) => (MessageLevel::Error, format!("Create failed: {}", e)),
             })
@@ -179,22 +160,12 @@ pub fn commit(prompt: &FilePrompt) -> Option<(MessageLevel, String)> {
             }
         }
         FilePromptKind::Delete(path) => {
-            let result = if path.is_dir() {
-                std::fs::remove_dir_all(path)
-            } else {
-                std::fs::remove_file(path)
-            };
-            let name = path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("")
-                .to_string();
+            let result =
+                if path.is_dir() { std::fs::remove_dir_all(path) } else { std::fs::remove_file(path) };
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
             Some(match result {
                 Ok(()) => (MessageLevel::Success, format!("Deleted '{}'", name)),
-                Err(e) => (
-                    MessageLevel::Error,
-                    format!("Delete failed for '{}': {}", name, e),
-                ),
+                Err(e) => (MessageLevel::Error, format!("Delete failed for '{}': {}", name, e)),
             })
         }
     }
@@ -271,10 +242,7 @@ mod tests {
         }
         let (level, _) = commit(&p).expect("reports the clash");
         assert_eq!(level, MessageLevel::Info);
-        assert_eq!(
-            std::fs::read_to_string(root.join("taken")).unwrap(),
-            "original"
-        );
+        assert_eq!(std::fs::read_to_string(root.join("taken")).unwrap(), "original");
         std::fs::remove_dir_all(&root).ok();
     }
 

@@ -96,12 +96,7 @@ impl LspClient {
 
     #[cfg(test)]
     fn from_parts(writer: Box<dyn Write + Send>, rx: Receiver<ServerMessage>) -> Self {
-        LspClient {
-            child: None,
-            writer,
-            rx,
-            next_id: 0,
-        }
+        LspClient { child: None, writer, rx, next_id: 0 }
     }
 }
 
@@ -155,17 +150,10 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let client = LspClient::from_parts(Box::new(sink), rx);
 
-        tx.send(ServerMessage::Notification {
-            method: "note".into(),
-            params: Value::Null,
-        })
-        .unwrap();
-        tx.send(ServerMessage::Response {
-            id: 1,
-            result: Value::Null,
-            error: None,
-        })
-        .unwrap();
+        tx.send(ServerMessage::Notification { method: "note".into(), params: Value::Null })
+            .unwrap();
+        tx.send(ServerMessage::Response { id: 1, result: Value::Null, error: None })
+            .unwrap();
         let msgs = client.poll();
         assert_eq!(msgs.len(), 2);
         assert!(client.poll().is_empty(), "second poll drains nothing");

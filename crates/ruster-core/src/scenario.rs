@@ -8,20 +8,11 @@ pub fn scenario(src: &str, keys: &[KeyEvent], expect_text: &str, expect_head: Op
     let mut e = Editor::from_str(src);
     let mut v = VimState::new();
     for k in keys {
-        for a in v.handle(*k, &e) {
-            e.execute(a);
-        }
+        for a in v.handle(*k, &e) { e.execute(a); }
     }
-    assert_eq!(
-        e.buffer().to_string(),
-        expect_text,
-        "scenario src={:?} keys={:?}",
-        src,
-        keys
-    );
-    if let Some(h) = expect_head {
-        assert_eq!(e.primary_head(), h);
-    }
+    assert_eq!(e.buffer().to_string(), expect_text,
+        "scenario src={:?} keys={:?}", src, keys);
+    if let Some(h) = expect_head { assert_eq!(e.primary_head(), h); }
 }
 
 #[cfg(test)]
@@ -36,17 +27,13 @@ mod tests {
         scenario(
             "hello world",
             &[
-                KeyEvent::Char('g'),
-                KeyEvent::Char('g'),
-                KeyEvent::Char('c'),
-                KeyEvent::Char('i'),
-                KeyEvent::Char('w'),
+                KeyEvent::Char('g'), KeyEvent::Char('g'),
+                KeyEvent::Char('c'), KeyEvent::Char('i'), KeyEvent::Char('w'),
                 KeyEvent::Char('x'),
                 KeyEvent::Esc,
                 KeyEvent::Char('u'),
             ],
-            "hello world",
-            None,
+            "hello world", None,
         );
     }
 
@@ -58,19 +45,14 @@ mod tests {
         scenario(
             "foo bar baz",
             &[
-                KeyEvent::Char('g'),
-                KeyEvent::Char('g'),
-                KeyEvent::Char('d'),
-                KeyEvent::Char('w'), // -> "bar baz"
-                KeyEvent::Char('u'), // -> "foo bar baz"
+                KeyEvent::Char('g'), KeyEvent::Char('g'),
+                KeyEvent::Char('d'), KeyEvent::Char('w'), // -> "bar baz"
+                KeyEvent::Char('u'),                      // -> "foo bar baz"
                 KeyEvent::Char('w'),
-                KeyEvent::Char('d'),
-                KeyEvent::Char('w'), // -> "foo baz"
-                KeyEvent::Char('g'),
-                KeyEvent::Char('-'), // back to "bar baz"
+                KeyEvent::Char('d'), KeyEvent::Char('w'), // -> "foo baz"
+                KeyEvent::Char('g'), KeyEvent::Char('-'), // back to "bar baz"
             ],
-            "bar baz",
-            None,
+            "bar baz", None,
         );
     }
 
@@ -79,21 +61,15 @@ mod tests {
         scenario(
             "foo bar baz",
             &[
-                KeyEvent::Char('g'),
-                KeyEvent::Char('g'),
-                KeyEvent::Char('d'),
-                KeyEvent::Char('w'),
+                KeyEvent::Char('g'), KeyEvent::Char('g'),
+                KeyEvent::Char('d'), KeyEvent::Char('w'),
                 KeyEvent::Char('u'),
                 KeyEvent::Char('w'),
-                KeyEvent::Char('d'),
-                KeyEvent::Char('w'), // -> "foo baz"
-                KeyEvent::Char('g'),
-                KeyEvent::Char('-'), // -> "bar baz"
-                KeyEvent::Char('g'),
-                KeyEvent::Char('+'), // -> "foo baz" again
+                KeyEvent::Char('d'), KeyEvent::Char('w'), // -> "foo baz"
+                KeyEvent::Char('g'), KeyEvent::Char('-'), // -> "bar baz"
+                KeyEvent::Char('g'), KeyEvent::Char('+'), // -> "foo baz" again
             ],
-            "foo baz",
-            None,
+            "foo baz", None,
         );
     }
 
@@ -104,15 +80,12 @@ mod tests {
         scenario(
             "foo bar baz",
             &[
-                KeyEvent::Char('g'),
-                KeyEvent::Char('g'),
+                KeyEvent::Char('g'), KeyEvent::Char('g'),
                 KeyEvent::Char('w'), // cursor -> 4 (start of "bar")
-                KeyEvent::Char('d'),
-                KeyEvent::Char('w'), // delete "bar " -> "foo baz"
+                KeyEvent::Char('d'), KeyEvent::Char('w'), // delete "bar " -> "foo baz"
                 KeyEvent::Char('u'), // undo: restores "bar " at offset 4
             ],
-            "foo bar baz",
-            Some(4),
+            "foo bar baz", Some(4),
         );
     }
 
@@ -125,15 +98,12 @@ mod tests {
         scenario(
             "foo bar baz",
             &[
-                KeyEvent::Char('g'),
-                KeyEvent::Char('g'),
-                KeyEvent::Char('d'),
-                KeyEvent::Char('w'),
+                KeyEvent::Char('g'), KeyEvent::Char('g'),
+                KeyEvent::Char('d'), KeyEvent::Char('w'),
                 KeyEvent::Char('w'),
                 KeyEvent::Char('.'),
             ],
-            "bar ",
-            None,
+            "bar ", None,
         );
     }
 }

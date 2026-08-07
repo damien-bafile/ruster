@@ -15,12 +15,8 @@ pub fn ruster_style_to_ratatui(s: &SyntaxStyle) -> ratatui::style::Style {
     let mut style = ratatui::style::Style::default()
         .fg(ruster_color_to_ratatui(&s.fg))
         .bg(ruster_color_to_ratatui(&s.bg));
-    if s.bold {
-        style = style.add_modifier(ratatui::style::Modifier::BOLD);
-    }
-    if s.italic {
-        style = style.add_modifier(ratatui::style::Modifier::ITALIC);
-    }
+    if s.bold { style = style.add_modifier(ratatui::style::Modifier::BOLD); }
+    if s.italic { style = style.add_modifier(ratatui::style::Modifier::ITALIC); }
     style
 }
 
@@ -34,19 +30,11 @@ impl TuiRenderer {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let stdout = std::io::stdout();
         let terminal = Terminal::new(CrosstermBackend::new(stdout))?;
-        Ok(TuiRenderer {
-            terminal: Some(terminal),
-            settings_scroll: 0,
-            picker_scroll: 0,
-        })
+        Ok(TuiRenderer { terminal: Some(terminal), settings_scroll: 0, picker_scroll: 0 })
     }
 
     pub fn dummy() -> Self {
-        TuiRenderer {
-            terminal: None,
-            settings_scroll: 0,
-            picker_scroll: 0,
-        }
+        TuiRenderer { terminal: None, settings_scroll: 0, picker_scroll: 0 }
     }
 }
 
@@ -94,9 +82,9 @@ impl Renderer for TuiRenderer {
                 );
 
                 if state.welcome.as_ref().is_some_and(|w| w.visible) {
-                    let ww =
-                        crate::widgets::WelcomeWidget::new(state.welcome.as_ref().unwrap().clone())
-                            .with_theme(&state.theme);
+                    let ww = crate::widgets::WelcomeWidget::new(
+                        state.welcome.as_ref().unwrap().clone(),
+                    ).with_theme(&state.theme);
                     frame.render_widget(ww, buf_area);
                 } else if let Some(grid) = &view.terminal {
                     let term_widget = crate::widgets::TerminalWidget::new(grid.clone())
@@ -105,26 +93,24 @@ impl Renderer for TuiRenderer {
                     frame.render_widget(term_widget, buf_area);
                 } else {
                     let has_highlights = view.lines.iter().any(|l| !l.highlights.is_empty());
-                    let buf_widget =
-                        crate::widgets::BufferWidget::new(view.lines.clone(), view.cursor)
-                            .with_syntax(has_highlights)
-                            .with_cursor_visible(view.cursor_visible)
-                            .with_cursor_kind(view.cursor_kind)
-                            .with_scroll(view.scroll_offset)
-                            .with_gutter(view.gutter.clone())
-                            .with_signs(view.signs.clone())
-                            .with_extra_cursors(view.extra_cursors.clone())
-                            .with_selection(view.selection)
-                            .with_active(view.active)
-                            .with_theme(&state.theme);
+                    let buf_widget = crate::widgets::BufferWidget::new(view.lines.clone(), view.cursor)
+                        .with_syntax(has_highlights)
+                        .with_cursor_visible(view.cursor_visible)
+                        .with_cursor_kind(view.cursor_kind)
+                        .with_scroll(view.scroll_offset)
+                        .with_gutter(view.gutter.clone())
+                        .with_signs(view.signs.clone())
+                        .with_extra_cursors(view.extra_cursors.clone())
+                        .with_selection(view.selection)
+                        .with_active(view.active)
+                        .with_theme(&state.theme);
                     frame.render_widget(buf_widget, buf_area);
                 }
 
                 // Flash jump labels overlay. Labels sit on top of the buffer
                 // text, so they share the layout every backend and the mouse
                 // hit-test use.
-                let text_area =
-                    ruster_render::TextArea::of(view.rect, view.signs.width, view.gutter.width);
+                let text_area = ruster_render::TextArea::of(view.rect, view.signs.width, view.gutter.width);
                 for fl in &view.flash_labels {
                     if fl.row >= text_area.height {
                         continue;
@@ -139,10 +125,11 @@ impl Renderer for TuiRenderer {
                     }
                     let fg_color = ruster_color_to_ratatui(&fl.color);
                     let bg_color = ratatui::style::Color::Indexed(214);
-                    let style = ratatui::style::Style::default().fg(fg_color).bg(bg_color);
+                    let style = ratatui::style::Style::default()
+                        .fg(fg_color)
+                        .bg(bg_color);
                     let area = Rect::new(x, y, w, 1);
-                    let line =
-                        ratatui::text::Line::from(ratatui::text::Span::styled(&fl.text, style));
+                    let line = ratatui::text::Line::from(ratatui::text::Span::styled(&fl.text, style));
                     frame.render_widget(ratatui::widgets::Paragraph::new(line), area);
                 }
 
@@ -153,7 +140,8 @@ impl Renderer for TuiRenderer {
 
             if let Some(text) = state.cmdline {
                 let cl_area = Rect::new(0, area.height.saturating_sub(1), area.width, 1);
-                let cmd = crate::widgets::CmdlineWidget::new(text).with_theme(&state.theme);
+                let cmd = crate::widgets::CmdlineWidget::new(text)
+                    .with_theme(&state.theme);
                 frame.render_widget(cmd, cl_area);
             }
             for (i, text) in state.noice_mini.iter().enumerate() {
@@ -187,7 +175,7 @@ impl Renderer for TuiRenderer {
                     }
                     frame.render_widget(
                         ratatui::widgets::Paragraph::new(ratatui::text::Line::from(
-                            ratatui::text::Span::styled(&line.text, bg),
+                            ratatui::text::Span::styled(&line.text, bg)
                         )),
                         Rect::new(panel_area.x, panel_area.y + i as u16, panel_width, 1),
                     );
@@ -214,9 +202,7 @@ impl Renderer for TuiRenderer {
                 // +3: title row, query row and the box's bottom edge.
                 let rows = (picker.rows.len() as u16 + 3).max(picker.preview.len() as u16 + 2);
                 let parea = if picker.placement == ruster_render::PickerPlacement::Bottom {
-                    let ph = rows
-                        .clamp(3, area.height.saturating_sub(1))
-                        .min(area.height / 2);
+                    let ph = rows.clamp(3, area.height.saturating_sub(1)).min(area.height / 2);
                     Rect::new(area.x, area.height.saturating_sub(ph), area.width, ph)
                 } else {
                     let frac = if picker.preview.is_empty() { 6 } else { 9 };

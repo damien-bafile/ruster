@@ -10,7 +10,9 @@ pub fn crossterm_to_ruster_key(ck: CKEvent) -> KeyEvent {
         // Alt/Meta chords (Emacs `M-…`). Checked before Ctrl so `C-M-…` maps to
         // the Meta form, which is what the Emacs bindings expect.
         KeyCode::Char(c) if ck.modifiers.contains(KeyModifiers::ALT) => KeyEvent::Alt(c),
-        KeyCode::Char(c) if ck.modifiers.contains(KeyModifiers::CONTROL) => KeyEvent::Ctrl(c),
+        KeyCode::Char(c) if ck.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyEvent::Ctrl(c)
+        }
         KeyCode::Char(c) => KeyEvent::Char(c),
         KeyCode::Tab if ck.modifiers == KeyModifiers::SHIFT => KeyEvent::ShiftTab,
         KeyCode::BackTab => KeyEvent::BackTab,

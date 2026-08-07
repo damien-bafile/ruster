@@ -93,15 +93,9 @@ impl SettingsState {
                 dyn_opts.insert(i, opts);
             }
         }
-        let theme_idx = specs
-            .iter()
-            .position(|s| s.group == "general" && s.key == "theme");
-        let color_rows: Vec<usize> = specs
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| s.group == "colors")
-            .map(|(i, _)| i)
-            .collect();
+        let theme_idx = specs.iter().position(|s| s.group == "general" && s.key == "theme");
+        let color_rows: Vec<usize> =
+            specs.iter().enumerate().filter(|(_, s)| s.group == "colors").map(|(i, _)| i).collect();
         let current = config.to_settings();
         let values = specs
             .iter()
@@ -120,11 +114,7 @@ impl SettingsState {
                 expanded: false,
                 groups: groups
                     .into_iter()
-                    .map(|(group, default_hex, value)| SyntaxGroupRow {
-                        group,
-                        value,
-                        default_hex,
-                    })
+                    .map(|(group, default_hex, value)| SyntaxGroupRow { group, value, default_hex })
                     .collect(),
             })
             .collect();
@@ -162,9 +152,7 @@ impl SettingsState {
             .map(Row::Spec)
             .collect();
         for (li, lang) in self.syntax.iter().enumerate() {
-            if rows.is_empty() && !filter.is_empty() {
-                break;
-            }
+            if rows.is_empty() && !filter.is_empty() { break; }
             if matches(&lang.key, &lang.key) {
                 rows.push(Row::SyntaxLang(li));
                 if lang.expanded {
@@ -190,10 +178,7 @@ impl SettingsState {
     /// The current theme's palette as picker options, prefixed with an
     /// "unset → use default" sentinel labelled `unset_label` (empty value).
     fn palette_opts(&self, unset_label: &str) -> Vec<Opt> {
-        let theme = self
-            .theme_idx
-            .map(|i| self.values[i].display())
-            .unwrap_or_default();
+        let theme = self.theme_idx.map(|i| self.values[i].display()).unwrap_or_default();
         let palette = self.theme_palettes.get(&theme).cloned().unwrap_or_default();
         let mut opts: Vec<Opt> = vec![(unset_label.to_string(), String::new())];
         opts.extend(palette);
@@ -205,11 +190,7 @@ impl SettingsState {
             return Some(opts.clone());
         }
         if let SettingKind::Enum(opts) = self.specs[idx].kind {
-            return Some(
-                opts.iter()
-                    .map(|s| (s.to_string(), s.to_string()))
-                    .collect(),
-            );
+            return Some(opts.iter().map(|s| (s.to_string(), s.to_string())).collect());
         }
         None
     }
@@ -220,11 +201,7 @@ impl SettingsState {
 
     /// The current working values, addressed by `(group, key)`.
     pub fn values(&self) -> Vec<(Addr, SettingValue)> {
-        self.specs
-            .iter()
-            .zip(&self.values)
-            .map(|(s, v)| ((s.group, s.key), v.clone()))
-            .collect()
+        self.specs.iter().zip(&self.values).map(|(s, v)| ((s.group, s.key), v.clone())).collect()
     }
 
     /// The edited per-language syntax overrides (`lang -> group -> hex`), only
@@ -248,10 +225,7 @@ impl SettingsState {
     // --- current row ---
 
     fn cur(&self) -> Row {
-        self.rows
-            .get(self.selected)
-            .copied()
-            .unwrap_or(Row::Spec(0))
+        self.rows.get(self.selected).copied().unwrap_or(Row::Spec(0))
     }
 
     /// The spec index if the selected row is a flat schema setting.
@@ -317,15 +291,12 @@ impl SettingsState {
     pub fn prev_group(&mut self) {
         let cur = self.section_of(self.cur()).to_string();
         // Walk back to a different section, then to that section's first row.
-        let prev = (0..self.selected)
-            .rev()
-            .find(|&i| self.section_of(self.rows[i]) != cur);
+        let prev = (0..self.selected).rev().find(|&i| self.section_of(self.rows[i]) != cur);
         match prev {
             Some(j) => {
                 let target = self.section_of(self.rows[j]).to_string();
-                self.selected = (0..=j)
-                    .find(|&i| self.section_of(self.rows[i]) == target)
-                    .unwrap_or(j);
+                self.selected =
+                    (0..=j).find(|&i| self.section_of(self.rows[i]) == target).unwrap_or(j);
             }
             None => self.selected = 0,
         }
@@ -396,9 +367,7 @@ impl SettingsState {
     }
 
     fn cycle_spec(&mut self, i: usize, delta: i64) {
-        let Some(opts) = self.options_for(i) else {
-            return;
-        };
+        let Some(opts) = self.options_for(i) else { return };
         if opts.is_empty() {
             return;
         }
@@ -504,9 +473,7 @@ impl SettingsState {
 
     /// Commit the edit buffer if it parses and validates; otherwise discard.
     pub fn edit_commit(&mut self) {
-        let Some(buf) = self.editing.take() else {
-            return;
-        };
+        let Some(buf) = self.editing.take() else { return };
         let Some(i) = self.cur_spec() else { return };
         let spec = &self.specs[i];
         if let Some(v) = parse_value(&spec.kind, buf.trim()) {
@@ -521,10 +488,7 @@ impl SettingsState {
     /// The palette colour name for a stored hex, or the hex itself if it isn't a
     /// named palette colour.
     fn color_label(&self, hex: &str) -> String {
-        let theme = self
-            .theme_idx
-            .map(|i| self.values[i].display())
-            .unwrap_or_default();
+        let theme = self.theme_idx.map(|i| self.values[i].display()).unwrap_or_default();
         self.theme_palettes
             .get(&theme)
             .and_then(|p| p.iter().find(|(_, v)| v == hex).map(|(l, _)| l.clone()))
@@ -535,10 +499,7 @@ impl SettingsState {
         let mut groups: Vec<SettingsGroup> = Vec::new();
         let push_row = |groups: &mut Vec<SettingsGroup>, section: String, row: SettingRowView| {
             if groups.last().map(|g| g.name != section).unwrap_or(true) {
-                groups.push(SettingsGroup {
-                    name: section.clone(),
-                    rows: Vec::new(),
-                });
+                groups.push(SettingsGroup { name: section.clone(), rows: Vec::new() });
             }
             groups.last_mut().expect("group pushed").rows.push(row);
         };
@@ -554,11 +515,7 @@ impl SettingsState {
                         SettingKind::Enum(_) => ControlKind::Enum,
                         SettingKind::Int { .. } | SettingKind::Float { .. } => ControlKind::Number,
                         SettingKind::Text | SettingKind::Color => {
-                            if dyn_row {
-                                ControlKind::Enum
-                            } else {
-                                ControlKind::Text
-                            }
+                            if dyn_row { ControlKind::Enum } else { ControlKind::Text }
                         }
                     };
                     let editing = selected && self.editing.is_some();
@@ -578,39 +535,28 @@ impl SettingsState {
                     } else {
                         None
                     };
-                    push_row(
-                        &mut groups,
-                        group_title(spec.group),
-                        SettingRowView {
-                            label: spec.label.to_string(),
-                            kind,
-                            value,
-                            editing,
-                            selected,
-                            help: spec.help.to_string(),
-                            swatch,
-                        },
-                    );
+                    push_row(&mut groups, group_title(spec.group), SettingRowView {
+                        label: spec.label.to_string(),
+                        kind,
+                        value,
+                        editing,
+                        selected,
+                        help: spec.help.to_string(),
+                        swatch,
+                    });
                 }
                 Row::SyntaxLang(li) => {
                     let lang = &self.syntax[li];
                     let caret = if lang.expanded { "▾" } else { "▸" };
-                    push_row(
-                        &mut groups,
-                        "Syntax".to_string(),
-                        SettingRowView {
-                            label: format!("{caret} {}", lang.key),
-                            kind: ControlKind::Text,
-                            value: String::new(),
-                            editing: false,
-                            selected,
-                            help: format!(
-                                "Enter: expand/collapse · syntax colours for {}",
-                                lang.key
-                            ),
-                            swatch: None,
-                        },
-                    );
+                    push_row(&mut groups, "Syntax".to_string(), SettingRowView {
+                        label: format!("{caret} {}", lang.key),
+                        kind: ControlKind::Text,
+                        value: String::new(),
+                        editing: false,
+                        selected,
+                        help: format!("Enter: expand/collapse · syntax colours for {}", lang.key),
+                        swatch: None,
+                    });
                 }
                 Row::SyntaxGroup(li, gi) => {
                     let g = &self.syntax[li].groups[gi];
@@ -619,19 +565,15 @@ impl SettingsState {
                     } else {
                         (self.color_label(&g.value), g.value.clone())
                     };
-                    push_row(
-                        &mut groups,
-                        "Syntax".to_string(),
-                        SettingRowView {
-                            label: format!("    {}", g.group),
-                            kind: ControlKind::Enum,
-                            value,
-                            editing: false,
-                            selected,
-                            help: format!("{} colour ({})", g.group, self.syntax[li].key),
-                            swatch: is_hex(&hex).then_some(hex),
-                        },
-                    );
+                    push_row(&mut groups, "Syntax".to_string(), SettingRowView {
+                        label: format!("    {}", g.group),
+                        kind: ControlKind::Enum,
+                        value,
+                        editing: false,
+                        selected,
+                        help: format!("{} colour ({})", g.group, self.syntax[li].key),
+                        swatch: is_hex(&hex).then_some(hex),
+                    });
                 }
             }
         }
@@ -644,11 +586,7 @@ impl SettingsState {
         } else {
             "j/k move · gg/G top/bottom · Tab group · / filter · Space toggle/cycle · h/l adjust · Enter edit/expand · dd reset · :w save · q close".to_string()
         };
-        SettingsView {
-            groups,
-            dirty: self.dirty,
-            footer,
-        }
+        SettingsView { groups, dirty: self.dirty, footer }
     }
 }
 
@@ -709,10 +647,7 @@ mod tests {
 
     fn state_with_syntax(syntax: SyntaxSeed) -> SettingsState {
         let palettes = vec![
-            (
-                "default".to_string(),
-                vec![("mauve".to_string(), "#cba6f7".to_string())],
-            ),
+            ("default".to_string(), vec![("mauve".to_string(), "#cba6f7".to_string())]),
             (
                 "gruvbox".to_string(),
                 vec![
@@ -724,19 +659,13 @@ mod tests {
         let dynamic = vec![(
             "general",
             "theme",
-            vec![
-                ("default".to_string(), "default".to_string()),
-                ("gruvbox".to_string(), "gruvbox".to_string()),
-            ],
+            vec![("default".to_string(), "default".to_string()), ("gruvbox".to_string(), "gruvbox".to_string())],
         )];
         SettingsState::new(&Config::default(), dynamic, palettes, syntax)
     }
 
     fn goto(s: &mut SettingsState, group: &str, key: &str) {
-        let idx = schema::schema()
-            .iter()
-            .position(|sp| sp.group == group && sp.key == key)
-            .unwrap();
+        let idx = schema::schema().iter().position(|sp| sp.group == group && sp.key == key).unwrap();
         s.selected = 0;
         for _ in 0..idx {
             s.move_down();
@@ -760,14 +689,8 @@ mod tests {
         goto(&mut s, "colors", "accent");
         // Default theme palette: [theme, mauve]. Cycle → mauve (#cba6f7).
         s.activate();
-        assert_eq!(
-            s.values()
-                .iter()
-                .find(|((g, k), _)| *g == "colors" && *k == "accent")
-                .unwrap()
-                .1,
-            SettingValue::Text("#cba6f7".into())
-        );
+        assert_eq!(s.values().iter().find(|((g, k), _)| *g == "colors" && *k == "accent").unwrap().1,
+                   SettingValue::Text("#cba6f7".into()));
     }
 
     #[test]
@@ -775,21 +698,13 @@ mod tests {
         let mut s = state();
         goto(&mut s, "general", "theme");
         s.adjust(1); // → gruvbox
-        let theme_val = s
-            .values()
-            .into_iter()
-            .find(|((g, k), _)| *g == "general" && *k == "theme")
-            .unwrap()
-            .1;
+        let theme_val =
+            s.values().into_iter().find(|((g, k), _)| *g == "general" && *k == "theme").unwrap().1;
         assert_eq!(theme_val, SettingValue::Text("gruvbox".into()));
         goto(&mut s, "colors", "accent");
         s.activate(); // theme → first palette color = orange
         assert_eq!(
-            s.values()
-                .iter()
-                .find(|((g, k), _)| *g == "colors" && *k == "accent")
-                .unwrap()
-                .1,
+            s.values().iter().find(|((g, k), _)| *g == "colors" && *k == "accent").unwrap().1,
             SettingValue::Text("#fe8019".into())
         );
     }
@@ -800,11 +715,7 @@ mod tests {
         goto(&mut s, "colors", "accent");
         s.activate(); // pick a palette color (non-default)
         let val = |s: &SettingsState| {
-            s.values()
-                .into_iter()
-                .find(|((g, k), _)| *g == "colors" && *k == "accent")
-                .unwrap()
-                .1
+            s.values().into_iter().find(|((g, k), _)| *g == "colors" && *k == "accent").unwrap().1
         };
         assert_ne!(val(&s), SettingValue::Text(String::new()));
         assert!(!s.press_d());
@@ -827,20 +738,10 @@ mod tests {
     fn reset_selected_restores_int_default() {
         let mut s = state();
         goto(&mut s, "general", "tabstop");
-        let def = s
-            .values()
-            .into_iter()
-            .find(|((g, k), _)| *g == "general" && *k == "tabstop")
-            .unwrap()
-            .1;
+        let def = s.values().into_iter().find(|((g, k), _)| *g == "general" && *k == "tabstop").unwrap().1;
         s.adjust(3);
         assert!(s.reset_selected());
-        let now = s
-            .values()
-            .into_iter()
-            .find(|((g, k), _)| *g == "general" && *k == "tabstop")
-            .unwrap()
-            .1;
+        let now = s.values().into_iter().find(|((g, k), _)| *g == "general" && *k == "tabstop").unwrap().1;
         assert_eq!(now, def);
     }
 
@@ -887,11 +788,7 @@ mod tests {
         s.selected = lang_row;
         let collapsed = s.rows.len();
         s.activate(); // expand
-        assert_eq!(
-            s.rows.len(),
-            collapsed + 2,
-            "keyword+string rows should appear"
-        );
+        assert_eq!(s.rows.len(), collapsed + 2, "keyword+string rows should appear");
         // The Syntax group is present with a caret + indented group rows.
         let view = s.view();
         let syntax = view.groups.iter().find(|g| g.name == "Syntax").unwrap();
@@ -907,12 +804,7 @@ mod tests {
         s.move_down(); // first group: keyword
         s.activate(); // default → first palette colour (#cba6f7)
         let ov = s.syntax_overrides();
-        assert_eq!(
-            ov.get("rust")
-                .and_then(|m| m.get("keyword"))
-                .map(String::as_str),
-            Some("#cba6f7")
-        );
+        assert_eq!(ov.get("rust").and_then(|m| m.get("keyword")).map(String::as_str), Some("#cba6f7"));
         // dd clears it back to default (dropped from the export).
         assert!(!s.press_d());
         assert!(s.press_d());

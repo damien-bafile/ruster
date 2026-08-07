@@ -1,7 +1,7 @@
-use crate::keymap::{parse_lua_key, LuaKeymap};
-use crate::runtime::{self, Shared};
 use mlua::{Function, Table, Value};
+use crate::runtime::{self, Shared};
 use std::rc::Rc;
+use crate::keymap::{parse_lua_key, LuaKeymap};
 
 /// Install the `ruster` table.
 ///
@@ -16,9 +16,7 @@ pub fn create_table(lua: &mlua::Lua, shared: &Rc<Shared>) -> mlua::Result<Table>
     let print_fn = lua.create_function(move |_, args: mlua::MultiValue| {
         let parts: Vec<String> = args.iter().map(format_value).collect();
         let msg = parts.join("\t");
-        {
-            sh.pending.borrow_mut().push(runtime::LuaAction::Print(msg));
-        }
+        { sh.pending.borrow_mut().push(runtime::LuaAction::Print(msg)); }
         Ok(())
     })?;
     t.set("print", print_fn)?;
@@ -38,52 +36,36 @@ pub fn create_table(lua: &mlua::Lua, shared: &Rc<Shared>) -> mlua::Result<Table>
         t.set(name, f)?;
     }
     let sh = shared.clone();
-    let stop_fn = lua.create_function(move |_, id: u64| Ok(sh.timers.borrow_mut().cancel(id)))?;
+    let stop_fn =
+        lua.create_function(move |_, id: u64| Ok(sh.timers.borrow_mut().cancel(id)))?;
     t.set("timer_stop", stop_fn)?;
 
     // ruster.cmd(str)
     let sh = shared.clone();
     let cmd_fn = lua.create_function(move |_, cmd: String| {
-        {
-            sh.pending.borrow_mut().push(runtime::LuaAction::Cmd(cmd));
-        }
+        { sh.pending.borrow_mut().push(runtime::LuaAction::Cmd(cmd)); }
         Ok(())
     })?;
     t.set("cmd", cmd_fn)?;
 
     // ruster.keymap.set(mode, lhs, callback)
     let sh = shared.clone();
-    let keymap_set =
-        lua.create_function(move |lua, (mode, lhs, func): (String, String, Function)| {
-            let keys: Vec<_> = lhs
-                .split_inclusive('>')
-                .filter(|s| !s.is_empty())
-                .filter_map(|s| {
-                    if s.ends_with('>') {
-                        parse_lua_key(s.trim())
-                    } else {
-                        s.chars()
-                            .map(|c| parse_lua_key(&c.to_string()))
-                            .collect::<Option<Vec<_>>>()?
-                            .into_iter()
-                            .next()
-                    }
-                })
-                .collect();
-            if keys.is_empty() {
-                return Err(mlua::Error::external("Cannot parse key sequence"));
-            }
-            let reg = lua.create_registry_value(func);
-            match reg {
-                Ok(r) => sh.keymaps.borrow_mut().push(LuaKeymap {
-                    mode,
-                    keys,
-                    callback: r,
-                }),
-                Err(e) => return Err(e),
-            }
-            Ok(())
-        })?;
+    let keymap_set = lua.create_function(move |lua, (mode, lhs, func): (String, String, Function)| {
+        let keys: Vec<_> = lhs.split_inclusive('>')
+            .filter(|s| !s.is_empty())
+            .filter_map(|s| {
+                if s.ends_with('>') { parse_lua_key(s.trim()) }
+                else { s.chars().map(|c| parse_lua_key(&c.to_string())).collect::<Option<Vec<_>>>()?.into_iter().next() }
+            })
+            .collect();
+        if keys.is_empty() { return Err(mlua::Error::external("Cannot parse key sequence")); }
+        let reg = lua.create_registry_value(func);
+        match reg {
+            Ok(r) => { sh.keymaps.borrow_mut().push(LuaKeymap { mode, keys, callback: r }) },
+            Err(e) => return Err(e),
+        }
+        Ok(())
+    })?;
     let keymap = lua.create_table()?;
     keymap.set("set", keymap_set)?;
     t.set("keymap", keymap)?;
@@ -131,9 +113,8 @@ pub fn create_table(lua: &mlua::Lua, shared: &Rc<Shared>) -> mlua::Result<Table>
         if let Ok(list) = spec.get::<mlua::Table>("fields") {
             for f in list.sequence_values::<mlua::Table>().flatten() {
                 let label: String = f.get::<Option<String>>("label")?.unwrap_or_default();
-                let kind: String = f
-                    .get::<Option<String>>("kind")?
-                    .unwrap_or_else(|| "text".into());
+                let kind: String =
+                    f.get::<Option<String>>("kind")?.unwrap_or_else(|| "text".into());
                 let value: String = f.get::<Option<String>>("value")?.unwrap_or_default();
                 let mut options = Vec::new();
                 if let Ok(opts) = f.get::<mlua::Table>("options") {
@@ -149,9 +130,7 @@ pub fn create_table(lua: &mlua::Lua, shared: &Rc<Shared>) -> mlua::Result<Table>
             }
         }
         {
-            sh.pending
-                .borrow_mut()
-                .push(runtime::LuaAction::Dialog { title, fields });
+            sh.pending.borrow_mut().push(runtime::LuaAction::Dialog { title, fields });
         }
         Ok(())
     })?;
@@ -163,48 +142,40 @@ pub fn create_table(lua: &mlua::Lua, shared: &Rc<Shared>) -> mlua::Result<Table>
 
     // nvim_buf_get_lines(buf, start, end_opt)
     let sh = shared.clone();
-    let get_lines = lua.create_function(
-        move |lua, (_buf, start, end_opt): (i32, i32, Option<i32>)| {
-            let mut cb = { sh.get_lines.borrow_mut() };
-            let lines = match &mut *cb {
-                Some(f) => f(start, end_opt),
-                None => Vec::new(),
-            };
-            let t = lua.create_table()?;
-            for (i, line) in lines.iter().enumerate() {
-                t.set(i as i32 + 1, line.as_str())?;
-            }
-            Ok(mlua::Value::Table(t))
-        },
-    )?;
+    let get_lines = lua.create_function(move |lua, (_buf, start, end_opt): (i32, i32, Option<i32>)| {
+        let mut cb = { sh.get_lines.borrow_mut() };
+        let lines = match &mut *cb {
+            Some(f) => f(start, end_opt),
+            None => Vec::new(),
+        };
+        let t = lua.create_table()?;
+        for (i, line) in lines.iter().enumerate() {
+            t.set(i as i32 + 1, line.as_str())?;
+        }
+        Ok(mlua::Value::Table(t))
+    })?;
     api.set("nvim_buf_get_lines", get_lines)?;
 
     // nvim_buf_set_lines(buf, start, end, lines)
     let sh = shared.clone();
-    let set_lines = lua.create_function(
-        move |_, (_buf, start, end, lines): (i32, i32, i32, mlua::Value)| {
-            let lines_vec: Vec<String> = match lines {
-                mlua::Value::String(s) => {
-                    vec![s.to_str().map(|s| s.to_string()).unwrap_or_default()]
+    let set_lines = lua.create_function(move |_, (_buf, start, end, lines): (i32, i32, i32, mlua::Value)| {
+        let lines_vec: Vec<String> = match lines {
+            mlua::Value::String(s) => vec![s.to_str().map(|s| s.to_string()).unwrap_or_default()],
+            mlua::Value::Table(t) => {
+                let mut v = Vec::new();
+                for i in 1..=t.len()? {
+                    if let Ok(s) = t.get::<String>(i) { v.push(s); }
                 }
-                mlua::Value::Table(t) => {
-                    let mut v = Vec::new();
-                    for i in 1..=t.len()? {
-                        if let Ok(s) = t.get::<String>(i) {
-                            v.push(s);
-                        }
-                    }
-                    v
-                }
-                _ => return Err(mlua::Error::external("set_lines expects string or table")),
-            };
-            let mut cb = { sh.set_lines.borrow_mut() };
-            if let Some(f) = cb.as_mut() {
-                f(start, end, lines_vec);
+                v
             }
-            Ok(())
-        },
-    )?;
+            _ => return Err(mlua::Error::external("set_lines expects string or table")),
+        };
+        let mut cb = { sh.set_lines.borrow_mut() };
+        if let Some(f) = cb.as_mut() {
+            f(start, end, lines_vec);
+        }
+        Ok(())
+    })?;
     api.set("nvim_buf_set_lines", set_lines)?;
 
     // nvim_win_get_cursor(win)
@@ -320,9 +291,7 @@ pub fn create_table(lua: &mlua::Lua, shared: &Rc<Shared>) -> mlua::Result<Table>
     let open_win = lua.create_function(move |_, vertical: Option<bool>| {
         let id = {
             let mut cb = sh.window_cb.borrow_mut();
-            cb.as_mut()
-                .map(|c| (c.open_win)(vertical.unwrap_or(false)))
-                .unwrap_or(0)
+            cb.as_mut().map(|c| (c.open_win)(vertical.unwrap_or(false))).unwrap_or(0)
         };
         Ok(id)
     })?;
@@ -344,19 +313,17 @@ pub fn create_table(lua: &mlua::Lua, shared: &Rc<Shared>) -> mlua::Result<Table>
     // ruster.api.get_frame_delta()
     let sh = shared.clone();
     let get_frame_delta = lua.create_function(move |_, ()| {
-        let dt = sh.current_dt.borrow();
-        Ok(*dt)
+        {
+            let dt = sh.current_dt.borrow();
+            Ok(*dt)
+        }
     })?;
     api.set("get_frame_delta", get_frame_delta)?;
 
     // ruster.api.notify(text) — Info level
     let sh = shared.clone();
     let notify_fn = lua.create_function(move |_, text: String| {
-        {
-            sh.pending
-                .borrow_mut()
-                .push(runtime::LuaAction::Notify(0, text));
-        }
+        { sh.pending.borrow_mut().push(runtime::LuaAction::Notify(0, text)); }
         Ok(())
     })?;
     api.set("notify", notify_fn)?;
@@ -364,11 +331,7 @@ pub fn create_table(lua: &mlua::Lua, shared: &Rc<Shared>) -> mlua::Result<Table>
     // ruster.api.notify_success(text)
     let sh = shared.clone();
     let notify_success = lua.create_function(move |_, text: String| {
-        {
-            sh.pending
-                .borrow_mut()
-                .push(runtime::LuaAction::Notify(1, text));
-        }
+        { sh.pending.borrow_mut().push(runtime::LuaAction::Notify(1, text)); }
         Ok(())
     })?;
     api.set("notify_success", notify_success)?;
@@ -376,11 +339,7 @@ pub fn create_table(lua: &mlua::Lua, shared: &Rc<Shared>) -> mlua::Result<Table>
     // ruster.api.notify_warn(text)
     let sh = shared.clone();
     let notify_warn = lua.create_function(move |_, text: String| {
-        {
-            sh.pending
-                .borrow_mut()
-                .push(runtime::LuaAction::Notify(2, text));
-        }
+        { sh.pending.borrow_mut().push(runtime::LuaAction::Notify(2, text)); }
         Ok(())
     })?;
     api.set("notify_warn", notify_warn)?;
@@ -388,11 +347,7 @@ pub fn create_table(lua: &mlua::Lua, shared: &Rc<Shared>) -> mlua::Result<Table>
     // ruster.api.notify_error(text)
     let sh = shared.clone();
     let notify_error = lua.create_function(move |_, text: String| {
-        {
-            sh.pending
-                .borrow_mut()
-                .push(runtime::LuaAction::Notify(3, text));
-        }
+        { sh.pending.borrow_mut().push(runtime::LuaAction::Notify(3, text)); }
         Ok(())
     })?;
     api.set("notify_error", notify_error)?;
@@ -403,16 +358,10 @@ pub fn create_table(lua: &mlua::Lua, shared: &Rc<Shared>) -> mlua::Result<Table>
         let text: String = opts.get("text").unwrap_or_default();
         let level_str: String = opts.get("level").unwrap_or_else(|_| "info".to_string());
         let level = match level_str.as_str() {
-            "success" => 1,
-            "warning" => 2,
-            "error" => 3,
+            "success" => 1, "warning" => 2, "error" => 3,
             _ => 0,
         };
-        {
-            sh.pending
-                .borrow_mut()
-                .push(runtime::LuaAction::Notify(level, text));
-        }
+        { sh.pending.borrow_mut().push(runtime::LuaAction::Notify(level, text)); }
         Ok(())
     })?;
     api.set("notify_with", notify_with)?;
@@ -479,10 +428,7 @@ pub fn create_table(lua: &mlua::Lua, shared: &Rc<Shared>) -> mlua::Result<Table>
 fn format_value(v: &Value) -> String {
     match v {
         Value::Nil => "nil".into(),
-        Value::String(s) => s
-            .to_str()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|_| "?".to_string()),
+        Value::String(s) => s.to_str().map(|s| s.to_string()).unwrap_or_else(|_| "?".to_string()),
         Value::Integer(i) => i.to_string(),
         Value::Number(n) => n.to_string(),
         Value::Boolean(b) => b.to_string(),
@@ -514,14 +460,8 @@ mod tests {
         // now be doubly wrong.
         let rt = Box::new(rt);
 
-        rt.lua
-            .load(r#"ruster.print("from init.lua")"#)
-            .exec()
-            .expect("print must not crash");
-        rt.lua
-            .load(r#"ruster.cmd(":w")"#)
-            .exec()
-            .expect("cmd must not crash");
+        rt.lua.load(r#"ruster.print("from init.lua")"#).exec().expect("print must not crash");
+        rt.lua.load(r#"ruster.cmd(":w")"#).exec().expect("cmd must not crash");
         rt.lua
             .load(r#"ruster.keymap.set("n", "<F8>", function() end)"#)
             .exec()
@@ -532,11 +472,7 @@ mod tests {
             .expect("ui.dialog must not crash");
 
         let actions = rt.drain_actions();
-        assert_eq!(
-            actions.len(),
-            3,
-            "print, cmd and dialog all queued: {actions:?}"
-        );
+        assert_eq!(actions.len(), 3, "print, cmd and dialog all queued: {actions:?}");
         assert!(matches!(&actions[0], runtime::LuaAction::Print(m) if m == "from init.lua"));
         assert!(matches!(&actions[1], runtime::LuaAction::Cmd(m) if m == ":w"));
         assert!(matches!(
@@ -679,15 +615,9 @@ mod tests {
         let t: Table = rt.lua.globals().get("ruster").unwrap();
         let statusline: Table = t.get("statusline").unwrap();
         let section: Function = statusline.get("section").unwrap();
-        let f = rt
-            .lua
-            .create_function(|_, ()| Ok("git:main".to_string()))
-            .unwrap();
+        let f = rt.lua.create_function(|_, ()| Ok("git:main".to_string())).unwrap();
         section.call::<()>(("right", f)).unwrap();
-        assert_eq!(
-            rt.statusline_sections("right"),
-            vec!["git:main".to_string()]
-        );
+        assert_eq!(rt.statusline_sections("right"), vec!["git:main".to_string()]);
         assert!(rt.statusline_sections("left").is_empty());
     }
 
@@ -744,13 +674,10 @@ mod tests {
         let on_fn: Function = t.get("on").unwrap();
         let received = std::rc::Rc::new(std::cell::RefCell::new(None::<f64>));
         let received_clone = received.clone();
-        let func = rt
-            .lua
-            .create_function(move |_, dt: f64| {
-                *received_clone.borrow_mut() = Some(dt);
-                Ok(())
-            })
-            .unwrap();
+        let func = rt.lua.create_function(move |_, dt: f64| {
+            *received_clone.borrow_mut() = Some(dt);
+            Ok(())
+        }).unwrap();
         on_fn.call::<()>(("Frame", func)).unwrap();
         rt.set_frame_dt(33.3);
         let val = received.borrow();

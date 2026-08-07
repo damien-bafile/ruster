@@ -46,10 +46,7 @@ pub fn highlight_markup(lang: MarkupLang, source: &str) -> Vec<StyledLine> {
                 MarkupLang::Org => org_line(line, in_code),
             };
             in_code = still_in_code;
-            StyledLine {
-                text: line.to_string(),
-                highlights: spans,
-            }
+            StyledLine { text: line.to_string(), highlights: spans }
         })
         .collect()
 }
@@ -65,10 +62,7 @@ fn markdown_line(line: &str, in_code: bool) -> (Vec<Span>, bool) {
         return (spans, !is_fence);
     }
     if is_fence {
-        return (
-            vec![(0, line.chars().count(), markup_style("keyword"))],
-            true,
-        );
+        return (vec![(0, line.chars().count(), markup_style("keyword"))], true);
     }
 
     // ATX heading: 1–6 leading '#'s then a space.
@@ -76,24 +70,15 @@ fn markdown_line(line: &str, in_code: bool) -> (Vec<Span>, bool) {
     let after = &line[indent..];
     let hashes = after.chars().take_while(|c| *c == '#').count();
     if (1..=6).contains(&hashes) && after.chars().nth(hashes) == Some(' ') {
-        return (
-            vec![(0, line.chars().count(), markup_style("heading"))],
-            false,
-        );
+        return (vec![(0, line.chars().count(), markup_style("heading"))], false);
     }
 
     // Blockquote and thematic break span the whole line.
     if after.starts_with('>') {
-        return (
-            vec![(0, line.chars().count(), markup_style("quote"))],
-            false,
-        );
+        return (vec![(0, line.chars().count(), markup_style("quote"))], false);
     }
     if is_thematic_break(after) {
-        return (
-            vec![(0, line.chars().count(), markup_style("marker"))],
-            false,
-        );
+        return (vec![(0, line.chars().count(), markup_style("marker"))], false);
     }
 
     let mut spans = Vec::new();
@@ -118,17 +103,11 @@ fn org_line(line: &str, in_code: bool) -> (Vec<Span>, bool) {
 
     // `#+KEYWORD:` metadata and block delimiters.
     if line.trim_start().starts_with("#+") {
-        return (
-            vec![(0, line.chars().count(), markup_style("keyword"))],
-            is_begin,
-        );
+        return (vec![(0, line.chars().count(), markup_style("keyword"))], is_begin);
     }
     // A plain `# ` comment line.
     if line.trim_start().starts_with("# ") {
-        return (
-            vec![(0, line.chars().count(), markup_style("quote"))],
-            false,
-        );
+        return (vec![(0, line.chars().count(), markup_style("quote"))], false);
     }
 
     // Headings: leading '*'s then a space. TODO/DONE keywords get their own color.
@@ -152,10 +131,7 @@ fn org_line(line: &str, in_code: bool) -> (Vec<Span>, bool) {
 
     // Table rows.
     if line.trim_start().starts_with('|') {
-        return (
-            vec![(0, line.chars().count(), markup_style("marker"))],
-            false,
-        );
+        return (vec![(0, line.chars().count(), markup_style("marker"))], false);
     }
 
     let mut spans = Vec::new();
@@ -172,9 +148,7 @@ fn org_line(line: &str, in_code: bool) -> (Vec<Span>, bool) {
 fn is_thematic_break(s: &str) -> bool {
     let t: String = s.chars().filter(|c| !c.is_whitespace()).collect();
     t.len() >= 3
-        && (t.chars().all(|c| c == '-')
-            || t.chars().all(|c| c == '*')
-            || t.chars().all(|c| c == '_'))
+        && (t.chars().all(|c| c == '-') || t.chars().all(|c| c == '*') || t.chars().all(|c| c == '_'))
 }
 
 /// Length (in chars) of a leading list marker like `- `, `* `, `+ `, or `12. `.
@@ -202,38 +176,10 @@ fn inline_markdown(line: &str, spans: &mut Vec<Span>) {
     let mut covered = vec![false; chars.len()];
 
     scan_delimited(&chars, &mut covered, "`", "`", markup_style("code"), spans);
-    scan_delimited(
-        &chars,
-        &mut covered,
-        "**",
-        "**",
-        markup_style("strong"),
-        spans,
-    );
-    scan_delimited(
-        &chars,
-        &mut covered,
-        "__",
-        "__",
-        markup_style("strong"),
-        spans,
-    );
-    scan_delimited(
-        &chars,
-        &mut covered,
-        "*",
-        "*",
-        markup_style("emphasis"),
-        spans,
-    );
-    scan_delimited(
-        &chars,
-        &mut covered,
-        "_",
-        "_",
-        markup_style("emphasis"),
-        spans,
-    );
+    scan_delimited(&chars, &mut covered, "**", "**", markup_style("strong"), spans);
+    scan_delimited(&chars, &mut covered, "__", "__", markup_style("strong"), spans);
+    scan_delimited(&chars, &mut covered, "*", "*", markup_style("emphasis"), spans);
+    scan_delimited(&chars, &mut covered, "_", "_", markup_style("emphasis"), spans);
     scan_links(&chars, &mut covered, spans);
 }
 
@@ -245,30 +191,9 @@ fn inline_org(line: &str, spans: &mut Vec<Span>) {
 
     scan_delimited(&chars, &mut covered, "~", "~", markup_style("code"), spans);
     scan_delimited(&chars, &mut covered, "=", "=", markup_style("code"), spans);
-    scan_delimited(
-        &chars,
-        &mut covered,
-        "*",
-        "*",
-        markup_style("strong"),
-        spans,
-    );
-    scan_delimited(
-        &chars,
-        &mut covered,
-        "/",
-        "/",
-        markup_style("emphasis"),
-        spans,
-    );
-    scan_delimited(
-        &chars,
-        &mut covered,
-        "_",
-        "_",
-        markup_style("emphasis"),
-        spans,
-    );
+    scan_delimited(&chars, &mut covered, "*", "*", markup_style("strong"), spans);
+    scan_delimited(&chars, &mut covered, "/", "/", markup_style("emphasis"), spans);
+    scan_delimited(&chars, &mut covered, "_", "_", markup_style("emphasis"), spans);
 }
 
 /// Find `open … close` pairs and emit one span per pair (delimiters included).
@@ -358,10 +283,7 @@ mod tests {
         assert_eq!(styles_of(&out[0]), vec![(0, 7)]);
         // Second line has a strong span over "**bold**" and a code span.
         let second = &out[1];
-        assert!(second
-            .highlights
-            .iter()
-            .any(|(o, l, s)| *o == 5 && *l == 8 && s.bold));
+        assert!(second.highlights.iter().any(|(o, l, s)| *o == 5 && *l == 8 && s.bold));
         assert!(second
             .highlights
             .iter()
@@ -398,12 +320,9 @@ mod tests {
 
     #[test]
     fn org_heading_todo_and_keyword() {
-        let out = highlight_markup(
-            MarkupLang::Org,
-            "#+TITLE: x\n* TODO task\n/em/ and ~code~\n",
-        );
+        let out = highlight_markup(MarkupLang::Org, "#+TITLE: x\n* TODO task\n/em/ and ~code~\n");
         assert_eq!(styles_of(&out[0]), vec![(0, 10)]); // whole #+ line
-                                                       // Heading line has a whole-line heading span plus a TODO span at 2..6.
+        // Heading line has a whole-line heading span plus a TODO span at 2..6.
         assert!(out[1].highlights.iter().any(|(o, l, _)| *o == 2 && *l == 4));
         // Inline emphasis and code on the third line.
         assert!(out[2].highlights.iter().any(|(_, _, s)| s.italic));

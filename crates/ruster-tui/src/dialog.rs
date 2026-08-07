@@ -92,12 +92,7 @@ pub struct DialogState {
 
 impl DialogState {
     pub fn new(title: impl Into<String>, fields: Vec<Field>) -> Self {
-        Self {
-            title: title.into(),
-            fields,
-            selected: 0,
-            editing: None,
-        }
+        Self { title: title.into(), fields, selected: 0, editing: None }
     }
 
     pub fn is_editing(&self) -> bool {
@@ -181,11 +176,7 @@ impl DialogState {
         let f = self.fields.get_mut(self.selected)?;
         match f.kind {
             ControlKind::Toggle => {
-                f.value = if f.value == "on" {
-                    "off".into()
-                } else {
-                    "on".into()
-                };
+                f.value = if f.value == "on" { "off".into() } else { "on".into() };
             }
             ControlKind::Enum => self.cycle(1),
             ControlKind::Text | ControlKind::Number => {
@@ -198,9 +189,7 @@ impl DialogState {
 
     /// Step an enum field through its options, wrapping.
     fn cycle(&mut self, delta: isize) {
-        let Some(f) = self.fields.get_mut(self.selected) else {
-            return;
-        };
+        let Some(f) = self.fields.get_mut(self.selected) else { return };
         if f.kind != ControlKind::Enum || f.options.is_empty() {
             return;
         }
@@ -326,10 +315,7 @@ mod tests {
     #[test]
     fn enter_submits_from_a_non_text_field() {
         let mut d = dialog();
-        assert_eq!(
-            d.handle_key(KeyEvent::from(KeyCode::Enter)),
-            DialogResponse::Submitted { button: None }
-        );
+        assert_eq!(d.handle_key(KeyEvent::from(KeyCode::Enter)), DialogResponse::Submitted { button: None });
     }
 
     /// A button is an action, not a value: activating it submits and reports
@@ -338,11 +324,7 @@ mod tests {
     fn a_button_submits_and_names_itself() {
         let mut d = DialogState::new(
             "Confirm",
-            vec![
-                Field::toggle("Force", false),
-                Field::button("OK"),
-                Field::button("Apply"),
-            ],
+            vec![Field::toggle("Force", false), Field::button("OK"), Field::button("Apply")],
         );
         d.handle_key(key('j')); // onto OK
         match d.handle_key(key(' ')) {
@@ -361,11 +343,7 @@ mod tests {
     fn buttons_are_not_values() {
         let d = DialogState::new(
             "Confirm",
-            vec![
-                Field::toggle("Force", true),
-                Field::button("OK"),
-                Field::text("Note", "hi"),
-            ],
+            vec![Field::toggle("Force", true), Field::button("OK"), Field::text("Note", "hi")],
         );
         let v = d.values();
         assert_eq!(v.len(), 2, "the button is an action, not a field: {v:?}");
@@ -383,10 +361,7 @@ mod tests {
     #[test]
     fn esc_cancels() {
         let mut d = dialog();
-        assert_eq!(
-            d.handle_key(KeyEvent::from(KeyCode::Esc)),
-            DialogResponse::Cancelled
-        );
+        assert_eq!(d.handle_key(KeyEvent::from(KeyCode::Esc)), DialogResponse::Cancelled);
     }
 
     #[test]
@@ -420,9 +395,6 @@ mod tests {
         d.handle_key(key('j'));
         d.handle_key(key(' '));
         assert!(d.values().is_empty());
-        assert_eq!(
-            d.handle_key(KeyEvent::from(KeyCode::Enter)),
-            DialogResponse::Submitted { button: None }
-        );
+        assert_eq!(d.handle_key(KeyEvent::from(KeyCode::Enter)), DialogResponse::Submitted { button: None });
     }
 }

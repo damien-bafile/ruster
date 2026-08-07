@@ -11,14 +11,8 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq)]
 pub enum SettingKind {
     Bool,
-    Int {
-        min: i64,
-        max: i64,
-    },
-    Float {
-        min: f64,
-        max: f64,
-    },
+    Int { min: i64, max: i64 },
+    Float { min: f64, max: f64 },
     Text,
     /// One of a fixed set of string values (rendered as a radio/combobox).
     Enum(&'static [&'static str]),
@@ -111,18 +105,14 @@ impl SettingKind {
                 _ => return Err(format!("expected true/false, got {trimmed:?}")),
             },
             SettingKind::Int { min, max } => {
-                let i: i64 = trimmed
-                    .parse()
-                    .map_err(|_| format!("invalid integer {trimmed:?}"))?;
+                let i: i64 = trimmed.parse().map_err(|_| format!("invalid integer {trimmed:?}"))?;
                 if i < *min || i > *max {
                     return Err(format!("{i} is out of range {min}..{max}"));
                 }
                 SettingValue::Int(i)
             }
             SettingKind::Float { min, max } => {
-                let f: f64 = trimmed
-                    .parse()
-                    .map_err(|_| format!("invalid number {trimmed:?}"))?;
+                let f: f64 = trimmed.parse().map_err(|_| format!("invalid number {trimmed:?}"))?;
                 if f < *min || f > *max {
                     return Err(format!("{f} is out of range {min}..{max}"));
                 }
@@ -133,10 +123,7 @@ impl SettingKind {
                 if opts.contains(&trimmed) {
                     SettingValue::Enum(trimmed.to_string())
                 } else {
-                    return Err(format!(
-                        "expected one of {}, got {trimmed:?}",
-                        opts.join(", ")
-                    ));
+                    return Err(format!("expected one of {}, got {trimmed:?}", opts.join(", ")));
                 }
             }
             SettingKind::Color => {
@@ -262,660 +249,118 @@ pub fn schema() -> Vec<SettingSpec> {
     use SettingKind::*;
     let mut s = Vec::new();
     let mut add = |group, key, label, kind, default, help| {
-        s.push(SettingSpec {
-            group,
-            key,
-            label,
-            kind,
-            default,
-            help,
-        });
+        s.push(SettingSpec { group, key, label, kind, default, help });
     };
 
     // --- general ---
-    add(
-        "general",
-        "tabstop",
-        "Tab width",
-        Int { min: 1, max: 16 },
-        i(4),
-        "Spaces a tab represents",
-    );
-    add(
-        "general",
-        "softtabstop",
-        "Soft tab stop",
-        Int { min: 0, max: 16 },
-        i(4),
-        "Spaces inserted on Tab",
-    );
-    add(
-        "general",
-        "expandtab",
-        "Expand tabs",
-        Bool,
-        b(true),
-        "Insert spaces instead of tabs",
-    );
-    add(
-        "general",
-        "shiftwidth",
-        "Shift width",
-        Int { min: 1, max: 16 },
-        i(4),
-        "Spaces per indent step",
-    );
-    add(
-        "general",
-        "editmode",
-        "Editing paradigm",
-        Enum(&["neovim", "emacs"]),
-        e("neovim"),
-        "Modal (neovim) or modeless (emacs)",
-    );
-    add(
-        "general",
-        "editorconfig",
-        "Honor .editorconfig",
-        Bool,
-        b(true),
-        "Apply project .editorconfig files",
-    );
-    add(
-        "general",
-        "line_ending",
-        "Default line ending",
-        Enum(&["lf", "crlf"]),
-        e("lf"),
-        "Line ending for new files",
-    );
-    add(
-        "general",
-        "theme",
-        "Theme name",
-        Text,
-        t("default"),
-        "Named color theme",
-    );
+    add("general", "tabstop", "Tab width", Int { min: 1, max: 16 }, i(4), "Spaces a tab represents");
+    add("general", "softtabstop", "Soft tab stop", Int { min: 0, max: 16 }, i(4), "Spaces inserted on Tab");
+    add("general", "expandtab", "Expand tabs", Bool, b(true), "Insert spaces instead of tabs");
+    add("general", "shiftwidth", "Shift width", Int { min: 1, max: 16 }, i(4), "Spaces per indent step");
+    add("general", "editmode", "Editing paradigm", Enum(&["neovim", "emacs"]), e("neovim"), "Modal (neovim) or modeless (emacs)");
+    add("general", "editorconfig", "Honor .editorconfig", Bool, b(true), "Apply project .editorconfig files");
+    add("general", "line_ending", "Default line ending", Enum(&["lf", "crlf"]), e("lf"), "Line ending for new files");
+    add("general", "theme", "Theme name", Text, t("default"), "Named color theme");
 
     // --- gui ---
-    add(
-        "gui",
-        "font",
-        "Font",
-        Text,
-        t(""),
-        "Font file/path; empty = auto-detect a Nerd font",
-    );
-    add(
-        "gui",
-        "font_size",
-        "Font size",
-        Int { min: 8, max: 48 },
-        i(20),
-        "GUI glyph size in px",
-    );
-    add(
-        "gui",
-        "line_height",
-        "Line height",
-        Int { min: 10, max: 64 },
-        i(24),
-        "Row height in px",
-    );
-    add(
-        "gui",
-        "padding_x",
-        "Horizontal padding",
-        Int { min: 0, max: 64 },
-        i(8),
-        "Left padding in px",
-    );
-    add(
-        "gui",
-        "padding_y",
-        "Vertical padding",
-        Int { min: 0, max: 64 },
-        i(4),
-        "Top padding in px",
-    );
-    add(
-        "gui",
-        "window_width",
-        "Window width",
-        Int {
-            min: 320,
-            max: 7680,
-        },
-        i(800),
-        "Initial window width",
-    );
-    add(
-        "gui",
-        "window_height",
-        "Window height",
-        Int {
-            min: 240,
-            max: 4320,
-        },
-        i(600),
-        "Initial window height",
-    );
-    add(
-        "gui",
-        "target_fps",
-        "Target FPS",
-        Int { min: 30, max: 240 },
-        i(60),
-        "Render loop frame cap",
-    );
-    add(
-        "gui",
-        "cursor_kind",
-        "Cursor shape",
-        Enum(&["block", "bar"]),
-        e("block"),
-        "Block or bar cursor",
-    );
-    add(
-        "gui",
-        "cursor_anim",
-        "Smooth cursor",
-        Bool,
-        b(true),
-        "Animate cursor movement",
-    );
-    add(
-        "gui",
-        "cursor_anim_speed",
-        "Cursor speed",
-        Float {
-            min: 1.0,
-            max: 60.0,
-        },
-        f(12.0),
-        "Smooth-cursor easing speed",
-    );
+    add("gui", "font", "Font", Text, t(""), "Font file/path; empty = auto-detect a Nerd font");
+    add("gui", "font_size", "Font size", Int { min: 8, max: 48 }, i(20), "GUI glyph size in px");
+    add("gui", "line_height", "Line height", Int { min: 10, max: 64 }, i(24), "Row height in px");
+    add("gui", "padding_x", "Horizontal padding", Int { min: 0, max: 64 }, i(8), "Left padding in px");
+    add("gui", "padding_y", "Vertical padding", Int { min: 0, max: 64 }, i(4), "Top padding in px");
+    add("gui", "window_width", "Window width", Int { min: 320, max: 7680 }, i(800), "Initial window width");
+    add("gui", "window_height", "Window height", Int { min: 240, max: 4320 }, i(600), "Initial window height");
+    add("gui", "target_fps", "Target FPS", Int { min: 30, max: 240 }, i(60), "Render loop frame cap");
+    add("gui", "cursor_kind", "Cursor shape", Enum(&["block", "bar"]), e("block"), "Block or bar cursor");
+    add("gui", "cursor_anim", "Smooth cursor", Bool, b(true), "Animate cursor movement");
+    add("gui", "cursor_anim_speed", "Cursor speed", Float { min: 1.0, max: 60.0 }, f(12.0), "Smooth-cursor easing speed");
     // Colors are theme-driven — see general.theme + the themes/ directory.
 
     // --- gutter ---
-    add(
-        "gutter",
-        "number",
-        "Line numbers",
-        Bool,
-        b(false),
-        "Show absolute line numbers",
-    );
-    add(
-        "gutter",
-        "relativenumber",
-        "Relative numbers",
-        Bool,
-        b(false),
-        "Show relative line numbers",
-    );
+    add("gutter", "number", "Line numbers", Bool, b(false), "Show absolute line numbers");
+    add("gutter", "relativenumber", "Relative numbers", Bool, b(false), "Show relative line numbers");
 
     // --- whichkey ---
-    add(
-        "whichkey",
-        "enabled",
-        "Enabled",
-        Bool,
-        b(true),
-        "Show the which-key hint panel",
-    );
-    add(
-        "whichkey",
-        "timeoutlen",
-        "Timeout (ms)",
-        Int { min: 0, max: 5000 },
-        i(300),
-        "Delay before the panel appears",
-    );
-    add(
-        "whichkey",
-        "command_palette",
-        "Command palette",
-        Enum(&["center", "bottom"]),
-        e("center"),
-        "Where the :-Tab command palette appears: a centered box or docked at the bottom",
-    );
+    add("whichkey", "enabled", "Enabled", Bool, b(true), "Show the which-key hint panel");
+    add("whichkey", "timeoutlen", "Timeout (ms)", Int { min: 0, max: 5000 }, i(300), "Delay before the panel appears");
+    add("whichkey", "command_palette", "Command palette", Enum(&["center", "bottom"]), e("center"), "Where the :-Tab command palette appears: a centered box or docked at the bottom");
 
     // --- lsp ---
-    add(
-        "lsp",
-        "format_on_save",
-        "Format on save",
-        Bool,
-        b(false),
-        "Run LSP formatting on :w",
-    );
-    add(
-        "lsp",
-        "diagnostics",
-        "Diagnostics",
-        Bool,
-        b(true),
-        "Show LSP diagnostics",
-    );
-    add(
-        "lsp",
-        "hover",
-        "Hover",
-        Bool,
-        b(true),
-        "Enable hover popups",
-    );
-    add(
-        "lsp",
-        "autostart",
-        "Auto-start servers",
-        Bool,
-        b(true),
-        "Launch a server when a file opens",
-    );
+    add("lsp", "format_on_save", "Format on save", Bool, b(false), "Run LSP formatting on :w");
+    add("lsp", "diagnostics", "Diagnostics", Bool, b(true), "Show LSP diagnostics");
+    add("lsp", "hover", "Hover", Bool, b(true), "Enable hover popups");
+    add("lsp", "autostart", "Auto-start servers", Bool, b(true), "Launch a server when a file opens");
 
     // --- terminal ---
-    add(
-        "terminal",
-        "shell",
-        "Shell",
-        Text,
-        t(""),
-        "Program for :term; empty = platform default",
-    );
-    add(
-        "terminal",
-        "scrollback",
-        "Scrollback",
-        Int {
-            min: 0,
-            max: 1_000_000,
-        },
-        i(10000),
-        "Lines of history retained",
-    );
-    add(
-        "terminal",
-        "default_mode",
-        "Start mode",
-        Enum(&["insert", "normal"]),
-        e("insert"),
-        "Initial mode for a new terminal",
-    );
+    add("terminal", "shell", "Shell", Text, t(""), "Program for :term; empty = platform default");
+    add("terminal", "scrollback", "Scrollback", Int { min: 0, max: 1_000_000 }, i(10000), "Lines of history retained");
+    add("terminal", "default_mode", "Start mode", Enum(&["insert", "normal"]), e("insert"), "Initial mode for a new terminal");
 
     // --- dired ---
-    add(
-        "dired",
-        "show_hidden",
-        "Show hidden files",
-        Bool,
-        b(false),
-        "Show dotfiles in the file explorer",
-    );
+    add("dired", "show_hidden", "Show hidden files", Bool, b(false), "Show dotfiles in the file explorer");
 
     // --- sidebar ---
-    add(
-        "sidebar",
-        "auto_open",
-        "Auto-open sidebar",
-        Bool,
-        b(false),
-        "Open the sidebar automatically on startup",
-    );
-    add(
-        "session",
-        "autoload",
-        "Restore session on open",
-        Bool,
-        b(false),
-        "Reopen the project's saved files and layout on startup",
-    );
-    add(
-        "session",
-        "autosave",
-        "Save session on quit",
-        Bool,
-        b(true),
-        "Write the session when the editor exits",
-    );
+    add("sidebar", "auto_open", "Auto-open sidebar", Bool, b(false), "Open the sidebar automatically on startup");
+    add("session", "autoload", "Restore session on open", Bool, b(false), "Reopen the project's saved files and layout on startup");
+    add("session", "autosave", "Save session on quit", Bool, b(true), "Write the session when the editor exits");
 
     // --- noice ---
-    add(
-        "noice",
-        "mini",
-        "Mini toasts",
-        Bool,
-        b(true),
-        "Show transient toasts in the cmdline row",
-    );
-    add(
-        "noice",
-        "notify",
-        "Notify panel",
-        Bool,
-        b(true),
-        "Show the stacking panel for warnings and errors",
-    );
-    add(
-        "noice",
-        "split",
-        "Split history",
-        Bool,
-        b(true),
-        "Allow :Noice split to open the *noice* history buffer",
-    );
-    add(
-        "noice",
-        "info_timeout",
-        "Info timeout (ms)",
-        Int { min: 0, max: 60000 },
-        i(2000),
-        "How long info toasts stay up",
-    );
-    add(
-        "noice",
-        "success_timeout",
-        "Success timeout (ms)",
-        Int { min: 0, max: 60000 },
-        i(2000),
-        "How long success toasts stay up",
-    );
-    add(
-        "noice",
-        "warning_timeout",
-        "Warning timeout (ms)",
-        Int { min: 0, max: 60000 },
-        i(5000),
-        "How long warnings stay up; errors are persistent",
-    );
-    add(
-        "noice",
-        "max_history",
-        "History size",
-        Int {
-            min: 1,
-            max: 100000,
-        },
-        i(1000),
-        "Messages retained for :messages and :Noice split",
-    );
+    add("noice", "mini", "Mini toasts", Bool, b(true), "Show transient toasts in the cmdline row");
+    add("noice", "notify", "Notify panel", Bool, b(true), "Show the stacking panel for warnings and errors");
+    add("noice", "split", "Split history", Bool, b(true), "Allow :Noice split to open the *noice* history buffer");
+    add("noice", "info_timeout", "Info timeout (ms)", Int { min: 0, max: 60000 }, i(2000), "How long info toasts stay up");
+    add("noice", "success_timeout", "Success timeout (ms)", Int { min: 0, max: 60000 }, i(2000), "How long success toasts stay up");
+    add("noice", "warning_timeout", "Warning timeout (ms)", Int { min: 0, max: 60000 }, i(5000), "How long warnings stay up; errors are persistent");
+    add("noice", "max_history", "History size", Int { min: 1, max: 100000 }, i(1000), "Messages retained for :messages and :Noice split");
 
     // --- build / test / dap ---
     // Empty means "work it out from the project"; a project's ruster.toml still
     // wins over anything set here.
     // --- git ---
-    add(
-        "git",
-        "signs",
-        "Git signs",
-        Bool,
-        b(true),
-        "Mark added/changed/removed lines in the gutter",
-    );
+    add("git", "signs", "Git signs", Bool, b(true), "Mark added/changed/removed lines in the gutter");
 
     // --- todo ---
-    add(
-        "todo",
-        "keywords",
-        "Keywords",
-        Text,
-        t("TODO,FIXME,HACK,NOTE,XXX"),
-        "Comma-separated markers highlighted in comments; empty disables",
-    );
+    add("todo", "keywords", "Keywords", Text, t("TODO,FIXME,HACK,NOTE,XXX"), "Comma-separated markers highlighted in comments; empty disables");
 
-    add(
-        "build",
-        "command",
-        "Build command",
-        Text,
-        t(""),
-        "Command for :build; empty = detect from the project type",
-    );
-    add(
-        "test",
-        "command",
-        "Test command",
-        Text,
-        t(""),
-        "Command for :test; empty = detect from the project type",
-    );
-    add(
-        "dap",
-        "adapter",
-        "Debug adapter",
-        Text,
-        t(""),
-        "Adapter program for :debug; empty = detect from the file's language",
-    );
+    add("build", "command", "Build command", Text, t(""), "Command for :build; empty = detect from the project type");
+    add("test", "command", "Test command", Text, t(""), "Command for :test; empty = detect from the project type");
+    add("dap", "adapter", "Debug adapter", Text, t(""), "Adapter program for :debug; empty = detect from the file's language");
 
     // --- colors (overrides; empty = use the theme's color) ---
-    add(
-        "colors",
-        "bg",
-        "Background",
-        Text,
-        t(""),
-        "Override editor background",
-    );
-    add(
-        "colors",
-        "fg",
-        "Foreground",
-        Text,
-        t(""),
-        "Override default text color",
-    );
-    add(
-        "colors",
-        "gutter",
-        "Gutter",
-        Text,
-        t(""),
-        "Override line-number color",
-    );
-    add(
-        "colors",
-        "gutter_bg",
-        "Gutter background",
-        Text,
-        t(""),
-        "Override the gutter background",
-    );
-    add(
-        "colors",
-        "cursor_bg",
-        "Cursor background",
-        Text,
-        t(""),
-        "Block cursor background color",
-    );
-    add(
-        "colors",
-        "selection_bg",
-        "Selection background",
-        Text,
-        t(""),
-        "Text selection highlight background",
-    );
-    add(
-        "colors",
-        "selection_fg",
-        "Selection text",
-        Text,
-        t(""),
-        "Override text drawn over the selection",
-    );
-    add(
-        "colors",
-        "cursor_fg",
-        "Cursor text",
-        Text,
-        t(""),
-        "Override the glyph under the block cursor",
-    );
-    add(
-        "colors",
-        "divider",
-        "Window borders",
-        Text,
-        t(""),
-        "Override window header lines and picker separators",
-    );
-    add(
-        "colors",
-        "statusline_fg",
-        "Statusline text",
-        Text,
-        t(""),
-        "Override statusline text color",
-    );
-    add(
-        "colors",
-        "statusline_bg",
-        "Statusline background",
-        Text,
-        t(""),
-        "Override statusline background",
-    );
-    add(
-        "colors",
-        "accent",
-        "Accent",
-        Text,
-        t(""),
-        "Override accent (titles, prompts)",
-    );
-    add(
-        "colors",
-        "accent_fg",
-        "Accent text",
-        Text,
-        t(""),
-        "Override text drawn on accent bars",
-    );
-    add(
-        "colors",
-        "whichkey_bg",
-        "Which-key background",
-        Text,
-        t(""),
-        "Override the which-key panel background",
-    );
-    add(
-        "colors",
-        "whichkey_fg",
-        "Which-key text",
-        Text,
-        t(""),
-        "Override the which-key panel text",
-    );
-    add(
-        "colors",
-        "cmdline_bg",
-        "Cmdline background",
-        Text,
-        t(""),
-        "Override the cmdline background",
-    );
-    add(
-        "colors",
-        "cmdline_fg",
-        "Cmdline text",
-        Text,
-        t(""),
-        "Override the cmdline text",
-    );
-    add(
-        "colors",
-        "mode_normal_bg",
-        "Normal mode bg",
-        Text,
-        t(""),
-        "Statusline background in Normal mode",
-    );
-    add(
-        "colors",
-        "mode_normal_fg",
-        "Normal mode text",
-        Text,
-        t(""),
-        "Statusline text color in Normal mode",
-    );
-    add(
-        "colors",
-        "mode_insert_bg",
-        "Insert mode bg",
-        Text,
-        t(""),
-        "Statusline background in Insert mode",
-    );
-    add(
-        "colors",
-        "mode_insert_fg",
-        "Insert mode text",
-        Text,
-        t(""),
-        "Statusline text color in Insert mode",
-    );
-    add(
-        "colors",
-        "mode_visual_bg",
-        "Visual mode bg",
-        Text,
-        t(""),
-        "Statusline background in Visual mode",
-    );
-    add(
-        "colors",
-        "mode_visual_fg",
-        "Visual mode text",
-        Text,
-        t(""),
-        "Statusline text color in Visual mode",
-    );
-    add(
-        "colors",
-        "mode_cmdline_bg",
-        "Cmdline mode bg",
-        Text,
-        t(""),
-        "Statusline background in Cmdline mode",
-    );
-    add(
-        "colors",
-        "mode_cmdline_fg",
-        "Cmdline mode text",
-        Text,
-        t(""),
-        "Statusline text color in Cmdline mode",
-    );
-    add(
-        "colors",
-        "mode_emacs_bg",
-        "Emacs mode bg",
-        Text,
-        t(""),
-        "Statusline background in Emacs mode",
-    );
-    add(
-        "colors",
-        "mode_emacs_fg",
-        "Emacs mode text",
-        Text,
-        t(""),
-        "Statusline text color in Emacs mode",
-    );
+    add("colors", "bg", "Background", Text, t(""), "Override editor background");
+    add("colors", "fg", "Foreground", Text, t(""), "Override default text color");
+    add("colors", "gutter", "Gutter", Text, t(""), "Override line-number color");
+    add("colors", "gutter_bg", "Gutter background", Text, t(""), "Override the gutter background");
+    add("colors", "cursor_bg", "Cursor background", Text, t(""), "Block cursor background color");
+    add("colors", "selection_bg", "Selection background", Text, t(""), "Text selection highlight background");
+    add("colors", "selection_fg", "Selection text", Text, t(""), "Override text drawn over the selection");
+    add("colors", "cursor_fg", "Cursor text", Text, t(""), "Override the glyph under the block cursor");
+    add("colors", "divider", "Window borders", Text, t(""), "Override window header lines and picker separators");
+    add("colors", "statusline_fg", "Statusline text", Text, t(""), "Override statusline text color");
+    add("colors", "statusline_bg", "Statusline background", Text, t(""), "Override statusline background");
+    add("colors", "accent", "Accent", Text, t(""), "Override accent (titles, prompts)");
+    add("colors", "accent_fg", "Accent text", Text, t(""), "Override text drawn on accent bars");
+    add("colors", "whichkey_bg", "Which-key background", Text, t(""), "Override the which-key panel background");
+    add("colors", "whichkey_fg", "Which-key text", Text, t(""), "Override the which-key panel text");
+    add("colors", "cmdline_bg", "Cmdline background", Text, t(""), "Override the cmdline background");
+    add("colors", "cmdline_fg", "Cmdline text", Text, t(""), "Override the cmdline text");
+    add("colors", "mode_normal_bg", "Normal mode bg", Text, t(""), "Statusline background in Normal mode");
+    add("colors", "mode_normal_fg", "Normal mode text", Text, t(""), "Statusline text color in Normal mode");
+    add("colors", "mode_insert_bg", "Insert mode bg", Text, t(""), "Statusline background in Insert mode");
+    add("colors", "mode_insert_fg", "Insert mode text", Text, t(""), "Statusline text color in Insert mode");
+    add("colors", "mode_visual_bg", "Visual mode bg", Text, t(""), "Statusline background in Visual mode");
+    add("colors", "mode_visual_fg", "Visual mode text", Text, t(""), "Statusline text color in Visual mode");
+    add("colors", "mode_cmdline_bg", "Cmdline mode bg", Text, t(""), "Statusline background in Cmdline mode");
+    add("colors", "mode_cmdline_fg", "Cmdline mode text", Text, t(""), "Statusline text color in Cmdline mode");
+    add("colors", "mode_emacs_bg", "Emacs mode bg", Text, t(""), "Statusline background in Emacs mode");
+    add("colors", "mode_emacs_fg", "Emacs mode text", Text, t(""), "Statusline text color in Emacs mode");
 
     s
 }
 
 /// Look up a spec by group + key.
 pub fn spec_for(group: &str, key: &str) -> Option<SettingSpec> {
-    schema()
-        .into_iter()
-        .find(|s| s.group == group && s.key == key)
+    schema().into_iter().find(|s| s.group == group && s.key == key)
 }
 
 /// Look up a spec by key alone (keys are unique across groups).
@@ -930,10 +375,7 @@ pub fn generate_default_config() -> String {
 
 /// The default value for every spec, keyed by `(group, key)`.
 pub fn default_values() -> Vec<((&'static str, &'static str), SettingValue)> {
-    schema()
-        .into_iter()
-        .map(|s| ((s.group, s.key), s.default))
-        .collect()
+    schema().into_iter().map(|s| ((s.group, s.key), s.default)).collect()
 }
 
 /// Render a `config.lua` from a set of values, grouped and commented. Values are
@@ -950,9 +392,7 @@ pub fn generate_config(values: &[((&'static str, &'static str), SettingValue)]) 
     let mut out = String::new();
     out.push_str("-- ruster config — managed by the Settings page (:settings, save with :w).\n");
     out.push_str("-- Safe to hand-edit; comments and layout are regenerated on save.\n");
-    out.push_str(
-        "-- Advanced scripting (keymaps, plugins) goes in init.lua, loaded after this.\n\n",
-    );
+    out.push_str("-- Advanced scripting (keymaps, plugins) goes in init.lua, loaded after this.\n\n");
 
     let all = schema();
     for (group, group_help) in GROUPS {
@@ -998,12 +438,8 @@ mod tests {
         assert!(en.check(&SettingValue::Enum("a".into())).is_ok());
         assert!(en.check(&SettingValue::Enum("c".into())).is_err());
 
-        assert!(SettingKind::Color
-            .check(&SettingValue::Color("#aabbcc".into()))
-            .is_ok());
-        assert!(SettingKind::Color
-            .check(&SettingValue::Color("blue".into()))
-            .is_err());
+        assert!(SettingKind::Color.check(&SettingValue::Color("#aabbcc".into())).is_ok());
+        assert!(SettingKind::Color.check(&SettingValue::Color("blue".into())).is_err());
     }
 
     #[test]
@@ -1019,17 +455,10 @@ mod tests {
     fn generated_config_has_every_group_and_key() {
         let lua = generate_default_config();
         for (group, _) in GROUPS {
-            assert!(
-                lua.contains(&format!("ruster.config.{group} = {{")),
-                "missing group {group}"
-            );
+            assert!(lua.contains(&format!("ruster.config.{group} = {{")), "missing group {group}");
         }
         for spec in schema() {
-            assert!(
-                lua.contains(&format!("{} =", spec.key)),
-                "missing key {}",
-                spec.key
-            );
+            assert!(lua.contains(&format!("{} =", spec.key)), "missing key {}", spec.key);
         }
     }
 

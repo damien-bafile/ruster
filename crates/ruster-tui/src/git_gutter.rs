@@ -38,12 +38,7 @@ impl Default for GitGutter {
 impl GitGutter {
     pub fn new(enabled: bool) -> Self {
         let (tx, rx) = channel();
-        GitGutter {
-            hunks: HashMap::new(),
-            tx,
-            rx,
-            enabled,
-        }
+        GitGutter { hunks: HashMap::new(), tx, rx, enabled }
     }
 
     pub fn enabled(&self) -> bool {
@@ -65,10 +60,7 @@ impl GitGutter {
     }
 
     pub fn hunks(&self, buffer: BufferId) -> &[Hunk] {
-        self.hunks
-            .get(&buffer)
-            .map(Vec::as_slice)
-            .unwrap_or_default()
+        self.hunks.get(&buffer).map(Vec::as_slice).unwrap_or_default()
     }
 
     /// Start a background `git diff` for `buffer`.
@@ -134,11 +126,7 @@ mod tests {
     use ruster_git::HunkKind;
 
     fn hunk(start: u32) -> Hunk {
-        Hunk {
-            kind: HunkKind::Added,
-            start,
-            count: 1,
-        }
+        Hunk { kind: HunkKind::Added, start, count: 1 }
     }
 
     /// Feed the cache directly, standing in for a worker that finished.
@@ -174,11 +162,7 @@ mod tests {
         deliver(&g, buf, vec![hunk(1), hunk(2)]);
         deliver(&g, buf, vec![hunk(5)]);
         g.drain();
-        assert_eq!(
-            g.hunks(buf).len(),
-            1,
-            "results accumulated instead of replacing"
-        );
+        assert_eq!(g.hunks(buf).len(), 1, "results accumulated instead of replacing");
         assert_eq!(g.hunks(buf)[0].start, 5);
     }
 
@@ -214,11 +198,7 @@ mod tests {
         assert_eq!(g.tracked(), 2);
         g.forget(BufferId(1));
         assert_eq!(g.tracked(), 1, "the closed buffer's hunks leaked");
-        assert_eq!(
-            g.hunks(BufferId(2)).len(),
-            1,
-            "the wrong buffer was forgotten"
-        );
+        assert_eq!(g.hunks(BufferId(2)).len(), 1, "the wrong buffer was forgotten");
     }
 
     #[test]

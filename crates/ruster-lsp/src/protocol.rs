@@ -154,27 +154,15 @@ mod tests {
 
     #[test]
     fn position_params_carry_line_and_character() {
-        let p = text_document_position(
-            "file:///a.rs",
-            LspPosition {
-                line: 3,
-                character: 7,
-            },
-        );
+        let p = text_document_position("file:///a.rs", LspPosition { line: 3, character: 7 });
         assert_eq!(p["position"]["line"], 3);
         assert_eq!(p["position"]["character"], 7);
     }
 
     #[test]
     fn server_requests_get_appropriate_replies() {
-        assert_eq!(
-            server_request_reply("client/registerCapability"),
-            Some(Value::Null)
-        );
-        assert_eq!(
-            server_request_reply("workspace/configuration"),
-            Some(json!([Value::Null]))
-        );
+        assert_eq!(server_request_reply("client/registerCapability"), Some(Value::Null));
+        assert_eq!(server_request_reply("workspace/configuration"), Some(json!([Value::Null])));
         assert_eq!(server_request_reply("textDocument/hover"), None);
     }
 }

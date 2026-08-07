@@ -82,35 +82,26 @@ impl DebugSession {
         for (path, lines) in files {
             let lines_usize: Vec<usize> = lines.into_iter().map(|l| l as usize).collect();
             let src = Source {
-                name: Some(
-                    path.file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string(),
-                ),
+                name: Some(path.file_name().unwrap_or_default().to_string_lossy().to_string()),
                 path: Some(path.to_string_lossy().to_string()),
                 ..Default::default()
             };
-            let bps: Vec<SourceBreakpoint> = lines_usize
-                .iter()
-                .map(|&line| SourceBreakpoint {
+            let bps: Vec<SourceBreakpoint> = lines_usize.iter().map(|&line| {
+                SourceBreakpoint {
                     line: line as i64,
                     column: None,
                     condition: None,
                     hit_condition: None,
                     log_message: None,
-                })
-                .collect();
+                }
+            }).collect();
             let args = SetBreakpointsArguments {
                 source: src,
                 breakpoints: Some(bps),
                 source_modified: Some(false),
                 ..Default::default()
             };
-            let req = Request {
-                seq: self.next_seq(),
-                command: Command::SetBreakpoints(args),
-            };
+            let req = Request { seq: self.next_seq(), command: Command::SetBreakpoints(args) };
             self.client.send_request(req)?;
         }
         Ok(())
@@ -134,10 +125,7 @@ impl DebugSession {
             supports_run_in_terminal_request: Some(false),
             ..Default::default()
         };
-        let req = Request {
-            seq: self.next_seq(),
-            command: Command::Initialize(args),
-        };
+        let req = Request { seq: self.next_seq(), command: Command::Initialize(args) };
         self.client.send_request(req)?;
         Ok(())
     }
@@ -148,10 +136,7 @@ impl DebugSession {
             additional_data: Some(config_json),
             ..Default::default()
         };
-        let req = Request {
-            seq: self.next_seq(),
-            command: Command::Launch(args),
-        };
+        let req = Request { seq: self.next_seq(), command: Command::Launch(args) };
         self.client.send_request(req)?;
         self.state = SessionState::Running;
         Ok(())
@@ -159,52 +144,35 @@ impl DebugSession {
 
     pub fn set_breakpoints(&mut self, path: PathBuf, lines: &[usize]) -> Result<()> {
         let src = Source {
-            name: Some(
-                path.file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string(),
-            ),
+            name: Some(path.file_name().unwrap_or_default().to_string_lossy().to_string()),
             path: Some(path.to_string_lossy().to_string()),
             ..Default::default()
         };
-        let bps: Vec<SourceBreakpoint> = lines
-            .iter()
-            .map(|&line| {
-                self.breakpoints.retain(|(p, _), _| p != &path);
-                SourceBreakpoint {
-                    line: line as i64,
-                    column: None,
-                    condition: None,
-                    hit_condition: None,
-                    log_message: None,
-                }
-            })
-            .collect();
+        let bps: Vec<SourceBreakpoint> = lines.iter().map(|&line| {
+            self.breakpoints.retain(|(p, _), _| p != &path);
+            SourceBreakpoint {
+                line: line as i64,
+                column: None,
+                condition: None,
+                hit_condition: None,
+                log_message: None,
+            }
+        }).collect();
         let args = SetBreakpointsArguments {
             source: src,
             breakpoints: Some(bps),
             source_modified: Some(false),
             ..Default::default()
         };
-        let req = Request {
-            seq: self.next_seq(),
-            command: Command::SetBreakpoints(args),
-        };
+        let req = Request { seq: self.next_seq(), command: Command::SetBreakpoints(args) };
         self.client.send_request(req)?;
         Ok(())
     }
 
     pub fn continue_exec(&mut self) -> Result<()> {
         let tid = self.stopped_thread.unwrap_or(0) as i64;
-        let args = ContinueArguments {
-            thread_id: tid,
-            single_thread: None,
-        };
-        let req = Request {
-            seq: self.next_seq(),
-            command: Command::Continue(args),
-        };
+        let args = ContinueArguments { thread_id: tid, single_thread: None };
+        let req = Request { seq: self.next_seq(), command: Command::Continue(args) };
         self.client.send_request(req)?;
         self.state = SessionState::Running;
         self.stopped_thread = None;
@@ -217,25 +185,15 @@ impl DebugSession {
     pub fn pause(&mut self) -> Result<()> {
         let tid = self.threads.keys().next().copied().unwrap_or(0) as i64;
         let args = PauseArguments { thread_id: tid };
-        let req = Request {
-            seq: self.next_seq(),
-            command: Command::Pause(args),
-        };
+        let req = Request { seq: self.next_seq(), command: Command::Pause(args) };
         self.client.send_request(req)?;
         Ok(())
     }
 
     pub fn step_over(&mut self) -> Result<()> {
         let tid = self.stopped_thread.unwrap_or(0) as i64;
-        let args = NextArguments {
-            thread_id: tid,
-            single_thread: None,
-            granularity: None,
-        };
-        let req = Request {
-            seq: self.next_seq(),
-            command: Command::Next(args),
-        };
+        let args = NextArguments { thread_id: tid, single_thread: None, granularity: None };
+        let req = Request { seq: self.next_seq(), command: Command::Next(args) };
         self.client.send_request(req)?;
         self.state = SessionState::Running;
         self.stack_frames.clear();
@@ -246,16 +204,8 @@ impl DebugSession {
 
     pub fn step_into(&mut self) -> Result<()> {
         let tid = self.stopped_thread.unwrap_or(0) as i64;
-        let args = StepInArguments {
-            thread_id: tid,
-            single_thread: None,
-            target_id: None,
-            granularity: None,
-        };
-        let req = Request {
-            seq: self.next_seq(),
-            command: Command::StepIn(args),
-        };
+        let args = StepInArguments { thread_id: tid, single_thread: None, target_id: None, granularity: None };
+        let req = Request { seq: self.next_seq(), command: Command::StepIn(args) };
         self.client.send_request(req)?;
         self.state = SessionState::Running;
         self.stack_frames.clear();
@@ -266,15 +216,8 @@ impl DebugSession {
 
     pub fn step_out(&mut self) -> Result<()> {
         let tid = self.stopped_thread.unwrap_or(0) as i64;
-        let args = StepOutArguments {
-            thread_id: tid,
-            single_thread: None,
-            granularity: None,
-        };
-        let req = Request {
-            seq: self.next_seq(),
-            command: Command::StepOut(args),
-        };
+        let args = StepOutArguments { thread_id: tid, single_thread: None, granularity: None };
+        let req = Request { seq: self.next_seq(), command: Command::StepOut(args) };
         self.client.send_request(req)?;
         self.state = SessionState::Running;
         self.stack_frames.clear();
@@ -290,22 +233,14 @@ impl DebugSession {
             levels: Some(50),
             format: None,
         };
-        let req = Request {
-            seq: self.next_seq(),
-            command: Command::StackTrace(args),
-        };
+        let req = Request { seq: self.next_seq(), command: Command::StackTrace(args) };
         self.client.send_request(req)?;
         Ok(())
     }
 
     pub fn get_scopes(&mut self, frame_id: u64) -> Result<()> {
-        let args = ScopesArguments {
-            frame_id: frame_id as i64,
-        };
-        let req = Request {
-            seq: self.next_seq(),
-            command: Command::Scopes(args),
-        };
+        let args = ScopesArguments { frame_id: frame_id as i64 };
+        let req = Request { seq: self.next_seq(), command: Command::Scopes(args) };
         self.client.send_request(req)?;
         Ok(())
     }
@@ -318,10 +253,7 @@ impl DebugSession {
             count: None,
             format: None,
         };
-        let req = Request {
-            seq: self.next_seq(),
-            command: Command::Variables(args),
-        };
+        let req = Request { seq: self.next_seq(), command: Command::Variables(args) };
         self.client.send_request(req)?;
         Ok(())
     }
@@ -333,10 +265,7 @@ impl DebugSession {
             context: Some(EvaluateArgumentsContext::Hover),
             format: None,
         };
-        let req = Request {
-            seq: self.next_seq(),
-            command: Command::Evaluate(args),
-        };
+        let req = Request { seq: self.next_seq(), command: Command::Evaluate(args) };
         self.client.send_request(req)?;
         Ok(())
     }
@@ -346,10 +275,7 @@ impl DebugSession {
             terminate_debuggee: Some(true),
             ..Default::default()
         };
-        let req = Request {
-            seq: self.next_seq(),
-            command: Command::Disconnect(args),
-        };
+        let req = Request { seq: self.next_seq(), command: Command::Disconnect(args) };
         self.client.send_request(req)?;
         self.state = SessionState::Terminated;
         Ok(())
@@ -382,7 +308,8 @@ impl DebugSession {
         events
     }
 
-    fn handle_response(&mut self, _rsp: dap::responses::Response) {}
+    fn handle_response(&mut self, _rsp: dap::responses::Response) {
+    }
 
     fn handle_event(&mut self, evt: dap::events::Event) -> Option<DapEvent> {
         use dap::events::Event;
@@ -393,56 +320,31 @@ impl DebugSession {
                 self.state = SessionState::Paused;
                 self.stopped_thread = Some(tid);
                 if tid > 0 && !self.threads.contains_key(&tid) {
-                    self.threads.insert(
-                        tid,
-                        Thread {
-                            id: tid as i64,
-                            name: format!("Thread {tid}"),
-                        },
-                    );
+                    self.threads.insert(tid, Thread { id: tid as i64, name: format!("Thread {tid}") });
                 }
-                Some(DapEvent::Stopped {
-                    reason,
-                    thread_id: tid,
-                })
+                Some(DapEvent::Stopped { reason, thread_id: tid })
             }
             Event::Continued(body) => {
                 let tid = body.thread_id as u64;
                 self.state = SessionState::Running;
                 Some(DapEvent::Continued { thread_id: tid })
             }
-            Event::Exited(body) => Some(DapEvent::Exited {
-                exit_code: body.exit_code,
-            }),
+            Event::Exited(body) => {
+                Some(DapEvent::Exited { exit_code: body.exit_code })
+            }
             Event::Terminated(_) => {
                 self.state = SessionState::Terminated;
                 Some(DapEvent::Terminated)
             }
             Event::Output(body) => {
-                let cat = format!(
-                    "{:?}",
-                    body.category
-                        .unwrap_or(dap::types::OutputEventCategory::Console)
-                );
-                Some(DapEvent::Output {
-                    category: cat,
-                    output: body.output,
-                })
+                let cat = format!("{:?}", body.category.unwrap_or(dap::types::OutputEventCategory::Console));
+                Some(DapEvent::Output { category: cat, output: body.output })
             }
             Event::Thread(body) => {
                 let reason = format!("{:?}", body.reason);
                 let tid = body.thread_id as u64;
-                self.threads.insert(
-                    tid,
-                    Thread {
-                        id: tid as i64,
-                        name: format!("Thread {tid}"),
-                    },
-                );
-                Some(DapEvent::Thread {
-                    reason,
-                    thread_id: tid,
-                })
+                self.threads.insert(tid, Thread { id: tid as i64, name: format!("Thread {tid}") });
+                Some(DapEvent::Thread { reason, thread_id: tid })
             }
             Event::Breakpoint(body) => {
                 let id = body.breakpoint.id.unwrap_or(0) as u64;

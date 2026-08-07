@@ -1,20 +1,20 @@
-pub mod action;
 pub mod buffer;
-pub mod command;
 pub mod cursor;
-pub mod dired;
-pub mod document;
-pub mod editor;
-pub mod editorconfig;
-pub mod emacs;
+pub mod undo;
 pub mod key;
-pub mod message;
-#[cfg(test)]
-mod scenario;
-pub mod session;
+pub mod action;
+pub mod command;
+pub mod document;
+pub mod dired;
 pub mod sidebar;
 pub mod snippets;
-pub mod undo;
-pub mod vim;
-pub mod windows;
+pub mod message;
 pub mod workspace;
+pub mod session;
+pub mod windows;
+pub mod editor;
+pub mod vim;
+pub mod emacs;
+pub mod editorconfig;
+#[cfg(test)]
+mod scenario;
