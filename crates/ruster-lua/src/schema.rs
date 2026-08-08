@@ -846,6 +846,22 @@ pub fn schema() -> Vec<SettingSpec> {
     );
     add(
         "colors",
+        "border_focused",
+        "Focused window border",
+        Text,
+        t(""),
+        "Border of the window that has focus (compositor)",
+    );
+    add(
+        "colors",
+        "border_unfocused",
+        "Unfocused window border",
+        Text,
+        t(""),
+        "Border of a window without focus (compositor)",
+    );
+    add(
+        "colors",
         "mode_normal_bg",
         "Normal mode bg",
         Text,

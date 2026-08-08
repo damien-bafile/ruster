@@ -408,6 +408,11 @@ impl LuaRuntime {
             cmdline_bg: get("cmdline_bg", d.cmdline_bg),
             cmdline_fg: get("cmdline_fg", fg),
             cmdline_accent: get("cmdline_accent", accent),
+            // Focused falls back to the accent because that is already the
+            // "this is the active thing" colour everywhere else in the UI;
+            // unfocused to the divider, which is what separates panes.
+            border_focused: get("border_focused", accent),
+            border_unfocused: get("border_unfocused", d.divider),
             mode_normal_bg: get("mode_normal_bg", d.mode_normal_bg),
             mode_normal_fg: get("mode_normal_fg", fg),
             mode_insert_bg: get("mode_insert_bg", d.mode_insert_bg),
@@ -444,6 +449,8 @@ impl LuaRuntime {
                 ("cmdline_bg".into(), roles.cmdline_bg),
                 ("cmdline_fg".into(), roles.cmdline_fg),
                 ("cmdline_accent".into(), roles.cmdline_accent),
+                ("border_focused".into(), roles.border_focused),
+                ("border_unfocused".into(), roles.border_unfocused),
             ],
         };
         Some(Theme { palette, roles })

@@ -278,6 +278,8 @@ fn resolve_theme_colors(
     set(&ov.whichkey_fg, &mut colors.whichkey_fg);
     set(&ov.whichkey_key, &mut colors.whichkey_key);
     set(&ov.cmdline_accent, &mut colors.cmdline_accent);
+    set(&ov.border_focused, &mut colors.border_focused);
+    set(&ov.border_unfocused, &mut colors.border_unfocused);
     set(&ov.cmdline_bg, &mut colors.cmdline_bg);
     set(&ov.cmdline_fg, &mut colors.cmdline_fg);
     set(&ov.mode_normal_bg, &mut colors.mode_normal_bg);
@@ -2064,7 +2066,6 @@ impl App {
     /// GUI metrics + theme built from config, for the raylib renderer.
     pub fn gui_config(&self) -> ruster_render::GuiConfig {
         let c = &self.config;
-        let col = |rgb: ruster_lua::config::Rgb| ruster_render::Color::Rgb(rgb.r, rgb.g, rgb.b);
         ruster_render::GuiConfig {
             font_size: c.font_size as i32,
             line_height: c.line_height as i32,
@@ -2078,74 +2079,12 @@ impl App {
             } else {
                 ruster_render::CursorKind::Block
             },
-            theme: ruster_render::Theme {
-                bg: col(c.colors.bg),
-                fg: col(c.colors.fg),
-                gutter: col(c.colors.gutter),
-                gutter_bg: col(c.colors.gutter_bg),
-                cursor_bg: col(c.colors.cursor_bg),
-                cursor_fg: col(c.colors.cursor_fg),
-                selection_bg: col(c.colors.selection_bg),
-                selection_fg: col(c.colors.selection_fg),
-                divider: col(c.colors.divider),
-                statusline_fg: col(c.colors.statusline_fg),
-                statusline_bg: col(c.colors.statusline_bg),
-                mode_normal_bg: col(c.colors.mode_normal_bg),
-                mode_normal_fg: col(c.colors.mode_normal_fg),
-                mode_insert_bg: col(c.colors.mode_insert_bg),
-                mode_insert_fg: col(c.colors.mode_insert_fg),
-                mode_visual_bg: col(c.colors.mode_visual_bg),
-                mode_visual_fg: col(c.colors.mode_visual_fg),
-                mode_cmdline_bg: col(c.colors.mode_cmdline_bg),
-                mode_cmdline_fg: col(c.colors.mode_cmdline_fg),
-                mode_emacs_bg: col(c.colors.mode_emacs_bg),
-                mode_emacs_fg: col(c.colors.mode_emacs_fg),
-                accent: col(c.colors.accent),
-                accent_fg: col(c.colors.accent_fg),
-                whichkey_bg: col(c.colors.whichkey_bg),
-                whichkey_fg: col(c.colors.whichkey_fg),
-                whichkey_key: col(c.colors.whichkey_key),
-                cmdline_bg: col(c.colors.cmdline_bg),
-                cmdline_fg: col(c.colors.cmdline_fg),
-                cmdline_accent: col(c.colors.cmdline_accent),
-            },
+            theme: (&c.colors).into(),
         }
     }
 
     fn theme_palette(&self) -> ruster_render::Theme {
-        let c = &self.config;
-        let col = |rgb: ruster_lua::config::Rgb| ruster_render::Color::Rgb(rgb.r, rgb.g, rgb.b);
-        ruster_render::Theme {
-            bg: col(c.colors.bg),
-            fg: col(c.colors.fg),
-            gutter: col(c.colors.gutter),
-            gutter_bg: col(c.colors.gutter_bg),
-            cursor_bg: col(c.colors.cursor_bg),
-            cursor_fg: col(c.colors.cursor_fg),
-            selection_bg: col(c.colors.selection_bg),
-            selection_fg: col(c.colors.selection_fg),
-            divider: col(c.colors.divider),
-            statusline_fg: col(c.colors.statusline_fg),
-            statusline_bg: col(c.colors.statusline_bg),
-            mode_normal_bg: col(c.colors.mode_normal_bg),
-            mode_normal_fg: col(c.colors.mode_normal_fg),
-            mode_insert_bg: col(c.colors.mode_insert_bg),
-            mode_insert_fg: col(c.colors.mode_insert_fg),
-            mode_visual_bg: col(c.colors.mode_visual_bg),
-            mode_visual_fg: col(c.colors.mode_visual_fg),
-            mode_cmdline_bg: col(c.colors.mode_cmdline_bg),
-            mode_cmdline_fg: col(c.colors.mode_cmdline_fg),
-            mode_emacs_bg: col(c.colors.mode_emacs_bg),
-            mode_emacs_fg: col(c.colors.mode_emacs_fg),
-            accent: col(c.colors.accent),
-            accent_fg: col(c.colors.accent_fg),
-            whichkey_bg: col(c.colors.whichkey_bg),
-            whichkey_fg: col(c.colors.whichkey_fg),
-            whichkey_key: col(c.colors.whichkey_key),
-            cmdline_bg: col(c.colors.cmdline_bg),
-            cmdline_fg: col(c.colors.cmdline_fg),
-            cmdline_accent: col(c.colors.cmdline_accent),
-        }
+        (&self.config.colors).into()
     }
 
     pub fn handle_key(&mut self, ck: crossterm::event::KeyEvent) {

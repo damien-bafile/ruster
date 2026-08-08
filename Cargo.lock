@@ -2511,6 +2511,7 @@ dependencies = [
  "crossterm",
  "mlua",
  "ruster-core",
+ "ruster-render",
 ]
 
 [[package]]

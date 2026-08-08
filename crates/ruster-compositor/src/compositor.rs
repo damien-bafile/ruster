@@ -380,11 +380,50 @@ pub fn create_state<B: Backend + 'static>(
         toplevels: HashMap::new(),
         pending_focus: None,
         mapped: HashSet::new(),
-        chrome: Some(Chrome::new(Theme::default())),
+        // The user's theme, not the built-in one: the compositor drew with
+        // `Theme::default()` while `ruster-lua` sat unimported in its
+        // Cargo.toml, so every colour the editor lets you configure was ignored
+        // here.
+        chrome: Some(Chrome::new(user_theme())),
         screenshot_pending: false,
         screenshot_count: 0,
         keybinds: Vec::new(),
     }
+}
+
+/// The theme from the user's `config.lua`, or the built-in one if there is none.
+///
+/// The compositor drew with `Theme::default()` while `ruster-lua` sat unimported
+/// in its Cargo.toml, so none of the colours the editor lets you configure — and
+/// none of the built-in themes — reached the compositor's chrome at all.
+fn user_theme() -> Theme {
+    // Never touch the real ~/.config/ruster from the test suite; the state
+    // constructor below is built in unit tests.
+    if cfg!(test) {
+        return Theme::default();
+    }
+    let mut lua = match ruster_lua::runtime::LuaRuntime::new() {
+        Ok(lua) => lua,
+        Err(err) => {
+            tracing::warn!(%err, "could not start the lua runtime; using the default theme");
+            return Theme::default();
+        }
+    };
+    if let Some(dir) = dirs::config_dir().map(|p| p.join("ruster")) {
+        // `config.lua` then `init.lua`, the same order and the same meaning as
+        // the editor: the declarative file first, user scripting on top. Unlike
+        // the editor this never *writes* a default config — a compositor that
+        // creates files in the config dir on a bare VT boot would be a surprise.
+        for name in ["config.lua", "init.lua"] {
+            let path = dir.join(name);
+            if path.exists() {
+                if let Err(err) = lua.load_init(&path) {
+                    tracing::warn!(path = %path.display(), %err, "config failed to load");
+                }
+            }
+        }
+    }
+    (&lua.config().colors).into()
 }
 
 /// Insert the core display globals for `CompositorState<B>`.

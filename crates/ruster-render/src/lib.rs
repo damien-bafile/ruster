@@ -87,6 +87,14 @@ pub struct Theme {
     /// command" from "the editor is showing you a message", which otherwise
     /// share a row and a colour.
     pub cmdline_accent: Color,
+    /// Border of the window that has focus (defaults to `accent`).
+    ///
+    /// A tiling compositor gives every window the same shape and the same
+    /// chrome, so without this nothing on screen distinguishes the window that
+    /// will receive the next keystroke from the ones that will not.
+    pub border_focused: Color,
+    /// Border of a window that does not have focus (defaults to `divider`).
+    pub border_unfocused: Color,
 }
 
 impl Default for Theme {
@@ -121,6 +129,8 @@ impl Default for Theme {
             cmdline_bg: Color::Rgb(30, 30, 30),
             cmdline_fg: Color::Rgb(205, 214, 244),
             cmdline_accent: Color::Rgb(243, 139, 168),
+            border_focused: Color::Rgb(203, 166, 247),
+            border_unfocused: Color::Rgb(69, 71, 90),
         }
     }
 }

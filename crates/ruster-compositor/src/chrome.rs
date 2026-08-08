@@ -13,7 +13,7 @@ use ruster_render::Theme;
 use ruster_render_gles::atlas::{layout_text, Atlas};
 use ruster_render_gles::cursor::CursorBitmap;
 use ruster_render_gles::geometry::{rect_verts, rounded_rect_verts, GlyphQuad, Vertex};
-use ruster_shell::Layout;
+use ruster_shell::{Layout, Rect, WindowId};
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::solid::{SolidColorBuffer, SolidColorRenderElement};
 use smithay::backend::renderer::element::texture::TextureRenderElement;
@@ -53,6 +53,12 @@ impl TreeStatus {
         format!("{axis} {}{float}", self.windows)
     }
 }
+
+/// Thickness of a window border, in logical pixels.
+///
+/// Thin enough that covering that many pixels of the client costs nothing
+/// legible, thick enough to read at a glance on a 1440p display.
+const BORDER_WIDTH: f32 = 2.0;
 
 /// One frame's worth of chrome geometry: solid quads and textured glyph quads,
 /// both in physical pixels with the origin at the output's top-left.
@@ -323,6 +329,52 @@ impl Chrome {
     }
 
     /// Bottom which-key overlay panel.
+    /// Outline every visible window, marking the focused one.
+    ///
+    /// Without this nothing on screen says which window takes the next
+    /// keystroke: a tiling compositor gives them all the same shape and the
+    /// same chrome, and the only other cue — the title in the statusline —
+    /// names the window without pointing at it.
+    ///
+    /// Drawn *over* the outermost pixels of each window rather than by insetting
+    /// the layout. Insetting is what i3 does and looks better, but it would mean
+    /// changing `geometry()`, `reconfigure_tiles` and `tile_under` in step; any
+    /// disagreement between them puts the pointer somewhere other than where it
+    /// looks, which is a bug this compositor has already had once.
+    ///
+    /// `scale` converts the layout's logical rectangles to the physical pixels
+    /// the rest of the chrome is measured in.
+    pub fn draw_window_borders(
+        &mut self,
+        windows: &[(WindowId, Rect)],
+        focus: Option<WindowId>,
+        scale: f64,
+        batch: &mut ChromeBatch,
+    ) {
+        let s = scale as f32;
+        let width = (BORDER_WIDTH * s).max(1.0);
+        for (id, rect) in windows {
+            let color: (f32, f32, f32, f32) = if Some(*id) == focus {
+                self.theme.border_focused.into()
+            } else {
+                self.theme.border_unfocused.into()
+            };
+            let (x, y) = (rect.x as f32 * s, rect.y as f32 * s);
+            let (w, h) = (rect.w as f32 * s, rect.h as f32 * s);
+            if w <= 0.0 || h <= 0.0 {
+                continue;
+            }
+            batch.verts.extend(rect_verts(x, y, w, width, color));
+            batch
+                .verts
+                .extend(rect_verts(x, y + h - width, w, width, color));
+            batch.verts.extend(rect_verts(x, y, width, h, color));
+            batch
+                .verts
+                .extend(rect_verts(x + w - width, y, width, h, color));
+        }
+    }
+
     pub fn draw_whichkey(&mut self, binds: &[(String, String)], batch: &mut ChromeBatch) {
         let w = 420.0;
         let row_h = 20.0;
@@ -426,6 +478,91 @@ pub fn solid_elements_from_verts(verts: &[Vertex]) -> Vec<SolidColorRenderElemen
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_focused_window_is_bordered_differently_from_the_others() {
+        // The whole point: with every window the same shape and the same
+        // chrome, the border is the only thing that says which one takes the
+        // next keystroke.
+        let mut chrome = Chrome::new(Theme::default());
+        let windows = vec![
+            (WindowId(0), Rect::new(0, 0, 100, 100)),
+            (WindowId(1), Rect::new(100, 0, 100, 100)),
+        ];
+        let mut batch = ChromeBatch::default();
+        chrome.draw_window_borders(&windows, Some(WindowId(1)), 1.0, &mut batch);
+
+        // Four edges per window, two triangles each, three vertices a triangle.
+        assert_eq!(batch.verts.len(), 2 * 4 * 6);
+        let colors: std::collections::BTreeSet<[u32; 4]> = batch
+            .verts
+            .iter()
+            .map(|v| [v[4], v[5], v[6], v[7]].map(f32::to_bits))
+            .collect();
+        assert_eq!(
+            colors.len(),
+            2,
+            "focused and unfocused must not come out the same colour"
+        );
+    }
+
+    #[test]
+    fn an_unfocused_workspace_gets_borders_in_one_colour() {
+        // Nothing is focused while a workspace with no focusable window is on
+        // screen, and every border being the "focused" one would be a lie.
+        let mut chrome = Chrome::new(Theme::default());
+        let windows = vec![
+            (WindowId(0), Rect::new(0, 0, 50, 50)),
+            (WindowId(1), Rect::new(50, 0, 50, 50)),
+        ];
+        let mut batch = ChromeBatch::default();
+        chrome.draw_window_borders(&windows, None, 1.0, &mut batch);
+        let colors: std::collections::BTreeSet<[u32; 4]> = batch
+            .verts
+            .iter()
+            .map(|v| [v[4], v[5], v[6], v[7]].map(f32::to_bits))
+            .collect();
+        assert_eq!(colors.len(), 1);
+    }
+
+    #[test]
+    fn a_border_stays_inside_the_window_it_outlines() {
+        // Drawn over the client's outer pixels rather than by insetting the
+        // layout, so a border that strayed outside would land on the neighbour.
+        let mut chrome = Chrome::new(Theme::default());
+        let rect = Rect::new(10, 20, 100, 80);
+        let mut batch = ChromeBatch::default();
+        chrome.draw_window_borders(&[(WindowId(0), rect)], None, 1.0, &mut batch);
+        for v in &batch.verts {
+            assert!(
+                v[0] >= 10.0 && v[0] <= 110.0,
+                "x {} escaped the window",
+                v[0]
+            );
+            assert!(
+                v[1] >= 20.0 && v[1] <= 100.0,
+                "y {} escaped the window",
+                v[1]
+            );
+        }
+    }
+
+    #[test]
+    fn borders_scale_with_the_output() {
+        // Chrome is measured in physical pixels and the layout in logical ones,
+        // so a 2x display would otherwise get a border at half the size and in
+        // the wrong place.
+        let mut chrome = Chrome::new(Theme::default());
+        let mut batch = ChromeBatch::default();
+        chrome.draw_window_borders(
+            &[(WindowId(0), Rect::new(0, 0, 100, 100))],
+            None,
+            2.0,
+            &mut batch,
+        );
+        let max_x = batch.verts.iter().map(|v| v[0]).fold(0.0f32, f32::max);
+        assert_eq!(max_x, 200.0, "a 100px logical window is 200px physical");
+    }
+
     use super::*;
     use ruster_render::Theme;
 

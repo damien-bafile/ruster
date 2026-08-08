@@ -181,6 +181,15 @@ where
             .map(|mode| mode.size)
             .unwrap_or_default();
         let mut batch = ChromeBatch::default();
+        // First in the batch, so everything else lands in front of it: the
+        // tiling area covers the whole output, statusline included, so a
+        // full-height window's border would otherwise sit on top of the bar.
+        chrome.draw_window_borders(
+            scene.geometry,
+            scene.focus,
+            scene.output.current_scale().fractional_scale(),
+            &mut batch,
+        );
         chrome.draw_statusline(
             size.w,
             size.h,
