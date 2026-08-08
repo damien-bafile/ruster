@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use cosmic_text::{Attrs, Buffer, FontSystem, Metrics, Shaping, SwashCache, SwashContent};
+use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent};
 
 /// A single glyph's pixel rect (in the destination) and UV rect (in the atlas).
 ///
@@ -56,7 +56,36 @@ pub struct TextLayout {
 /// `MultiRenderer`). Chrome uses a handful of theme colours at two sizes, so
 /// baking the colour into the cell costs a few hundred small cells and keeps the
 /// draw path renderer-agnostic.
-type GlyphKey = (u32, [u8; 3], char);
+type GlyphKey = (u32, [u8; 3], char, FontFamily);
+
+/// Which face to shape and rasterize with.
+///
+/// Chrome is proportional and should stay that way — it is UI text. A text grid
+/// cannot be: column alignment, cursor placement, the gutter and
+/// click-to-position all assume every cell is the same width, and
+/// `Attrs::new()` gives cosmic-text's *sans-serif* default, so an editor pane
+/// built on the chrome path would render code in a proportional font.
+///
+/// Part of the atlas key, not just the shaping call: the same character at the
+/// same size and colour is a different bitmap in each family, and sharing one
+/// cell between them would hand whichever asked second the wrong glyph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum FontFamily {
+    /// Proportional, for chrome.
+    #[default]
+    Ui,
+    /// Fixed-advance, for text grids.
+    Mono,
+}
+
+impl FontFamily {
+    fn attrs(self) -> Attrs<'static> {
+        match self {
+            FontFamily::Ui => Attrs::new(),
+            FontFamily::Mono => Attrs::new().family(Family::Monospace),
+        }
+    }
+}
 
 /// CPU-side glyph atlas: rasterizes glyphs on demand into a single RGBA image
 /// that the renderer uploads as one texture, and hands back the UV rect of each.
@@ -116,23 +145,51 @@ impl Atlas {
     /// assert what a draw pass actually put on screen, since the colour a glyph
     /// was drawn in is baked into its cell and not recoverable from the quad.
     pub fn contains(&self, font_size_px: u32, color: [u8; 3], c: char) -> bool {
-        self.glyphs.contains_key(&(font_size_px, color, c))
+        self.contains_in(font_size_px, color, c, FontFamily::Ui)
+    }
+
+    /// As [`contains`](Self::contains), for a specific family.
+    pub fn contains_in(
+        &self,
+        font_size_px: u32,
+        color: [u8; 3],
+        c: char,
+        family: FontFamily,
+    ) -> bool {
+        self.glyphs.contains_key(&(font_size_px, color, c, family))
     }
 
     /// The glyph for `c` at `font_size_px` in `color`, rasterizing and packing
     /// it into the atlas on first use.
     pub fn glyph(&mut self, font_size_px: u32, color: [u8; 3], c: char) -> Glyph {
-        let key = (font_size_px, color, c);
+        self.glyph_in(font_size_px, color, c, FontFamily::Ui)
+    }
+
+    /// As [`glyph`](Self::glyph), for a specific family.
+    pub fn glyph_in(
+        &mut self,
+        font_size_px: u32,
+        color: [u8; 3],
+        c: char,
+        family: FontFamily,
+    ) -> Glyph {
+        let key = (font_size_px, color, c, family);
         if let Some(g) = self.glyphs.get(&key) {
             return *g;
         }
-        let g = self.rasterize(font_size_px, color, c);
+        let g = self.rasterize(font_size_px, color, c, family);
         self.glyphs.insert(key, g);
         g
     }
 
     /// Shape `c` on its own, rasterize it, and blit it into the atlas.
-    fn rasterize(&mut self, font_size_px: u32, color: [u8; 3], c: char) -> Glyph {
+    fn rasterize(
+        &mut self,
+        font_size_px: u32,
+        color: [u8; 3],
+        c: char,
+        family: FontFamily,
+    ) -> Glyph {
         if c.is_control() || c == ' ' {
             return Glyph::EMPTY;
         }
@@ -152,7 +209,7 @@ impl Atlas {
 
         let metrics = Metrics::new(font_size_px as f32, font_size_px as f32 + 4.0);
         let mut buf = Buffer::new(font_system, metrics);
-        buf.set_text(&String::from(c), &Attrs::new(), Shaping::Advanced, None);
+        buf.set_text(&String::from(c), &family.attrs(), Shaping::Advanced, None);
         buf.shape_until_scroll(font_system, false);
 
         // The first laid-out glyph of the first run is our character. `line_y`
@@ -280,11 +337,33 @@ thread_local! {
 /// shaped glyph instead, which is the better design and a bigger change than
 /// the bug warrants.
 pub fn layout_text(text: &str, font_size_px: u32, wrap_width: Option<f32>) -> TextLayout {
+    layout_text_in(text, font_size_px, wrap_width, FontFamily::Ui)
+}
+
+/// The size of one character cell in the monospace face: advance width and line
+/// height, in pixels.
+///
+/// A text grid needs this before it can lay anything out — how many columns fit
+/// a tile, which cell a click landed in, where the cursor block goes. Measured
+/// rather than assumed, because the advance depends on whichever monospace font
+/// fontconfig resolves on this machine.
+pub fn cell_metrics(font_size_px: u32) -> (f32, f32) {
+    let layout = layout_text_in("M", font_size_px, None, FontFamily::Mono);
+    (layout.width_px, font_size_px as f32 + 4.0)
+}
+
+/// Lay out a string in a specific family.
+pub fn layout_text_in(
+    text: &str,
+    font_size_px: u32,
+    wrap_width: Option<f32>,
+    family: FontFamily,
+) -> TextLayout {
     FONT_SYSTEM.with(|thread| {
         let mut fs = thread.borrow_mut();
         let metrics = Metrics::new(font_size_px as f32, font_size_px as f32 + 4.0);
         let mut buf = Buffer::new(&mut fs, metrics);
-        buf.set_text(text, &Attrs::new(), Shaping::Basic, None);
+        buf.set_text(text, &family.attrs(), Shaping::Basic, None);
         if let Some(w) = wrap_width {
             buf.set_size(Some(w), None);
         }
@@ -385,6 +464,65 @@ mod tests {
         let horizontally_apart = a.u1 <= b.u0 || b.u1 <= a.u0;
         let vertically_apart = a.v1 <= b.v0 || b.v1 <= a.v0;
         assert!(horizontally_apart || vertically_apart);
+    }
+
+    #[test]
+    fn the_mono_family_gives_every_character_the_same_advance() {
+        // The point of the family at all. `Attrs::new()` is cosmic-text's
+        // sans-serif default, so a text grid built on the chrome path would
+        // render code proportionally — and column alignment, cursor placement,
+        // the gutter and click-to-position all assume a fixed advance.
+        let narrow = layout_text_in("iiii", 16, None, FontFamily::Mono).width_px;
+        let wide = layout_text_in("WWWW", 16, None, FontFamily::Mono).width_px;
+        assert!(
+            (narrow - wide).abs() < 0.5,
+            "monospace advances differ: iiii={narrow} WWWW={wide}"
+        );
+    }
+
+    #[test]
+    fn the_ui_family_is_actually_proportional() {
+        // The negative half: if the machine resolved a monospace font for both,
+        // the test above would pass while proving nothing.
+        let narrow = layout_text_in("iiii", 16, None, FontFamily::Ui).width_px;
+        let wide = layout_text_in("WWWW", 16, None, FontFamily::Ui).width_px;
+        assert!(
+            wide > narrow + 1.0,
+            "the UI family should be proportional: iiii={narrow} WWWW={wide}"
+        );
+    }
+
+    #[test]
+    fn cell_metrics_report_a_usable_cell() {
+        let (advance, line_h) = cell_metrics(16);
+        assert!(advance > 1.0, "advance {advance} is not a cell width");
+        assert!(line_h > advance, "a cell should be taller than it is wide");
+        // Every character must fit the cell the metrics promise, or a grid
+        // laid out from them overlaps.
+        for c in ['M', 'i', '@', '#'] {
+            let w = layout_text_in(&c.to_string(), 16, None, FontFamily::Mono).width_px;
+            assert!(
+                (w - advance).abs() < 0.5,
+                "{c:?} is {w} wide but the cell is {advance}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_same_character_in_two_families_gets_two_atlas_cells() {
+        // The key includes the family. Sharing one cell would hand whichever
+        // asked second the other family's bitmap — the same class of bug as the
+        // glyph-id collision that made every glyph draw the atlas itself.
+        let mut atlas = Atlas::new();
+        let ui = atlas.glyph_in(16, [255, 255, 255], 'M', FontFamily::Ui);
+        let mono = atlas.glyph_in(16, [255, 255, 255], 'M', FontFamily::Mono);
+        assert!(atlas.contains_in(16, [255, 255, 255], 'M', FontFamily::Ui));
+        assert!(atlas.contains_in(16, [255, 255, 255], 'M', FontFamily::Mono));
+        assert_ne!(
+            (ui.u0, ui.v0),
+            (mono.u0, mono.v0),
+            "the two families must occupy different cells"
+        );
     }
 
     #[test]
