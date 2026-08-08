@@ -13,6 +13,7 @@ pub mod input;
 pub mod keymap;
 pub mod lua;
 pub mod minibuffer;
+pub mod persist;
 pub mod render;
 pub mod screenshot;
 pub mod shell;

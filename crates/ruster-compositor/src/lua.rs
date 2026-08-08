@@ -628,7 +628,13 @@ pub fn apply_config_to_shell<B: Backend + 'static>(
     if let Some(workspace) = shell.initial_workspace {
         state.switch_workspace(workspace);
     }
-    spawn_startup_clients(&shell.startup_clients, socket_name);
+    // A restored session already says what to launch, and it says it more
+    // precisely: it is what was on screen last time, startup clients included.
+    // Launching both would add a fresh terminal on every boot, and the boot
+    // after that would save two.
+    if !state.restore_session(socket_name) {
+        spawn_startup_clients(&shell.startup_clients, socket_name, &mut state.persist);
+    }
 }
 
 /// Launch each configured startup client with `WAYLAND_DISPLAY` pointing at our
@@ -674,23 +680,33 @@ pub fn apply_keyboard_config<B: Backend + 'static>(
     handle.change_repeat_info(keyboard.repeat_rate, keyboard.repeat_delay);
 }
 
-/// Launch `command` on the compositor's own Wayland socket.
+/// Launch `command` on the compositor's own Wayland socket, reporting the pid it
+/// started, or `None` if nothing was started.
 ///
 /// Split on whitespace, so `foot -e htop` works but quoting does not — a config
 /// needing a shell can spawn one (`sh -c ...`) rather than have this grow a
 /// parser it would get subtly wrong.
 ///
+/// The pid is what ties a window back to the command that produced it: a Wayland
+/// client's own pid comes from its socket credentials, and matching the two is
+/// the only way the compositor can know what is in a leaf. See
+/// [`crate::persist`], which is the only caller that should need it.
+///
 /// Children are not reaped, so a spawned program that exits leaves a zombie
 /// until the compositor does. Startup clients have always behaved this way; a
 /// keybind makes it reachable more often, but the fix is a SIGCHLD handler on
 /// the event loop rather than anything here.
-pub fn spawn_command(command: &str, socket_name: Option<&str>) {
-    let Some(mut cmd) = build_command(command, socket_name) else {
-        return;
-    };
+pub fn spawn_command(command: &str, socket_name: Option<&str>) -> Option<u32> {
+    let mut cmd = build_command(command, socket_name)?;
     match cmd.spawn() {
-        Ok(child) => tracing::info!(%command, pid = child.id(), "spawned"),
-        Err(err) => tracing::warn!(%command, %err, "failed to spawn"),
+        Ok(child) => {
+            tracing::info!(%command, pid = child.id(), "spawned");
+            Some(child.id())
+        }
+        Err(err) => {
+            tracing::warn!(%command, %err, "failed to spawn");
+            None
+        }
     }
 }
 
@@ -735,9 +751,18 @@ fn build_command(command: &str, socket_name: Option<&str>) -> Option<Command> {
 /// checking whether that failed. That executes an arbitrary program to find out
 /// whether it exists, which is a strange thing to do to a user's config, and it
 /// answered a question the spawn itself already answers.
-pub fn spawn_startup_clients(clients: &[String], socket_name: &str) {
+///
+/// Launched through `persist` so their windows are relaunchable too: a startup
+/// client is the one window whose command the compositor has always known, and
+/// not recording it would mean the commonest window in a session — the terminal
+/// the config opens — came back as a title and nothing else.
+pub fn spawn_startup_clients(
+    clients: &[String],
+    socket_name: &str,
+    persist: &mut crate::persist::Persistence,
+) {
     for client in clients {
-        spawn_command(client, Some(socket_name));
+        persist.spawn(client, Some(socket_name));
     }
 }
 
