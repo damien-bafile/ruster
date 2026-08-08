@@ -17,6 +17,25 @@ use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::{ExportMem, Renderer, RendererSuper};
 use smithay::utils::{Buffer as BufferCoord, Rectangle, Size};
 
+// The DRM capture reaches for smithay's drm module, which only exists when the
+// udev backend is compiled in — a nested build has no swapchain to blit out of.
+#[cfg(feature = "udev")]
+use smithay::backend::allocator::dmabuf::{AsDmabuf, Dmabuf};
+#[cfg(feature = "udev")]
+use smithay::backend::allocator::Buffer as AllocBuffer;
+#[cfg(feature = "udev")]
+use smithay::backend::drm::compositor::RenderFrameResult;
+#[cfg(feature = "udev")]
+use smithay::backend::drm::Framebuffer as DrmFramebuffer;
+#[cfg(feature = "udev")]
+use smithay::backend::renderer::element::{Element, RenderElement};
+#[cfg(feature = "udev")]
+use smithay::backend::renderer::gles::GlesTexture;
+#[cfg(feature = "udev")]
+use smithay::backend::renderer::{Bind, Blit, Offscreen};
+#[cfg(feature = "udev")]
+use smithay::utils::{Physical, Scale, Transform};
+
 /// Where captures go, and under what name.
 ///
 /// `$XDG_RUNTIME_DIR` because it is guaranteed writable and per-session, and
@@ -65,14 +84,81 @@ where
     }
 }
 
+/// Capture a DRM frame that has been composited but not yet scanned out.
+///
+/// The winit path can hand [`capture`] the framebuffer it just drew into. On
+/// DRM there is no such framebuffer to borrow: the frame lives in a swapchain
+/// buffer owned by the `DrmOutput`, destined for the display and not for us. So
+/// the composited result is blitted into an offscreen texture we do own, and
+/// read back from there.
+///
+/// This is the whole reason the screenshot exists — a DRM session implements no
+/// screencopy protocol, so nothing outside the compositor can see its screen —
+/// and for a while it was implemented only on the backend that did not need it.
+#[cfg(feature = "udev")]
+pub fn capture_drm_frame<R, B, F, E>(
+    result: &RenderFrameResult<'_, B, F, E>,
+    renderer: &mut R,
+    size: Size<i32, Physical>,
+    transform: Transform,
+    path: &Path,
+) -> Result<PathBuf, String>
+where
+    R: Renderer + Bind<Dmabuf> + Bind<GlesTexture> + Offscreen<GlesTexture> + Blit + ExportMem,
+    <R as RendererSuper>::TextureId: 'static,
+    B: AllocBuffer + AsDmabuf,
+    <B as AsDmabuf>::Error: std::fmt::Debug + Send + Sync + 'static,
+    F: DrmFramebuffer,
+    E: Element + RenderElement<R>,
+{
+    // `Size<_, Buffer>` is what both the allocator and the readback speak; the
+    // output's size is in physical pixels and the two are numerically the same
+    // here because the capture buffer has no scale of its own.
+    let buffer_size = Size::<i32, BufferCoord>::from((size.w, size.h));
+    let mut target = renderer
+        .create_buffer(Fourcc::Abgr8888, buffer_size)
+        .map_err(|err| format!("failed to allocate the capture buffer: {err}"))?;
+
+    // The framebuffer borrows the *target*, not the renderer, so the renderer
+    // stays usable for the blit and the readback that follow.
+    let mut framebuffer = renderer
+        .bind(&mut target)
+        .map_err(|err| format!("failed to bind the capture buffer: {err}"))?;
+
+    // Blit the whole output rather than only the frame's damage: a freshly
+    // allocated buffer is blank, so a damage-only copy of a mostly-static
+    // screen would come back mostly black.
+    let sync = result
+        .blit_frame_result(
+            size,
+            transform,
+            Scale::from(1.0),
+            renderer,
+            &mut framebuffer,
+            [Rectangle::from_size(size)],
+            [],
+        )
+        .map_err(|err| format!("failed to blit the frame: {err:?}"))?;
+
+    // The blit is asynchronous. Reading the texture back before the GPU has
+    // finished writing it captures whatever was there first — which for a
+    // freshly allocated buffer is a plausible-looking black frame, the most
+    // misleading result this could produce.
+    sync.wait()
+        .map_err(|_| "interrupted waiting for the frame blit".to_string())?;
+
+    capture(renderer, &framebuffer, buffer_size, path)
+}
+
 /// Reverse the row order of an RGBA image.
 ///
 /// GL's framebuffer origin is bottom-left and a PNG's is top-left, so a
-/// straight readback is upside down. The frame on screen is right way up
-/// because the output carries `Transform::Flipped180`, but that transform is
-/// applied on the way *out* to the display and says nothing about what a
-/// read-back sees — which is how a capture can be inverted while the screen it
-/// captured is not.
+/// straight readback is upside down. That is a property of reading a GL
+/// framebuffer and holds on both backends, independently of any output
+/// transform: nested, the screen is upright because the output carries
+/// `Transform::Flipped180`, but that is applied on the way *out* to the display
+/// and says nothing about what a read-back sees — which is how a capture can be
+/// inverted while the screen it captured is not.
 fn flip_rows(pixels: &[u8], width: usize, height: usize) -> Vec<u8> {
     let stride = width * 4;
     let mut out = Vec::with_capacity(stride * height);

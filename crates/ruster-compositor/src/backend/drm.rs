@@ -441,6 +441,27 @@ impl CompositorState<RusterUdevData> {
             FrameFlags::DEFAULT,
         ) {
             Ok(result) => {
+                // Before `queue_frame`, which takes the output mutably and so
+                // ends the borrow this result holds on it.
+                if self.screenshot_pending {
+                    self.screenshot_pending = false;
+                    self.screenshot_count += 1;
+                    let path = crate::screenshot::capture_path(self.screenshot_count);
+                    let size = output.current_mode().map(|m| m.size).unwrap_or_default();
+                    // `Transform::Normal`: unlike winit, the DRM output carries
+                    // no transform, so the composited frame is already the way
+                    // up the display shows it.
+                    match crate::screenshot::capture_drm_frame(
+                        &result,
+                        &mut renderer,
+                        size,
+                        smithay::utils::Transform::Normal,
+                        &path,
+                    ) {
+                        Ok(path) => info!(path = %path.display(), "screenshot"),
+                        Err(err) => warn!("screenshot failed: {err}"),
+                    }
+                }
                 if result.is_empty {
                     true
                 } else {
