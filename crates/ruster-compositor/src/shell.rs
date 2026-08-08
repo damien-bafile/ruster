@@ -8,7 +8,8 @@
 
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
-use smithay::utils::{Serial, SERIAL_COUNTER as SCOUNTER};
+use smithay::desktop::PopupKind;
+use smithay::utils::{Logical, Rectangle, Serial, SERIAL_COUNTER as SCOUNTER};
 use smithay::wayland::compositor::{self, BufferAssignment};
 use smithay::wayland::shell::xdg::{
     decoration::XdgDecorationHandler, PopupSurface, PositionerState, ToplevelSurface,
@@ -18,6 +19,26 @@ use smithay::wayland::shell::xdg::{
 use crate::backend::Backend;
 use crate::compositor::CompositorState;
 use ruster_shell::Layout;
+
+/// Where a popup should sit, kept inside the output.
+///
+/// A menu opened near an edge asks for a rectangle that runs off the screen and
+/// the protocol expects the compositor to bring it back. smithay's positioner
+/// knows how the client wants that resolved — flip to the other side of the
+/// anchor, slide along, or resize — so this hands it the output rectangle and
+/// takes its answer rather than clamping by hand, which would ignore the
+/// client's stated preference and put submenus on the wrong side of their
+/// parent.
+fn unconstrain_popup(
+    positioner: &PositionerState,
+    output: ruster_shell::Rect,
+) -> Rectangle<i32, Logical> {
+    let area = Rectangle::new(
+        (output.x, output.y).into(),
+        (output.w.max(1), output.h.max(1)).into(),
+    );
+    positioner.get_unconstrained_geometry(area)
+}
 
 impl<B: Backend + 'static> XdgShellHandler for CompositorState<B> {
     fn xdg_shell_state(&mut self) -> &mut XdgShellState {
@@ -63,19 +84,48 @@ impl<B: Backend + 'static> XdgShellHandler for CompositorState<B> {
         // consumes `pending_focus`.
     }
 
-    fn new_popup(&mut self, _surface: PopupSurface, _positioner: PositionerState) {
-        // TODO(next phase): track popups relative to their parent toplevel.
-        tracing::debug!("new popup (untracked in Phase 0)");
+    fn new_popup(&mut self, surface: PopupSurface, positioner: PositionerState) {
+        // Untracked until now, which meant every client menu and tooltip was
+        // simply not drawn — the surface existed and the client believed it was
+        // on screen, so a right-click opened a menu nobody could see and the
+        // next click went to whatever was behind it.
+        //
+        // The positioner is unconstrained against the output first: a menu
+        // opened near an edge asks for a position that runs off the screen, and
+        // the protocol expects the compositor to flip or slide it back. Without
+        // this the bottom of every menu near the bottom of the screen is
+        // unreachable.
+        let output = self.output_rect();
+        surface.with_pending_state(|state| {
+            state.geometry = unconstrain_popup(&positioner, output);
+        });
+        if let Err(err) = self.popups.track_popup(PopupKind::Xdg(surface)) {
+            tracing::warn!(%err, "could not track popup");
+        }
     }
 
     fn grab(&mut self, _surface: PopupSurface, _seat: WlSeat, _serial: Serial) {}
 
+    /// A client asking to move a popup it has already mapped — a submenu
+    /// following the cursor, say.
+    ///
+    /// The token has to be echoed back with `send_repositioned`, or the client
+    /// waits forever for an acknowledgement it will never get.
     fn reposition_request(
         &mut self,
-        _surface: PopupSurface,
-        _positioner: PositionerState,
-        _token: u32,
+        surface: PopupSurface,
+        positioner: PositionerState,
+        token: u32,
     ) {
+        let output = self.output_rect();
+        surface.with_pending_state(|state| {
+            state.geometry = unconstrain_popup(&positioner, output);
+            state.positioner = positioner;
+        });
+        surface.send_repositioned(token);
+        if let Err(err) = surface.send_configure() {
+            tracing::warn!(%err, "could not configure a repositioned popup");
+        }
     }
 
     fn title_changed(&mut self, surface: ToplevelSurface) {
@@ -207,6 +257,75 @@ impl CommitBuffer {
 
 #[cfg(test)]
 mod tests {
+    use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_positioner::{
+        Anchor, ConstraintAdjustment, Gravity,
+    };
+    use smithay::utils::Size;
+
+    /// A positioner for a menu anchored at `anchor` inside a parent, wanting to
+    /// open down-right, the way a right-click menu does.
+    fn menu_positioner(anchor_at: (i32, i32), size: (i32, i32)) -> PositionerState {
+        PositionerState {
+            rect_size: Size::from(size),
+            // Zero-sized: the anchor *point* the pointer was at, so the
+            // expected position is the point itself rather than a corner of a
+            // rectangle.
+            anchor_rect: Rectangle::new(anchor_at.into(), (0, 0).into()),
+            anchor_edges: Anchor::BottomRight,
+            gravity: Gravity::BottomRight,
+            constraint_adjustment: ConstraintAdjustment::FlipY | ConstraintAdjustment::SlideX,
+            ..PositionerState::default()
+        }
+    }
+
+    #[test]
+    fn a_menu_in_open_space_opens_exactly_where_it_asked() {
+        // The unconstrain must not move a popup that already fits, or every
+        // menu would drift from the point it was opened at.
+        let output = ruster_shell::Rect::new(0, 0, 1920, 1080);
+        let geo = unconstrain_popup(&menu_positioner((100, 100), (200, 300)), output);
+        assert_eq!((geo.loc.x, geo.loc.y), (100, 100));
+        assert_eq!((geo.size.w, geo.size.h), (200, 300));
+    }
+
+    #[test]
+    fn a_menu_near_the_bottom_is_brought_back_onto_the_screen() {
+        // Opened 60px from the bottom, a 300px menu would put most of itself
+        // below the screen — and the part you cannot see is the part you were
+        // reaching for.
+        let output = ruster_shell::Rect::new(0, 0, 1920, 1080);
+        let geo = unconstrain_popup(&menu_positioner((100, 1020), (200, 300)), output);
+        assert!(
+            geo.loc.y + geo.size.h <= 1080,
+            "menu runs off the bottom: y={} h={}",
+            geo.loc.y,
+            geo.size.h
+        );
+    }
+
+    #[test]
+    fn a_menu_near_the_right_edge_is_brought_back_too() {
+        let output = ruster_shell::Rect::new(0, 0, 1920, 1080);
+        let geo = unconstrain_popup(&menu_positioner((1900, 100), (200, 300)), output);
+        assert!(
+            geo.loc.x + geo.size.w <= 1920,
+            "menu runs off the right: x={} w={}",
+            geo.loc.x,
+            geo.size.w
+        );
+    }
+
+    #[test]
+    fn a_zero_sized_output_does_not_panic_the_unconstrain() {
+        // `output_rect()` returns 0x0 before the first output is configured,
+        // and a popup arriving in that window must not take the session down.
+        let geo = unconstrain_popup(
+            &menu_positioner((0, 0), (200, 300)),
+            ruster_shell::Rect::new(0, 0, 0, 0),
+        );
+        assert_eq!((geo.size.w, geo.size.h), (200, 300));
+    }
+
     use super::*;
     use ruster_shell::ShellState;
 

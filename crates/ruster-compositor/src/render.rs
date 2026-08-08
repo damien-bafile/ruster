@@ -22,6 +22,7 @@ use smithay::backend::renderer::{
 };
 use smithay::desktop::space::SurfaceTree;
 use smithay::desktop::utils::send_frames_surface_tree;
+use smithay::desktop::PopupManager;
 use smithay::input::pointer::{CursorImageStatus, CursorImageSurfaceData};
 use smithay::output::Output;
 use smithay::utils::{
@@ -213,8 +214,24 @@ where
             continue;
         };
         let wl_surface = surface.wl_surface().clone();
+        let origin_logical = Point::<i32, Logical>::from((rect.x, rect.y));
+        let origin = origin_logical.to_physical_precise_round(scale);
+
+        // Popups first, so they land in front of the window that owns them —
+        // this list is front-to-back. A menu drawn behind its own toplevel is
+        // indistinguishable from one that never opened.
+        for (popup, offset) in PopupManager::popups_for_surface(&wl_surface) {
+            let popup_origin =
+                (origin_logical + offset - popup.geometry().loc).to_physical_precise_round(scale);
+            let tree = SurfaceTree::from_surface(popup.wl_surface());
+            elements.extend(
+                AsRenderElements::<R>::render_elements(&tree, renderer, popup_origin, scale, 1.0)
+                    .into_iter()
+                    .map(ChromeRenderElements::Surface),
+            );
+        }
+
         let surface_tree = SurfaceTree::from_surface(&wl_surface);
-        let origin = Point::<i32, Logical>::from((rect.x, rect.y)).to_physical_precise_round(scale);
         elements.extend(
             AsRenderElements::<R>::render_elements(&surface_tree, renderer, origin, scale, 1.0)
                 .into_iter()

@@ -122,6 +122,9 @@ pub struct CompositorState<B: Backend + 'static> {
     /// leak a stray release to the client — which is how a terminal ends up
     /// with a key it thinks is still held.
     pub intercepted: HashSet<u32>,
+    /// Popups (client menus, tooltips), tracked so they can be drawn at the
+    /// position their positioner asked for rather than not at all.
+    pub popups: smithay::desktop::PopupManager,
     /// Whether the shortcut helper is pinned open.
     ///
     /// The overlay appears on its own while a chord is half-typed; pinning is
@@ -619,6 +622,7 @@ pub fn create_state<B: Backend + 'static>(
         keymap: crate::keymap::Keymap::default(),
         chord: crate::keymap::ChordState::default(),
         intercepted: HashSet::new(),
+        popups: smithay::desktop::PopupManager::default(),
         help_pinned: false,
         minibuffer: None,
         wm: None,
@@ -743,6 +747,11 @@ impl<B: Backend + 'static> CompositorHandler for CompositorState<B> {
     }
 
     fn commit(&mut self, surface: &wl_surface::WlSurface) {
+        // The popup manager needs every commit: it is what advances a popup
+        // from "created" to "mapped" and sends the initial configure. Without
+        // it a tracked popup never gets configured, so the client never draws
+        // into it and the menu stays empty.
+        self.popups.commit(surface);
         // Read the buffer assignment BEFORE importing it. This ordering is load
         // bearing: `on_commit_buffer_handler` calls `attrs.buffer.take()`, so
         // once it has run the surface reports no buffer this commit and the

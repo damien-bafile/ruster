@@ -31,6 +31,8 @@ use tracing::{debug, trace};
 
 use crate::backend::Backend;
 use crate::compositor::CompositorState;
+use smithay::desktop::PopupManager;
+
 use crate::keymap::{ChordState, Resolved};
 use crate::lua::Action;
 use ruster_shell::{Rect, WindowId};
@@ -125,7 +127,26 @@ impl<B: Backend + 'static> CompositorState<B> {
             return None;
         }
         let toplevel = self.toplevels.get(&id)?;
-        Some((toplevel.wl_surface().clone(), origin))
+        let parent = toplevel.wl_surface().clone();
+
+        // A popup over this window takes the pointer before the window does.
+        // Without this a menu is visible but unclickable — every click falls
+        // through to the toplevel behind it, which is what a client reads as
+        // "the user dismissed the menu and clicked over there".
+        for (popup, offset) in PopupManager::popups_for_surface(&parent) {
+            let geo = popup.geometry();
+            let popup_origin = origin + (offset - geo.loc).to_f64();
+            let rect = Rect::new(
+                popup_origin.x.round() as i32,
+                popup_origin.y.round() as i32,
+                geo.size.w,
+                geo.size.h,
+            );
+            if rect.contains(location.x.floor() as i32, location.y.floor() as i32) {
+                return Some((popup.wl_surface().clone(), popup_origin));
+            }
+        }
+        Some((parent, origin))
     }
 
     /// Route one backend input event to its handler. Generic over the input
