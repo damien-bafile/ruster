@@ -48,6 +48,11 @@ pub fn is_quit_keysym(keysym: Keysym, mods: &ModifiersState) -> bool {
 
 /// The VT `Ctrl+Alt+F<n>` asks for, or `None` for any other key.
 ///
+/// Must be given the **modified** keysym. xkb maps `Ctrl+Alt+F2` to
+/// `XF86Switch_VT_2` only after the modifiers are applied; the raw sym stays
+/// `F2` and matches nothing here. Passing the raw one compiles, type-checks,
+/// and silently disables VT switching entirely — which is what it did.
+///
 /// xkb turns `Ctrl+Alt+F1`..`F12` into the `XF86Switch_VT_1`..`_12` keysyms,
 /// which occupy a contiguous range — matching the range keeps all twelve in one
 /// line and does not depend on twelve constants being named as expected.
@@ -183,7 +188,11 @@ impl<B: Backend + 'static> CompositorState<B> {
                 // escape hatch, and a user who has bound themselves into a
                 // corner still has to be able to get out.
                 if key_state == KeyState::Pressed {
-                    if let Some(vt) = vt_switch_target(keysym) {
+                    // The *modified* sym: xkb only produces `XF86Switch_VT_n`
+                    // once Ctrl+Alt are applied, so the raw sym is plain `F2`
+                    // and never matches. Testing the raw one is why this never
+                    // fired on hardware.
+                    if let Some(vt) = vt_switch_target(handle.modified_sym()) {
                         compositor.backend_data.change_vt(vt);
                         return FilterResult::Intercept(());
                     }
@@ -421,6 +430,8 @@ mod tests {
     struct TestBackend {
         output: Output,
         resets: u32,
+        /// VTs the compositor asked to switch to, in order.
+        vt_switches: Vec<i32>,
     }
 
     impl Backend for TestBackend {
@@ -434,6 +445,10 @@ mod tests {
 
         fn output(&self) -> &Output {
             &self.output
+        }
+
+        fn change_vt(&mut self, vt: i32) {
+            self.vt_switches.push(vt);
         }
     }
 
@@ -535,6 +550,9 @@ mod tests {
     const KEY_A: u32 = 30 + 8;
     const KEY_LEFTSHIFT: u32 = 42 + 8;
     const KEY_LEFTMETA: u32 = 125 + 8;
+    const KEY_LEFTCTRL: u32 = 29 + 8;
+    const KEY_LEFTALT: u32 = 56 + 8;
+    const KEY_F2: u32 = 60 + 8;
 
     /// A headless compositor state with the Phase 0 default keybinds installed.
     /// The [`EventLoop`] is returned alongside because `create_state` registers
@@ -568,7 +586,11 @@ mod tests {
         let mut state = create_state(
             display,
             event_loop.handle(),
-            TestBackend { output, resets: 0 },
+            TestBackend {
+                output,
+                resets: 0,
+                vt_switches: Vec::new(),
+            },
         );
         state.keymap = crate::keymap::Keymap::new(&[
             ("M-S-q".into(), "quit".into()),
@@ -763,6 +785,35 @@ mod tests {
             Resolved::Action(action) => Some(action),
             _ => None,
         }
+    }
+
+    #[test]
+    fn ctrl_alt_f2_through_the_seat_asks_for_the_vt() {
+        // The escape hatch, driven the way a keyboard drives it. The old test
+        // called `vt_switch_target(Keysym::XF86Switch_VT_2)` directly — an
+        // input the real code never produced, because it passed the *raw* sym
+        // (`F2`). It passed for months while VT switching did not work at all,
+        // on the one path where being unable to switch away means a black
+        // screen and no way back.
+        let (_loop, mut state) = test_state();
+        // Ctrl and Alt held, so xkb resolves F2 to the VT sym.
+        press(&mut state, KEY_LEFTCTRL);
+        press(&mut state, KEY_LEFTALT);
+        press(&mut state, KEY_F2);
+        assert_eq!(
+            state.backend_data.vt_switches,
+            vec![2],
+            "Ctrl+Alt+F2 must ask the session for VT 2"
+        );
+    }
+
+    #[test]
+    fn f2_on_its_own_is_not_a_vt_switch() {
+        // Without the modifiers xkb yields plain `F2` and nothing should
+        // happen — otherwise a function key would throw you off the session.
+        let (_loop, mut state) = test_state();
+        press(&mut state, KEY_F2);
+        assert!(state.backend_data.vt_switches.is_empty());
     }
 
     #[test]

@@ -90,7 +90,7 @@ ordinary keycodes.
 | DRM keyboard (libinput) | type, and use the quit binding | ✅ 95 key events routed through the seat; `Super+Shift+q` quit the compositor |
 | DRM pointer (libinput) | move a mouse | ⛔ not confirmed on hardware — relative-motion handling is still unexecuted there, and nothing logs pointer events |
 | Cursor is drawn | move the pointer over chrome, then over a client | ✅ nested: the built-in arrow renders over chrome, and a client's own cursor surface (foot's I-beam) renders with its hotspot applied once the pointer enters it |
-| `Ctrl+Alt+F<n>` switches VT | press it on a DRM boot | ⛔ **not exercised** — the boot was ended with the quit binding instead, so no `XF86Switch_VT` keysym ever reached the handler. This is the escape hatch; it is unproven |
+| `Ctrl+Alt+F<n>` switches VT | press it on a DRM boot | ⛔ **it did not work, and now should.** Pressed on hardware, it did nothing: the log shows `key=F2 modified=XF86Switch_VT_2`, and the handler was testing the *raw* sym, which is plain `F2` and never in the `XF86Switch_VT_*` range. So VT switching had been dead since it was written. The old test called `vt_switch_target(Keysym::XF86Switch_VT_2)` directly — an input the real code never produced — and passed throughout. Now fixed to read the modified sym, and guarded by a test that drives Ctrl+Alt+F2 through the real seat and asserts the session was asked for VT 2. Still ⛔ until a boot confirms it |
 | VT suspend/resume | switch away from a DRM boot and back | ⛔ not run — no `pausing session`/`resuming session` in the log |
 | DRM restores the previous state on exit | quit and check the log | ⛔ **fails**: `Failed to restore previous state. Error: Invalid argument (os error 22)` from smithay's atomic teardown |
 
