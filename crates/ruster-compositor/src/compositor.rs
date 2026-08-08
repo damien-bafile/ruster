@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use smithay::backend::renderer::utils::on_commit_buffer_handler;
-use smithay::input::keyboard::{KeyboardHandle, XkbConfig};
+use smithay::input::keyboard::{KeyboardHandle, Keysym, XkbConfig};
 use smithay::input::pointer::{CursorImageStatus, PointerHandle};
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::output::Output;
@@ -99,6 +99,8 @@ pub struct CompositorState<B: Backend + 'static> {
     /// leak a stray release to the client — which is how a terminal ends up
     /// with a key it thinks is still held.
     pub intercepted: HashSet<u32>,
+    /// The `:` prompt, when open or showing a result.
+    pub minibuffer: Option<crate::minibuffer::MiniBuffer>,
     /// The live Lua control plane, when a config produced one. `None` means the
     /// config failed to run, so there is nothing to call into — keybinds still
     /// work, since those are resolved from `keybinds` above.
@@ -143,6 +145,66 @@ impl<B: Backend + 'static> CompositorState<B> {
     pub fn output_rect(&self) -> Rect {
         let size = logical_output_size(self.backend_data.output()).unwrap_or_default();
         Rect::new(0, 0, size.w, size.h)
+    }
+
+    /// Feed one keypress to the open prompt.
+    ///
+    /// `modified` is the shifted keysym — the character actually typed — while
+    /// the raw one identifies the editing keys. Reading text off the raw keysym
+    /// would make every capital letter lowercase.
+    pub fn minibuffer_key(&mut self, raw: Keysym, modified: Keysym) {
+        use smithay::input::keyboard::keysyms as ks;
+        match raw.raw() {
+            ks::KEY_Escape => self.minibuffer = None,
+            ks::KEY_Return | ks::KEY_KP_Enter => self.submit_minibuffer(),
+            ks::KEY_BackSpace => {
+                // Deleting back past the sigil closes the prompt, as in vim.
+                if let Some(mb) = &mut self.minibuffer {
+                    if mb.backspace() {
+                        self.minibuffer = None;
+                    }
+                }
+            }
+            _ => {
+                if let Some(c) = modified.key_char().filter(|c| !c.is_control()) {
+                    if let Some(mb) = &mut self.minibuffer {
+                        mb.push(c);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Carry out a submitted mini-buffer line.
+    ///
+    /// Actions go to the same `dispatch` a keybind uses and Lua goes to the same
+    /// VM the config ran in, so the prompt cannot do anything the rest of the
+    /// control plane cannot — nor grow a vocabulary of its own that drifts.
+    pub fn submit_minibuffer(&mut self) {
+        use crate::minibuffer::{MiniBuffer, Submission};
+        let submission = match &self.minibuffer {
+            Some(mb) if mb.is_open() => mb.submit(),
+            _ => return,
+        };
+        self.minibuffer = None;
+        match submission {
+            Submission::Action(action) => self.dispatch(action),
+            Submission::Lua(code) => {
+                let result = match &self.wm {
+                    Some(wm) => wm.eval(&code),
+                    // A config that failed to parse leaves no VM, and silently
+                    // ignoring the line would look like the prompt is broken.
+                    None => Err("no lua runtime (the config failed to load)".to_string()),
+                };
+                if let Err(err) = result {
+                    self.minibuffer = Some(MiniBuffer::message(err));
+                }
+            }
+            Submission::Nothing(msg) if !msg.is_empty() => {
+                self.minibuffer = Some(MiniBuffer::message(msg));
+            }
+            Submission::Nothing(_) => {}
+        }
     }
 
     /// Run everything Lua has queued since last time, then publish what the
@@ -214,6 +276,11 @@ impl<B: Backend + 'static> CompositorState<B> {
                 self.switch_workspace(n);
             }
             Action::Screenshot => self.screenshot_pending = true,
+            Action::Prompt(prompt) => {
+                // Opening clears any message from last time; a stale result
+                // sitting behind a fresh prompt reads as a reply to it.
+                self.minibuffer = Some(crate::minibuffer::MiniBuffer::new(prompt));
+            }
             Action::Spawn(command) => {
                 crate::lua::spawn_command(&command, self.socket_name.as_deref())
             }
@@ -447,6 +514,7 @@ pub fn create_state<B: Backend + 'static>(
         keymap: crate::keymap::Keymap::default(),
         chord: crate::keymap::ChordState::default(),
         intercepted: HashSet::new(),
+        minibuffer: None,
         wm: None,
     }
 }

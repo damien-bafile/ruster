@@ -375,6 +375,42 @@ impl Chrome {
         }
     }
 
+    /// Draw the `:` line along the bottom, just above the statusline.
+    ///
+    /// The sigil is drawn in `cmdline_accent` and the rest in `cmdline_fg`,
+    /// which is what distinguishes "waiting for a command" from "showing you a
+    /// message" — the two otherwise share a row and a colour. A message has no
+    /// sigil and so is drawn entirely in the text colour.
+    pub fn draw_minibuffer(
+        &mut self,
+        output_w: i32,
+        output_h: i32,
+        line: &str,
+        sigil_len: usize,
+        batch: &mut ChromeBatch,
+    ) {
+        let bar_h = crate::render::chrome_height(output_h) as f32;
+        let h = bar_h;
+        let y = output_h as f32 - bar_h - h;
+        let bg: (f32, f32, f32, f32) = self.theme.cmdline_bg.into();
+        let fg: (f32, f32, f32, f32) = self.theme.cmdline_fg.into();
+        let accent: (f32, f32, f32, f32) = self.theme.cmdline_accent.into();
+
+        batch
+            .verts
+            .extend(rect_verts(0.0, y, output_w as f32, h, bg));
+        let font = (h * 0.5) as u32;
+        let ty = y + h * 0.25;
+        let (sigil, rest) = line.split_at(sigil_len.min(line.len()));
+        let mut x = 10.0;
+        if !sigil.is_empty() {
+            x += self.text(sigil, font, x, ty, accent, batch);
+        }
+        if !rest.is_empty() {
+            self.text(rest, font, x, ty, fg, batch);
+        }
+    }
+
     /// Draw the which-key panel for a half-typed chord.
     ///
     /// Takes a [`WhichKeyView`] — the same type the editor renders — rather than

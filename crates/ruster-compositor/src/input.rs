@@ -189,6 +189,22 @@ impl<B: Backend + 'static> CompositorState<B> {
                     }
                 }
 
+                // An open prompt takes every key, before the keymap and before
+                // the quit hatch. Letting anything through would type the
+                // command into the focused terminal at the same time — and a
+                // keybind firing mid-line would act on a half-typed thought.
+                if compositor
+                    .minibuffer
+                    .as_ref()
+                    .is_some_and(|mb| mb.is_open())
+                {
+                    if key_state == KeyState::Pressed {
+                        compositor.minibuffer_key(keysym, handle.modified_sym());
+                    }
+                    compositor.intercepted.insert(keycode.raw());
+                    return FilterResult::Intercept(());
+                }
+
                 // Releases follow whatever their press did. Resolution is a
                 // press-time decision and the pending sequence has moved on by
                 // now, so asking again would answer differently.

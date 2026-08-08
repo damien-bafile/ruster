@@ -99,6 +99,8 @@ pub struct FrameInput<'a> {
     pub keymap: &'a crate::keymap::Keymap,
     /// The which-key overlay, drawn only while a chord is half-typed.
     pub whichkey: Option<ruster_render::WhichKeyView>,
+    /// The `:` line, when open or showing a result.
+    pub minibuffer: Option<&'a crate::minibuffer::MiniBuffer>,
 }
 
 /// Composite the focused toplevel fullscreen onto the output, draw ruster's
@@ -182,6 +184,10 @@ where
             scene.tree_status,
             &mut batch,
         );
+
+        if let Some(mb) = scene.minibuffer {
+            chrome.draw_minibuffer(size.w, size.h, &mb.display(), mb.sigil_len(), &mut batch);
+        }
 
         let editor_mark = batch.mark();
         let frame_w = (size.w / 2).clamp(120, 360);

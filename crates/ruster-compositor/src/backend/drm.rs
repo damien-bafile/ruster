@@ -438,6 +438,7 @@ impl CompositorState<RusterUdevData> {
             geometry: &geometry,
             tree_status,
             keymap: &self.keymap,
+            minibuffer: self.minibuffer.as_ref(),
             whichkey: crate::keymap::whichkey_view(&self.keymap, &self.chord),
         };
         let elements = collect_render_elements(&scene, &mut self.chrome, &mut renderer);

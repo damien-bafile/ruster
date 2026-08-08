@@ -61,6 +61,8 @@
 --                            which is also the axis the next window here uses
 --   toggle floating          float the focused window, or re-tile it
 --   spawn <command>          launch a program on this compositor's socket
+--   command                  open the ":" prompt (an action name)
+--   lua                      open the "=" prompt (Lua, in the config's VM)
 --   workspace <1-9>          show a numbered workspace
 --   move to workspace <1-9>  send the focused window there
 --
@@ -111,6 +113,8 @@ return {
     -- Without a spawn bind there is no way to open a window from inside the
     -- session: on DRM the only windows that exist are the startup clients.
     { "M-Return", "spawn foot" },
+    { "M-S-semicolon", "command" },
+    { "M-S-equal",     "lua" },
 
     { "M-1",   "workspace 1" },
     { "M-2",   "workspace 2" },

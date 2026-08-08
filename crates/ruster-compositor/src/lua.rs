@@ -51,6 +51,8 @@ pub enum Action {
     /// startup clients — and the only way to get a second one is to type into
     /// the first, which assumes the first is a terminal.
     Spawn(String),
+    /// Open the `:` prompt (or `=` for Lua).
+    Prompt(crate::minibuffer::Prompt),
     /// Write the composited output to a PNG.
     ///
     /// The compositor implements no screencopy protocol, so on a real boot
@@ -553,6 +555,10 @@ impl Action {
             ("quit", _, _) => Some(Action::Quit),
             ("cycle workspace", _, _) => Some(Action::CycleWorkspace),
             ("screenshot", _, _) => Some(Action::Screenshot),
+            ("command" | "prompt", _, _) => {
+                Some(Action::Prompt(crate::minibuffer::Prompt::Command))
+            }
+            ("lua" | "eval", _, _) => Some(Action::Prompt(crate::minibuffer::Prompt::Lua)),
             ("toggle floating" | "float", _, _) => Some(Action::ToggleFloating),
             (_, "focus", Some(d)) => direction_word(d).map(Action::Focus),
             (_, "swap", Some(d)) => direction_word(d).map(Action::Swap),
