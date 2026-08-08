@@ -6,12 +6,13 @@
 //! `CompositorHandler::commit` (see [`CommitBuffer`]). Rendering, focus, and
 //! keyboard forwarding are Tasks 7 and 10.
 
+use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::utils::{Serial, SERIAL_COUNTER as SCOUNTER};
 use smithay::wayland::compositor::{self, BufferAssignment};
 use smithay::wayland::shell::xdg::{
-    PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
-    XdgToplevelSurfaceData,
+    decoration::XdgDecorationHandler, PopupSurface, PositionerState, ToplevelSurface,
+    XdgShellHandler, XdgShellState, XdgToplevelSurfaceData,
 };
 
 use crate::backend::Backend;
@@ -68,12 +69,7 @@ impl<B: Backend + 'static> XdgShellHandler for CompositorState<B> {
         let Some(title) = toplevel_title(&surface) else {
             return;
         };
-        let Some(id) = self
-            .toplevels
-            .iter()
-            .find(|(_, t)| t.wl_surface() == surface.wl_surface())
-            .map(|(id, _)| *id)
-        else {
+        let Some(id) = self.window_for_surface(surface.wl_surface()) else {
             return;
         };
         if let Some(window) = self.shell.window(id) {
@@ -82,12 +78,7 @@ impl<B: Backend + 'static> XdgShellHandler for CompositorState<B> {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
-        let Some(id) = self
-            .toplevels
-            .iter()
-            .find(|(_, t)| t.wl_surface() == surface.wl_surface())
-            .map(|(id, _)| *id)
-        else {
+        let Some(id) = self.window_for_surface(surface.wl_surface()) else {
             return;
         };
         self.toplevels.remove(&id);
@@ -103,6 +94,52 @@ impl<B: Backend + 'static> XdgShellHandler for CompositorState<B> {
         self.reconfigure_tiles();
         self.update_keyboard_focus(SCOUNTER.next_serial());
         tracing::info!(?id, "toplevel destroyed");
+    }
+}
+
+/// Decoration: ruster answers every client the same way, because the answer is
+/// a fact about the compositor rather than a negotiation. `Chrome` already draws
+/// a border around each tile and the statusline already names the focused
+/// window, so a client titlebar is the second copy of both — drawn *inside* the
+/// border, where it reads as a mistake.
+impl<B: Backend + 'static> XdgDecorationHandler for CompositorState<B> {
+    fn new_decoration(&mut self, toplevel: ToplevelSurface) {
+        answer_decoration(&toplevel, None);
+    }
+
+    fn request_mode(&mut self, toplevel: ToplevelSurface, mode: Mode) {
+        answer_decoration(&toplevel, Some(mode));
+    }
+
+    fn unset_mode(&mut self, toplevel: ToplevelSurface) {
+        answer_decoration(&toplevel, None);
+    }
+}
+
+/// The mode ruster replies with, whatever the client asked for.
+///
+/// A separate function from the three handler methods above so the policy — no
+/// client-side decorations, ever — is one statement that a test can pin, rather
+/// than three arms that could drift apart.
+fn decoration_mode(_requested: Option<Mode>) -> Mode {
+    Mode::ServerSide
+}
+
+/// Reply to a decoration request on `toplevel`, `requested` being the mode the
+/// client asked for if it named one.
+///
+/// Nothing is sent before the initial configure: `send_configure` marks the
+/// initial configure as sent, and `CompositorHandler::commit` uses exactly that
+/// flag to decide when to send the *sized* first configure. Answering the
+/// decoration request immediately would therefore consume the flag and leave
+/// the client sized to its own guess forever. The mode is instead left pending
+/// and rides out on that first configure — smithay emits the decoration
+/// configure ahead of the xdg one, which is the order the protocol requires.
+fn answer_decoration(toplevel: &ToplevelSurface, requested: Option<Mode>) {
+    let mode = decoration_mode(requested);
+    toplevel.with_pending_state(|state| state.decoration_mode = Some(mode));
+    if toplevel.is_initial_configure_sent() {
+        toplevel.send_pending_configure();
     }
 }
 
@@ -196,6 +233,16 @@ mod tests {
     fn commit_without_buffer_keeps_current_mapped_state() {
         assert!(CommitBuffer::Unchanged.is_mapped(true));
         assert!(!CommitBuffer::Unchanged.is_mapped(false));
+    }
+
+    #[test]
+    fn every_decoration_request_is_answered_server_side() {
+        // The compositor draws the border and names the window in the
+        // statusline; conceding to a client that asks for CSD would put a
+        // second titlebar inside a tile that already has chrome.
+        assert_eq!(decoration_mode(None), Mode::ServerSide);
+        assert_eq!(decoration_mode(Some(Mode::ClientSide)), Mode::ServerSide);
+        assert_eq!(decoration_mode(Some(Mode::ServerSide)), Mode::ServerSide);
     }
 
     #[test]

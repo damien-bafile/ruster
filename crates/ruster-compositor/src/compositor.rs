@@ -15,7 +15,7 @@ use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_server::{
     backend::{ClientData, ClientId, DisconnectReason},
     protocol::{wl_buffer, wl_output, wl_surface},
-    Client, Display, DisplayHandle,
+    Client, Display, DisplayHandle, Resource,
 };
 use smithay::utils::{Serial, SERIAL_COUNTER as SCOUNTER};
 use smithay::wayland::socket::ListeningSocketSource;
@@ -25,13 +25,22 @@ use smithay::wayland::{
         with_states, CompositorClientState, CompositorHandler,
         CompositorState as WlCompositorState, SurfaceAttributes,
     },
+    cursor_shape::CursorShapeManagerState,
     output::OutputHandler,
     selection::data_device::{
-        ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
+        set_data_device_focus, ClientDndGrabHandler, DataDeviceHandler, DataDeviceState,
+        ServerDndGrabHandler,
+    },
+    selection::primary_selection::{
+        set_primary_focus, PrimarySelectionHandler, PrimarySelectionState,
     },
     selection::SelectionHandler,
-    shell::xdg::{ToplevelSurface, XdgShellState},
+    shell::xdg::{decoration::XdgDecorationState, ToplevelSurface, XdgShellState},
     shm::{ShmHandler, ShmState},
+    tablet_manager::TabletSeatHandler,
+    xdg_activation::{
+        XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
+    },
 };
 use tracing::{debug, info};
 
@@ -55,6 +64,20 @@ pub struct CompositorState<B: Backend + 'static> {
     pub shm_state: ShmState,
     pub xdg_shell_state: XdgShellState,
     pub data_device_state: DataDeviceState,
+    /// The middle-click clipboard. Separate state from `data_device_state`
+    /// because it is a separate protocol, but the same seat and the same
+    /// [`SelectionHandler`] serve both.
+    pub primary_selection_state: PrimarySelectionState,
+    /// Tokens handed out by `xdg_activation_v1`, which a client redeems to ask
+    /// that one of its windows be focused.
+    pub xdg_activation_state: XdgActivationState,
+    /// `zxdg_decoration_manager_v1`. Held only so the global can be taken back
+    /// down; every decoration decision is made in the handler.
+    pub xdg_decoration_state: XdgDecorationState,
+    /// `wp_cursor_shape_manager_v1`. Held for the same reason — smithay turns a
+    /// client's named shape straight into a [`SeatHandler::cursor_image`] call,
+    /// so there is no per-request state of ours to keep.
+    pub cursor_shape_state: CursorShapeManagerState,
     pub seat_state: SeatState<CompositorState<B>>,
     pub seat: Seat<CompositorState<B>>,
     pub keyboard: KeyboardHandle<CompositorState<B>>,
@@ -133,8 +156,31 @@ impl<B: Backend + 'static> CompositorState<B> {
             .or_else(|| self.shell.focus.filter(|id| self.focusable(*id)))
             .and_then(|id| self.toplevels.get(&id))
             .map(|toplevel| toplevel.wl_surface().clone());
+        // Both clipboards follow the keyboard. smithay only offers a selection
+        // to the client the *seat* considers focused, and it does not derive
+        // that from the keyboard focus — so until this call existed neither
+        // `wl_data_device.selection` nor its primary twin ever fired and paste
+        // was silently dead. Done here rather than in `SeatHandler::focus_changed`
+        // because that callback is not invoked when focus is cleared, which
+        // would leave the last client still holding the offer after its window
+        // went away.
+        let client = focus.as_ref().and_then(|surface| surface.client());
+        set_data_device_focus(&self.display_handle, &self.seat, client.clone());
+        set_primary_focus(&self.display_handle, &self.seat, client);
         let keyboard = self.keyboard.clone();
         keyboard.set_focus(self, focus, serial);
+    }
+
+    /// The window id owning `surface`, if any toplevel does.
+    ///
+    /// `toplevels` is keyed the other way round because every other caller has
+    /// the id and wants the surface; the protocol handlers arrive with only a
+    /// surface, and each of them used to open-code this same linear scan.
+    pub fn window_for_surface(&self, surface: &wl_surface::WlSurface) -> Option<WindowId> {
+        self.toplevels
+            .iter()
+            .find(|(_, toplevel)| toplevel.wl_surface() == surface)
+            .map(|(id, _)| *id)
     }
 
     /// Whether `window` may hold the keyboard: it has committed a buffer, and
@@ -384,7 +430,9 @@ impl<B: Backend + 'static> CompositorState<B> {
                 state.size = Some((rect.w, rect.h).into());
                 // Tiled on every edge: the honest way to tell a client it does
                 // not own its borders, so it drops rounded corners and shadows.
-                // Server-side decoration is Phase 2's frame theming.
+                // The titlebar goes away separately, via xdg-decoration (see
+                // `shell::answer_decoration`) — tiled states alone do not
+                // stop a toolkit drawing one.
                 state.states.set(xdg_toplevel::State::TiledLeft);
                 state.states.set(xdg_toplevel::State::TiledRight);
                 state.states.set(xdg_toplevel::State::TiledTop);
@@ -392,6 +440,23 @@ impl<B: Backend + 'static> CompositorState<B> {
             });
             toplevel.send_pending_configure();
         }
+    }
+
+    /// Put `window` in front of the user and give it the keyboard, switching
+    /// workspaces if that is where it lives. Does nothing for a window that
+    /// cannot be shown — see [`activation_workspace`].
+    ///
+    /// Focusing goes through the same three calls a `focus` keybind makes, so
+    /// an activation and a keypress leave the compositor in the same state.
+    pub fn activate_window(&mut self, window: WindowId) {
+        let Some(workspace) = activation_workspace(&self.workspaces, &self.mapped, window) else {
+            return;
+        };
+        debug!(?window, workspace, "activating window");
+        self.switch_workspace(workspace);
+        self.shell.set_focus(window);
+        self.workspaces.raise_floating(window);
+        self.update_keyboard_focus(SCOUNTER.next_serial());
     }
 
     /// Show `workspace` and hide whatever was on screen.
@@ -453,6 +518,24 @@ fn next_focus_after_unmap(mapped: &HashSet<WindowId>, unmapped: WindowId) -> Opt
     mapped.iter().filter(|id| **id != unmapped).max().copied()
 }
 
+/// Which workspace has to be on screen before `window` can take focus, or
+/// `None` when an activation request naming it should be dropped.
+///
+/// A window with no buffer yet has nothing to show and cannot hold the keyboard
+/// (see [`CompositorState::focusable`]), and one the trees do not hold is
+/// already gone — honouring either would switch the user to a workspace to look
+/// at nothing. Pure, so the activation policy is testable without a display.
+fn activation_workspace(
+    workspaces: &Workspaces,
+    mapped: &HashSet<WindowId>,
+    window: WindowId,
+) -> Option<u32> {
+    if !mapped.contains(&window) {
+        return None;
+    }
+    workspaces.workspace_of(window)
+}
+
 /// Globals created for a display; bundled so `create_state` can build them
 /// before the state struct itself exists (anvil does this inline in `init`).
 struct InitGlobals<B: Backend + 'static> {
@@ -460,6 +543,10 @@ struct InitGlobals<B: Backend + 'static> {
     shm_state: ShmState,
     xdg_shell_state: XdgShellState,
     data_device_state: DataDeviceState,
+    primary_selection_state: PrimarySelectionState,
+    xdg_activation_state: XdgActivationState,
+    xdg_decoration_state: XdgDecorationState,
+    cursor_shape_state: CursorShapeManagerState,
     seat_state: SeatState<CompositorState<B>>,
     seat: Seat<CompositorState<B>>,
     keyboard: KeyboardHandle<CompositorState<B>>,
@@ -503,6 +590,10 @@ pub fn create_state<B: Backend + 'static>(
         shm_state: globals.shm_state,
         xdg_shell_state: globals.xdg_shell_state,
         data_device_state: globals.data_device_state,
+        primary_selection_state: globals.primary_selection_state,
+        xdg_activation_state: globals.xdg_activation_state,
+        xdg_decoration_state: globals.xdg_decoration_state,
+        cursor_shape_state: globals.cursor_shape_state,
         seat_state: globals.seat_state,
         seat: globals.seat,
         keyboard: globals.keyboard,
@@ -573,6 +664,18 @@ fn init_globals<B: Backend + 'static>(dh: &DisplayHandle, seat_name: String) -> 
     // exit before they ever map a surface, so without this global no client
     // reaches the compositor at all.
     let data_device_state = DataDeviceState::new::<CompositorState<B>>(dh);
+    // The middle-click clipboard. Every terminal and editor on X11 had one and
+    // toolkits still expect it; foot names its absence at startup.
+    let primary_selection_state = PrimarySelectionState::new::<CompositorState<B>>(dh);
+    let xdg_activation_state = XdgActivationState::new::<CompositorState<B>>(dh);
+    // Announce that ruster decorates windows. It already draws a border per
+    // tile, so a client drawing its own titlebar inside that border is chrome
+    // twice over; without this global every toolkit assumes CSD unconditionally.
+    let xdg_decoration_state = XdgDecorationState::new::<CompositorState<B>>(dh);
+    // Named cursor shapes. The compositor already draws the pointer itself, so
+    // this only gives clients a way to name the shape they want instead of each
+    // one loading an XCursor theme and attaching its own surface.
+    let cursor_shape_state = CursorShapeManagerState::new::<CompositorState<B>>(dh);
     let mut seat_state = SeatState::new();
     let mut seat = seat_state.new_wl_seat(dh, seat_name);
     let pointer = seat.add_pointer();
@@ -596,6 +699,10 @@ fn init_globals<B: Backend + 'static>(dh: &DisplayHandle, seat_name: String) -> 
         shm_state,
         xdg_shell_state,
         data_device_state,
+        primary_selection_state,
+        xdg_activation_state,
+        xdg_decoration_state,
+        cursor_shape_state,
         seat_state,
         seat,
         keyboard,
@@ -658,12 +765,7 @@ impl<B: Backend + 'static> CompositorHandler for CompositorState<B> {
         // unmapped again on a null-buffer commit. Map/unmap is tracked here
         // (see `CommitBuffer`); the render loop draws mapped surfaces in
         // Task 7.
-        let Some(id) = self
-            .toplevels
-            .iter()
-            .find(|(_, t)| t.wl_surface() == surface)
-            .map(|(id, _)| *id)
-        else {
+        let Some(id) = self.window_for_surface(surface) else {
             return;
         };
         // Send the initial configure once, in response to the client's first
@@ -779,16 +881,59 @@ impl<B: Backend + 'static> DataDeviceHandler for CompositorState<B> {
     }
 }
 
+impl<B: Backend + 'static> PrimarySelectionHandler for CompositorState<B> {
+    fn primary_selection_state(&self) -> &PrimarySelectionState {
+        &self.primary_selection_state
+    }
+}
+
+// Named cursor shapes arrive as `SeatHandler::cursor_image` calls, so nothing
+// extra is needed for the pointer. The tablet half of the protocol shares the
+// manager global and its handler has a do-nothing default: ruster does not
+// speak `zwp_tablet_manager_v2` at all, so no tool can ever ask for a shape.
+impl<B: Backend + 'static> TabletSeatHandler for CompositorState<B> {}
+
+impl<B: Backend + 'static> XdgActivationHandler for CompositorState<B> {
+    fn activation_state(&mut self) -> &mut XdgActivationState {
+        &mut self.xdg_activation_state
+    }
+
+    /// A client redeemed a token asking that one of its windows be focused —
+    /// what foot's `bell.urgent` does, and what a browser does when a second
+    /// invocation hands the URL to the copy already running.
+    ///
+    /// The window is brought into view: if it sits on a workspace that is not
+    /// on screen, that workspace is switched to. The alternative was to honour
+    /// activation only for windows already visible, which is safer against a
+    /// client yanking the screen around — but it makes activation a no-op in
+    /// exactly the case it exists for, and a request that does nothing is
+    /// indistinguishable from a compositor that never implemented it.
+    fn request_activation(
+        &mut self,
+        _token: XdgActivationToken,
+        _token_data: XdgActivationTokenData,
+        surface: wl_surface::WlSurface,
+    ) {
+        if let Some(id) = self.window_for_surface(&surface) {
+            self.activate_window(id);
+        }
+    }
+}
+
 // One delegate per protocol we speak. Each wires the `Dispatch`/`GlobalDispatch`
 // impls for that protocol's objects through to the smithay state we hold above,
-// so the handler traits implemented in this file (and `XdgShellHandler` in
-// `shell.rs`) are all the glue we write by hand.
+// so the handler traits implemented in this file (and `XdgShellHandler` /
+// `XdgDecorationHandler` in `shell.rs`) are all the glue we write by hand.
 smithay::delegate_compositor!(@<B: Backend + 'static> CompositorState<B>);
 smithay::delegate_shm!(@<B: Backend + 'static> CompositorState<B>);
 smithay::delegate_output!(@<B: Backend + 'static> CompositorState<B>);
 smithay::delegate_seat!(@<B: Backend + 'static> CompositorState<B>);
 smithay::delegate_xdg_shell!(@<B: Backend + 'static> CompositorState<B>);
+smithay::delegate_xdg_decoration!(@<B: Backend + 'static> CompositorState<B>);
 smithay::delegate_data_device!(@<B: Backend + 'static> CompositorState<B>);
+smithay::delegate_primary_selection!(@<B: Backend + 'static> CompositorState<B>);
+smithay::delegate_xdg_activation!(@<B: Backend + 'static> CompositorState<B>);
+smithay::delegate_cursor_shape!(@<B: Backend + 'static> CompositorState<B>);
 
 /// Register the auto-named Wayland client listening socket with the compositor's
 /// event loop. Returns the socket name for clients to connect to (print it and
@@ -917,6 +1062,46 @@ mod tests {
         // Unmapping the only mapped window leaves nothing to focus.
         assert_eq!(
             next_focus_after_unmap(&HashSet::from([WindowId(2)]), WindowId(2)),
+            None
+        );
+    }
+
+    #[test]
+    fn activation_names_the_workspace_holding_the_window() {
+        // The point of honouring xdg-activation across workspaces: a client on
+        // a workspace nobody is looking at asks to be seen, and the answer is
+        // the workspace to switch to rather than "no".
+        let mut workspaces = Workspaces::new();
+        let here = WindowId(1);
+        let away = WindowId(2);
+        workspaces.insert(here, None, ruster_shell::Layout::Horizontal);
+        workspaces.switch_to(4);
+        workspaces.insert(away, None, ruster_shell::Layout::Horizontal);
+        workspaces.switch_to(1);
+
+        let mapped = HashSet::from([here, away]);
+        assert_eq!(
+            activation_workspace(&workspaces, &mapped, here),
+            Some(workspaces.active())
+        );
+        assert_eq!(activation_workspace(&workspaces, &mapped, away), Some(4));
+    }
+
+    #[test]
+    fn activation_is_dropped_for_windows_that_cannot_be_shown() {
+        // A window that has never committed a buffer has nothing to show and
+        // cannot hold the keyboard, so switching the user to its workspace
+        // would move the screen to look at nothing.
+        let mut workspaces = Workspaces::new();
+        let unmapped = WindowId(7);
+        workspaces.insert(unmapped, None, ruster_shell::Layout::Horizontal);
+        assert_eq!(
+            activation_workspace(&workspaces, &HashSet::new(), unmapped),
+            None
+        );
+        // And a window no tree holds is already gone, mapped set or not.
+        assert_eq!(
+            activation_workspace(&workspaces, &HashSet::from([WindowId(9)]), WindowId(9)),
             None
         );
     }

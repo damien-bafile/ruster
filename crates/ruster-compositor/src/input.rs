@@ -712,6 +712,55 @@ mod tests {
     }
 
     #[test]
+    fn activation_brings_a_window_back_from_a_hidden_workspace() {
+        // What `foot`'s `bell.urgent` and a second browser invocation both ask
+        // for. Honouring it only for windows already on screen would make the
+        // request a no-op in the one case it exists for.
+        let (_loop, mut state) = test_state();
+        let here = add_visible_window(&mut state, "here");
+        state.switch_workspace(4);
+        // Two of them, and the activated one is deliberately *not* the one a
+        // bare workspace switch would land on — otherwise the switch alone
+        // would make the assertion below pass and the focus never be tested.
+        let wanted = add_visible_window(&mut state, "wanted");
+        let neighbour = add_visible_window(&mut state, "neighbour");
+        state.switch_workspace(1);
+        assert_eq!(state.shell.focus, Some(here));
+        // Prove the discrimination: arriving on workspace 4 any other way puts
+        // the keyboard on the neighbour, so an activation that only switched
+        // and never focused would leave it there.
+        state.switch_workspace(4);
+        assert_eq!(state.shell.focus, Some(neighbour));
+        state.switch_workspace(1);
+
+        state.activate_window(wanted);
+
+        assert_eq!(
+            state.workspaces.active(),
+            4,
+            "the screen followed the window"
+        );
+        assert_eq!(state.shell.focus, Some(wanted), "and it took the keyboard");
+        assert_ne!(state.shell.focus, Some(neighbour));
+    }
+
+    #[test]
+    fn activation_of_a_window_with_no_buffer_leaves_the_screen_alone() {
+        // A toplevel that has never committed cannot hold the keyboard, so
+        // switching to its workspace would strand the user looking at nothing.
+        let (_loop, mut state) = test_state();
+        let here = add_visible_window(&mut state, "here");
+        let ghost = state.shell.add_window("ghost".into(), 100, 100);
+        state.workspaces.insert(ghost, None, Layout::Horizontal);
+        state.move_to_workspace(ghost, 4);
+
+        state.activate_window(ghost);
+
+        assert_eq!(state.workspaces.active(), 1, "still on the same workspace");
+        assert_eq!(state.shell.focus, Some(here));
+    }
+
+    #[test]
     fn moving_a_window_away_leaves_focus_on_one_that_is_still_shown() {
         let (_loop, mut state) = test_state();
         let a = add_visible_window(&mut state, "a");
