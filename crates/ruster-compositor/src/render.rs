@@ -217,10 +217,12 @@ where
                 continue;
             };
             let mark = batch.mark();
+            let (first_line, lines) = pane.visible_lines();
             chrome.draw_editor_frame(
                 (rect.w as f32 * chrome_scale) as i32,
                 (rect.h as f32 * chrome_scale) as i32,
-                &[],
+                &lines,
+                first_line,
                 &pane.title,
                 &mut batch,
             );

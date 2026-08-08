@@ -281,12 +281,19 @@ impl<B: Backend + 'static> CompositorState<B> {
     /// ordinary leaf and taking a different route would be the first step
     /// towards the two diverging.
     pub fn open_pane(&mut self) {
+        self.open_pane_with(crate::pane::EditorPane::new("scratch"));
+    }
+
+    /// Insert `pane` beside the focused leaf and focus it.
+    ///
+    /// The one place a pane enters the tree, so an empty scratch pane and a
+    /// pane opened on a file cannot end up in different shapes.
+    pub fn open_pane_with(&mut self, pane: crate::pane::EditorPane) {
         let area = self.output_rect();
-        let id = self.shell.add_window("scratch".to_string(), area.w, area.h);
+        let id = self.shell.add_window(pane.title.clone(), area.w, area.h);
         self.workspaces
             .insert(id, self.shell.focus, ruster_shell::Layout::Horizontal);
-        self.panes
-            .insert(id, crate::pane::EditorPane::new("scratch"));
+        self.panes.insert(id, pane);
         crate::pane::debug_assert_disjoint(&self.panes, &self.toplevels);
         self.shell.set_focus(id);
         self.reconfigure_tiles();
@@ -295,6 +302,31 @@ impl<B: Backend + 'static> CompositorState<B> {
         // with an id no toplevel resolves.
         self.update_keyboard_focus(SCOUNTER.next_serial());
         tracing::info!(?id, "new pane");
+    }
+
+    /// Open `path` in a new pane, or report why not.
+    ///
+    /// The read happens here rather than in the pane so a file that cannot be
+    /// read produces a message instead of an empty pane titled after it — an
+    /// empty buffer and a missing file look identical once drawn.
+    pub fn open_file(&mut self, path: &str) {
+        let expanded = expand_home(path);
+        match std::fs::read_to_string(&expanded) {
+            Ok(text) => {
+                let title = std::path::Path::new(&expanded)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(path)
+                    .to_string();
+                self.open_pane_with(crate::pane::EditorPane::with_text(title, &text));
+            }
+            Err(err) => {
+                tracing::warn!(%path, %err, "could not open the file");
+                self.minibuffer = Some(crate::minibuffer::MiniBuffer::message(format!(
+                    "{path}: {err}"
+                )));
+            }
+        }
     }
 
     /// Run everything Lua has queued since last time, then publish what the
@@ -368,6 +400,7 @@ impl<B: Backend + 'static> CompositorState<B> {
             Action::Screenshot => self.screenshot_pending = true,
             Action::ToggleHelp => self.help_pinned = !self.help_pinned,
             Action::NewPane => self.open_pane(),
+            Action::Edit(path) => self.open_file(&path),
             Action::Bind(binding, action) => self.keymap.bind(&binding, &action),
             Action::Prompt(prompt) => {
                 // Opening clears any message from last time; a stale result
@@ -569,6 +602,21 @@ const RESIZE_STEP: f32 = 0.05;
 /// unit-testable without a live display.
 fn next_focus_after_unmap(mapped: &HashSet<WindowId>, unmapped: WindowId) -> Option<WindowId> {
     mapped.iter().filter(|id| **id != unmapped).max().copied()
+}
+
+/// `~` expanded to the home directory.
+///
+/// Only the leading `~`, and only when it starts a path — a file legitimately
+/// named `a~b` is not a home directory reference, and expanding it would open
+/// the wrong thing while looking like it worked.
+fn expand_home(path: &str) -> String {
+    match path.strip_prefix("~/") {
+        Some(rest) => match dirs::home_dir() {
+            Some(home) => home.join(rest).to_string_lossy().into_owned(),
+            None => path.to_string(),
+        },
+        None => path.to_string(),
+    }
 }
 
 /// Font size a pane's character grid is measured at.

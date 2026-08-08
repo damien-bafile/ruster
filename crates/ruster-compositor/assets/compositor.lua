@@ -70,7 +70,8 @@
 --                            which is also the axis the next window here uses
 --   toggle floating          float the focused window, or re-tile it
 --   spawn <command>          launch a program on this compositor's socket
---   new pane                 open an editor pane as a tile (Phase 3, empty so far)
+--   new pane                 open an empty editor pane as a tile
+--   edit <path>              open a file in an editor pane (read-only so far)
 --   toggle help              pin the shortcut helper open, or unpin it
 --   command                  open the ":" prompt (an action name)
 --   lua                      open the "=" prompt (Lua, in the config's VM)

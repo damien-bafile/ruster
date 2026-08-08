@@ -55,6 +55,8 @@ pub enum Action {
     Bind(String, String),
     /// Open a new editor pane beside the focused leaf.
     NewPane,
+    /// Open a file in a new editor pane.
+    Edit(String),
     /// Pin the shortcut helper open, or unpin it.
     ToggleHelp,
     /// Open the `:` prompt (or `=` for Lua).
@@ -556,6 +558,11 @@ impl Action {
         let trimmed = name.trim();
         if let Some(rest) = strip_verb(trimmed, "spawn") {
             return (!rest.is_empty()).then(|| Action::Spawn(rest.to_string()));
+        }
+        // Same reasoning as `spawn`: a path is not a keyword, and normalising
+        // it would lowercase `README.md` and turn `my-file.rs` into spaces.
+        if let Some(rest) = strip_verb(trimmed, "edit") {
+            return (!rest.is_empty()).then(|| Action::Edit(rest.to_string()));
         }
         let name = trimmed.to_ascii_lowercase().replace(['_', '-'], " ");
         // Several actions take an argument, and it is always the last word, so
@@ -1095,6 +1102,23 @@ mod tests {
         wm.eval(r#"ruster.wm.action("workspace 7")"#).unwrap();
         assert_eq!(wm.take_actions(), vec![Action::Workspace(7)]);
         assert!(wm.eval("this is not lua").is_err());
+    }
+
+    #[test]
+    fn an_edit_keeps_its_path_exactly_as_written() {
+        // A path is not a keyword: normalising would lowercase README.md and
+        // turn my-file.rs into spaces.
+        assert_eq!(
+            Action::from_name("edit README.md"),
+            Some(Action::Edit("README.md".into()))
+        );
+        assert_eq!(
+            Action::from_name("edit src/my-file.rs"),
+            Some(Action::Edit("src/my-file.rs".into()))
+        );
+        assert_eq!(Action::from_name("edit"), None);
+        // And a word merely starting with the verb is not the verb.
+        assert_eq!(Action::from_name("editor"), None);
     }
 
     #[test]

@@ -9,8 +9,9 @@
 
 use std::any::Any;
 
+use crate::compositor::PANE_FONT_PX;
 use ruster_render::{Theme, WhichKeyEntry, WhichKeyView};
-use ruster_render_gles::atlas::{layout_text, Atlas};
+use ruster_render_gles::atlas::{cell_metrics, layout_text, layout_text_in, Atlas, FontFamily};
 use ruster_render_gles::cursor::CursorBitmap;
 use ruster_render_gles::geometry::{rect_verts, rounded_rect_verts, GlyphQuad, Vertex};
 use ruster_shell::{Layout, Rect, WindowId};
@@ -60,6 +61,19 @@ impl TreeStatus {
 /// legible, thick enough to read at a glance on a 1440p display.
 const BORDER_WIDTH: f32 = 2.0;
 
+/// How many cells the line-number gutter needs, including its trailing space.
+///
+/// Sized to the largest number that will be shown rather than to the buffer, so
+/// a 10,000-line file does not reserve five columns while showing lines 1-40 —
+/// and zero when there is nothing to number, so an empty pane has no gutter.
+fn gutter_width(first_line: usize, shown: usize) -> usize {
+    if shown == 0 {
+        return 0;
+    }
+    let last = first_line + shown;
+    last.to_string().len() + 1
+}
+
 /// One frame's worth of chrome geometry: solid quads and textured glyph quads,
 /// both in physical pixels with the origin at the output's top-left.
 ///
@@ -106,8 +120,6 @@ impl ChromeBatch {
 /// The compositor's UI chrome: statusline, editor frame, which-key overlay.
 pub struct Chrome {
     pub atlas: Atlas,
-    pub theme: Theme,
-    line_h: i32,
     /// The atlas as uploaded to the GPU, with the atlas generation it was built
     /// from. Boxed as `Any` because the texture type belongs to the renderer,
     /// and the two backends composite through different ones (`GlesRenderer`
@@ -125,6 +137,8 @@ pub struct Chrome {
     /// regions. Ids are handed out by position in the batch and kept stable, so
     /// a glyph that does not move reports no damage.
     glyph_ids: Vec<Id>,
+    /// The colours everything here draws in, from the user's config.
+    theme: Theme,
 }
 
 impl Chrome {
@@ -132,7 +146,6 @@ impl Chrome {
         Chrome {
             atlas: Atlas::new(),
             theme,
-            line_h: 24,
             texture: None,
             cursor: CursorBitmap::arrow(),
             cursor_texture: None,
@@ -290,11 +303,13 @@ impl Chrome {
 
     /// A synthetic editor frame: mode-line title + buffer rows. Phase 0 shows a
     /// welcome buffer; buffer-driven content lands with the embedded editor.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw_editor_frame(
         &mut self,
         w: i32,
         h: i32,
         buffer: &[String],
+        first_line: usize,
         title: &str,
         batch: &mut ChromeBatch,
     ) {
@@ -319,12 +334,41 @@ impl Chrome {
             batch,
         );
 
-        let rows = (h - bar_h - 8) / self.line_h;
-        let shown = rows.min(buffer.len() as i32);
-        for line in 0..shown {
-            let text = &buffer[line as usize];
-            let gy = (bar_h + 6 + line * self.line_h) as f32;
-            self.text(text, 14, 6.0, gy, fg, batch);
+        // The body is a character grid, so it is laid out on cell metrics
+        // rather than a fixed chrome line height — the two are different
+        // numbers, and using a chrome constant would drift a row out of
+        // alignment every few lines. The old `line_h: 24` field went with it.
+        let (cell_w, cell_h) = cell_metrics(PANE_FONT_PX);
+        let gutter_cols = gutter_width(first_line, buffer.len());
+        let gutter_px = gutter_cols as f32 * cell_w;
+        let rows = (((h - bar_h - 8) as f32) / cell_h).max(0.0) as usize;
+        let gutter_color: (f32, f32, f32, f32) = self.theme.gutter.into();
+
+        for (row, text) in buffer.iter().take(rows).enumerate() {
+            let gy = bar_h as f32 + 6.0 + row as f32 * cell_h;
+            if gutter_cols > 0 {
+                // Right-aligned, the way every editor draws line numbers: the
+                // units column has to line up or the eye cannot scan it.
+                let number = format!("{:>width$} ", first_line + row + 1, width = gutter_cols - 1);
+                self.text_in(
+                    &number,
+                    PANE_FONT_PX,
+                    6.0,
+                    gy,
+                    gutter_color,
+                    FontFamily::Mono,
+                    batch,
+                );
+            }
+            self.text_in(
+                text,
+                PANE_FONT_PX,
+                6.0 + gutter_px,
+                gy,
+                fg,
+                FontFamily::Mono,
+                batch,
+            );
         }
     }
 
@@ -544,10 +588,28 @@ impl Chrome {
         color: (f32, f32, f32, f32),
         batch: &mut ChromeBatch,
     ) -> f32 {
+        self.text_in(text, font_size, x, y, color, FontFamily::Ui, batch)
+    }
+
+    /// As [`text`](Self::text), in a specific face.
+    ///
+    /// Chrome is proportional; a pane's body is not. Column alignment, the
+    /// gutter and (in Stage 3) click-to-position all assume a fixed advance.
+    #[allow(clippy::too_many_arguments)]
+    fn text_in(
+        &mut self,
+        text: &str,
+        font_size: u32,
+        x: f32,
+        y: f32,
+        color: (f32, f32, f32, f32),
+        family: FontFamily,
+        batch: &mut ChromeBatch,
+    ) -> f32 {
         let rgb = rgb8(color);
-        let layout = layout_text(text, font_size, None);
+        let layout = layout_text_in(text, font_size, None, family);
         for (gx, _, c) in layout.glyphs {
-            let g = self.atlas.glyph(font_size, rgb, c);
+            let g = self.atlas.glyph_in(font_size, rgb, c, family);
             if g.is_empty() {
                 continue;
             }
@@ -795,7 +857,7 @@ mod tests {
         let mut chrome = Chrome::new(theme());
         let buf: Vec<String> = (0..20).map(|i| format!("line {i}")).collect();
         let mut batch = ChromeBatch::default();
-        chrome.draw_editor_frame(400, 300, &buf, "welcome", &mut batch);
+        chrome.draw_editor_frame(400, 300, &buf, 0, "welcome", &mut batch);
         assert!(batch.verts.len() >= 6 * 2); // frame + title bar
         assert!(!batch.glyphs.is_empty(), "title and rows draw glyphs");
     }
@@ -888,11 +950,11 @@ mod tests {
     fn translate_since_moves_both_panels_and_glyphs() {
         let mut chrome = Chrome::new(theme());
         let mut batch = ChromeBatch::default();
-        chrome.draw_editor_frame(400, 300, &["hi".to_string()], "welcome", &mut batch);
+        chrome.draw_editor_frame(400, 300, &["hi".to_string()], 0, "welcome", &mut batch);
         let (vert, glyph) = (batch.verts[0], batch.glyphs[0]);
 
         let mark = batch.mark();
-        chrome.draw_editor_frame(400, 300, &["hi".to_string()], "welcome", &mut batch);
+        chrome.draw_editor_frame(400, 300, &["hi".to_string()], 0, "welcome", &mut batch);
         batch.translate_since(mark, 10.0, 20.0);
 
         // Everything before the mark stays put; everything after it shifts.
