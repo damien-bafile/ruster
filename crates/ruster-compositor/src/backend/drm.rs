@@ -402,6 +402,19 @@ impl CompositorState<RusterUdevData> {
     /// (no damage) or the frame fails to queue, a repaint is re-scheduled for
     /// the next frame to keep polling for damage.
     fn render_surface(&mut self) {
+        // While the session is paused — the user is on another VT — the DRM
+        // device is inactive and every frame fails. Rendering anyway spun at
+        // full frame rate producing `PrepareFrame(DeviceInactive)`: 11,746
+        // warnings in five minutes on the first hardware boot that switched
+        // away, 96% of the log. On a VT the log is the only diagnostic channel
+        // there is, so drowning it is worse than the wasted work.
+        //
+        // Nothing is rescheduled here: `ActivateSession` kicks a render when
+        // the session comes back, which is the only moment there is anything
+        // new to draw.
+        if !self.backend_data.session.is_active() {
+            return;
+        }
         let output = self.backend_data.output.clone();
         // Read before the renderer is acquired: `single_renderer` borrows
         // `self` mutably for the rest of the frame.
