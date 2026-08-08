@@ -53,6 +53,8 @@ pub enum Action {
     Spawn(String),
     /// Add or replace a keybinding while running.
     Bind(String, String),
+    /// Open a new editor pane beside the focused leaf.
+    NewPane,
     /// Pin the shortcut helper open, or unpin it.
     ToggleHelp,
     /// Open the `:` prompt (or `=` for Lua).
@@ -569,6 +571,7 @@ impl Action {
             ("cycle workspace", _, _) => Some(Action::CycleWorkspace),
             ("screenshot", _, _) => Some(Action::Screenshot),
             ("toggle help" | "help" | "toggle whichkey", _, _) => Some(Action::ToggleHelp),
+            ("new pane" | "pane", _, _) => Some(Action::NewPane),
             ("command" | "prompt", _, _) => {
                 Some(Action::Prompt(crate::minibuffer::Prompt::Command))
             }

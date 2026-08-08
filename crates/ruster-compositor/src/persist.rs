@@ -196,14 +196,24 @@ impl<B: Backend + 'static> CompositorState<B> {
             tracing::warn!("no config directory; the session was not saved");
             return;
         };
-        let session = Session::capture(&self.workspaces, |id| App {
-            command: self.persist.commands.get(&id).cloned(),
-            title: self
-                .shell
-                .windows()
-                .find(|w| w.id == id)
-                .map(|w| w.title.clone())
-                .unwrap_or_default(),
+        let panes = &self.panes;
+        let session = Session::capture(&self.workspaces, |id| {
+            // A pane is recreated, not relaunched, so it saves as its own shape
+            // rather than as a window whose command we could not identify —
+            // which `rebuild` drops, silently losing it from the layout.
+            if let Some(pane) = panes.get(&id) {
+                return App::pane(pane.title.clone());
+            }
+            App {
+                command: self.persist.commands.get(&id).cloned(),
+                title: self
+                    .shell
+                    .windows()
+                    .find(|w| w.id == id)
+                    .map(|w| w.title.clone())
+                    .unwrap_or_default(),
+                pane: false,
+            }
         });
         let relaunchable = session.apps.iter().filter(|a| a.command.is_some()).count();
         match persist::save(&dir, &self.seat_name(), &session) {
@@ -231,7 +241,18 @@ impl<B: Backend + 'static> CompositorState<B> {
             return false;
         };
         let mut pending = HashMap::new();
+        // Panes come back immediately: there is no process to wait for, so the
+        // leaf can be filled in this pass rather than when some client appears.
+        let mut restored_panes: Vec<(usize, WindowId)> = Vec::new();
         for (app, entry) in session.apps.iter().enumerate() {
+            if entry.pane {
+                let area = self.output_rect();
+                let id = self.shell.add_window(entry.title.clone(), area.w, area.h);
+                self.panes
+                    .insert(id, crate::pane::EditorPane::new(entry.title.clone()));
+                restored_panes.push((app, id));
+                continue;
+            }
             let Some(command) = &entry.command else {
                 tracing::info!(
                     title = %entry.title,
@@ -246,6 +267,7 @@ impl<B: Backend + 'static> CompositorState<B> {
         tracing::info!(
             windows = session.apps.len(),
             relaunched = pending.len(),
+            panes = restored_panes.len(),
             workspace = session.active,
             "restoring session"
         );
@@ -253,13 +275,25 @@ impl<B: Backend + 'static> CompositorState<B> {
         // the clients trickle in, which would move the screen under whoever is
         // already typing.
         self.switch_workspace(session.active);
+
+        // Panes are already in hand, so seed them into the claim table. When
+        // nothing was relaunched they are the whole restore and the tree is
+        // rebuilt here; otherwise they are simply filled in before the first
+        // client arrives, and `place_restored_window` completes the picture.
+        let claimed: HashMap<usize, WindowId> = restored_panes.into_iter().collect();
         if pending.is_empty() {
+            if !claimed.is_empty() {
+                session.restore_into(&mut self.workspaces, |app| claimed.get(&app).copied());
+                self.reconfigure_tiles();
+                self.shell.focus = self.workspaces.focus_for_active(None);
+                tracing::info!(panes = claimed.len(), "restored a session of panes");
+            }
             return false;
         }
         self.persist.restore = Some(Restore {
             session,
             pending,
-            claimed: HashMap::new(),
+            claimed,
         });
         true
     }

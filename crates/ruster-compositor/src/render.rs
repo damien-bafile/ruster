@@ -95,6 +95,8 @@ pub struct FrameInput<'a> {
     /// Where each visible window sits, bottom to top.
     pub geometry: &'a [(WindowId, ruster_shell::Rect)],
     pub tree_status: TreeStatus,
+    /// Editor panes, drawn where the layout put them.
+    pub panes: &'a crate::pane::Panes,
     /// The bindings in force, so the welcome frame can say how to quit.
     pub keymap: &'a crate::keymap::Keymap,
     /// The which-key overlay, drawn only while a chord is half-typed.
@@ -200,6 +202,33 @@ where
         // about anything.
         if let Some(view) = &scene.whichkey {
             chrome.draw_whichkey(size.w, size.h, view, &mut batch);
+        }
+
+        // Editor panes, at the rectangles the layout gave them. Drawn inside the
+        // chrome batch so they sit above client surfaces and below the
+        // statusline, which is where a tile belongs — and so a pane's frame is
+        // translated by the same `translate_since` the rest of the chrome uses
+        // rather than a second positioning scheme.
+        // Chrome is measured in physical pixels and the layout in logical ones,
+        // the same conversion `draw_window_borders` does.
+        let chrome_scale = scene.output.current_scale().fractional_scale() as f32;
+        for (id, rect) in scene.geometry {
+            let Some(pane) = scene.panes.get(id) else {
+                continue;
+            };
+            let mark = batch.mark();
+            chrome.draw_editor_frame(
+                (rect.w as f32 * chrome_scale) as i32,
+                (rect.h as f32 * chrome_scale) as i32,
+                &[],
+                &pane.title,
+                &mut batch,
+            );
+            batch.translate_since(
+                mark,
+                rect.x as f32 * chrome_scale,
+                rect.y as f32 * chrome_scale,
+            );
         }
 
         // Synthetic load, when asked for. Real glyphs from the atlas rather than

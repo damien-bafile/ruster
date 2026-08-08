@@ -162,6 +162,7 @@ fn run_winit() -> anyhow::Result<()> {
                     cursor_location,
                     geometry: &geometry,
                     tree_status,
+                    panes: &state.panes,
                     keymap: &state.keymap,
                     minibuffer: state.minibuffer.as_ref(),
                     whichkey: ruster_compositor::keymap::whichkey_view(

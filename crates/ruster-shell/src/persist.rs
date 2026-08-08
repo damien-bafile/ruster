@@ -70,6 +70,24 @@ pub struct App {
     /// not a program — but it is what makes the saved file legible, and it is
     /// the only trace left of a window that cannot be relaunched.
     pub title: String,
+    /// True when this leaf was an editor pane rather than a client window.
+    ///
+    /// A pane needs no command: it is recreated rather than relaunched. Without
+    /// this it would save as a window with no command, which is the shape of
+    /// "we could not identify this program" — and `rebuild` drops those, so a
+    /// restored layout would silently lose every pane in it.
+    pub pane: bool,
+}
+
+impl App {
+    /// An editor pane, which has no command line to record.
+    pub fn pane(title: impl Into<String>) -> Self {
+        App {
+            command: None,
+            title: title.into(),
+            pane: true,
+        }
+    }
 }
 
 /// One node of a saved container tree. The n-ary mirror of [`Node`], with app
@@ -204,10 +222,16 @@ impl Session {
         let mut out = format!("{MAGIC} {VERSION}\n");
         out.push_str(&format!("active {}\n", self.active));
         for app in &self.apps {
-            out.push_str(&format!(
-                "app {}\n",
-                one_line(app.command.as_deref().unwrap_or(""))
-            ));
+            // A distinct keyword, so a pane is never mistaken for a window
+            // whose command we failed to identify.
+            if app.pane {
+                out.push_str("pane\n");
+            } else {
+                out.push_str(&format!(
+                    "app {}\n",
+                    one_line(app.command.as_deref().unwrap_or(""))
+                ));
+            }
             let title = one_line(&app.title);
             if !title.is_empty() {
                 out.push_str(&format!("title {title}\n"));
@@ -247,10 +271,17 @@ impl Session {
 
         let mut apps: Vec<App> = Vec::new();
         while let Some(line) = rest.get(at) {
-            if let Some(command) = value(line, "app") {
+            if line.trim() == "pane" {
+                apps.push(App {
+                    command: None,
+                    title: String::new(),
+                    pane: true,
+                });
+            } else if let Some(command) = value(line, "app") {
                 apps.push(App {
                     command: (!command.is_empty()).then(|| command.to_string()),
                     title: String::new(),
+                    pane: false,
                 });
             } else if let Some(title) = value(line, "title") {
                 // A title with no app in front of it is not a file we wrote.
@@ -550,11 +581,60 @@ mod tests {
     }
 
     /// An app table entry named after the window, so a restore can be checked
+    #[test]
+    fn a_pane_survives_the_round_trip_as_a_pane() {
+        // A pane saved as "a window with no command" is indistinguishable from
+        // one whose program we failed to identify — and `rebuild` drops those,
+        // so every pane would vanish from a restored layout without a word.
+        let mut ws = Workspaces::new();
+        ws.insert(w(1), None, Layout::Horizontal);
+        ws.insert(w(2), Some(w(1)), Layout::Horizontal);
+        let session = Session::capture(&ws, |id| {
+            if id == w(2) {
+                App::pane("scratch")
+            } else {
+                App {
+                    command: Some("foot".into()),
+                    title: "term".into(),
+                    pane: false,
+                }
+            }
+        });
+        let text = session.encode();
+        assert!(
+            text.contains("\npane\n"),
+            "expected a pane keyword in:\n{text}"
+        );
+
+        let back = Session::decode(&text).expect("a session we wrote must parse");
+        assert_eq!(back.apps.len(), 2);
+        assert!(back.apps[1].pane, "the pane must come back a pane");
+        assert_eq!(back.apps[1].title, "scratch");
+        assert!(!back.apps[0].pane, "the client must not");
+        assert_eq!(back.apps[0].command.as_deref(), Some("foot"));
+    }
+
+    #[test]
+    fn a_pane_is_not_confused_with_a_window_we_could_not_identify() {
+        // Both have no command. Only one should come back as a pane.
+        let mut ws = Workspaces::new();
+        ws.insert(w(1), None, Layout::Horizontal);
+        let session = Session::capture(&ws, |_| App {
+            command: None,
+            title: "mystery".into(),
+            pane: false,
+        });
+        let back = Session::decode(&session.encode()).unwrap();
+        assert!(!back.apps[0].pane);
+        assert_eq!(back.apps[0].command, None);
+    }
+
     /// window by window.
     fn app_of(window: WindowId) -> App {
         App {
             command: Some(format!("foot -e app{}", window.0)),
             title: format!("window {}", window.0),
+            pane: false,
         }
     }
 
@@ -731,6 +811,7 @@ mod tests {
         let session = Session::capture(&ws, |id| App {
             command: (id == w(1)).then(|| "foot".to_string()),
             title: format!("window {}", id.0),
+            pane: false,
         });
         assert_eq!(session.apps[1].command, None);
         assert_eq!(session.apps[1].title, "window 2");
@@ -890,6 +971,7 @@ mod tests {
             apps: vec![App {
                 command: Some("sh -c 'foot -e htop'".into()),
                 title: "htop — 3 running".into(),
+                pane: false,
             }],
             workspaces: {
                 let mut ws: [WorkspaceSnapshot; SLOTS] = Default::default();
@@ -912,6 +994,7 @@ mod tests {
             apps: vec![App {
                 command: Some("foot".into()),
                 title: "evil\nworkspace 2\nleaf 0".into(),
+                pane: false,
             }],
             workspaces,
             active: 1,

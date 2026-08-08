@@ -122,6 +122,10 @@ pub struct CompositorState<B: Backend + 'static> {
     /// leak a stray release to the client — which is how a terminal ends up
     /// with a key it thinks is still held.
     pub intercepted: HashSet<u32>,
+    /// Editor panes: tree leaves that are not Wayland clients. A leaf is a
+    /// client if `toplevels` has it and a pane if this does — see `pane.rs` for
+    /// why that is a side table rather than a variant on `Node::Leaf`.
+    pub panes: crate::pane::Panes,
     /// Popups (client menus, tooltips), tracked so they can be drawn at the
     /// position their positioner asked for rather than not at all.
     pub popups: smithay::desktop::PopupManager,
@@ -194,7 +198,12 @@ impl<B: Backend + 'static> CompositorState<B> {
     /// same failure — keystrokes disappearing into a window the user is not
     /// looking at, with no way to tell where they went.
     fn focusable(&self, window: WindowId) -> bool {
-        self.mapped.contains(&window) && self.workspaces.is_visible(window)
+        // A pane is focusable as soon as it is on screen: it has no buffer to
+        // commit and no client to wait for, so the `mapped` gate — which exists
+        // to stop the keyboard reaching a window that has never drawn — has
+        // nothing to say about it.
+        let exists = self.mapped.contains(&window) || self.panes.contains_key(&window);
+        exists && self.workspaces.is_visible(window)
     }
 }
 
@@ -263,6 +272,29 @@ impl<B: Backend + 'static> CompositorState<B> {
             }
             Submission::Nothing(_) => {}
         }
+    }
+
+    /// Insert a new editor pane beside the focused leaf and focus it.
+    ///
+    /// The same two calls `new_toplevel` makes — an id from `ShellState`, then
+    /// `Workspaces::insert` next to whatever has focus — because a pane is an
+    /// ordinary leaf and taking a different route would be the first step
+    /// towards the two diverging.
+    pub fn open_pane(&mut self) {
+        let area = self.output_rect();
+        let id = self.shell.add_window("scratch".to_string(), area.w, area.h);
+        self.workspaces
+            .insert(id, self.shell.focus, ruster_shell::Layout::Horizontal);
+        self.panes
+            .insert(id, crate::pane::EditorPane::new("scratch"));
+        crate::pane::debug_assert_disjoint(&self.panes, &self.toplevels);
+        self.shell.set_focus(id);
+        self.reconfigure_tiles();
+        // The seat keyboard has no surface to hold now, which is the correct
+        // answer for a pane and is what `update_keyboard_focus` already does
+        // with an id no toplevel resolves.
+        self.update_keyboard_focus(SCOUNTER.next_serial());
+        tracing::info!(?id, "new pane");
     }
 
     /// Run everything Lua has queued since last time, then publish what the
@@ -335,6 +367,7 @@ impl<B: Backend + 'static> CompositorState<B> {
             }
             Action::Screenshot => self.screenshot_pending = true,
             Action::ToggleHelp => self.help_pinned = !self.help_pinned,
+            Action::NewPane => self.open_pane(),
             Action::Bind(binding, action) => self.keymap.bind(&binding, &action),
             Action::Prompt(prompt) => {
                 // Opening clears any message from last time; a stale result
@@ -431,7 +464,18 @@ impl<B: Backend + 'static> CompositorState<B> {
     /// drawing at its old size and either overlaps the window beside it or
     /// leaves a gap.
     pub fn reconfigure_tiles(&mut self) {
+        let (cell_w, cell_h) = ruster_render_gles::atlas::cell_metrics(PANE_FONT_PX);
         for (id, rect) in self.geometry() {
+            // A pane is sized in cells rather than pixels. Same layout pass and
+            // the same rectangle, so a pane and a client can never disagree
+            // about where the tile boundary is.
+            if let Some(pane) = self.panes.get_mut(&id) {
+                let (cols, rows) =
+                    crate::pane::EditorPane::grid_for(rect.w, rect.h, cell_w, cell_h);
+                pane.cols = cols;
+                pane.rows = rows;
+                continue;
+            }
             let Some(toplevel) = self.toplevels.get(&id) else {
                 continue;
             };
@@ -526,6 +570,13 @@ const RESIZE_STEP: f32 = 0.05;
 fn next_focus_after_unmap(mapped: &HashSet<WindowId>, unmapped: WindowId) -> Option<WindowId> {
     mapped.iter().filter(|id| **id != unmapped).max().copied()
 }
+
+/// Font size a pane's character grid is measured at.
+///
+/// One constant so the grid `reconfigure_tiles` computes and the text Stage 2
+/// draws cannot be measured at different sizes — which would put the cursor in
+/// the wrong cell without anything looking obviously wrong.
+pub const PANE_FONT_PX: u32 = 14;
 
 /// Which workspace has to be on screen before `window` can take focus, or
 /// `None` when an activation request naming it should be dropped.
@@ -622,6 +673,7 @@ pub fn create_state<B: Backend + 'static>(
         keymap: crate::keymap::Keymap::default(),
         chord: crate::keymap::ChordState::default(),
         intercepted: HashSet::new(),
+        panes: crate::pane::Panes::new(),
         popups: smithay::desktop::PopupManager::default(),
         help_pinned: false,
         minibuffer: None,
@@ -832,7 +884,15 @@ impl<B: Backend + 'static> CompositorHandler for CompositorState<B> {
                         .copied()
                         .filter(|w| self.workspaces.is_visible(*w))
                         .collect();
-                    if let Some(next) = next_focus_after_unmap(&visible, id) {
+                    // Through the tree, not the `mapped` set: a client unmapping
+                    // beside a pane would otherwise pick `None` and focus would
+                    // vanish, because a pane is not in `mapped` and never will be.
+                    let after_tree = self
+                        .workspaces
+                        .focus_for_active(Some(id))
+                        .filter(|n| *n != id);
+                    if let Some(next) = after_tree.or_else(|| next_focus_after_unmap(&visible, id))
+                    {
                         self.shell.set_focus(next);
                     }
                     self.update_keyboard_focus(SCOUNTER.next_serial());
