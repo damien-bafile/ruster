@@ -33,6 +33,8 @@ use crate::backend::Backend;
 use crate::compositor::CompositorState;
 use smithay::desktop::PopupManager;
 
+use ruster_core::key::{Arrow, KeyEvent};
+
 use crate::keymap::{ChordState, Resolved};
 use crate::lua::Action;
 use ruster_shell::{Rect, WindowId};
@@ -65,6 +67,57 @@ pub fn vt_switch_target(keysym: Keysym) -> Option<i32> {
     (FIRST..=LAST)
         .contains(&raw)
         .then(|| (raw - FIRST) as i32 + 1)
+}
+
+/// An xkb keypress as the editor's [`KeyEvent`], or `None` for keys the editor
+/// has no vocabulary for.
+///
+/// A third sibling of the editor's crossterm and raylib key tables. The source
+/// vocabularies genuinely differ — xkb keysyms, crossterm codes, raylib enums —
+/// so what is shared is the target, which already is.
+///
+/// `modified` carries the shifted symbol, which is the character actually typed;
+/// reading text off the raw keysym would make every capital lowercase. The raw
+/// one identifies the editing keys, which do not shift.
+pub fn editor_key(raw: Keysym, modified: Keysym, mods: &ModifiersState) -> Option<KeyEvent> {
+    use smithay::input::keyboard::keysyms as ks;
+    let arrow = match raw.raw() {
+        ks::KEY_Left => Some(Arrow::Left),
+        ks::KEY_Right => Some(Arrow::Right),
+        ks::KEY_Up => Some(Arrow::Up),
+        ks::KEY_Down => Some(Arrow::Down),
+        _ => None,
+    };
+    if let Some(arrow) = arrow {
+        return Some(KeyEvent::Arrow(arrow));
+    }
+    match raw.raw() {
+        ks::KEY_Escape => return Some(KeyEvent::Esc),
+        ks::KEY_Return | ks::KEY_KP_Enter => return Some(KeyEvent::Enter),
+        ks::KEY_BackSpace => return Some(KeyEvent::Backspace),
+        ks::KEY_Delete => return Some(KeyEvent::Delete),
+        ks::KEY_Tab => {
+            return Some(if mods.shift {
+                KeyEvent::BackTab
+            } else {
+                KeyEvent::Tab
+            })
+        }
+        ks::KEY_ISO_Left_Tab => return Some(KeyEvent::BackTab),
+        _ => {}
+    }
+    // Ctrl before the character: `Ctrl('d')` is a half-page scroll, while the
+    // character it would otherwise produce is a control code nobody types.
+    if mods.ctrl {
+        return raw.key_char().map(KeyEvent::Ctrl);
+    }
+    if mods.alt {
+        return raw.key_char().map(KeyEvent::Alt);
+    }
+    modified
+        .key_char()
+        .filter(|c| !c.is_control())
+        .map(KeyEvent::Char)
 }
 
 /// The window under `pointer`, and the origin of its tile, from a laid-out tree.
@@ -290,6 +343,17 @@ impl<B: Backend + 'static> CompositorState<B> {
                     // missing a keystroke the user did not mean for it.
                     Resolved::None if compositor.chord.is_active() => {
                         compositor.chord.clear();
+                        compositor.intercepted.insert(keycode.raw());
+                        FilterResult::Intercept(())
+                    }
+                    // A focused editor pane takes the key — but only here, after
+                    // VT switching, the mini-buffer, chord resolution and the
+                    // quit hatch. An editor that swallowed `M-S-q` on a DRM
+                    // boot would be the worst bug in this project.
+                    Resolved::None if compositor.pane_has_focus() => {
+                        if let Some(key) = editor_key(keysym, handle.modified_sym(), modifiers) {
+                            compositor.pane_key(key);
+                        }
                         compositor.intercepted.insert(keycode.raw());
                         FilterResult::Intercept(())
                     }
@@ -890,6 +954,54 @@ mod tests {
         let (_loop, mut state) = test_state();
         press(&mut state, KEY_F2);
         assert!(state.backend_data.vt_switches.is_empty());
+    }
+
+    #[test]
+    fn the_quit_hatch_still_fires_while_an_editor_pane_has_focus() {
+        // The ordering the Phase 3 plan calls non-negotiable. A pane takes
+        // every key the keymap does not claim, so if its arm sat above the
+        // escape hatch an editor would swallow `M-S-q` — on a DRM boot that is
+        // a black screen with no way out.
+        let (_loop, mut state) = test_state();
+        // A keymap that does *not* bind quit, so what is being tested is the
+        // unconditional hatch rather than a configured binding. With `M-S-q`
+        // bound, this test passes even when the hatch is disabled entirely —
+        // which it did, until the mutation showed it.
+        state.keymap = crate::keymap::Keymap::new(&[("M-t".into(), "cycle workspace".into())]);
+        state.open_pane();
+        assert!(state.pane_has_focus(), "the new pane should hold focus");
+        assert!(state.running.load(Ordering::SeqCst));
+
+        press(&mut state, KEY_LEFTMETA);
+        press(&mut state, KEY_LEFTSHIFT);
+        press(&mut state, KEY_Q);
+        assert!(
+            !state.running.load(Ordering::SeqCst),
+            "Super+Shift+q must quit even with an editor pane focused"
+        );
+    }
+
+    #[test]
+    fn a_pane_receives_the_keys_the_keymap_does_not_claim() {
+        // The other half: everything the WM has no use for reaches the editor,
+        // rather than being forwarded to a client that is not focused.
+        let (_loop, mut state) = test_state();
+        state.open_pane();
+        let id = state.shell.focus.expect("a pane was just focused");
+        state.panes.get_mut(&id).unwrap().rows = 10;
+
+        press(&mut state, KEY_A);
+        let text = state.panes[&id].buffer.line_to_string(0);
+        assert!(
+            !text.starts_with('a'),
+            "`a` is an append command, not a literal: {text:?}"
+        );
+        // Now in insert mode, so the next key is text.
+        press(&mut state, KEY_Q);
+        assert!(
+            state.panes[&id].buffer.line_to_string(0).contains('q'),
+            "typing after `a` should insert"
+        );
     }
 
     #[test]

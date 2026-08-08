@@ -304,6 +304,24 @@ impl<B: Backend + 'static> CompositorState<B> {
         tracing::info!(?id, "new pane");
     }
 
+    /// Whether the focused leaf is an editor pane.
+    pub fn pane_has_focus(&self) -> bool {
+        self.shell
+            .focus
+            .is_some_and(|id| self.panes.contains_key(&id))
+    }
+
+    /// Feed a key to the focused pane.
+    pub fn pane_key(&mut self, key: ruster_core::key::KeyEvent) {
+        // Four spaces until the config has an opinion. Stage 4 reads it from
+        // the editor's settings, which already have one.
+        if let Some(id) = self.shell.focus {
+            if let Some(pane) = self.panes.get_mut(&id) {
+                pane.handle_key(key, "    ");
+            }
+        }
+    }
+
     /// Open `path` in a new pane, or report why not.
     ///
     /// The read happens here rather than in the pane so a file that cannot be

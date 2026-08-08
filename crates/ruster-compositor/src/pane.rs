@@ -16,10 +16,16 @@
 //! the pointer land somewhere other than where it looked exactly once, and it
 //! was because two functions computed one rectangle two ways.
 //!
-//! Phase 3 Stage 1: a pane exists, holds focus, moves, splits, resizes and
-//! survives a restart. It draws an empty titled frame. Buffers arrive in Stage 2.
+//! Stage 1 gave a pane its place in the tree; Stage 2 put a buffer in it; Stage
+//! 3 makes it editable, driving the same `VimState` and `EditSession` the editor
+//! does rather than a second editing implementation living in the compositor.
 
 use ruster_core::buffer::Buffer;
+use ruster_core::cursor::CursorSet;
+use ruster_core::editor::{EditSession, EditorView};
+use ruster_core::key::KeyEvent;
+use ruster_core::undo::UndoStack;
+use ruster_core::vim::VimState;
 use ruster_shell::WindowId;
 
 /// One editor pane.
@@ -45,6 +51,34 @@ pub struct EditorPane {
     pub buffer: Buffer,
     /// First visible buffer line.
     pub scroll_top: usize,
+    /// Where the carets are. A `CursorSet` rather than one position because
+    /// that is what `EditSession` edits through, and multi-cursor comes free
+    /// with it rather than as a later retrofit.
+    pub cursors: CursorSet,
+    pub undo: UndoStack,
+    /// Modal state. The compositor drives the same `VimState` the editor does,
+    /// so a motion cannot behave differently here than it does in the TUI.
+    pub vim: VimState,
+}
+
+impl EditorView for EditorPane {
+    fn buffer(&self) -> &Buffer {
+        &self.buffer
+    }
+
+    fn primary_head(&self) -> usize {
+        self.cursors.primary().head
+    }
+
+    fn cursors(&self) -> &CursorSet {
+        &self.cursors
+    }
+
+    /// The pane's own row count, so half-page motions move by what is on
+    /// screen rather than by the trait's headless default of 24.
+    fn viewport_height(&self) -> usize {
+        self.rows.max(1) as usize
+    }
 }
 
 impl EditorPane {
@@ -55,6 +89,9 @@ impl EditorPane {
             rows: 0,
             buffer: Buffer::new(),
             scroll_top: 0,
+            cursors: CursorSet::single(0),
+            undo: UndoStack::new(),
+            vim: VimState::default(),
         }
     }
 
@@ -63,6 +100,43 @@ impl EditorPane {
         EditorPane {
             buffer: Buffer::from_str(text),
             ..EditorPane::new(title)
+        }
+    }
+
+    /// Feed one key to the pane's editor.
+    ///
+    /// The `VimState` is taken out for the duration because `handle` wants the
+    /// pane as an `&dyn EditorView` — an immutable borrow — while the state
+    /// doing the handling lives on the pane itself. Putting it back is not
+    /// optional and there is no early return between the two.
+    pub fn handle_key(&mut self, key: KeyEvent, indent: &str) {
+        let mut vim = std::mem::take(&mut self.vim);
+        let actions = vim.handle(key, self);
+        self.vim = vim;
+        {
+            let mut session =
+                EditSession::new(&mut self.buffer, &mut self.cursors, &mut self.undo, indent);
+            for action in actions {
+                session.execute(action);
+            }
+        }
+        self.follow_cursor();
+    }
+
+    /// Scroll just enough to keep the primary cursor on screen.
+    ///
+    /// Without this the cursor walks off the top or bottom and the pane looks
+    /// frozen — the buffer is changing, just not where anyone is looking.
+    pub fn follow_cursor(&mut self) {
+        let rows = self.rows as usize;
+        if rows == 0 {
+            return;
+        }
+        let line = self.buffer.char_to_line(self.cursors.primary().head);
+        if line < self.scroll_top {
+            self.scroll_top = line;
+        } else if line >= self.scroll_top + rows {
+            self.scroll_top = line + 1 - rows;
         }
     }
 
@@ -141,6 +215,87 @@ pub fn debug_assert_disjoint<T>(panes: &Panes, toplevels: &std::collections::Has
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typing_in_insert_mode_changes_the_buffer() {
+        // The whole point of the stage: keys reach `VimState` and `EditSession`
+        // rather than a private editing implementation living in the
+        // compositor.
+        let mut pane = EditorPane::with_text("f.rs", "abc");
+        pane.rows = 10;
+        pane.handle_key(KeyEvent::Char('i'), "    ");
+        for c in "hi ".chars() {
+            pane.handle_key(KeyEvent::Char(c), "    ");
+        }
+        assert_eq!(pane.visible_lines().1[0], "hi abc");
+    }
+
+    #[test]
+    fn normal_mode_motions_move_without_editing() {
+        let mut pane = EditorPane::with_text("f.rs", "abc\ndef");
+        pane.rows = 10;
+        for _ in 0..2 {
+            pane.handle_key(KeyEvent::Char('l'), "    ");
+        }
+        pane.handle_key(KeyEvent::Char('j'), "    ");
+        assert_eq!(pane.visible_lines().1, vec!["abc", "def"], "text unchanged");
+        assert_eq!(
+            pane.buffer.char_to_line(pane.cursors.primary().head),
+            1,
+            "the cursor moved down a line"
+        );
+    }
+
+    #[test]
+    fn undo_puts_back_what_was_typed() {
+        // The pane owns an `UndoStack` and hands it to `EditSession`, so undo
+        // is the editor's undo rather than something re-implemented here.
+        let mut pane = EditorPane::with_text("f.rs", "abc");
+        pane.rows = 10;
+        pane.handle_key(KeyEvent::Char('i'), "    ");
+        pane.handle_key(KeyEvent::Char('X'), "    ");
+        assert_eq!(pane.visible_lines().1[0], "Xabc");
+        pane.handle_key(KeyEvent::Esc, "    ");
+        pane.handle_key(KeyEvent::Char('u'), "    ");
+        assert_eq!(pane.visible_lines().1[0], "abc");
+    }
+
+    #[test]
+    fn the_view_follows_the_cursor_off_the_bottom() {
+        // Without this the cursor walks past the last visible row and the pane
+        // looks frozen: the buffer is changing, just not where anyone is
+        // looking.
+        let text = (1..=50)
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut pane = EditorPane::with_text("f.rs", &text);
+        pane.rows = 5;
+        for _ in 0..10 {
+            pane.handle_key(KeyEvent::Char('j'), "    ");
+        }
+        let (first, lines) = pane.visible_lines();
+        let cursor_line = pane.buffer.char_to_line(pane.cursors.primary().head);
+        assert!(
+            (first..first + lines.len()).contains(&cursor_line),
+            "cursor on line {cursor_line} but showing {first}..{}",
+            first + lines.len()
+        );
+    }
+
+    #[test]
+    fn the_view_follows_the_cursor_back_up() {
+        let text = (1..=50)
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut pane = EditorPane::with_text("f.rs", &text);
+        pane.rows = 5;
+        pane.scroll_top = 30;
+        pane.cursors = CursorSet::single(0);
+        pane.follow_cursor();
+        assert_eq!(pane.scroll_top, 0);
+    }
 
     #[test]
     fn a_pane_shows_the_lines_its_grid_has_room_for() {
