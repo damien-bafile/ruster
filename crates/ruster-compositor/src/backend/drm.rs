@@ -483,7 +483,7 @@ impl CompositorState<RusterUdevData> {
             ),
         };
         let elements = collect_render_elements(&scene, &mut self.chrome, &mut renderer);
-        send_frame_callbacks(self.shell.focus, &self.toplevels, &output);
+        send_frame_callbacks(&geometry, &self.toplevels, &output);
 
         let reschedule = match self.backend_data.drm_output.render_frame(
             &mut renderer,

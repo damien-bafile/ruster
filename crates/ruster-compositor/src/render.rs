@@ -108,7 +108,7 @@ pub fn render_frame(
     let result =
         damage_tracker.render_output(renderer, framebuffer, age, &elements, CLEAR_COLOR)?;
     let damage = result.damage.cloned();
-    send_frame_callbacks(scene.focus, scene.toplevels, scene.output);
+    send_frame_callbacks(scene.geometry, scene.toplevels, scene.output);
     Ok(damage)
 }
 
@@ -350,21 +350,36 @@ where
         .collect()
 }
 
-/// Deliver frame callbacks to the focused toplevel against the time of the next
-/// frame (one refresh interval in the future), so its client schedules the next
-/// redraw. The 1s throttle only backstops surfaces not on a scan-out output.
+/// Deliver frame callbacks to every window on screen, against the time of the
+/// next frame, so their clients schedule the next redraw.
+///
+/// Every *visible* window, not just the focused one. This served `focus` alone
+/// until now, which meant an unfocused client — a terminal running `top`, a
+/// video, anything that draws by itself — got nothing but the 1s throttle,
+/// updating once a second while the compositor was rendering at full rate.
+///
+/// The version that only served focus also had a much worse failure waiting for
+/// it: once focus can be something other than a client, the lookup yields
+/// `None` and *no window anywhere* gets a callback. The whole desktop freezes,
+/// with no error and nothing in the log. That is the shape of the bug rather
+/// than a hypothetical — the editor panes of Phase 3 are exactly such a focus.
+///
+/// The 1s throttle still backstops surfaces not on a scan-out output.
 pub fn send_frame_callbacks(
-    focus: Option<WindowId>,
+    geometry: &[(WindowId, ruster_shell::Rect)],
     toplevels: &HashMap<WindowId, ToplevelSurface>,
     output: &Output,
 ) {
-    if let Some(surface) = focus
-        .and_then(|id| toplevels.get(&id))
-        .map(|toplevel| toplevel.wl_surface().clone())
-    {
-        let frame_time = Clock::<Monotonic>::new().now() + Duration::from_millis(16);
+    let frame_time = Clock::<Monotonic>::new().now() + Duration::from_millis(16);
+    // `geometry` is the active workspace's layout, so a window on a hidden
+    // workspace is not in it and correctly gets nothing: it is not on screen,
+    // and telling it to redraw would be asking for work nobody can see.
+    for (id, _) in geometry {
+        let Some(toplevel) = toplevels.get(id) else {
+            continue;
+        };
         send_frames_surface_tree(
-            &surface,
+            toplevel.wl_surface(),
             output,
             frame_time,
             Some(Duration::from_secs(1)),
