@@ -74,6 +74,68 @@ fn gutter_width(first_line: usize, shown: usize) -> usize {
     last.to_string().len() + 1
 }
 
+/// Height of an editor frame's title bar, in physical pixels.
+const FRAME_BAR_H: f32 = 28.0;
+
+/// Gap between an editor frame's edge and its contents, in physical pixels.
+const FRAME_PAD: f32 = 6.0;
+
+/// Where an editor frame's text starts and how big one cell is, in physical
+/// pixels measured from the frame's own top-left.
+///
+/// The one description of that layout: [`Chrome::draw_editor_frame`] positions
+/// its rows from this and the pointer reads the same numbers back out, so the
+/// grid on screen and the grid under the mouse cannot be measured two ways.
+/// That is the same reason `tile_under` and `geometry()` are one list — a
+/// second opinion about a rectangle is how a click lands somewhere other than
+/// where it looked.
+///
+/// `ruster_render::TextArea` answers the equivalent question for the editor's
+/// windows and deliberately is not reused here: it counts in whole cells, from
+/// an origin one header *row* down, which a 28px bar and a 6px pad are not.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FrameBody {
+    /// First pixel of buffer text, past the gutter.
+    pub x: f32,
+    /// First pixel of the first text row, past the title bar.
+    pub y: f32,
+    pub cell_w: f32,
+    pub cell_h: f32,
+}
+
+impl FrameBody {
+    /// The body of a frame showing `shown` lines starting at `first_line`.
+    ///
+    /// Both arguments only because the gutter is: it widens as the numbers do,
+    /// which moves the first text column every time a pane scrolls past a power
+    /// of ten.
+    pub fn new(first_line: usize, shown: usize) -> Self {
+        let (cell_w, cell_h) = cell_metrics(PANE_FONT_PX);
+        FrameBody {
+            x: FRAME_PAD + gutter_width(first_line, shown) as f32 * cell_w,
+            y: FRAME_BAR_H + FRAME_PAD,
+            cell_w,
+            cell_h,
+        }
+    }
+
+    /// The (row, column) a point falls on, in cells from the body's origin.
+    ///
+    /// Anything above or left of the text — the title bar, the gutter, the pad
+    /// — is row 0 or column 0 rather than nothing: clicking a line number means
+    /// that line, and a caller that knows what is actually on those rows clamps
+    /// the other end. A frame with no measurable cell is all one cell, which is
+    /// the only answer that does not divide by zero.
+    pub fn cell_at(&self, x: f32, y: f32) -> (usize, usize) {
+        if self.cell_w <= 0.0 || self.cell_h <= 0.0 {
+            return (0, 0);
+        }
+        let col = ((x - self.x) / self.cell_w).floor().max(0.0) as usize;
+        let row = ((y - self.y) / self.cell_h).floor().max(0.0) as usize;
+        (row, col)
+    }
+}
+
 /// One frame's worth of chrome geometry: solid quads and textured glyph quads,
 /// both in physical pixels with the origin at the output's top-left.
 ///
@@ -313,7 +375,7 @@ impl Chrome {
         title: &str,
         batch: &mut ChromeBatch,
     ) {
-        let bar_h = 28;
+        let bar_h = FRAME_BAR_H;
         let bg: (f32, f32, f32, f32) = self.theme.bg.into();
         let fg: (f32, f32, f32, f32) = self.theme.fg.into();
         let accent: (f32, f32, f32, f32) = self.theme.accent.into();
@@ -324,28 +386,20 @@ impl Chrome {
             .extend(rounded_rect_verts(0.0, 0.0, w as f32, h as f32, 4.0, bg));
         batch
             .verts
-            .extend(rect_verts(0.0, 0.0, w as f32, bar_h as f32, accent));
-        self.text(
-            title,
-            16,
-            6.0,
-            (bar_h as f32 - 16.0) / 2.0,
-            accent_fg,
-            batch,
-        );
+            .extend(rect_verts(0.0, 0.0, w as f32, bar_h, accent));
+        self.text(title, 16, FRAME_PAD, (bar_h - 16.0) / 2.0, accent_fg, batch);
 
         // The body is a character grid, so it is laid out on cell metrics
         // rather than a fixed chrome line height — the two are different
         // numbers, and using a chrome constant would drift a row out of
         // alignment every few lines. The old `line_h: 24` field went with it.
-        let (cell_w, cell_h) = cell_metrics(PANE_FONT_PX);
+        let body = FrameBody::new(first_line, buffer.len());
         let gutter_cols = gutter_width(first_line, buffer.len());
-        let gutter_px = gutter_cols as f32 * cell_w;
-        let rows = (((h - bar_h - 8) as f32) / cell_h).max(0.0) as usize;
+        let rows = ((h as f32 - bar_h - 8.0) / body.cell_h).max(0.0) as usize;
         let gutter_color: (f32, f32, f32, f32) = self.theme.gutter.into();
 
         for (row, text) in buffer.iter().take(rows).enumerate() {
-            let gy = bar_h as f32 + 6.0 + row as f32 * cell_h;
+            let gy = body.y + row as f32 * body.cell_h;
             if gutter_cols > 0 {
                 // Right-aligned, the way every editor draws line numbers: the
                 // units column has to line up or the eye cannot scan it.
@@ -353,22 +407,14 @@ impl Chrome {
                 self.text_in(
                     &number,
                     PANE_FONT_PX,
-                    6.0,
+                    FRAME_PAD,
                     gy,
                     gutter_color,
                     FontFamily::Mono,
                     batch,
                 );
             }
-            self.text_in(
-                text,
-                PANE_FONT_PX,
-                6.0 + gutter_px,
-                gy,
-                fg,
-                FontFamily::Mono,
-                batch,
-            );
+            self.text_in(text, PANE_FONT_PX, body.x, gy, fg, FontFamily::Mono, batch);
         }
     }
 
