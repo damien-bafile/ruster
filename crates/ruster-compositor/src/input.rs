@@ -24,7 +24,7 @@ use smithay::input::keyboard::xkb::keysyms as xkb_keysyms;
 use smithay::input::keyboard::{FilterResult, Keysym, ModifiersState};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
 use smithay::reexports::wayland_server::protocol::{wl_pointer, wl_surface::WlSurface};
-use smithay::utils::{Logical, Point, Size, SERIAL_COUNTER as SCOUNTER};
+use smithay::utils::{Logical, Physical, Point, Size, SERIAL_COUNTER as SCOUNTER};
 use std::time::Instant;
 
 use tracing::{debug, trace};
@@ -144,6 +144,21 @@ pub fn tile_under(
         .map(|(id, r)| (*id, Point::from((r.x as f64, r.y as f64))))
 }
 
+/// How many buffer lines one scroll event moves a pane, signed the way the
+/// wheel is: positive is towards the end of the buffer.
+///
+/// The amount arrives in the smooth units libinput reports, where one wheel
+/// detent is 15.0; three lines a detent is what every editor does. Any nonzero
+/// amount moves at least one line, because a touchpad reports fractions of a
+/// detent and rounding those to zero would leave a pane that simply refuses to
+/// scroll under a finger.
+pub fn scroll_lines(amount: f64) -> i64 {
+    const DETENT: f64 = 15.0;
+    const LINES_PER_DETENT: f64 = 3.0;
+    let lines = amount / DETENT * LINES_PER_DETENT;
+    lines.abs().ceil().copysign(lines) as i64
+}
+
 impl<B: Backend + 'static> CompositorState<B> {
     /// The primary output's logical size: its physical mode size divided by the
     /// current output scale. The fullscreen toplevel spans exactly this.
@@ -151,16 +166,38 @@ impl<B: Backend + 'static> CompositorState<B> {
         crate::backend::logical_output_size(self.backend_data.output())
     }
 
-    /// The toplevel window the pointer is over, or `None`. [`tile_under`]
-    /// supplies the containment test against the laid-out tree, so a location
-    /// over no window matches nothing — and since the layout covers only the
-    /// active workspace, a click can never reach a window that is not on
-    /// screen. Answering from the geometry rather than from `shell.focus` is
+    /// The leaf the pointer is over and the origin of its tile, or `None`.
+    /// [`tile_under`] supplies the containment test against the laid-out tree,
+    /// so a location over no leaf matches nothing — and since the layout covers
+    /// only the active workspace, a click can never reach a window that is not
+    /// on screen. Answering from the geometry rather than from `shell.focus` is
     /// what lets a click recover a visible window when focus has gone stale.
-    fn toplevel_under(&self, location: Point<f64, Logical>) -> Option<WindowId> {
+    ///
+    /// A leaf is a client or a pane; an id that is neither is a toplevel with
+    /// nothing on screen yet, and clicking one must not move focus onto it. The
+    /// origin comes back too because a click into a pane has to know where the
+    /// pane starts, and hit-testing a second time for it is exactly how two
+    /// answers about one rectangle start to disagree.
+    fn leaf_under(&self, location: Point<f64, Logical>) -> Option<(WindowId, Point<f64, Logical>)> {
         tile_under(&self.geometry(), location)
-            .map(|(id, _)| id)
-            .filter(|id| self.mapped.contains(id))
+            .filter(|(id, _)| self.mapped.contains(id) || self.panes.contains_key(id))
+    }
+
+    /// Physical pixels from the top-left of the tile at `origin` — the
+    /// coordinate space a pane's frame is drawn in. Chrome is measured in
+    /// physical pixels and the layout in logical ones; this is the conversion
+    /// `draw_window_borders` and the pane renderer both do.
+    fn frame_local(
+        &self,
+        location: Point<f64, Logical>,
+        origin: Point<f64, Logical>,
+    ) -> Point<f64, Physical> {
+        let scale = self
+            .backend_data
+            .output()
+            .current_scale()
+            .fractional_scale();
+        (location - origin).to_physical(scale)
     }
 
     /// The surface under the pointer with its origin in global coordinates, or
@@ -421,25 +458,34 @@ impl<B: Backend + 'static> CompositorState<B> {
         pointer.frame(self);
     }
 
-    /// Pointer button press/release, with click-to-focus on press.
+    /// Pointer button press/release, with click-to-focus on press — and, over
+    /// an editor pane, click-to-position.
     pub fn on_pointer_button<I: InputBackend>(&mut self, event: I::PointerButtonEvent) {
         debug!(button = event.button_code(), "pointer button");
         let serial = SCOUNTER.next_serial();
         let time = Event::time_msec(&event);
         let state = wl_pointer::ButtonState::from(event.state());
         if state == wl_pointer::ButtonState::Pressed {
-            // Click-to-focus: focus the toplevel under the pointer. Button
-            // events carry no position, so the seat pointer's tracked location
-            // is used (anvil does the same via `pointer.current_location()`).
-            // Focusing the window under the cursor — rather than re-asserting a
-            // possibly stale `shell.focus` — lets a click always recover a
-            // visible window when the previous focus unmapped.
-            if let Some(id) = self
-                .toplevel_under(self.pointer.current_location())
-                .filter(|id| self.shell.focus != Some(*id))
-            {
-                self.shell.set_focus(id);
-                self.update_keyboard_focus(serial);
+            // Click-to-focus: focus the leaf under the pointer. Button events
+            // carry no position, so the seat pointer's tracked location is used
+            // (anvil does the same via `pointer.current_location()`). Focusing
+            // the window under the cursor — rather than re-asserting a possibly
+            // stale `shell.focus` — lets a click always recover a visible
+            // window when the previous focus unmapped.
+            let location = self.pointer.current_location();
+            if let Some((id, origin)) = self.leaf_under(location) {
+                if self.shell.focus != Some(id) {
+                    self.shell.set_focus(id);
+                    self.update_keyboard_focus(serial);
+                }
+                // A pane has no client to forward the press to, so the click
+                // means what it means in an editor: put the caret on the
+                // character it landed on. One hit-test does both — the tile it
+                // focused is the tile whose origin the caret is measured from.
+                let local = self.frame_local(location, origin);
+                if let Some(pane) = self.panes.get_mut(&id) {
+                    pane.click_at(local.x as f32, local.y as f32);
+                }
             }
         }
         let pointer = self.pointer.clone();
@@ -465,6 +511,18 @@ impl<B: Backend + 'static> CompositorState<B> {
         let vertical_amount = event
             .amount(Axis::Vertical)
             .unwrap_or_else(|| event.amount_v120(Axis::Vertical).unwrap_or(0.0) * 15.0 / 120.);
+
+        // A pane scrolls itself. It is not a client, so there is no surface for
+        // the axis frame to reach and the wheel would otherwise do nothing at
+        // all over one. Horizontal scroll is dropped with it: a pane does not
+        // scroll sideways, and passing it on would send it to whichever client
+        // last held the pointer.
+        if let Some((id, _)) = self.leaf_under(self.pointer.current_location()) {
+            if let Some(pane) = self.panes.get_mut(&id) {
+                pane.scroll_by(scroll_lines(vertical_amount));
+                return;
+            }
+        }
 
         let mut frame = AxisFrame::new(Event::time_msec(&event)).source(event.source());
         if horizontal_amount != 0.0 {

@@ -20,6 +20,7 @@
 //! 3 makes it editable, driving the same `VimState` and `EditSession` the editor
 //! does rather than a second editing implementation living in the compositor.
 
+use crate::chrome::FrameBody;
 use ruster_core::buffer::Buffer;
 use ruster_core::cursor::CursorSet;
 use ruster_core::editor::{EditSession, EditorView};
@@ -174,6 +175,45 @@ impl EditorPane {
         self.scroll_top = next.clamp(0, max as i64) as usize;
     }
 
+    /// The buffer offset a point inside the pane's frame names, in physical
+    /// pixels from the frame's top-left.
+    ///
+    /// The grid comes from [`visible_lines`](Self::visible_lines) and the frame
+    /// layout from [`FrameBody`], which are the two things the renderer draws
+    /// from — so the character under the pointer is the character on screen,
+    /// including after a scroll and including when the gutter has just grown a
+    /// digit and shifted every column right.
+    pub fn offset_at(&self, x: f32, y: f32) -> usize {
+        let (first, lines) = self.visible_lines();
+        let (row, col) = FrameBody::new(first, lines.len()).cell_at(x, y);
+        // Below the last line is the last line: a pane is usually taller than
+        // the text in it, and a click in that space that did nothing would feel
+        // like a dead region of the window.
+        let row = row.min(lines.len().saturating_sub(1));
+        let Some(line) = lines.get(row) else {
+            // No rows at all — an unlaid-out pane. There is no position to name
+            // but the start of the buffer.
+            return 0;
+        };
+        // `visible_lines` strips the terminator, so the end of a line is the
+        // last position on *this* line. Without the clamp, clicking the empty
+        // space to the right of a short line would run into the line below it.
+        let col = col.min(line.chars().count());
+        self.buffer.line_start_char(first + row) + col
+    }
+
+    /// Put the caret where a click at `(x, y)` — physical pixels from the
+    /// pane's top-left — landed.
+    ///
+    /// Extra cursors go: a click is how a multi-cursor session is ended in
+    /// every editor that has one, and leaving them would type in places the
+    /// user has just pointed away from.
+    pub fn click_at(&mut self, x: f32, y: f32) {
+        let at = self.offset_at(x, y);
+        self.cursors.clear_extra();
+        self.cursors.set_head(at, &self.buffer);
+    }
+
     /// The grid a rectangle of `width`x`height` logical pixels works out to.
     ///
     /// Saturating rather than panicking on a zero or negative rectangle: a tile
@@ -295,6 +335,108 @@ mod tests {
         pane.cursors = CursorSet::single(0);
         pane.follow_cursor();
         assert_eq!(pane.scroll_top, 0);
+    }
+
+    /// The pixel at the start of `row` (0-based, from the first visible line)
+    /// and `col`, half a cell in so the test names a character rather than a
+    /// boundary between two.
+    fn cell_pixel(pane: &EditorPane, row: usize, col: usize) -> (f32, f32) {
+        let (first, lines) = pane.visible_lines();
+        let body = crate::chrome::FrameBody::new(first, lines.len());
+        let (cw, ch) = ruster_render_gles::atlas::cell_metrics(crate::compositor::PANE_FONT_PX);
+        (
+            body.x + col as f32 * cw + cw / 2.0,
+            body.y + row as f32 * ch + ch / 2.0,
+        )
+    }
+
+    #[test]
+    fn clicking_a_character_puts_the_cursor_on_it() {
+        let mut pane = EditorPane::with_text("f.rs", "alpha\nbravo\ncharlie");
+        pane.rows = 10;
+        let (x, y) = cell_pixel(&pane, 1, 3);
+        assert_eq!(pane.offset_at(x, y), pane.buffer.line_start_char(1) + 3);
+    }
+
+    #[test]
+    fn clicking_the_gutter_names_that_line_not_the_one_before_it() {
+        // The gutter is left of the text, so a naive conversion gives a
+        // negative column and wraps onto the previous line.
+        let mut pane = EditorPane::with_text("f.rs", "alpha\nbravo\ncharlie");
+        pane.rows = 10;
+        let (_, y) = cell_pixel(&pane, 2, 0);
+        assert_eq!(pane.offset_at(1.0, y), pane.buffer.line_start_char(2));
+    }
+
+    #[test]
+    fn clicking_past_the_end_of_a_line_stops_at_its_end() {
+        // Without the clamp the empty space right of a short line runs into the
+        // line below — the click lands on text that is nowhere near the pointer.
+        let mut pane = EditorPane::with_text("f.rs", "ab\nlonger line here");
+        pane.rows = 10;
+        let (x, y) = cell_pixel(&pane, 0, 40);
+        assert_eq!(pane.offset_at(x, y), pane.buffer.line_start_char(0) + 2);
+    }
+
+    #[test]
+    fn clicking_below_the_last_line_lands_on_the_last_line() {
+        // A pane is usually taller than its text, and a click in that space
+        // doing nothing would feel like a dead region of the window.
+        let mut pane = EditorPane::with_text("f.rs", "one\ntwo");
+        pane.rows = 20;
+        let (x, y) = cell_pixel(&pane, 15, 0);
+        assert_eq!(pane.offset_at(x, y), pane.buffer.line_start_char(1));
+    }
+
+    #[test]
+    fn clicking_a_scrolled_pane_accounts_for_the_scroll() {
+        // The row clicked is an offset from the first *visible* line, not from
+        // the top of the buffer.
+        let text = (0..40)
+            .map(|n| format!("line{n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut pane = EditorPane::with_text("f.rs", &text);
+        pane.rows = 10;
+        pane.scroll_by(12);
+        let (x, y) = cell_pixel(&pane, 2, 1);
+        assert_eq!(pane.offset_at(x, y), pane.buffer.line_start_char(14) + 1);
+    }
+
+    #[test]
+    fn the_body_origin_moves_as_the_line_numbers_widen() {
+        // The gutter grows a column at every power of ten, moving the first
+        // text pixel. This asserts the geometry *independently* rather than
+        // through a click: a click test computes its pixel from the same
+        // `FrameBody` the code reads, so the two shift together and a fixed
+        // gutter would sail through it. (It did — that version of this test
+        // passed with the width hard-coded.)
+        let cw = ruster_render_gles::atlas::cell_metrics(crate::compositor::PANE_FONT_PX).0;
+        let narrow = crate::chrome::FrameBody::new(0, 10).x;
+        let wide = crate::chrome::FrameBody::new(350, 10).x;
+        assert!(
+            wide > narrow + cw * 0.9,
+            "a 3-digit gutter should be at least a column wider: {narrow} vs {wide}"
+        );
+    }
+
+    #[test]
+    fn a_click_lands_on_the_same_character_however_wide_the_gutter_is() {
+        let text = (0..400)
+            .map(|n| format!("line{n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut pane = EditorPane::with_text("f.rs", &text);
+        pane.rows = 10;
+        for scroll in [0usize, 95, 350] {
+            pane.scroll_top = scroll;
+            let (x, y) = cell_pixel(&pane, 0, 2);
+            assert_eq!(
+                pane.offset_at(x, y),
+                pane.buffer.line_start_char(scroll) + 2,
+                "clicking column 2 at scroll {scroll}"
+            );
+        }
     }
 
     #[test]
