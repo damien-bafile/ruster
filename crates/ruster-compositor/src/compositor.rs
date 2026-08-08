@@ -87,6 +87,10 @@ pub struct CompositorState<B: Backend + 'static> {
     /// Configured WM keybinds as `(binding, action)` pairs, loaded from
     /// `compositor.lua` (Task 9). Empty until the config is applied.
     pub keybinds: Vec<(String, String)>,
+    /// The live Lua control plane, when a config produced one. `None` means the
+    /// config failed to run, so there is nothing to call into — keybinds still
+    /// work, since those are resolved from `keybinds` above.
+    pub wm: Option<crate::lua::WmControl>,
 }
 
 impl<B: Backend + 'static> CompositorState<B> {
@@ -127,6 +131,47 @@ impl<B: Backend + 'static> CompositorState<B> {
     pub fn output_rect(&self) -> Rect {
         let size = logical_output_size(self.backend_data.output()).unwrap_or_default();
         Rect::new(0, 0, size.w, size.h)
+    }
+
+    /// Run everything Lua has queued since last time, then publish what the
+    /// compositor now looks like.
+    ///
+    /// Called once per event-loop iteration by both backends. The actions are
+    /// taken out of the queue first so the borrow on `wm` ends before
+    /// [`dispatch`](Self::dispatch) needs `&mut self` — and so a script that
+    /// queues while being drained cannot spin the loop forever, since anything
+    /// it adds waits for the next pass.
+    pub fn drain_wm_commands(&mut self) {
+        let queued = match &self.wm {
+            Some(wm) => wm.take_actions(),
+            None => return,
+        };
+        for action in queued {
+            self.dispatch(action);
+        }
+        let status = self.wm_status();
+        if let Some(wm) = &self.wm {
+            wm.publish(status);
+        }
+    }
+
+    /// What `ruster.wm.status()` should report about the compositor right now.
+    fn wm_status(&self) -> crate::lua::WmStatus {
+        let tree = self.tree_status();
+        crate::lua::WmStatus {
+            workspace: self.workspaces.active(),
+            windows: tree.windows,
+            focused_title: self
+                .shell
+                .focused()
+                .map(|w| w.title.clone())
+                .unwrap_or_default(),
+            floating: tree.floating,
+            layout: tree.layout.map(|l| match l {
+                ruster_shell::Layout::Horizontal => "horizontal".to_string(),
+                ruster_shell::Layout::Vertical => "vertical".to_string(),
+            }),
+        }
     }
 
     /// Carry out a bound action.
@@ -388,6 +433,7 @@ pub fn create_state<B: Backend + 'static>(
         screenshot_pending: false,
         screenshot_count: 0,
         keybinds: Vec::new(),
+        wm: None,
     }
 }
 

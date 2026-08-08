@@ -62,13 +62,18 @@ fn run_winit() -> anyhow::Result<()> {
     let mut state = create_state(display, event_loop.handle(), data);
     let socket_name = init_listener(&mut state);
     log_startup_header(env!("CARGO_PKG_VERSION"), "winit", &socket_name);
-    apply_config_to_shell(&mut state, load_compositor_config(), &socket_name);
+    let (control, shell) = load_compositor_config();
+    apply_config_to_shell(&mut state, control, shell, &socket_name);
 
     let running = state.running.clone();
     install_signal_handlers(&running, event_loop.get_signal())?;
 
     let mut winit = winit;
     while state.running.load(Ordering::SeqCst) {
+        // Anything `ruster.wm.*` queued since the last pass, before rendering,
+        // so a Lua-driven layout change shows up on this frame rather than the
+        // next one.
+        state.drain_wm_commands();
         let status = winit.dispatch_new_events(|event| state.handle_event(event));
         if let PumpStatus::Exit(_) = status {
             state.running.store(false, Ordering::SeqCst);

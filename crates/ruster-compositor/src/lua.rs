@@ -5,6 +5,7 @@
 //! the compositor to the editor crate's plugin model.
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::process::Command;
 use std::rc::Rc;
 
@@ -71,7 +72,7 @@ pub struct LuaShell {
 /// Load `compositor.lua` from the config dir (`~/.config/ruster/`), falling
 /// back to the embedded default (`assets/compositor.lua`). Errors are logged
 /// and swallowed, never fatal.
-pub fn load_compositor_config() -> LuaShell {
+pub fn load_compositor_config() -> (Option<WmControl>, LuaShell) {
     let path = dirs::config_dir()
         .map(|p| p.join("ruster").join("compositor.lua"))
         .filter(|p| p.exists());
@@ -80,16 +81,20 @@ pub fn load_compositor_config() -> LuaShell {
             Ok(src) => src,
             Err(err) => {
                 tracing::warn!(path = %p.display(), %err, "failed to read compositor config");
-                return LuaShell::default();
+                return (None, LuaShell::default());
             }
         },
         None => include_str!("../assets/compositor.lua").to_string(),
     };
-    match parse_config(&source) {
-        Ok(shell) => shell,
+    match WmControl::from_source(&source) {
+        Ok((control, shell)) => (Some(control), shell),
         Err(err) => {
+            // No control plane rather than a half-built one: a config that
+            // failed to run may have registered some of its calls and not
+            // others, and a WM obeying half a config is worse than one obeying
+            // none of it.
             tracing::warn!(%err, "failed to parse compositor config, using defaults");
-            LuaShell::default()
+            (None, LuaShell::default())
         }
     }
 }
@@ -122,18 +127,7 @@ pub fn load_compositor_config() -> LuaShell {
 /// exist yet — so the calls record intent that [`apply_config_to_shell`] acts
 /// on at startup.
 pub fn parse_config(source: &str) -> mlua::Result<LuaShell> {
-    let lua = Lua::new();
-    let recorded = Rc::new(RefCell::new(LuaShell::default()));
-    install_wm_api(&lua, &recorded)?;
-
-    // Evaluate as a value, not a table: a config that only calls the API
-    // returns nothing, and demanding a table would make it a parse error.
-    let returned: mlua::Value = lua.load(source).eval()?;
-    let mut shell = recorded.borrow().clone();
-    if let mlua::Value::Table(table) = returned {
-        merge_config_table(&table, &mut shell)?;
-    }
-    Ok(shell)
+    WmControl::from_source(source).map(|(_, shell)| shell)
 }
 
 /// Fold a declarative config table into `shell`, after any `ruster.wm` calls.
@@ -178,7 +172,100 @@ fn valid_workspace(ws: u32) -> Option<u32> {
 /// before the compositor state exists, and even if it did, a config is a
 /// declaration of what the session should look like rather than a script driving
 /// a live session. Runtime control lands with the full keymap in Phase 1.
-fn install_wm_api(lua: &Lua, shell: &Rc<RefCell<LuaShell>>) -> mlua::Result<()> {
+/// What the compositor last published about itself, for Lua to read.
+///
+/// A snapshot rather than a live borrow: [`CompositorState`] is generic over its
+/// backend, so a Lua closure cannot hold one — and even if it could, handing the
+/// live state to a script that runs mid-frame invites a `RefCell` panic at the
+/// worst possible moment. The compositor refreshes this once per event-loop
+/// iteration, so a query answers with the previous frame at the oldest.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct WmStatus {
+    pub workspace: u32,
+    /// Windows on the active workspace.
+    pub windows: usize,
+    pub focused_title: String,
+    /// Whether the focused window is floating.
+    pub floating: bool,
+    /// The split axis of the container holding focus, if any.
+    pub layout: Option<String>,
+}
+
+/// The live control plane: a Lua VM that outlives config parsing, the queue its
+/// calls push onto, and the status it can read back.
+///
+/// Before this, the VM was created inside the config parse and dropped when it
+/// returned, so `ruster.wm.*` could only *record intent* — `focus` was a stub
+/// that logged a warning and did nothing, because there was nothing for it to
+/// act on. Keeping the VM alive is what makes the API an API.
+///
+/// Calls do not act directly: they push an [`Action`] onto a queue the event
+/// loop drains into [`CompositorState::dispatch`]. That indirection buys two
+/// things — the closures need no access to the generic compositor state, and
+/// every route into the WM (keybind, Lua call, mini-buffer) ends up in the same
+/// `dispatch`, so none of them can drift from the others.
+pub struct WmControl {
+    lua: Lua,
+    queue: Rc<RefCell<VecDeque<Action>>>,
+    status: Rc<RefCell<WmStatus>>,
+}
+
+impl WmControl {
+    /// Build a control plane from config source, returning it and what the
+    /// config declared.
+    pub fn from_source(source: &str) -> mlua::Result<(Self, LuaShell)> {
+        let lua = Lua::new();
+        let recorded = Rc::new(RefCell::new(LuaShell::default()));
+        let queue: Rc<RefCell<VecDeque<Action>>> = Rc::new(RefCell::new(VecDeque::new()));
+        let status = Rc::new(RefCell::new(WmStatus::default()));
+        install_wm_api(&lua, &recorded, &queue, &status)?;
+
+        // Evaluate as a value, not a table: a config that only calls the API
+        // returns nothing, and demanding a table would make it a parse error.
+        let returned: mlua::Value = lua.load(source).eval()?;
+        let mut shell = recorded.borrow().clone();
+        if let mlua::Value::Table(table) = returned {
+            merge_config_table(&table, &mut shell)?;
+        }
+        Ok((WmControl { lua, queue, status }, shell))
+    }
+
+    /// Everything queued since the last call, in the order it was queued.
+    ///
+    /// Returns owned actions rather than lending the queue, so the caller can
+    /// take `&mut self` on the compositor to run them — which it must, since
+    /// dispatching is the entire point.
+    pub fn take_actions(&self) -> Vec<Action> {
+        self.queue.borrow_mut().drain(..).collect()
+    }
+
+    /// Publish what the compositor currently looks like, for `ruster.wm.status`.
+    pub fn publish(&self, status: WmStatus) {
+        *self.status.borrow_mut() = status;
+    }
+
+    /// Run a chunk of Lua against the live VM.
+    ///
+    /// This is what makes a mini-buffer possible: the same VM the config ran in,
+    /// so a command can call anything the config could.
+    pub fn eval(&self, code: &str) -> Result<(), String> {
+        self.lua.load(code).exec().map_err(|err| err.to_string())
+    }
+}
+
+/// Install the `ruster.wm` table into the Lua globals.
+///
+/// Two kinds of function live here. The declarative ones (`set_keybind`,
+/// `launch_client`) record into `shell` because they describe the session rather
+/// than change it, and are meaningless once it is running. The rest queue an
+/// [`Action`], which works identically whether the config is being read or a
+/// keybind fired ten minutes later.
+fn install_wm_api(
+    lua: &Lua,
+    shell: &Rc<RefCell<LuaShell>>,
+    queue: &Rc<RefCell<VecDeque<Action>>>,
+    status: &Rc<RefCell<WmStatus>>,
+) -> mlua::Result<()> {
     let wm = lua.create_table()?;
 
     let recorder = shell.clone();
@@ -199,30 +286,95 @@ fn install_wm_api(lua: &Lua, shell: &Rc<RefCell<LuaShell>>) -> mlua::Result<()> 
         })?,
     )?;
 
+    // Records *and* queues. At startup the recorded value is applied and then
+    // the queued action repeats it, which is idempotent; called at runtime the
+    // recording is ignored and the queued action is the whole effect. One
+    // implementation that means the same thing in both places.
     let recorder = shell.clone();
+    let q = queue.clone();
     wm.set(
         "switch_workspace",
         lua.create_function(move |_, workspace: u32| {
             if let Some(ws) = valid_workspace(workspace) {
                 recorder.borrow_mut().initial_workspace = Some(ws);
+                q.borrow_mut().push_back(Action::Workspace(ws));
             }
             Ok(())
         })?,
     )?;
 
-    // `focus` is deliberately inert. Focus is a runtime operation against
-    // windows that do not exist while the config is being read, and Phase 0 has
-    // no addressing scheme for them — no directions, because there is no layout
-    // until Phase 1, and no stable ids a user could write down. It exists so a
-    // config calling it does not blow up, and says so.
+    // Every action by name, which is the whole `Action` vocabulary in one
+    // function and stays correct as variants are added.
+    let q = queue.clone();
+    wm.set(
+        "action",
+        lua.create_function(move |_, name: String| match Action::from_name(&name) {
+            Some(action) => {
+                q.borrow_mut().push_back(action);
+                Ok(true)
+            }
+            None => {
+                tracing::warn!(%name, "ruster.wm.action: not an action");
+                Ok(false)
+            }
+        })?,
+    )?;
+
+    // `focus` used to warn and do nothing, because the config ran before any
+    // window existed and there was no way to name one. With a queue there is:
+    // the call is carried out whenever the compositor next drains, by which time
+    // there is a layout to move around in.
+    let q = queue.clone();
     wm.set(
         "focus",
-        lua.create_function(move |_, target: mlua::Value| {
-            tracing::warn!(
-                ?target,
-                "ruster.wm.focus is not implemented in Phase 0 (no windows exist at config time); ignoring"
-            );
+        lua.create_function(move |_, direction: String| {
+            match direction_word(&direction).map(Action::Focus) {
+                Some(action) => {
+                    q.borrow_mut().push_back(action);
+                    Ok(true)
+                }
+                None => {
+                    tracing::warn!(%direction, "ruster.wm.focus: not a direction");
+                    Ok(false)
+                }
+            }
+        })?,
+    )?;
+
+    let q = queue.clone();
+    wm.set(
+        "spawn",
+        lua.create_function(move |_, command: String| {
+            let command = command.trim().to_string();
+            if command.is_empty() {
+                return Ok(false);
+            }
+            q.borrow_mut().push_back(Action::Spawn(command));
+            Ok(true)
+        })?,
+    )?;
+
+    let q = queue.clone();
+    wm.set(
+        "quit",
+        lua.create_function(move |_, ()| {
+            q.borrow_mut().push_back(Action::Quit);
             Ok(())
+        })?,
+    )?;
+
+    let snapshot = status.clone();
+    wm.set(
+        "status",
+        lua.create_function(move |lua, ()| {
+            let s = snapshot.borrow().clone();
+            let t = lua.create_table()?;
+            t.set("workspace", s.workspace)?;
+            t.set("windows", s.windows)?;
+            t.set("title", s.focused_title)?;
+            t.set("floating", s.floating)?;
+            t.set("layout", s.layout)?;
+            Ok(t)
         })?,
     )?;
 
@@ -248,7 +400,7 @@ fn strip_verb<'a>(text: &'a str, verb: &str) -> Option<&'a str> {
 }
 
 /// A compass word as a [`Direction`], or `None` for anything else.
-fn direction(word: &str) -> Option<Direction> {
+fn direction_word(word: &str) -> Option<Direction> {
     match word {
         "left" | "l" => Some(Direction::Left),
         "right" | "r" => Some(Direction::Right),
@@ -332,9 +484,9 @@ impl Action {
             ("cycle workspace", _, _) => Some(Action::CycleWorkspace),
             ("screenshot", _, _) => Some(Action::Screenshot),
             ("toggle floating" | "float", _, _) => Some(Action::ToggleFloating),
-            (_, "focus", Some(d)) => direction(d).map(Action::Focus),
-            (_, "swap", Some(d)) => direction(d).map(Action::Swap),
-            (_, "resize", Some(d)) => direction(d).map(Action::Resize),
+            (_, "focus", Some(d)) => direction_word(d).map(Action::Focus),
+            (_, "swap", Some(d)) => direction_word(d).map(Action::Swap),
+            (_, "resize", Some(d)) => direction_word(d).map(Action::Resize),
             (_, "split", Some("horizontal" | "h")) => Some(Action::Split(Layout::Horizontal)),
             (_, "split", Some("vertical" | "v")) => Some(Action::Split(Layout::Vertical)),
             (_, "workspace", Some(n)) => n
@@ -376,9 +528,11 @@ impl Action {
 /// silently depend on call order).
 pub fn apply_config_to_shell<B: Backend + 'static>(
     state: &mut CompositorState<B>,
+    control: Option<WmControl>,
     shell: LuaShell,
     socket_name: &str,
 ) {
+    state.wm = control;
     state.keybinds = shell.keybinds;
     if let Some(workspace) = shell.initial_workspace {
         state.switch_workspace(workspace);
@@ -450,7 +604,7 @@ mod tests {
 
     #[test]
     fn default_config_has_startup_client_and_binds() {
-        let shell = load_compositor_config();
+        let (_, shell) = load_compositor_config();
         assert!(!shell.keybinds.is_empty());
         assert_eq!(shell.keybinds[0], ("M-S-q".into(), "quit".into()));
     }
@@ -600,6 +754,112 @@ mod tests {
         assert_eq!(cmd.get_program(), "foot");
         assert!(cmd.get_envs().all(|(k, _)| k != "WAYLAND_DISPLAY"));
         assert!(build_command("   ", Some("wayland-1")).is_none());
+    }
+
+    #[test]
+    fn focus_is_a_real_call_now_rather_than_a_warning() {
+        // It used to log "not implemented" and drop the call, because the VM
+        // died with the config parse and there was nothing to act on.
+        let (wm, _) = WmControl::from_source(r#"ruster.wm.focus("left")"#).unwrap();
+        assert_eq!(wm.take_actions(), vec![Action::Focus(Direction::Left)]);
+    }
+
+    #[test]
+    fn queued_actions_come_back_in_the_order_they_were_made() {
+        // Order is the whole contract: `focus left` then `swap right` is not
+        // the same session as the reverse.
+        let (wm, _) = WmControl::from_source(
+            r#"
+            ruster.wm.focus("right")
+            ruster.wm.action("swap left")
+            ruster.wm.spawn("foot -e htop")
+            ruster.wm.quit()
+            "#,
+        )
+        .unwrap();
+        assert_eq!(
+            wm.take_actions(),
+            vec![
+                Action::Focus(Direction::Right),
+                Action::Swap(Direction::Left),
+                Action::Spawn("foot -e htop".into()),
+                Action::Quit,
+            ]
+        );
+    }
+
+    #[test]
+    fn draining_the_queue_empties_it() {
+        // The event loop drains every iteration; a queue that kept its contents
+        // would replay the whole session's actions on every frame.
+        let (wm, _) = WmControl::from_source(r#"ruster.wm.quit()"#).unwrap();
+        assert_eq!(wm.take_actions().len(), 1);
+        assert!(wm.take_actions().is_empty());
+    }
+
+    #[test]
+    fn a_bad_call_is_reported_to_the_script_and_queues_nothing() {
+        // Returning false rather than raising: a config that mistypes one
+        // direction should not abort the rest of the config, but it must not
+        // silently look like it worked either.
+        let (wm, _) = WmControl::from_source(
+            r#"
+            ok_dir = ruster.wm.focus("sideways")
+            ok_act = ruster.wm.action("frobnicate")
+            ok_spawn = ruster.wm.spawn("   ")
+            "#,
+        )
+        .unwrap();
+        assert!(wm.take_actions().is_empty());
+        for name in ["ok_dir", "ok_act", "ok_spawn"] {
+            let v: bool = wm.lua.globals().get(name).unwrap();
+            assert!(!v, "{name} should have reported failure");
+        }
+    }
+
+    #[test]
+    fn status_reports_what_the_compositor_last_published() {
+        // The query side cannot borrow the compositor — it is generic over its
+        // backend — so it reads a snapshot the event loop refreshes.
+        let (wm, _) = WmControl::from_source("").unwrap();
+        wm.publish(WmStatus {
+            workspace: 4,
+            windows: 3,
+            focused_title: "foot".into(),
+            floating: true,
+            layout: Some("vertical".into()),
+        });
+        wm.eval(
+            r#"
+            local s = ruster.wm.status()
+            assert(s.workspace == 4, "workspace")
+            assert(s.windows == 3, "windows")
+            assert(s.title == "foot", "title")
+            assert(s.floating == true, "floating")
+            assert(s.layout == "vertical", "layout")
+            "#,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn switching_workspace_works_from_a_config_and_at_runtime() {
+        // One function for both: the recorded value is what startup applies,
+        // and the queued action is what a runtime call does. Applying both at
+        // boot lands on the same workspace twice, which is the same workspace.
+        let (wm, shell) = WmControl::from_source("ruster.wm.switch_workspace(4)").unwrap();
+        assert_eq!(shell.initial_workspace, Some(4));
+        assert_eq!(wm.take_actions(), vec![Action::Workspace(4)]);
+    }
+
+    #[test]
+    fn the_minibuffer_can_run_anything_the_config_could() {
+        // `eval` is the same VM the config ran in, which is what makes a `:`
+        // line worth having rather than a second, smaller command language.
+        let (wm, _) = WmControl::from_source("").unwrap();
+        wm.eval(r#"ruster.wm.action("workspace 7")"#).unwrap();
+        assert_eq!(wm.take_actions(), vec![Action::Workspace(7)]);
+        assert!(wm.eval("this is not lua").is_err());
     }
 
     #[test]

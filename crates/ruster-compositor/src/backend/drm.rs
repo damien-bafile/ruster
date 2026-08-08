@@ -278,7 +278,8 @@ pub fn run_drm() -> anyhow::Result<()> {
     // appears — there is no outer compositor to launch one into our socket by
     // hand — so a boot without it renders an empty screen no keybinding can
     // escape.
-    apply_config_to_shell(&mut state, load_compositor_config(), &socket_name);
+    let (control, shell) = load_compositor_config();
+    apply_config_to_shell(&mut state, control, shell, &socket_name);
 
     // Input: libinput seatted to the same libseat session, so device fds are
     // opened through the session and revoked on VT switch. Events go through
@@ -371,6 +372,10 @@ pub fn run_drm() -> anyhow::Result<()> {
     state.handle.insert_idle(|data| data.render_surface());
 
     while state.running.load(Ordering::SeqCst) {
+        // Anything `ruster.wm.*` queued since the last pass. The DRM path
+        // repaints on vblank rather than every iteration, and `dispatch`
+        // reconfigures tiles, so a queued layout change lands on the next frame.
+        state.drain_wm_commands();
         // A dispatch failure used to drop out of the loop and return `Ok`,
         // so the compositor exited 0 with nothing on stdout and no line in the
         // log — indistinguishable from a clean quit, and impossible to

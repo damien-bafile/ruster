@@ -14,8 +14,26 @@
 --        ruster.wm.launch_client("weston-terminal")
 --      end
 --
---    ruster.wm.focus(...) exists but does nothing in Phase 0 — there is no way
---    to name a window until the layout tree lands.
+--    The API is live: the Lua VM stays alive for the whole session, so these
+--    can be called at any time, not only while the config is read. Calls queue
+--    an action that the event loop carries out on its next pass — the same
+--    path a keybind takes, so nothing can drift between them.
+--
+--      ruster.wm.focus("left")        -- left/right/up/down (or h/l/k/j)
+--      ruster.wm.action("swap right") -- any action name from the list below
+--      ruster.wm.spawn("foot")        -- launch on this compositor's socket
+--      ruster.wm.quit()
+--      ruster.wm.switch_workspace(2)  -- the starting workspace from a config,
+--                                     -- and a plain switch at runtime
+--
+--    and to read the session back:
+--
+--      local s = ruster.wm.status()
+--      -- s.workspace, s.windows, s.title, s.floating, s.layout
+--
+--    `focus`, `action` and `spawn` return false rather than raising when given
+--    something they cannot use, so one typo does not abandon the rest of a
+--    config.
 --
 -- 2. Return a table, which is enough when nothing needs deciding. This file
 --    does that.
