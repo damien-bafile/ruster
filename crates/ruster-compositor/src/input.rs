@@ -37,6 +37,7 @@ use ruster_core::key::{Arrow, KeyEvent};
 
 use crate::keymap::{ChordState, Resolved};
 use crate::lua::Action;
+use crate::repeat::RepeatTarget;
 use ruster_shell::{Rect, WindowId};
 
 /// True when the given keysym+modifier state should quit the compositor:
@@ -258,6 +259,18 @@ impl<B: Backend + 'static> CompositorState<B> {
                     "key",
                 );
 
+                // Repeat is settled before anything decides what the key means,
+                // because every route out of this closure has to agree on it: a
+                // press supersedes whatever was repeating, and a release stops
+                // the key it let go of. A repeat that outlives its keypress
+                // types forever, and on DRM there is no second window to kill
+                // it from. See [`crate::repeat`].
+                if key_state == KeyState::Pressed {
+                    compositor.cancel_repeat();
+                } else {
+                    compositor.release_key(keycode.raw());
+                }
+
                 // VT switching comes first and is never configurable: it is the
                 // escape hatch, and a user who has bound themselves into a
                 // corner still has to be able to get out.
@@ -282,7 +295,13 @@ impl<B: Backend + 'static> CompositorState<B> {
                     .is_some_and(|mb| mb.is_open())
                 {
                     if key_state == KeyState::Pressed {
-                        compositor.minibuffer_key(keysym, handle.modified_sym());
+                        compositor.hold_key(
+                            keycode.raw(),
+                            RepeatTarget::Prompt {
+                                raw: keysym,
+                                modified: handle.modified_sym(),
+                            },
+                        );
                     }
                     compositor.intercepted.insert(keycode.raw());
                     return FilterResult::Intercept(());
@@ -351,8 +370,16 @@ impl<B: Backend + 'static> CompositorState<B> {
                     // quit hatch. An editor that swallowed `M-S-q` on a DRM
                     // boot would be the worst bug in this project.
                     Resolved::None if compositor.pane_has_focus() => {
-                        if let Some(key) = editor_key(keysym, handle.modified_sym(), modifiers) {
-                            compositor.pane_key(key);
+                        if let Some((window, key)) = compositor.shell.focus.zip(editor_key(
+                            keysym,
+                            handle.modified_sym(),
+                            modifiers,
+                        )) {
+                            // Named rather than left to `pane_key`'s own lookup
+                            // of the focused leaf, so a repeat still going when
+                            // focus moves is aimed at the pane that was typed
+                            // into and not at whatever replaced it.
+                            compositor.hold_key(keycode.raw(), RepeatTarget::Pane { window, key });
                         }
                         compositor.intercepted.insert(keycode.raw());
                         FilterResult::Intercept(())
@@ -954,6 +981,43 @@ mod tests {
         let (_loop, mut state) = test_state();
         press(&mut state, KEY_F2);
         assert!(state.backend_data.vt_switches.is_empty());
+    }
+
+    #[test]
+    fn releasing_a_key_stops_it_repeating() {
+        // The dangerous one. A repeat that outlives its key press types
+        // forever, and on a DRM boot that is unrecoverable short of the quit
+        // hatch.
+        let (_loop, mut state) = test_state();
+        state.open_pane();
+        let id = state.shell.focus.unwrap();
+        state.panes.get_mut(&id).unwrap().rows = 10;
+
+        press(&mut state, KEY_A); // append: enters insert mode
+        press(&mut state, KEY_Q);
+        assert!(state.is_repeating(), "a held key should be repeating");
+        release(&mut state, KEY_Q);
+        assert!(!state.is_repeating(), "releasing it must stop the repeat");
+    }
+
+    #[test]
+    fn a_repeat_does_not_outlive_the_pane_it_was_aimed_at() {
+        // A pane that loses focus is no longer listening, and delivering to it
+        // anyway would type into whatever replaced it.
+        let (_loop, mut state) = test_state();
+        state.open_pane();
+        let pane = state.shell.focus.unwrap();
+        state.panes.get_mut(&pane).unwrap().rows = 10;
+        press(&mut state, KEY_A);
+        press(&mut state, KEY_Q);
+        assert!(state.is_repeating());
+
+        // Focus moves elsewhere; the repeat has nothing left to deliver to.
+        state.shell.focus = None;
+        assert!(
+            !state.deliver_repeat_for_test(),
+            "delivery must refuse once the target is gone"
+        );
     }
 
     #[test]

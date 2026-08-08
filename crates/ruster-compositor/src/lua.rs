@@ -688,6 +688,12 @@ pub fn apply_keyboard_config<B: Backend + 'static>(
         }
     }
     handle.change_repeat_info(keyboard.repeat_rate, keyboard.repeat_delay);
+    // The same numbers, kept where the compositor can read them back: the keys
+    // it intercepts never reach a client, so nothing out there will act on the
+    // `repeat_info` just announced and the compositor has to repeat them itself
+    // (see [`crate::repeat`]). Recorded here, beside the call that announces
+    // them, so the seat and the timer cannot end up disagreeing.
+    state.keyboard_config = keyboard.clone();
 }
 
 /// Launch `command` on the compositor's own Wayland socket, reporting the pid it

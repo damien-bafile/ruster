@@ -122,6 +122,22 @@ pub struct CompositorState<B: Backend + 'static> {
     /// leak a stray release to the client — which is how a terminal ends up
     /// with a key it thinks is still held.
     pub intercepted: HashSet<u32>,
+    /// The intercepted key currently held down, if it is one that repeats.
+    ///
+    /// A key the compositor keeps for itself never reaches a toolkit, and the
+    /// toolkit is what repeats a held key — so the compositor has to. See
+    /// [`crate::repeat`].
+    pub repeat: Option<crate::repeat::KeyRepeat>,
+    /// Armings so far, so a timer can tell whether it is still the live one.
+    pub repeat_generation: u64,
+    /// The keyboard configuration the seat was given.
+    ///
+    /// Held because `repeat_delay`/`repeat_rate` have to drive the compositor's
+    /// own repeat timer as well as the `wl_keyboard.repeat_info` the seat
+    /// announces, and smithay keeps its copy private. Written only where the
+    /// seat is told — [`crate::lua::apply_keyboard_config`] and the seat
+    /// construction below — so the two cannot drift.
+    pub keyboard_config: crate::lua::KeyboardConfig,
     /// Editor panes: tree leaves that are not Wayland clients. A leaf is a
     /// client if `toplevels` has it and a pane if this does — see `pane.rs` for
     /// why that is a side table rather than a variant on `Node::Leaf`.
@@ -677,6 +693,9 @@ struct InitGlobals<B: Backend + 'static> {
     seat: Seat<CompositorState<B>>,
     keyboard: KeyboardHandle<CompositorState<B>>,
     pointer: PointerHandle<CompositorState<B>>,
+    /// The configuration the keyboard above was built with, so the state can
+    /// record what the seat was actually told.
+    keyboard_config: crate::lua::KeyboardConfig,
 }
 
 /// Create the compositor state for a freshly minted [`Display`]: registers the
@@ -739,6 +758,9 @@ pub fn create_state<B: Backend + 'static>(
         keymap: crate::keymap::Keymap::default(),
         chord: crate::keymap::ChordState::default(),
         intercepted: HashSet::new(),
+        repeat: None,
+        repeat_generation: 0,
+        keyboard_config: globals.keyboard_config,
         panes: crate::pane::Panes::new(),
         popups: smithay::desktop::PopupManager::default(),
         help_pinned: false,
@@ -814,12 +836,12 @@ fn init_globals<B: Backend + 'static>(dh: &DisplayHandle, seat_name: String) -> 
     // config that names its own is applied afterwards by
     // `lua::apply_keyboard_config`, which can fail safely; this one cannot fail
     // at all without the machine being broken.
-    let defaults = crate::lua::KeyboardConfig::default();
+    let keyboard_config = crate::lua::KeyboardConfig::default();
     let keyboard = seat
         .add_keyboard(
             XkbConfig::default(),
-            defaults.repeat_delay,
-            defaults.repeat_rate,
+            keyboard_config.repeat_delay,
+            keyboard_config.repeat_rate,
         )
         .expect("failed to initialize the keyboard");
 
@@ -836,6 +858,7 @@ fn init_globals<B: Backend + 'static>(dh: &DisplayHandle, seat_name: String) -> 
         seat,
         keyboard,
         pointer,
+        keyboard_config,
     }
 }
 
