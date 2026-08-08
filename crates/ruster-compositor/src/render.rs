@@ -53,27 +53,6 @@ smithay::backend::renderer::element::render_elements! {
     Surface=WaylandSurfaceRenderElement<R>,
 }
 
-/// The welcome buffer shown in the editor frame until an embedded editor
-/// provides real content (Phase 3).
-///
-/// It advertised `M-t`/`M-S-q` as fixed text for the same reason and with the
-/// same result: on a config that rebound them it was simply wrong. Now it shows
-/// how to quit, whatever quitting is bound to here.
-fn welcome_buffer(keymap: &crate::keymap::Keymap) -> Vec<String> {
-    let mut lines = vec![
-        "RUSTER  v0.1.0".to_string(),
-        "────────────".to_string(),
-        "EXWM-style Wayland compositor".to_string(),
-    ];
-    match keymap.binding_for("quit") {
-        Some(bind) => lines.push(format!("{bind}  quit")),
-        // `M-S-q` quits regardless of the config, so naming it is true even
-        // when nothing is bound at all. See `input::is_quit_keysym`.
-        None => lines.push("M-S-q  quit".to_string()),
-    }
-    lines
-}
-
 /// Everything one frame needs to know about *what* to draw, as opposed to the
 /// backend machinery that draws it.
 ///
@@ -189,16 +168,11 @@ where
             chrome.draw_minibuffer(size.w, size.h, &mb.display(), mb.sigil_len(), &mut batch);
         }
 
-        let editor_mark = batch.mark();
-        let frame_w = (size.w / 2).clamp(120, 360);
-        let frame_h = (size.h / 2).clamp(80, 240);
-        let welcome = welcome_buffer(scene.keymap);
-        chrome.draw_editor_frame(frame_w, frame_h, &welcome, "welcome", &mut batch);
-        batch.translate_since(
-            editor_mark,
-            ((size.w - frame_w) / 2) as f32,
-            ((size.h - frame_h) / 2) as f32,
-        );
+        // No editor frame. It drew a hardcoded welcome buffer over the middle
+        // of the screen — a Phase 3 placeholder standing in for a real
+        // `ruster-core` buffer in a tile, and until that exists it is an
+        // obstruction with nothing behind it. `Chrome::draw_editor_frame` stays
+        // for the tile that will replace it.
 
         // Only while something is pending. It used to be drawn every frame
         // from a hardcoded pair, so it was permanently on screen and never
@@ -385,24 +359,6 @@ pub fn send_frame_callbacks(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_welcome_buffer_names_the_quit_bind_this_session_has() {
-        let keymap = crate::keymap::Keymap::new(&[("C-A-x".to_string(), "quit".to_string())]);
-        let lines = welcome_buffer(&keymap);
-        assert!(
-            lines.iter().any(|l| l.contains("C-A-x")),
-            "should name the configured quit bind, got {lines:?}"
-        );
-    }
-
-    #[test]
-    fn the_welcome_buffer_still_offers_a_way_out_with_no_config() {
-        // `M-S-q` quits whatever the config says, so naming it is true even
-        // here — and a screen with no way off it would be the worse failure.
-        let lines = welcome_buffer(&crate::keymap::Keymap::default());
-        assert!(lines.iter().any(|l| l.contains("M-S-q")), "got {lines:?}");
-    }
 
     #[test]
     fn chrome_height_never_exceeds_output() {

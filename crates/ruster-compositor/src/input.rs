@@ -27,7 +27,7 @@ use smithay::reexports::wayland_server::protocol::{wl_pointer, wl_surface::WlSur
 use smithay::utils::{Logical, Point, Size, SERIAL_COUNTER as SCOUNTER};
 use std::time::Instant;
 
-use tracing::debug;
+use tracing::{debug, trace};
 
 use crate::backend::Backend;
 use crate::compositor::CompositorState;
@@ -286,7 +286,13 @@ impl<B: Backend + 'static> CompositorState<B> {
     /// absolute window coordinates), so this is the DRM pointer path.
     pub fn on_pointer_motion<I: InputBackend>(&mut self, event: I::PointerMotionEvent) {
         let size = self.logical_output_size().unwrap_or_default();
-        let mut pos = self.pointer.current_location() + event.delta();
+        let delta = event.delta();
+        // Relative motion is the DRM-only path — winit only ever sends absolute
+        // — and nothing logged it, so a hardware boot could not report whether
+        // the mouse had done anything at all. Trace level, because a moving
+        // pointer would drown a debug log the way the paused render loop did.
+        trace!(dx = delta.x, dy = delta.y, "pointer motion");
+        let mut pos = self.pointer.current_location() + delta;
         pos.x = pos.x.clamp(0.0, (size.w as f64 - 1.0).max(0.0));
         pos.y = pos.y.clamp(0.0, (size.h as f64 - 1.0).max(0.0));
         let serial = SCOUNTER.next_serial();

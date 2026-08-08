@@ -96,19 +96,6 @@ impl Keymap {
         }
     }
 
-    /// The binding that runs `action`, if the config named one.
-    ///
-    /// The welcome frame needs this to say how to quit. It reads from the same
-    /// structure the key handler resolves against, so it cannot advertise a
-    /// binding the keyboard does not have — which is exactly what the hardcoded
-    /// `M-S-q` did before.
-    pub fn binding_for(&self, action: &str) -> Option<String> {
-        self.binds
-            .iter()
-            .find(|(_, name)| name == action)
-            .map(|(chords, _)| chords.join(" "))
-    }
-
     /// Every binding in force, full sequence and all, in config order.
     ///
     /// [`continuations`](Self::continuations) answers "what can I press next",
