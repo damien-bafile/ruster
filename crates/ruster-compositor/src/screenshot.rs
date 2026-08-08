@@ -52,10 +52,17 @@ pub fn capture_path(index: u32) -> PathBuf {
 /// Called after the frame is rendered and before it is submitted: the contents
 /// are complete by then, and `copy_framebuffer` is documented as
 /// non-destructive, so the frame the user sees is unaffected.
+///
+/// `flip` reverses the row order, which the two backends need differently and
+/// the difference is not guessable — the first DRM capture ever taken came out
+/// upside down for exactly this reason. Reading a GL framebuffer directly gives
+/// bottom-left origin, so winit flips; `blit_frame_result` writes top-left
+/// already, so the DRM path must not.
 pub fn capture<R>(
     renderer: &mut R,
     framebuffer: &<R as RendererSuper>::Framebuffer<'_>,
     size: Size<i32, BufferCoord>,
+    flip: bool,
     path: &Path,
 ) -> Result<PathBuf, String>
 where
@@ -72,7 +79,11 @@ where
         .map_texture(&mapping)
         .map_err(|err| format!("failed to map the captured framebuffer: {err}"))?;
 
-    let upright = flip_rows(pixels, size.w as usize, size.h as usize);
+    let upright = if flip {
+        flip_rows(pixels, size.w as usize, size.h as usize)
+    } else {
+        pixels.to_vec()
+    };
     write_png(path, &upright, size.w as u32, size.h as u32)?;
 
     // Confirm the file arrived rather than reporting a save that did not
@@ -147,18 +158,25 @@ where
     sync.wait()
         .map_err(|_| "interrupted waiting for the frame blit".to_string())?;
 
-    capture(renderer, &framebuffer, buffer_size, path)
+    // No flip: `blit_frame_result` writes the composited frame top-left first,
+    // unlike a direct GL framebuffer read. Flipping here is what made the first
+    // hardware capture come out upside down.
+    capture(renderer, &framebuffer, buffer_size, false, path)
 }
 
 /// Reverse the row order of an RGBA image.
 ///
-/// GL's framebuffer origin is bottom-left and a PNG's is top-left, so a
-/// straight readback is upside down. That is a property of reading a GL
-/// framebuffer and holds on both backends, independently of any output
-/// transform: nested, the screen is upright because the output carries
+/// GL's framebuffer origin is bottom-left and a PNG's is top-left, so a direct
+/// readback of a GL framebuffer is upside down. That is a property of the *read*
+/// and not of the output transform: nested, the screen is upright because the
+/// output carries
 /// `Transform::Flipped180`, but that is applied on the way *out* to the display
 /// and says nothing about what a read-back sees — which is how a capture can be
 /// inverted while the screen it captured is not.
+///
+/// It does *not* apply to the DRM path, which reads back a texture that
+/// `blit_frame_result` already wrote top-left first. Assuming otherwise made
+/// the first hardware capture ever taken come out upside down.
 fn flip_rows(pixels: &[u8], width: usize, height: usize) -> Vec<u8> {
     let stride = width * 4;
     let mut out = Vec::with_capacity(stride * height);

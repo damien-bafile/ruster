@@ -154,6 +154,8 @@ fn run_winit() -> anyhow::Result<()> {
                             renderer,
                             &fb,
                             (size.w, size.h).into(),
+                            // A direct GL framebuffer read is bottom-left first.
+                            true,
                             &path,
                         ) {
                             Ok(path) => tracing::info!(path = %path.display(), "screenshot"),
