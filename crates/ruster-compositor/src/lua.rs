@@ -51,6 +51,8 @@ pub enum Action {
     /// startup clients — and the only way to get a second one is to type into
     /// the first, which assumes the first is a terminal.
     Spawn(String),
+    /// Pin the shortcut helper open, or unpin it.
+    ToggleHelp,
     /// Open the `:` prompt (or `=` for Lua).
     Prompt(crate::minibuffer::Prompt),
     /// Write the composited output to a PNG.
@@ -555,6 +557,7 @@ impl Action {
             ("quit", _, _) => Some(Action::Quit),
             ("cycle workspace", _, _) => Some(Action::CycleWorkspace),
             ("screenshot", _, _) => Some(Action::Screenshot),
+            ("toggle help" | "help" | "toggle whichkey", _, _) => Some(Action::ToggleHelp),
             ("command" | "prompt", _, _) => {
                 Some(Action::Prompt(crate::minibuffer::Prompt::Command))
             }

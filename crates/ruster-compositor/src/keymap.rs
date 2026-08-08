@@ -198,22 +198,73 @@ impl ChordState {
     }
 }
 
-/// The overlay to draw for a half-typed sequence, or `None` when nothing is
-/// pending.
+/// The height of one which-key row, in physical pixels. Matches the row step
+/// `Chrome::draw_whichkey` lays out with.
+pub const ROW_HEIGHT: f32 = 20.0;
+
+/// Whether the helper is pinned open, and how tall a panel there is room for.
+#[derive(Debug, Clone, Copy)]
+pub struct HelpState {
+    /// Pinned open by the user, so the whole keymap shows with nothing pending.
+    pub pinned: bool,
+    /// The most rows the panel can draw without running off the output.
+    pub max_rows: usize,
+}
+
+/// The overlay to draw, or `None` when there is nothing to say.
 ///
-/// The overlay used to be drawn unconditionally from a hardcoded pair, so it was
-/// always on screen and never about anything. It now appears only once a prefix
-/// has been typed, which is what "which key" means.
-pub fn whichkey_view(keymap: &Keymap, chord: &ChordState) -> Option<WhichKeyView> {
-    if !chord.is_active() {
-        return None;
+/// Three cases. A half-typed chord shows what can continue it — that is the
+/// which-key proper, and it wins, because what you are in the middle of matters
+/// more than a reference you left open. Otherwise a pinned helper shows the
+/// whole keymap, which is what makes the bindings discoverable at all now that
+/// the panel is no longer permanently on screen. Otherwise nothing.
+///
+/// Long lists are truncated with a row saying how many were left out, rather
+/// than silently ending — a cheatsheet that stops short without admitting it is
+/// worse than one that says "and 26 more".
+impl HelpState {
+    /// The state for an output `height` physical pixels tall.
+    ///
+    /// The panel is a fixed box in the corner and does not scroll, so the row
+    /// budget has to come from the output rather than a constant — a laptop
+    /// panel and a 1440p display do not have room for the same cheatsheet.
+    /// Two-thirds of the height, leaving the rest for the frame beneath it.
+    pub fn for_output(pinned: bool, height: i32) -> Self {
+        let usable = (height as f32 * 0.66 - 12.0).max(ROW_HEIGHT);
+        HelpState {
+            pinned,
+            max_rows: (usable / ROW_HEIGHT) as usize,
+        }
     }
-    let rows = keymap.continuations(chord.pending());
+}
+
+pub fn whichkey_view(keymap: &Keymap, chord: &ChordState, help: HelpState) -> Option<WhichKeyView> {
+    let (title, mut rows) = if chord.is_active() {
+        (
+            chord.pending().join(" "),
+            keymap.continuations(chord.pending()),
+        )
+    } else if help.pinned {
+        ("keys".to_string(), keymap.continuations(&[]))
+    } else {
+        return None;
+    };
     if rows.is_empty() {
         return None;
     }
+    // One row of the budget goes to the "more" line, so the count itself is
+    // never what pushes the panel off the screen.
+    let budget = help.max_rows.max(1);
+    if rows.len() > budget {
+        let hidden = rows.len() - (budget - 1);
+        rows.truncate(budget - 1);
+        rows.push(WhichKeyEntry {
+            key: "…".to_string(),
+            desc: format!("and {hidden} more"),
+        });
+    }
     Some(WhichKeyView {
-        title: chord.pending().join(" "),
+        title,
         rows,
         anim: 1.0,
     })
@@ -306,11 +357,78 @@ mod tests {
         // permanently on screen and never about anything in particular.
         let km = Keymap::new(&[("M-w h".into(), "focus left".into())]);
         let mut chord = ChordState::default();
-        assert!(whichkey_view(&km, &chord).is_none());
+        let off = HelpState {
+            pinned: false,
+            max_rows: 12,
+        };
+        assert!(whichkey_view(&km, &chord, off).is_none());
         chord.push("M-w".into());
-        let view = whichkey_view(&km, &chord).expect("a prefix should raise the overlay");
+        let view = whichkey_view(&km, &chord, off).expect("a prefix should raise the overlay");
         assert_eq!(view.title, "M-w");
         assert_eq!(view.rows.len(), 1);
+    }
+
+    #[test]
+    fn pinning_the_helper_shows_the_whole_keymap_with_nothing_pending() {
+        // With the overlay only appearing mid-chord there is otherwise no way
+        // to simply look up what is bound.
+        let km = Keymap::new(&[
+            ("M-h".into(), "focus left".into()),
+            ("M-l".into(), "focus right".into()),
+        ]);
+        let chord = ChordState::default();
+        let pinned = HelpState {
+            pinned: true,
+            max_rows: 12,
+        };
+        let view = whichkey_view(&km, &chord, pinned).expect("pinned should show");
+        assert_eq!(view.title, "keys");
+        assert_eq!(view.rows.len(), 2);
+    }
+
+    #[test]
+    fn a_half_typed_chord_wins_over_the_pinned_helper() {
+        // What you are in the middle of matters more than a reference you left
+        // open, and showing the root list mid-sequence would be wrong anyway.
+        let km = Keymap::new(&[
+            ("M-w h".into(), "focus left".into()),
+            ("M-q".into(), "quit".into()),
+        ]);
+        let mut chord = ChordState::default();
+        chord.push("M-w".into());
+        let view = whichkey_view(
+            &km,
+            &chord,
+            HelpState {
+                pinned: true,
+                max_rows: 12,
+            },
+        )
+        .unwrap();
+        assert_eq!(view.title, "M-w");
+        assert_eq!(view.rows.len(), 1, "the continuations, not the root list");
+    }
+
+    #[test]
+    fn a_long_keymap_says_how_much_it_left_out() {
+        // The shipped config is nearly forty binds and the panel does not
+        // scroll, so a cheatsheet that stopped short without admitting it would
+        // be actively misleading.
+        let binds: Vec<(String, String)> = (0..40)
+            .map(|n| (format!("M-{n}"), format!("workspace {}", n % 9 + 1)))
+            .collect();
+        let km = Keymap::new(&binds);
+        let view = whichkey_view(
+            &km,
+            &ChordState::default(),
+            HelpState {
+                pinned: true,
+                max_rows: 10,
+            },
+        )
+        .unwrap();
+        assert_eq!(view.rows.len(), 10);
+        assert_eq!(view.rows[9].desc, "and 31 more");
     }
 
     #[test]

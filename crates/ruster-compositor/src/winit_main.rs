@@ -125,7 +125,19 @@ fn run_winit() -> anyhow::Result<()> {
                     tree_status,
                     keymap: &state.keymap,
                     minibuffer: state.minibuffer.as_ref(),
-                    whichkey: ruster_compositor::keymap::whichkey_view(&state.keymap, &state.chord),
+                    whichkey: ruster_compositor::keymap::whichkey_view(
+                        &state.keymap,
+                        &state.chord,
+                        ruster_compositor::keymap::HelpState::for_output(
+                            state.help_pinned,
+                            state
+                                .backend_data
+                                .output
+                                .current_mode()
+                                .map(|m| m.size.h)
+                                .unwrap_or_default(),
+                        ),
+                    ),
                 };
                 render_frame(
                     &scene,

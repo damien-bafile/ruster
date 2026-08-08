@@ -439,7 +439,14 @@ impl CompositorState<RusterUdevData> {
             tree_status,
             keymap: &self.keymap,
             minibuffer: self.minibuffer.as_ref(),
-            whichkey: crate::keymap::whichkey_view(&self.keymap, &self.chord),
+            whichkey: crate::keymap::whichkey_view(
+                &self.keymap,
+                &self.chord,
+                crate::keymap::HelpState::for_output(
+                    self.help_pinned,
+                    output.current_mode().map(|m| m.size.h).unwrap_or_default(),
+                ),
+            ),
         };
         let elements = collect_render_elements(&scene, &mut self.chrome, &mut renderer);
         send_frame_callbacks(self.shell.focus, &self.toplevels, &output);

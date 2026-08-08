@@ -99,6 +99,12 @@ pub struct CompositorState<B: Backend + 'static> {
     /// leak a stray release to the client — which is how a terminal ends up
     /// with a key it thinks is still held.
     pub intercepted: HashSet<u32>,
+    /// Whether the shortcut helper is pinned open.
+    ///
+    /// The overlay appears on its own while a chord is half-typed; pinning is
+    /// what makes the keymap browsable when nothing is pending, which the panel
+    /// used to do by accident by never going away.
+    pub help_pinned: bool,
     /// The `:` prompt, when open or showing a result.
     pub minibuffer: Option<crate::minibuffer::MiniBuffer>,
     /// The live Lua control plane, when a config produced one. `None` means the
@@ -276,6 +282,7 @@ impl<B: Backend + 'static> CompositorState<B> {
                 self.switch_workspace(n);
             }
             Action::Screenshot => self.screenshot_pending = true,
+            Action::ToggleHelp => self.help_pinned = !self.help_pinned,
             Action::Prompt(prompt) => {
                 // Opening clears any message from last time; a stale result
                 // sitting behind a fresh prompt reads as a reply to it.
@@ -514,6 +521,7 @@ pub fn create_state<B: Backend + 'static>(
         keymap: crate::keymap::Keymap::default(),
         chord: crate::keymap::ChordState::default(),
         intercepted: HashSet::new(),
+        help_pinned: false,
         minibuffer: None,
         wm: None,
     }

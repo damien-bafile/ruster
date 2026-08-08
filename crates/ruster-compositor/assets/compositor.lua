@@ -44,6 +44,11 @@
 -- second of nothing, so an abandoned prefix stops swallowing keys. A single
 -- chord is a sequence of length one, so ordinary binds are unchanged.
 --
+-- `toggle help` (M-? by default) pins that overlay open with the whole keymap
+-- in it, so the bindings can be browsed rather than only glimpsed mid-chord. A
+-- half-typed sequence still takes over while it lasts. The list is truncated to
+-- what fits the screen, with a final row saying how many were left out.
+--
 -- Keybinds are (binding, action) pairs. In a binding, `M` is Mod4
 -- (Super/Logo), `S` Shift, `C` Control and `A` Alt, followed by the key name:
 -- "M-S-q", "M-t", "M-F9", "C-A-space". Modifiers match exactly, so "M-t" does
@@ -61,6 +66,7 @@
 --                            which is also the axis the next window here uses
 --   toggle floating          float the focused window, or re-tile it
 --   spawn <command>          launch a program on this compositor's socket
+--   toggle help              pin the shortcut helper open, or unpin it
 --   command                  open the ":" prompt (an action name)
 --   lua                      open the "=" prompt (Lua, in the config's VM)
 --   workspace <1-9>          show a numbered workspace
@@ -113,6 +119,7 @@ return {
     -- Without a spawn bind there is no way to open a window from inside the
     -- session: on DRM the only windows that exist are the startup clients.
     { "M-Return", "spawn foot" },
+    { "M-S-slash",     "toggle help" },
     { "M-S-semicolon", "command" },
     { "M-S-equal",     "lua" },
 
