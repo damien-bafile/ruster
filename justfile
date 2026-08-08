@@ -106,6 +106,22 @@ icon:
 compositor:
     cargo run -p ruster-compositor
 
+# Must be launched from a shell on the VT you want it on. logind only grants DRM
+# master to the session that owns the seat, so running this from a terminal
+# inside your graphical session fails with "failed to initialize libseat
+# session" — correctly, and without touching your display.
+#
+#   Ctrl+Alt+F3, log in, then: just compositor-drm
+#
+# Escape hatches, best first: Ctrl+Alt+F2 (switches VT, leaves it running),
+# Super+Shift+q (quits whatever the config says).
+#
+# This runs scripts/drm-test.sh rather than a bare `cargo run` — it builds
+# first, tees the log to /tmp/ruster-drm.log, and afterwards reports the exit
+# status, any screenshots taken and whether a VT switch was seen. On a VT that
+# summary is the whole diagnosis, because the screen is gone by the time you can
+# read anything.
+
 # Run the compositor on DRM (needs a free VT + seatd/logind access).
 compositor-drm:
-    cargo run -p ruster-compositor --features ruster-compositor/udev -- --drm
+    ./scripts/drm-test.sh

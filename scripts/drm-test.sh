@@ -55,17 +55,28 @@ echo "  Ctrl+Alt+F2    back to your session (this keeps running) — try this fi
 echo "  Super+Shift+s  screenshot"
 echo "  Super+Shift+q  quit"
 echo
+# A marker to date this run by. Screenshots live in a directory that keeps them
+# between sessions, so listing them all would show yesterday's nested captures
+# next to today's — and reading a stale PNG as proof the DRM capture worked is
+# exactly the mistake this harness exists to prevent.
+MARKER=$(mktemp)
+trap 'rm -f "$MARKER"' EXIT
+
 RUST_LOG=ruster_compositor=debug,smithay=info "$BIN" --drm >"$LOG" 2>&1
 status=$?
 
 # The VT is readable again by the time we get here.
 echo
 echo "ruster-compositor exited with status $status"
-echo "screenshots:"
-ls -la "${XDG_RUNTIME_DIR:-/tmp}"/ruster-shot-*.png 2>/dev/null || echo "  (none)"
+echo "screenshots from this run:"
+shots=$(find "${XDG_RUNTIME_DIR:-/tmp}" -maxdepth 1 -name 'ruster-shot-*.png' \
+    -newer "$MARKER" -printf '  %p\n' 2>/dev/null | sort)
+echo "${shots:-  (none)}"
 echo
-echo "VT switches seen (the escape hatch):"
-grep -c "pausing session\|resuming session" "$LOG" 2>/dev/null || echo "  0"
+# `grep -c` exits non-zero on zero matches, so a plain `|| echo 0` prints the
+# count *and* the fallback. Count without letting grep's status leak.
+switches=$(grep -c "pausing session\|resuming session" "$LOG" 2>/dev/null || true)
+echo "VT switches seen (the escape hatch): ${switches:-0}"
 echo
 echo "last lines of $LOG:"
 tail -n 20 "$LOG"

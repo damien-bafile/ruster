@@ -85,7 +85,7 @@ ordinary keycodes.
 | The shortcut helper toggles | bind `toggle help` and press it twice | ✅ the panel pixel is `(30,30,46)` — `whichkey_bg` — after the first press and `(36,36,36)` (the client behind it) after the second, with two `ToggleHelp` dispatches in the log. Pinned, it lists the whole keymap under the title `keys`; a half-typed chord still takes the panel over while it lasts. `docs/verification/compositor-help-pinned.png` |
 | Screenshot costs a frame | capture nested, watch the log | ⚠️ every capture is followed by one `Failed to submit buffer: The context has been lost`; the next frame renders normally and the PNG is correct. A one-frame stutter per screenshot, not a lost session |
 | DRM fails gracefully without a seat | `--drm` inside a Wayland session | ✅ exits 1 with `failed to initialize libseat session` plus the seatd/logind hint; display untouched |
-| DRM boots (hardware) | `bash scripts/drm-test.sh` on a free VT | ✅ booted on seat0: `/dev/dri/card1`, connector DP-3, mode `3440x1440@60`, GLES on the RTX 4090, socket `wayland-1` |
+| DRM boots (hardware) | `just compositor-drm` on a free VT | ✅ booted on seat0: `/dev/dri/card1`, connector DP-3, mode `3440x1440@60`, GLES on the RTX 4090, socket `wayland-1` |
 | DRM launches its startup client | the Lua config's client appears on a DRM boot | ✅ `new toplevel` → `toplevel mapped`, and the client was usable |
 | DRM keyboard (libinput) | type, and use the quit binding | ✅ 95 key events routed through the seat; `Super+Shift+q` quit the compositor |
 | DRM pointer (libinput) | move a mouse | ⛔ not confirmed on hardware — relative-motion handling is still unexecuted there, and nothing logs pointer events |
@@ -100,11 +100,14 @@ ordinary keycodes.
 # Winit (nested, dev): boots a window on a running display server.
 just compositor
 
-# DRM (hardware): needs a free VT and seatd/logind access.
+# DRM (hardware): needs a free VT and seatd/logind access. Builds, logs to
+# /tmp/ruster-drm.log, and reports what happened once it exits.
 just compositor-drm
 ```
 
-The `just compositor` / `just compositor-drm` recipes are defined in the
-root `justfile` and map to `cargo run -p ruster-compositor` and
-`cargo run -p ruster-compositor --features ruster-compositor/udev -- --drm`
-respectively.
+The `just compositor` / `just compositor-drm` recipes are defined in the root
+`justfile`. The first is `cargo run -p ruster-compositor`; the second runs
+`scripts/drm-test.sh`, which builds with the `udev` feature, launches on DRM,
+and afterwards reports the exit status, any screenshots and whether a VT switch
+was seen — on a VT that summary is the whole diagnosis, since the screen is gone
+by the time you can read anything.
