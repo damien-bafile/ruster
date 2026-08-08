@@ -127,4 +127,19 @@ return {
     { "M-S-9", "move to workspace 9" },
   },
   startup_clients = { "foot" },
+
+  -- Keyboard layout and repeat. Omit this table entirely and libxkbcommon uses
+  -- the system default, which honours XKB_DEFAULT_LAYOUT and friends — so an
+  -- unconfigured compositor matches the rest of your session rather than
+  -- forcing US. A layout xkb rejects is refused with a warning and the previous
+  -- keymap is kept, because on DRM a broken keymap means a black screen and no
+  -- keyboard with which to fix the file that caused it.
+  --
+  -- keyboard = {
+  --   layout = "gb",
+  --   variant = "colemak",
+  --   options = "ctrl:nocaps",
+  --   repeat_delay = 200,   -- ms before repeating
+  --   repeat_rate = 25,     -- repeats per second
+  -- },
 }

@@ -10,7 +10,7 @@ use std::process::Command;
 use std::rc::Rc;
 
 use mlua::Lua;
-use smithay::input::keyboard::ModifiersState;
+use smithay::input::keyboard::{ModifiersState, XkbConfig};
 
 use crate::backend::Backend;
 use crate::compositor::CompositorState;
@@ -59,6 +59,44 @@ pub enum Action {
     Screenshot,
 }
 
+/// The keyboard layout and repeat behaviour a config asked for.
+///
+/// Empty strings mean "whatever the system says", which is what libxkbcommon
+/// falls back to — and it honours `XKB_DEFAULT_LAYOUT` and friends, so an
+/// unconfigured compositor already matches the rest of the session. The point of
+/// this struct is to let a config *override* that, which until now was
+/// impossible: the keymap was `XkbConfig::default()` with a `TODO` beside it,
+/// so every non-US layout was simply wrong and there was nowhere to say so.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyboardConfig {
+    pub layout: String,
+    pub variant: String,
+    pub model: String,
+    pub rules: String,
+    /// xkb options such as `ctrl:nocaps`, comma separated.
+    pub options: Option<String>,
+    /// Milliseconds held before a key starts repeating.
+    pub repeat_delay: i32,
+    /// Repeats per second once it starts.
+    pub repeat_rate: i32,
+}
+
+impl Default for KeyboardConfig {
+    fn default() -> Self {
+        // The delay/rate pair the seat was built with before this was
+        // configurable, so an existing session feels identical.
+        KeyboardConfig {
+            layout: String::new(),
+            variant: String::new(),
+            model: String::new(),
+            rules: String::new(),
+            options: None,
+            repeat_delay: 200,
+            repeat_rate: 25,
+        }
+    }
+}
+
 /// The parsed compositor config: keybinds as `(binding, action-name)` pairs,
 /// the clients to launch on startup, and the workspace to start on.
 #[derive(Debug, Clone, Default)]
@@ -67,6 +105,7 @@ pub struct LuaShell {
     pub startup_clients: Vec<String>,
     /// Workspace to start on, when the config asked for one.
     pub initial_workspace: Option<u32>,
+    pub keyboard: KeyboardConfig,
 }
 
 /// Load `compositor.lua` from the config dir (`~/.config/ruster/`), falling
@@ -146,7 +185,38 @@ fn merge_config_table(table: &mlua::Table, shell: &mut LuaShell) -> mlua::Result
     if let Ok(ws) = table.get::<u32>("workspace") {
         shell.initial_workspace = valid_workspace(ws);
     }
+    if let Ok(kb) = table.get::<mlua::Table>("keyboard") {
+        merge_keyboard_table(&kb, &mut shell.keyboard);
+    }
     Ok(())
+}
+
+/// Fold a `keyboard = { ... }` table into `keyboard`, leaving anything the
+/// config did not mention alone.
+fn merge_keyboard_table(table: &mlua::Table, keyboard: &mut KeyboardConfig) {
+    if let Ok(v) = table.get::<String>("layout") {
+        keyboard.layout = v;
+    }
+    if let Ok(v) = table.get::<String>("variant") {
+        keyboard.variant = v;
+    }
+    if let Ok(v) = table.get::<String>("model") {
+        keyboard.model = v;
+    }
+    if let Ok(v) = table.get::<String>("rules") {
+        keyboard.rules = v;
+    }
+    if let Ok(v) = table.get::<String>("options") {
+        // An empty string means "no options", not "an option named nothing" —
+        // xkb rejects the latter and would take the whole keymap down with it.
+        keyboard.options = (!v.is_empty()).then_some(v);
+    }
+    if let Ok(v) = table.get::<i32>("repeat_delay") {
+        keyboard.repeat_delay = v;
+    }
+    if let Ok(v) = table.get::<i32>("repeat_rate") {
+        keyboard.repeat_rate = v;
+    }
 }
 
 /// A workspace number the shell will accept, or `None` for one it will not.
@@ -533,6 +603,7 @@ pub fn apply_config_to_shell<B: Backend + 'static>(
     socket_name: &str,
 ) {
     state.wm = control;
+    apply_keyboard_config(state, &shell.keyboard);
     state.keybinds = shell.keybinds;
     if let Some(workspace) = shell.initial_workspace {
         state.switch_workspace(workspace);
@@ -543,6 +614,46 @@ pub fn apply_config_to_shell<B: Backend + 'static>(
 /// Launch each configured startup client with `WAYLAND_DISPLAY` pointing at our
 /// socket. Clients whose binary is not installed are skipped and a spawned
 /// child failing is ignored — a startup client can never crash the compositor.
+/// Load the configured keymap onto the seat, keeping the old one if xkb will
+/// not have it.
+///
+/// The fallback is the whole point. `add_keyboard` is called with
+/// `XkbConfig::default()` before any config is read, and a config naming a
+/// layout that does not exist would otherwise take the session down — on DRM,
+/// where the compositor is the display server, that means a black screen and no
+/// keyboard with which to fix the file that caused it. A warning and the
+/// previous keymap is always the better trade.
+pub fn apply_keyboard_config<B: Backend + 'static>(
+    state: &mut CompositorState<B>,
+    keyboard: &KeyboardConfig,
+) {
+    let keymap = XkbConfig {
+        rules: &keyboard.rules,
+        model: &keyboard.model,
+        layout: &keyboard.layout,
+        variant: &keyboard.variant,
+        options: keyboard.options.clone(),
+    };
+    let handle = state.keyboard.clone();
+    if *keyboard != KeyboardConfig::default() {
+        match handle.set_xkb_config(state, keymap) {
+            Ok(()) => tracing::info!(
+                layout = %keyboard.layout,
+                variant = %keyboard.variant,
+                options = ?keyboard.options,
+                "keymap loaded"
+            ),
+            Err(err) => tracing::warn!(
+                layout = %keyboard.layout,
+                variant = %keyboard.variant,
+                ?err,
+                "the configured keymap was rejected; keeping the current one"
+            ),
+        }
+    }
+    handle.change_repeat_info(keyboard.repeat_rate, keyboard.repeat_delay);
+}
+
 /// Launch `command` on the compositor's own Wayland socket.
 ///
 /// Split on whitespace, so `foot -e htop` works but quoting does not — a config
@@ -754,6 +865,55 @@ mod tests {
         assert_eq!(cmd.get_program(), "foot");
         assert!(cmd.get_envs().all(|(k, _)| k != "WAYLAND_DISPLAY"));
         assert!(build_command("   ", Some("wayland-1")).is_none());
+    }
+
+    #[test]
+    fn a_config_can_name_its_keyboard_layout() {
+        // The keymap was `XkbConfig::default()` with a TODO beside it, so every
+        // non-US layout was simply wrong and there was nowhere to say otherwise.
+        let shell = parse_config(
+            r#"return { keyboard = {
+                 layout = "gb", variant = "colemak", options = "ctrl:nocaps",
+                 repeat_delay = 300, repeat_rate = 40,
+               } }"#,
+        )
+        .unwrap();
+        assert_eq!(shell.keyboard.layout, "gb");
+        assert_eq!(shell.keyboard.variant, "colemak");
+        assert_eq!(shell.keyboard.options.as_deref(), Some("ctrl:nocaps"));
+        assert_eq!(shell.keyboard.repeat_delay, 300);
+        assert_eq!(shell.keyboard.repeat_rate, 40);
+    }
+
+    #[test]
+    fn an_unmentioned_keyboard_field_keeps_its_default() {
+        // A config setting only the layout must not silently reset the repeat
+        // rate to zero, which would be a keyboard that never repeats.
+        let shell = parse_config(r#"return { keyboard = { layout = "de" } }"#).unwrap();
+        let default = KeyboardConfig::default();
+        assert_eq!(shell.keyboard.layout, "de");
+        assert_eq!(shell.keyboard.repeat_delay, default.repeat_delay);
+        assert_eq!(shell.keyboard.repeat_rate, default.repeat_rate);
+        assert_eq!(shell.keyboard.variant, "");
+    }
+
+    #[test]
+    fn no_keyboard_table_means_the_system_keymap() {
+        // Empty strings are what libxkbcommon reads as "use the system
+        // default", which honours XKB_DEFAULT_LAYOUT — so an unconfigured
+        // compositor matches the rest of the session rather than forcing US.
+        let shell = parse_config("return {}").unwrap();
+        assert_eq!(shell.keyboard, KeyboardConfig::default());
+        assert!(shell.keyboard.layout.is_empty());
+        assert!(shell.keyboard.options.is_none());
+    }
+
+    #[test]
+    fn empty_options_are_dropped_rather_than_passed_to_xkb() {
+        // `options = ""` is an empty option list, not an option named nothing;
+        // xkb rejects the latter and takes the whole keymap with it.
+        let shell = parse_config(r#"return { keyboard = { options = "" } }"#).unwrap();
+        assert!(shell.keyboard.options.is_none());
     }
 
     #[test]

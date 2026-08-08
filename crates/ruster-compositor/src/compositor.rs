@@ -485,9 +485,19 @@ fn init_globals<B: Backend + 'static>(dh: &DisplayHandle, seat_name: String) -> 
     let mut seat_state = SeatState::new();
     let mut seat = seat_state.new_wl_seat(dh, seat_name);
     let pointer = seat.add_pointer();
-    // TODO(next phase): load an XKB config from ~/.config/ruster/ when present.
+    // The system keymap to start with — `XkbConfig::default()` compiles the
+    // libxkbcommon default, which honours `XKB_DEFAULT_LAYOUT` and friends, so
+    // an unconfigured compositor already matches the rest of the session. A
+    // config that names its own is applied afterwards by
+    // `lua::apply_keyboard_config`, which can fail safely; this one cannot fail
+    // at all without the machine being broken.
+    let defaults = crate::lua::KeyboardConfig::default();
     let keyboard = seat
-        .add_keyboard(XkbConfig::default(), 200, 25)
+        .add_keyboard(
+            XkbConfig::default(),
+            defaults.repeat_delay,
+            defaults.repeat_rate,
+        )
         .expect("failed to initialize the keyboard");
 
     InitGlobals {
