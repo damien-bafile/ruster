@@ -131,24 +131,50 @@ placement, the gutter and click-to-position all assume a fixed advance.
 Testable with no display: lay out `"iiii"` and `"WWWW"` at the same size in the
 monospace family and assert equal widths. A guard that can actually fail.
 
-### 0.3 One measurement, before any rendering decision
+### 0.3 One measurement, before any rendering decision — **done, and it decides Stage 2**
 
-Nobody knows how many render elements a frame can carry. `glyph_elements` emits
-one `TextureRenderElement` per glyph; an 80×40 pane is ~3,200 of them, against
-roughly a hundred for all of today's chrome.
+Measured with `RUSTER_BENCH_GLYPHS=n`, which makes `Chrome` emit *n* real atlas
+glyph quads per frame in a pane-shaped grid. Nested, 1873x1334, average frame
+time over one-second windows.
 
-Add a `RUSTER_BENCH_GLYPHS=n` escape hatch that makes `Chrome` emit *n* dummy
-glyph quads, and log frame time nested at n = 100, 500, 2000, 5000. The number
-decides Stage 2's rendering strategy. If per-glyph quads turn out fine at 3,000,
-half of Stage 2 disappears.
+**Release build:**
 
-One nuance the measurement must not hide: `solid_elements_from_verts` builds a
-fresh `SolidColorBuffer` per quad per frame, each with a new element id. Chrome's
-panels therefore have no id stability today and already damage fully every frame.
-The argument against thousands of glyph quads is *per-element CPU cost*, not
-damage — do not let a damage story stand in for a number.
+| extra glyph quads | avg frame ms |
+| ---: | ---: |
+| 0 | 4.73 |
+| 2,000 | 4.69 |
+| 3,200 (an 80x40 pane) | 4.69 |
+| 5,000 | 4.69 |
+| 10,000 | 4.84 |
+| 50,000 | 15.96 |
+| 200,000 | 73.85 |
 
----
+Flat to ten thousand, and an 80x40 pane is 3,200. Several panes at once would
+still sit in the flat region. The cliff is somewhere between 10k and 50k, which
+is an order of magnitude past anything Phase 3 will ask for.
+
+The flatness was checked rather than believed: a harness that was not really
+emitting the quads would look identical, so the load was pushed to 50k and 200k
+until the cost appeared. It does, proportionally.
+
+**So: implement option A, per-glyph quads with ids re-keyed to `(pane, row,
+col)`, and do not build option B.** Per-row CPU rasterization was designed here
+to solve a problem the numbers say does not exist. If a future pane somehow
+needs 50,000 cells, this section is why B was written down.
+
+**One caveat worth carrying.** The same measurement on a *debug* build:
+
+| extra glyph quads | avg frame ms (debug) |
+| ---: | ---: |
+| 0 | 4.66 |
+| 500 | 4.66 |
+| 2,000 | 9.88 |
+| 5,000 | 24.2 |
+
+A debug build degrades from 2,000 quads and misses the 60Hz budget at 5,000. So
+an editor pane will feel sluggish under `cargo run` while being perfectly fine
+in release — and a performance complaint during Phase 3 development should be
+re-checked in release before anyone optimises anything.
 
 ## Stage 1 — a pane that exists, takes focus, and draws nothing
 
@@ -420,8 +446,10 @@ draws nothing, so a regression has one obvious cause.
 
 - **Frame callbacks (0.1) change how every client is paced.** A mistake is a
   stuttering or frozen desktop. Small change, observable check, must land first.
-- **Frame time.** Unmeasured, which is why 0.3 exists. Three unknowns stack:
-  element count, glyph-id churn under scrolling, CPU rasterization cost.
+- **Frame time.** Measured (0.3): flat to 10,000 render elements in release, so
+  element count is *not* a risk for a pane. Glyph-id churn under scrolling is
+  still unmeasured, and CPU rasterization cost is now moot — option B is not
+  being built.
 - **Atlas exhaustion warns per glyph.** Not silent — flooding. See Stage 5.
 - **`arboard::Clipboard::new()` runs inside the display server.** On a bare VT it
   is a library reaching for X11/Wayland from inside the thing that *is* Wayland.
@@ -495,10 +523,6 @@ Unchanged, and it has earned its place repeatedly:
 
 ## What this plan does not know
 
-- The frame-time cliff for render elements. Stage 0.3 exists to answer it, and
-  the Stage 2 choice is deliberately left open until it does.
-- Whether a per-row CPU rasterization path can share `Atlas`'s swash cache
-  cleanly or needs its own. It looks like it can; nobody has tried.
 - Whether `arboard::Clipboard::new()` returns promptly or blocks when called from
   inside the compositor on a bare VT. Worth a timed log line before Stage 3.
 - How large the atlas needs to be for a full screen of highlighted code under a

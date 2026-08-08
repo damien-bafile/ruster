@@ -411,6 +411,37 @@ impl Chrome {
         }
     }
 
+    /// Emit `n` glyph quads of synthetic load, for measuring how many render
+    /// elements a frame can carry (`RUSTER_BENCH_GLYPHS`).
+    ///
+    /// Laid out in a grid the size a text pane would be, using real atlas
+    /// glyphs, so the cost measured is the cost an editor pane would pay:
+    /// per-element work in the damage tracker plus sampling the atlas texture.
+    pub fn bench_glyphs(&mut self, n: usize, batch: &mut ChromeBatch) {
+        let fg: (f32, f32, f32, f32) = self.theme.fg.into();
+        let rgb = rgb8(fg);
+        for i in 0..n {
+            // Cycle a few characters so the atlas holds more than one cell,
+            // and step positions so no two quads coincide.
+            let c = (*b"miW0")[i % 4] as char;
+            let g = self.atlas.glyph(14, rgb, c);
+            if g.is_empty() {
+                continue;
+            }
+            let (col, row) = (i % 80, i / 80);
+            batch.glyphs.push(GlyphQuad {
+                x: 20.0 + col as f32 * 9.0 + g.x,
+                y: 40.0 + row as f32 * 18.0 + g.y,
+                w: g.w,
+                h: g.h,
+                u0: g.u0,
+                v0: g.v0,
+                u1: g.u1,
+                v1: g.v1,
+            });
+        }
+    }
+
     /// Draw the which-key panel: a half-typed chord's continuations, or the
     /// whole keymap when the helper is pinned.
     ///

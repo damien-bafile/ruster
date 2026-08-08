@@ -54,6 +54,26 @@ smithay::backend::renderer::element::render_elements! {
     Surface=WaylandSurfaceRenderElement<R>,
 }
 
+/// How many extra glyph quads to emit per frame, from `RUSTER_BENCH_GLYPHS`.
+///
+/// Nobody knows how many render elements a frame can carry. `glyph_elements`
+/// emits one `TextureRenderElement` per glyph, and an 80x40 editor pane is about
+/// 3,200 of them against roughly a hundred for all of today's chrome. Stage 2 of
+/// the Phase 3 plan has to choose between per-glyph quads and one texture per
+/// text row, and that choice should follow a number rather than an argument.
+///
+/// Read once: this is on the render path, and a `var()` per frame would measure
+/// the environment lookup as much as the renderer.
+fn bench_glyph_count() -> usize {
+    static COUNT: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *COUNT.get_or_init(|| {
+        std::env::var("RUSTER_BENCH_GLYPHS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+    })
+}
+
 /// Everything one frame needs to know about *what* to draw, as opposed to the
 /// backend machinery that draws it.
 ///
@@ -180,6 +200,14 @@ where
         // about anything.
         if let Some(view) = &scene.whichkey {
             chrome.draw_whichkey(size.w, size.h, view, &mut batch);
+        }
+
+        // Synthetic load, when asked for. Real glyphs from the atlas rather than
+        // empty quads, so the measurement includes the texture the renderer
+        // actually samples.
+        let bench = bench_glyph_count();
+        if bench > 0 {
+            chrome.bench_glyphs(bench, &mut batch);
         }
 
         // Glyphs first, then panels. Within a panel the glyphs are drawn on top

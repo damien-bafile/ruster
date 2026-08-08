@@ -48,6 +48,44 @@ pub fn run() -> anyhow::Result<()> {
     run_winit()
 }
 
+/// Average frame time over the last second, at info level.
+///
+/// Exists for the `RUSTER_BENCH_GLYPHS` measurement: the question Stage 2 of the
+/// Phase 3 plan has to answer is how frame time moves with render-element count,
+/// and that is not answerable by watching. Averaged rather than logged per frame
+/// because a line per frame is the flood that cost this project a 2MB DRM log.
+fn report_frame_time(elapsed: Duration) {
+    use std::cell::Cell;
+    thread_local! {
+        static FRAMES: Cell<u32> = const { Cell::new(0) };
+        static TOTAL: Cell<Duration> = const { Cell::new(Duration::ZERO) };
+        static SINCE: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
+    }
+    if std::env::var_os("RUSTER_BENCH_GLYPHS").is_none() {
+        return;
+    }
+    FRAMES.with(|f| f.set(f.get() + 1));
+    TOTAL.with(|t| t.set(t.get() + elapsed));
+    let start = SINCE.with(|s| {
+        let v = s.get().unwrap_or_else(std::time::Instant::now);
+        s.set(Some(v));
+        v
+    });
+    if start.elapsed() < Duration::from_secs(1) {
+        return;
+    }
+    let frames = FRAMES.with(|f| f.replace(0));
+    let total = TOTAL.with(|t| t.replace(Duration::ZERO));
+    SINCE.with(|s| s.set(Some(std::time::Instant::now())));
+    if frames > 0 {
+        tracing::info!(
+            frames,
+            avg_ms = total.as_secs_f64() * 1000.0 / frames as f64,
+            "frame time"
+        );
+    }
+}
+
 fn run_winit() -> anyhow::Result<()> {
     let mut event_loop: EventLoop<'static, CompositorState<RusterWinitData>> =
         EventLoop::try_new()?;
@@ -101,6 +139,7 @@ fn run_winit() -> anyhow::Result<()> {
                 state.backend_data.output.current_mode().map(|m| m.size),
             )
         });
+        let frame_started = std::time::Instant::now();
         let render_res = state
             .backend_data
             .backend
@@ -177,6 +216,8 @@ fn run_winit() -> anyhow::Result<()> {
             }
             Err(err) => tracing::error!("Rendering failed: {err}"),
         }
+
+        report_frame_time(frame_started.elapsed());
 
         let result = event_loop.dispatch(Some(Duration::from_millis(1)), &mut state);
         if result.is_err() {
