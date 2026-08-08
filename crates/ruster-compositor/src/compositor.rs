@@ -28,13 +28,13 @@ use smithay::wayland::{
     cursor_shape::CursorShapeManagerState,
     output::OutputHandler,
     selection::data_device::{
-        set_data_device_focus, ClientDndGrabHandler, DataDeviceHandler, DataDeviceState,
-        ServerDndGrabHandler,
+        request_data_device_client_selection, set_data_device_focus, set_data_device_selection,
+        ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
     },
     selection::primary_selection::{
         set_primary_focus, PrimarySelectionHandler, PrimarySelectionState,
     },
-    selection::SelectionHandler,
+    selection::{SelectionHandler, SelectionSource, SelectionTarget},
     shell::xdg::{decoration::XdgDecorationState, ToplevelSurface, XdgShellState},
     shm::{ShmHandler, ShmState},
     tablet_manager::TabletSeatHandler,
@@ -138,6 +138,8 @@ pub struct CompositorState<B: Backend + 'static> {
     /// seat is told — [`crate::lua::apply_keyboard_config`] and the seat
     /// construction below — so the two cannot drift.
     pub keyboard_config: crate::lua::KeyboardConfig,
+    /// The seat's selection text, shared between editor panes and clients.
+    pub clipboard: crate::clipboard::Clipboard,
     /// Editor panes: tree leaves that are not Wayland clients. A leaf is a
     /// client if `toplevels` has it and a pane if this does — see `pane.rs` for
     /// why that is a side table rather than a variant on `Node::Leaf`.
@@ -327,8 +329,53 @@ impl<B: Backend + 'static> CompositorState<B> {
             .is_some_and(|id| self.panes.contains_key(&id))
     }
 
-    /// Feed a key to the focused pane.
+    /// Feed a key to the focused pane, keeping its clipboard and the seat's in
+    /// step.
+    ///
+    /// Around the key rather than inside `VimState`: the editor's clipboard is
+    /// an `arboard` handle plus an in-process buffer, and inside a compositor
+    /// `arboard` has no display to reach — this process is the display. Seeding
+    /// before and publishing after leaves the editor's own logic untouched and
+    /// makes the compositor's selection the one that counts.
     pub fn pane_key(&mut self, key: ruster_core::key::KeyEvent) {
+        let before = self.seed_pane_clipboard();
+        self.pane_key_inner(key);
+        self.publish_pane_clipboard(before);
+    }
+
+    /// Put the seat's selection where the pane's paste will look, returning what
+    /// the pane's clipboard held so a yank can be told apart afterwards.
+    fn seed_pane_clipboard(&mut self) -> Option<String> {
+        let text = self.clipboard.text().to_string();
+        let id = self.shell.focus?;
+        let pane = self.panes.get(&id)?;
+        if !text.is_empty() {
+            pane.vim.clipboard_set(&text);
+        }
+        pane.vim.clipboard_get()
+    }
+
+    /// If the key yanked something, make it the seat's selection.
+    fn publish_pane_clipboard(&mut self, before: Option<String>) {
+        let Some(id) = self.shell.focus else {
+            return;
+        };
+        let Some(after) = self.panes.get(&id).and_then(|p| p.vim.clipboard_get()) else {
+            return;
+        };
+        if Some(&after) == before.as_ref() || after.is_empty() {
+            return;
+        }
+        self.clipboard.set_from_pane(after);
+        set_data_device_selection(
+            &self.display_handle,
+            &self.seat.clone(),
+            crate::clipboard::mime_types(),
+            (),
+        );
+    }
+
+    fn pane_key_inner(&mut self, key: ruster_core::key::KeyEvent) {
         // Four spaces until the config has an opinion. Stage 4 reads it from
         // the editor's settings, which already have one.
         if let Some(id) = self.shell.focus {
@@ -761,6 +808,7 @@ pub fn create_state<B: Backend + 'static>(
         repeat: None,
         repeat_generation: 0,
         keyboard_config: globals.keyboard_config,
+        clipboard: crate::clipboard::Clipboard::default(),
         panes: crate::pane::Panes::new(),
         popups: smithay::desktop::PopupManager::default(),
         help_pinned: false,
@@ -1034,6 +1082,73 @@ impl<B: Backend + 'static> SeatHandler for CompositorState<B> {
 // the DnD grab handlers stay empty.
 impl<B: Backend + 'static> SelectionHandler for CompositorState<B> {
     type SelectionUserData = ();
+
+    /// A client is reading the selection a pane put there.
+    fn send_selection(
+        &mut self,
+        _ty: SelectionTarget,
+        mime_type: String,
+        fd: std::os::unix::io::OwnedFd,
+        _seat: Seat<Self>,
+        _user_data: &(),
+    ) {
+        if !crate::clipboard::is_text_mime(&mime_type) {
+            return;
+        }
+        // Written here rather than on the event loop: the far end is a pipe the
+        // client just created and is waiting on, and a selection is small. The
+        // fd is dropped either way, which is what tells the client the transfer
+        // ended — leaking it would hang whatever asked.
+        use std::io::Write;
+        let mut file = std::fs::File::from(fd);
+        if let Err(err) = file.write_all(self.clipboard.text().as_bytes()) {
+            tracing::warn!(%err, "could not hand over the selection");
+        }
+    }
+
+    /// Someone has taken the selection.
+    ///
+    /// `source` is `Some` when a *client* set it, and the text is fetched here
+    /// so a pane can paste it later. Not fetched at paste time: reading means
+    /// asking the owning client for a pipe and waiting on it, and a keystroke
+    /// cannot wait — a client that never answered would hang the display server.
+    fn new_selection(
+        &mut self,
+        ty: SelectionTarget,
+        source: Option<SelectionSource>,
+        seat: Seat<Self>,
+    ) {
+        if ty != SelectionTarget::Clipboard {
+            return;
+        }
+        let Some(source) = source else {
+            return;
+        };
+        self.clipboard.released();
+        let Some(mime) = crate::clipboard::preferred_mime(&source.mime_types()) else {
+            return;
+        };
+        match fetch_client_selection(&seat, mime) {
+            Ok(text) => self.clipboard.set_from_client(text),
+            Err(err) => tracing::warn!(%err, "could not read the client selection"),
+        }
+    }
+}
+
+/// Read the current client selection for `seat` as text.
+///
+/// A pipe, handed to the client to write into, read back here. Bounded by
+/// [`SELECTION_LIMIT`](crate::clipboard::SELECTION_LIMIT) because the far end is
+/// another process and this one is the display server.
+fn fetch_client_selection<B: Backend + 'static>(
+    seat: &Seat<CompositorState<B>>,
+    mime: String,
+) -> Result<String, String> {
+    let (rx, tx) = std::os::unix::net::UnixStream::pair().map_err(|err| err.to_string())?;
+    request_data_device_client_selection(seat, mime, tx.into())
+        .map_err(|err| format!("{err:?}"))?;
+    crate::clipboard::read_selection(rx.into(), crate::clipboard::SELECTION_LIMIT)
+        .map_err(|err| err.to_string())
 }
 
 impl<B: Backend + 'static> ClientDndGrabHandler for CompositorState<B> {}

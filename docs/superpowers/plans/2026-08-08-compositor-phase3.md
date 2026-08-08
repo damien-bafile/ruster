@@ -523,8 +523,9 @@ Unchanged, and it has earned its place repeatedly:
 
 ## What this plan does not know
 
-- Whether `arboard::Clipboard::new()` returns promptly or blocks when called from
-  inside the compositor on a bare VT. Worth a timed log line before Stage 3.
+- ~~Whether `arboard::Clipboard::new()` returns promptly or blocks with no
+  display.~~ **Answered: 48µs, returns `Err`.** Not a hazard, and
+  `clipboard::arboard_probe` now fails if that ever changes.
 - How large the atlas needs to be for a full screen of highlighted code under a
   real theme. Measurable once Stage 5 starts; guessing now would produce a number
   to defend.

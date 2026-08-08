@@ -17,6 +17,7 @@ ruster-shell = { path = "../ruster-shell" }
 ruster-render = { path = "../ruster-render" }
 ruster-render-gles = { path = "../ruster-render-gles" }
 ruster-core = { path = "../ruster-core" }
+arboard = "3"
 ruster-lua = { path = "../ruster-lua" }
 mlua = { version = "0.10", features = ["lua54", "vendored"] }
 dirs = "5"

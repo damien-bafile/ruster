@@ -8,6 +8,7 @@
 
 pub mod backend;
 pub mod chrome;
+pub mod clipboard;
 pub mod compositor;
 pub mod input;
 pub mod keymap;
