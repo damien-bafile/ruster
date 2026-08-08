@@ -128,15 +128,9 @@ fn run_winit() -> anyhow::Result<()> {
                     whichkey: ruster_compositor::keymap::whichkey_view(
                         &state.keymap,
                         &state.chord,
-                        ruster_compositor::keymap::HelpState::for_output(
-                            state.help_pinned,
-                            state
-                                .backend_data
-                                .output
-                                .current_mode()
-                                .map(|m| m.size.h)
-                                .unwrap_or_default(),
-                        ),
+                        ruster_compositor::keymap::HelpState {
+                            pinned: state.help_pinned,
+                        },
                     ),
                 };
                 render_frame(

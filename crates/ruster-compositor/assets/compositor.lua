@@ -19,6 +19,8 @@
 --    an action that the event loop carries out on its next pass — the same
 --    path a keybind takes, so nothing can drift between them.
 --
+--      ruster.wm.set_keybind("M-x", "screenshot")  -- takes effect at once,
+--                                     -- and appears in the helper immediately
 --      ruster.wm.focus("left")        -- left/right/up/down (or h/l/k/j)
 --      ruster.wm.action("swap right") -- any action name from the list below
 --      ruster.wm.spawn("foot")        -- launch on this compositor's socket
@@ -44,10 +46,12 @@
 -- second of nothing, so an abandoned prefix stops swallowing keys. A single
 -- chord is a sequence of length one, so ordinary binds are unchanged.
 --
--- `toggle help` (M-? by default) pins that overlay open with the whole keymap
--- in it, so the bindings can be browsed rather than only glimpsed mid-chord. A
--- half-typed sequence still takes over while it lasts. The list is truncated to
--- what fits the screen, with a final row saying how many were left out.
+-- `toggle help` (M-? by default) pins that overlay open with *every* binding in
+-- it — full sequences, not just what can be pressed next — so the keymap can be
+-- browsed rather than only glimpsed mid-chord. A half-typed sequence still takes
+-- over while it lasts. The panel wraps into as many columns as it needs, so
+-- nothing is left out however long the keymap grows, and it is built from the
+-- live keymap: a binding added with ruster.wm.set_keybind shows up at once.
 --
 -- Keybinds are (binding, action) pairs. In a binding, `M` is Mod4
 -- (Super/Logo), `S` Shift, `C` Control and `A` Alt, followed by the key name:

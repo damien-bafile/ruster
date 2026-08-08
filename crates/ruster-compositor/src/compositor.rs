@@ -283,6 +283,7 @@ impl<B: Backend + 'static> CompositorState<B> {
             }
             Action::Screenshot => self.screenshot_pending = true,
             Action::ToggleHelp => self.help_pinned = !self.help_pinned,
+            Action::Bind(binding, action) => self.keymap.bind(&binding, &action),
             Action::Prompt(prompt) => {
                 // Opening clears any message from last time; a stale result
                 // sitting behind a fresh prompt reads as a reply to it.

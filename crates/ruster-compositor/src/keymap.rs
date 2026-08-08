@@ -109,6 +109,39 @@ impl Keymap {
             .map(|(chords, _)| chords.join(" "))
     }
 
+    /// Every binding in force, full sequence and all, in config order.
+    ///
+    /// [`continuations`](Self::continuations) answers "what can I press next",
+    /// which is the right question mid-chord and the wrong one for a reference:
+    /// it collapses `M-w h` and `M-w l` into a single `M-w  +h` row, so a
+    /// two-key binding can never be read off it. This lists what a user would
+    /// actually have to type.
+    pub fn all_bindings(&self) -> Vec<WhichKeyEntry> {
+        self.binds
+            .iter()
+            .map(|(chords, action)| WhichKeyEntry {
+                key: chords.join(" "),
+                desc: action.clone(),
+            })
+            .collect()
+    }
+
+    /// Add a binding while the compositor is running.
+    ///
+    /// `ruster.wm.set_keybind` only recorded into the config until now, so a
+    /// keybind set at runtime silently did nothing — which stopped being
+    /// defensible once the Lua API became live.
+    pub fn bind(&mut self, binding: &str, action: &str) {
+        let chords: Vec<String> = binding.split_whitespace().map(str::to_string).collect();
+        if chords.is_empty() {
+            return;
+        }
+        // Replace rather than append: first match wins, so a second binding for
+        // the same chord would be dead the moment it was added.
+        self.binds.retain(|(existing, _)| *existing != chords);
+        self.binds.push((chords, action.to_string()));
+    }
+
     /// The keys that could come next after `pending`, and what they do.
     ///
     /// Empty when nothing continues from here, which is what tells the caller
@@ -198,70 +231,31 @@ impl ChordState {
     }
 }
 
-/// The height of one which-key row, in physical pixels. Matches the row step
-/// `Chrome::draw_whichkey` lays out with.
-pub const ROW_HEIGHT: f32 = 20.0;
-
-/// Whether the helper is pinned open, and how tall a panel there is room for.
+/// Whether the shortcut helper is pinned open.
+///
+/// It used to carry a row budget too, back when a list too long for the panel
+/// was truncated. The panel lays itself out in columns now, so everything fits
+/// and there is nothing to budget.
 #[derive(Debug, Clone, Copy)]
 pub struct HelpState {
-    /// Pinned open by the user, so the whole keymap shows with nothing pending.
     pub pinned: bool,
-    /// The most rows the panel can draw without running off the output.
-    pub max_rows: usize,
-}
-
-/// The overlay to draw, or `None` when there is nothing to say.
-///
-/// Three cases. A half-typed chord shows what can continue it — that is the
-/// which-key proper, and it wins, because what you are in the middle of matters
-/// more than a reference you left open. Otherwise a pinned helper shows the
-/// whole keymap, which is what makes the bindings discoverable at all now that
-/// the panel is no longer permanently on screen. Otherwise nothing.
-///
-/// Long lists are truncated with a row saying how many were left out, rather
-/// than silently ending — a cheatsheet that stops short without admitting it is
-/// worse than one that says "and 26 more".
-impl HelpState {
-    /// The state for an output `height` physical pixels tall.
-    ///
-    /// The panel is a fixed box in the corner and does not scroll, so the row
-    /// budget has to come from the output rather than a constant — a laptop
-    /// panel and a 1440p display do not have room for the same cheatsheet.
-    /// Two-thirds of the height, leaving the rest for the frame beneath it.
-    pub fn for_output(pinned: bool, height: i32) -> Self {
-        let usable = (height as f32 * 0.66 - 12.0).max(ROW_HEIGHT);
-        HelpState {
-            pinned,
-            max_rows: (usable / ROW_HEIGHT) as usize,
-        }
-    }
 }
 
 pub fn whichkey_view(keymap: &Keymap, chord: &ChordState, help: HelpState) -> Option<WhichKeyView> {
-    let (title, mut rows) = if chord.is_active() {
+    let (title, rows) = if chord.is_active() {
         (
             chord.pending().join(" "),
             keymap.continuations(chord.pending()),
         )
     } else if help.pinned {
-        ("keys".to_string(), keymap.continuations(&[]))
+        // Every binding, not the root continuations: a reference that collapses
+        // `M-w h` and `M-w l` into one `+h` row cannot be read off.
+        ("keys".to_string(), keymap.all_bindings())
     } else {
         return None;
     };
     if rows.is_empty() {
         return None;
-    }
-    // One row of the budget goes to the "more" line, so the count itself is
-    // never what pushes the panel off the screen.
-    let budget = help.max_rows.max(1);
-    if rows.len() > budget {
-        let hidden = rows.len() - (budget - 1);
-        rows.truncate(budget - 1);
-        rows.push(WhichKeyEntry {
-            key: "…".to_string(),
-            desc: format!("and {hidden} more"),
-        });
     }
     Some(WhichKeyView {
         title,
@@ -357,10 +351,7 @@ mod tests {
         // permanently on screen and never about anything in particular.
         let km = Keymap::new(&[("M-w h".into(), "focus left".into())]);
         let mut chord = ChordState::default();
-        let off = HelpState {
-            pinned: false,
-            max_rows: 12,
-        };
+        let off = HelpState { pinned: false };
         assert!(whichkey_view(&km, &chord, off).is_none());
         chord.push("M-w".into());
         let view = whichkey_view(&km, &chord, off).expect("a prefix should raise the overlay");
@@ -377,10 +368,7 @@ mod tests {
             ("M-l".into(), "focus right".into()),
         ]);
         let chord = ChordState::default();
-        let pinned = HelpState {
-            pinned: true,
-            max_rows: 12,
-        };
+        let pinned = HelpState { pinned: true };
         let view = whichkey_view(&km, &chord, pinned).expect("pinned should show");
         assert_eq!(view.title, "keys");
         assert_eq!(view.rows.len(), 2);
@@ -396,39 +384,54 @@ mod tests {
         ]);
         let mut chord = ChordState::default();
         chord.push("M-w".into());
-        let view = whichkey_view(
-            &km,
-            &chord,
-            HelpState {
-                pinned: true,
-                max_rows: 12,
-            },
-        )
-        .unwrap();
+        let view = whichkey_view(&km, &chord, HelpState { pinned: true }).unwrap();
         assert_eq!(view.title, "M-w");
         assert_eq!(view.rows.len(), 1, "the continuations, not the root list");
     }
 
     #[test]
-    fn a_long_keymap_says_how_much_it_left_out() {
-        // The shipped config is nearly forty binds and the panel does not
-        // scroll, so a cheatsheet that stopped short without admitting it would
-        // be actively misleading.
-        let binds: Vec<(String, String)> = (0..40)
-            .map(|n| (format!("M-{n}"), format!("workspace {}", n % 9 + 1)))
-            .collect();
-        let km = Keymap::new(&binds);
-        let view = whichkey_view(
-            &km,
-            &ChordState::default(),
-            HelpState {
-                pinned: true,
-                max_rows: 10,
-            },
-        )
-        .unwrap();
-        assert_eq!(view.rows.len(), 10);
-        assert_eq!(view.rows[9].desc, "and 31 more");
+    fn the_pinned_helper_lists_multi_key_bindings_in_full() {
+        // `continuations` collapses `M-w h` and `M-w l` into one `M-w  +h` row,
+        // so a reference built from it could not tell you what to actually
+        // type. Every binding is listed whole instead.
+        let km = Keymap::new(&[
+            ("M-w h".into(), "focus left".into()),
+            ("M-w l".into(), "focus right".into()),
+            ("M-q".into(), "quit".into()),
+        ]);
+        let view = whichkey_view(&km, &ChordState::default(), HelpState { pinned: true }).unwrap();
+        let keys: Vec<&str> = view.rows.iter().map(|r| r.key.as_str()).collect();
+        assert_eq!(keys, ["M-w h", "M-w l", "M-q"]);
+        assert_eq!(view.rows[0].desc, "focus left");
+    }
+
+    #[test]
+    fn a_binding_added_at_runtime_shows_up_immediately() {
+        // `ruster.wm.set_keybind` recorded into the config and nothing else, so
+        // a keybind set at runtime silently did nothing — and could not appear
+        // in a helper that reads the live keymap.
+        let mut km = Keymap::new(&[("M-q".into(), "quit".into())]);
+        km.bind("M-x", "screenshot");
+        let view = whichkey_view(&km, &ChordState::default(), HelpState { pinned: true }).unwrap();
+        assert_eq!(view.rows.len(), 2);
+        assert!(view.rows.iter().any(|r| r.key == "M-x"));
+        assert_eq!(
+            km.resolve(&[], &logo(), "x"),
+            Resolved::Action(Action::Screenshot)
+        );
+    }
+
+    #[test]
+    fn rebinding_a_chord_replaces_it_rather_than_shadowing_it() {
+        // First match wins, so an appended duplicate would be dead on arrival
+        // while the config said it was bound.
+        let mut km = Keymap::new(&[("M-q".into(), "quit".into())]);
+        km.bind("M-q", "screenshot");
+        assert_eq!(
+            km.resolve(&[], &logo(), "q"),
+            Resolved::Action(Action::Screenshot)
+        );
+        assert_eq!(km.all_bindings().len(), 1);
     }
 
     #[test]

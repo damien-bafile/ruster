@@ -442,10 +442,9 @@ impl CompositorState<RusterUdevData> {
             whichkey: crate::keymap::whichkey_view(
                 &self.keymap,
                 &self.chord,
-                crate::keymap::HelpState::for_output(
-                    self.help_pinned,
-                    output.current_mode().map(|m| m.size.h).unwrap_or_default(),
-                ),
+                crate::keymap::HelpState {
+                    pinned: self.help_pinned,
+                },
             ),
         };
         let elements = collect_render_elements(&scene, &mut self.chrome, &mut renderer);

@@ -9,7 +9,7 @@
 
 use std::any::Any;
 
-use ruster_render::{Theme, WhichKeyView};
+use ruster_render::{Theme, WhichKeyEntry, WhichKeyView};
 use ruster_render_gles::atlas::{layout_text, Atlas};
 use ruster_render_gles::cursor::CursorBitmap;
 use ruster_render_gles::geometry::{rect_verts, rounded_rect_verts, GlyphQuad, Vertex};
@@ -411,35 +411,89 @@ impl Chrome {
         }
     }
 
-    /// Draw the which-key panel for a half-typed chord.
+    /// Draw the which-key panel: a half-typed chord's continuations, or the
+    /// whole keymap when the helper is pinned.
     ///
-    /// Takes a [`WhichKeyView`] — the same type the editor renders — rather than
-    /// a list of pairs, which is what lets the key and its description be drawn
-    /// in different colours. They used to be concatenated into one string and
-    /// therefore one colour, because the panel had no idea which half was which.
-    pub fn draw_whichkey(&mut self, view: &WhichKeyView, batch: &mut ChromeBatch) {
-        let w = 420.0;
-        let row_h = 20.0;
-        let title_h = if view.title.is_empty() { 0.0 } else { row_h };
-        let h = 12.0 + title_h + view.rows.len() as f32 * row_h;
-        let x = 12.0;
-        let y = 12.0;
+    /// Lays out in as many columns as it takes to show every row, because the
+    /// alternative is truncating — and a shortcut reference that silently omits
+    /// shortcuts is worse than none. Column widths are measured from the text
+    /// rather than fixed, so a keymap of short binds does not reserve room for
+    /// long ones.
+    ///
+    /// Takes the [`WhichKeyView`] the editor also renders, which is what lets
+    /// the key and its description be drawn in different colours; they used to
+    /// be one concatenated string and therefore one colour.
+    pub fn draw_whichkey(
+        &mut self,
+        output_w: i32,
+        output_h: i32,
+        view: &WhichKeyView,
+        batch: &mut ChromeBatch,
+    ) {
+        const FONT: u32 = 14;
+        const ROW_H: f32 = 20.0;
+        const PAD: f32 = 10.0;
+        const GAP: f32 = 8.0;
+        const COL_GAP: f32 = 18.0;
+
         let bg: (f32, f32, f32, f32) = self.theme.whichkey_bg.into();
         let fg: (f32, f32, f32, f32) = self.theme.whichkey_fg.into();
         let key_color: (f32, f32, f32, f32) = self.theme.whichkey_key.into();
 
-        batch.verts.extend(rounded_rect_verts(x, y, w, h, 6.0, bg));
-        let mut ty = y + 10.0;
+        // Rows per column, from the room actually available above the
+        // statusline. A laptop panel and a 1440p display do not fit the same
+        // list, so this cannot be a constant.
+        let title_h = if view.title.is_empty() { 0.0 } else { ROW_H };
+        let usable_h = (output_h as f32 * 0.8 - PAD * 2.0 - title_h).max(ROW_H);
+        let per_col = ((usable_h / ROW_H) as usize).max(1);
+        let columns: Vec<&[WhichKeyEntry]> = view.rows.chunks(per_col).collect();
+
+        // Measure each column so a narrow one costs narrow space.
+        let widths: Vec<f32> = columns
+            .iter()
+            .map(|col| {
+                col.iter()
+                    .map(|e| {
+                        layout_text(&e.key, FONT, None).width_px
+                            + GAP
+                            + layout_text(&e.desc, FONT, None).width_px
+                    })
+                    .fold(0.0f32, f32::max)
+            })
+            .collect();
+
+        let rows_drawn = columns.first().map(|c| c.len()).unwrap_or(0);
+        let h = PAD * 2.0 + title_h + rows_drawn as f32 * ROW_H;
+        let w = PAD * 2.0
+            + widths.iter().sum::<f32>()
+            + COL_GAP * columns.len().saturating_sub(1) as f32;
+        let (x, y) = (12.0, 12.0);
+
+        batch.verts.extend(rounded_rect_verts(
+            x,
+            y,
+            w.min(output_w as f32 - 24.0),
+            h,
+            6.0,
+            bg,
+        ));
+
+        let mut ty = y + PAD;
         if !view.title.is_empty() {
-            self.text(&view.title, 14, x + 10.0, ty, key_color, batch);
-            ty += row_h;
+            self.text(&view.title, FONT, x + PAD, ty, key_color, batch);
+            ty += ROW_H;
         }
-        for entry in &view.rows {
-            // The key in the accent, the description in the panel text, so the
-            // thing you have to press is the thing that stands out.
-            let advance = self.text(&entry.key, 14, x + 10.0, ty, key_color, batch);
-            self.text(&entry.desc, 14, x + 18.0 + advance, ty, fg, batch);
-            ty += row_h;
+        let mut cx = x + PAD;
+        for (col, width) in columns.iter().zip(&widths) {
+            let mut row_y = ty;
+            for entry in col.iter() {
+                // The key in the accent, the description in the panel text, so
+                // the thing you have to press is the thing that stands out.
+                let advance = self.text(&entry.key, FONT, cx, row_y, key_color, batch);
+                self.text(&entry.desc, FONT, cx + advance + GAP, row_y, fg, batch);
+                row_y += ROW_H;
+            }
+            cx += width + COL_GAP;
         }
     }
 
@@ -733,7 +787,7 @@ mod tests {
             anim: 1.0,
         };
         let mut batch = ChromeBatch::default();
-        chrome.draw_whichkey(&view, &mut batch);
+        chrome.draw_whichkey(1920, 1080, &view, &mut batch);
         assert!(!batch.verts.is_empty());
         assert!(!batch.glyphs.is_empty());
     }
@@ -752,7 +806,7 @@ mod tests {
             anim: 1.0,
         };
         let mut batch = ChromeBatch::default();
-        chrome.draw_whichkey(&view, &mut batch);
+        chrome.draw_whichkey(1920, 1080, &view, &mut batch);
         let theme = theme();
         assert_ne!(
             theme.whichkey_key, theme.whichkey_fg,
@@ -766,6 +820,37 @@ mod tests {
         assert!(chrome
             .atlas
             .contains(14, rgb8(theme.whichkey_fg.into()), 'f'));
+    }
+
+    #[test]
+    fn a_keymap_too_tall_for_the_screen_wraps_into_columns() {
+        // Truncating was the alternative, and a shortcut reference that
+        // silently omits shortcuts is worse than none.
+        let mut chrome = Chrome::new(theme());
+        let rows: Vec<ruster_render::WhichKeyEntry> = (0..60)
+            .map(|n| ruster_render::WhichKeyEntry {
+                key: format!("M-{n}"),
+                desc: format!("action {n}"),
+            })
+            .collect();
+        let view = ruster_render::WhichKeyView {
+            title: "keys".into(),
+            rows,
+            anim: 1.0,
+        };
+        let mut batch = ChromeBatch::default();
+        // A short output, so 60 rows cannot possibly stack vertically.
+        chrome.draw_whichkey(1920, 400, &view, &mut batch);
+
+        let xs: Vec<f32> = batch.glyphs.iter().map(|g| g.x).collect();
+        let min_x = xs.iter().copied().fold(f32::MAX, f32::min);
+        let max_x = xs.iter().copied().fold(0.0f32, f32::max);
+        assert!(
+            max_x > min_x + 200.0,
+            "60 rows in 400px of height must occupy more than one column"
+        );
+        let bottom = batch.glyphs.iter().map(|g| g.y).fold(0.0f32, f32::max);
+        assert!(bottom < 400.0, "and must stay on the screen, got {bottom}");
     }
 
     #[test]

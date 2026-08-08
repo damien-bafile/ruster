@@ -51,6 +51,8 @@ pub enum Action {
     /// startup clients — and the only way to get a second one is to type into
     /// the first, which assumes the first is a terminal.
     Spawn(String),
+    /// Add or replace a keybinding while running.
+    Bind(String, String),
     /// Pin the shortcut helper open, or unpin it.
     ToggleHelp,
     /// Open the `:` prompt (or `=` for Lua).
@@ -342,11 +344,20 @@ fn install_wm_api(
 ) -> mlua::Result<()> {
     let wm = lua.create_table()?;
 
+    // Records *and* queues, like `switch_workspace`. Recording is what a config
+    // read at startup needs; queueing is what makes the same call work at
+    // runtime, which it did not before — a keybind set from a live session was
+    // filed into a struct nobody read again, and silently did nothing.
     let recorder = shell.clone();
+    let q = queue.clone();
     wm.set(
         "set_keybind",
         lua.create_function(move |_, (bind, action): (String, String)| {
-            recorder.borrow_mut().keybinds.push((bind, action));
+            recorder
+                .borrow_mut()
+                .keybinds
+                .push((bind.clone(), action.clone()));
+            q.borrow_mut().push_back(Action::Bind(bind, action));
             Ok(())
         })?,
     )?;
@@ -923,6 +934,20 @@ mod tests {
         // xkb rejects the latter and takes the whole keymap with it.
         let shell = parse_config(r#"return { keyboard = { options = "" } }"#).unwrap();
         assert!(shell.keyboard.options.is_none());
+    }
+
+    #[test]
+    fn a_keybind_set_at_runtime_takes_effect() {
+        // `set_keybind` filed into a struct that was only read once at startup,
+        // so calling it from a live session did nothing at all — which stopped
+        // being defensible when the API became live.
+        let (wm, shell) =
+            WmControl::from_source(r#"ruster.wm.set_keybind("M-x", "screenshot")"#).unwrap();
+        assert_eq!(shell.keybinds, vec![("M-x".into(), "screenshot".into())]);
+        assert_eq!(
+            wm.take_actions(),
+            vec![Action::Bind("M-x".into(), "screenshot".into())]
+        );
     }
 
     #[test]

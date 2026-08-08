@@ -204,7 +204,7 @@ where
         // from a hardcoded pair, so it was permanently on screen and never
         // about anything.
         if let Some(view) = &scene.whichkey {
-            chrome.draw_whichkey(view, &mut batch);
+            chrome.draw_whichkey(size.w, size.h, view, &mut batch);
         }
 
         // Glyphs first, then panels. Within a panel the glyphs are drawn on top
