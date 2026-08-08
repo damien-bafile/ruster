@@ -6,7 +6,7 @@
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::rc::Rc;
 
 use mlua::Lua;
@@ -704,6 +704,17 @@ fn build_command(command: &str, socket_name: Option<&str>) -> Option<Command> {
     let program = parts.next()?;
     let mut cmd = Command::new(program);
     cmd.args(parts);
+    // Clients get their own stdio rather than the compositor's. They otherwise
+    // inherit it, and on a DRM boot that is the log file — so `foot` shouting
+    // `err: wayland.c:2417: failed to roundtrip Wayland display: Broken pipe`
+    // as the compositor exits lands in the compositor's own log, looking for
+    // all the world like the compositor failing. That log is the only
+    // diagnostic channel a VT boot has, and it has found four defects today; it
+    // is worth keeping about the compositor.
+    //
+    // Nothing diagnostic is lost: a command that cannot be executed at all is
+    // reported by the spawn error below, which is the failure a user can act on.
+    cmd.stdout(Stdio::null()).stderr(Stdio::null());
     // Without this the child inherits the *host* socket when nested, and
     // connects to the wrong compositor — its window opens outside the session
     // that spawned it, which looks exactly like the spawn silently failing.
@@ -713,18 +724,20 @@ fn build_command(command: &str, socket_name: Option<&str>) -> Option<Command> {
     Some(cmd)
 }
 
+/// Launch each of the config's `startup_clients` on the compositor's socket.
+///
+/// Goes through [`spawn_command`] rather than building its own `Command`, which
+/// it used to. Two spawn paths meant two sets of behaviour for one operation —
+/// only one of them redirected the child's stdio, so startup clients kept
+/// writing into the compositor's log while keybind-spawned ones did not.
+///
+/// It also used to probe for the binary by *running* it with `--version` and
+/// checking whether that failed. That executes an arbitrary program to find out
+/// whether it exists, which is a strange thing to do to a user's config, and it
+/// answered a question the spawn itself already answers.
 pub fn spawn_startup_clients(clients: &[String], socket_name: &str) {
     for client in clients {
-        if Command::new(client).arg("--version").output().is_err() {
-            tracing::warn!(%client, "startup client not found, skipping");
-            continue;
-        }
-        if let Err(err) = Command::new(client)
-            .env("WAYLAND_DISPLAY", socket_name)
-            .spawn()
-        {
-            tracing::warn!(%client, %err, "failed to spawn startup client");
-        }
+        spawn_command(client, Some(socket_name));
     }
 }
 
