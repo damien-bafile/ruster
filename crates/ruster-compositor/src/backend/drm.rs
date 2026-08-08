@@ -391,6 +391,24 @@ pub fn run_drm() -> anyhow::Result<()> {
             error!("failed to flush wayland clients: {err}");
         }
     }
+    // Hand the device back before anything drops.
+    //
+    // smithay's atomic `Drop` otherwise replays every property it captured at
+    // startup — connectors, CRTCs, framebuffers and planes — in one commit, to
+    // put the console back the way it found it. The kernel rejects that with
+    // `Invalid argument`, every time, because the capture includes immutable
+    // properties (a connector's EDID and PATH among them) and an atomic commit
+    // that sets an immutable property is invalid by definition. The result was
+    // an `ERROR Failed to restore previous state` on every single exit.
+    //
+    // `pause()` is smithay's documented way to say we are finished with the
+    // file descriptor — "avoid making calls to the file descriptor e.g. on
+    // drop" — and it releases the DRM master lock, which is the handover the
+    // console driver actually waits for. Nothing is lost by skipping the
+    // restore: it never once succeeded, and the display has always come back,
+    // so dropping master was doing the work all along.
+    state.backend_data.drm_output_manager.pause();
+    info!("released the drm device");
     info!("shutting down drm backend");
     Ok(())
 }
