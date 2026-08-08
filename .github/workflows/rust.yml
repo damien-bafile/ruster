@@ -29,7 +29,8 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y ripgrep \
           libx11-dev libxrandr-dev libxi-dev libxcursor-dev \
-          libxinerama-dev libgl1-mesa-dev libwayland-dev libxkbcommon-dev
+          libxinerama-dev libgl1-mesa-dev libwayland-dev libxkbcommon-dev \
+          libseat-dev libinput-dev libgbm-dev libdrm-dev libudev-dev
     - name: Install ripgrep (macOS)
       if: runner.os == 'macOS'
       run: brew install ripgrep
@@ -56,3 +57,15 @@ jobs:
     # test code too, where several past findings lived.
     - name: Clippy
       run: cargo clippy --workspace --all-targets -- -D warnings
+
+    # The compositor's DRM backend is behind the `udev` feature, which is off by
+    # default — so none of it is built, tested or linted by the steps above.
+    # That is the code that only runs on real hardware and is hardest to
+    # exercise by hand, which makes it the code least able to afford being
+    # invisible to CI. Linux only: the feature does not exist elsewhere.
+    - name: Build, test and lint the DRM backend (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        cargo test -p ruster-compositor --features ruster-compositor/udev --verbose
+        cargo clippy -p ruster-compositor --features ruster-compositor/udev \
+          --all-targets -- -D warnings

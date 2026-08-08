@@ -1,39 +1,48 @@
 # ruster — justfile
-#   just         run in GUI mode (default)
-#   just run     run in TUI mode
-#   just gui     run in GUI mode (raylib)
-#   just build   build only
-#   just clean   clean build artifacts
-#   just test    run all tests
-#   just check   cargo check all crates
-#   just doc     build docs
-#   just release build in release mode
+#
+# `just` on its own lists what is here. The list is generated from the doc
+# comment above each recipe, so it cannot fall out of step with the recipes the
+# way a hand-written index does — this header used to name nine commands when
+# the file had thirteen.
 
-default: gui
+# List the available commands.
+default:
+    @just --list --unsorted
 
+# Build the workspace.
 build:
     cargo build
 
+# Run the editor in TUI mode.
 run file="main.rs":
     cargo run -- --tui {{file}}
 
+# Run the editor in GUI mode (raylib).
 gui file="main.rs":
     cargo run -- {{file}}
 
+# Remove build artifacts.
 clean:
     cargo clean
 
+# Run the whole test suite.
 test:
     cargo test
 
+# Type-check every crate.
 check:
     cargo check
 
+# Lint everything as CI does, including the compositor's udev backend.
+lint:
+    cargo fmt --all --check
+    cargo clippy --workspace --all-targets -- -D warnings
+    cargo clippy --workspace --all-targets --features ruster-compositor/udev -- -D warnings
+
+# Build the API docs.
 doc:
     cargo doc --no-deps
 
-# Capture a user-visible surface in both backends into docs/verification/.
-#
 #   just verify                 every surface, both backends
 #   just verify sidebar         one surface, both backends
 #   just verify "--gui hover"   one backend
@@ -41,9 +50,15 @@ doc:
 #
 # The GUI half needs an unlocked screen (macOS will not create a window for a
 # locked session); the script says so rather than letting raylib panic.
+#
+# `just --list` shows the *last* comment line above a recipe, and a blank line
+# ends the block — so the detail sits above and the summary directly below it.
+
+# Capture a user-visible surface in both backends into docs/verification/.
 verify surface="all":
     ./scripts/verify-capture.sh {{surface}}
 
+# Build in release mode.
 release:
     cargo build --release
 
@@ -54,14 +69,14 @@ bundle profile="release":
     if [ "{{profile}}" = "release" ]; then cargo build --release; else cargo build; fi
     ./scripts/bundle-macos.sh {{profile}}
 
-# Regenerate every derived icon from the assets/icon.png master.
-#
 # One master, three platforms: .icns for the macOS bundle, .ico for the Windows
 # resource table, hicolor PNGs for a Linux .desktop entry. Replacing the icon is
 # this one file plus this recipe.
 #
 # The .icns step needs macOS (`iconutil`); the rest run anywhere with
 # ImageMagick.
+
+# Regenerate every derived icon from the assets/icon.png master.
 icon:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -86,3 +101,27 @@ icon:
         magick assets/icon.png -resize ${s}x${s} assets/hicolor/ruster-${s}.png
     done
     echo "wrote assets/hicolor/ruster-{16,32,48,64,128,256,512}.png"
+
+# Run the compositor nested in a winit window (dev).
+compositor:
+    cargo run -p ruster-compositor
+
+# Must be launched from a shell on the VT you want it on. logind only grants DRM
+# master to the session that owns the seat, so running this from a terminal
+# inside your graphical session fails with "failed to initialize libseat
+# session" — correctly, and without touching your display.
+#
+#   Ctrl+Alt+F3, log in, then: just compositor-drm
+#
+# Escape hatches, best first: Ctrl+Alt+F2 (switches VT, leaves it running),
+# Super+Shift+q (quits whatever the config says).
+#
+# This runs scripts/drm-test.sh rather than a bare `cargo run` — it builds
+# first, tees the log to /tmp/ruster-drm.log, and afterwards reports the exit
+# status, any screenshots taken and whether a VT switch was seen. On a VT that
+# summary is the whole diagnosis, because the screen is gone by the time you can
+# read anything.
+
+# Run the compositor on DRM (needs a free VT + seatd/logind access).
+compositor-drm:
+    ./scripts/drm-test.sh

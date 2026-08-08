@@ -43,7 +43,7 @@ This spec covers the product definition and the overall architecture/roadmap. Th
 
 ### Dependencies
 
-- `smithay` (path to `~/Dev/smithay` clone or crates.io `0.7`) with features: `backend_udev`, `backend_drm`, `backend_gbm`, `backend_session_libseat`, `backend_libinput`, `backend_winit`, `renderer_gl` (provides the `GlesRenderer`), `desktop`, `wayland_frontend`.
+- `smithay` from crates.io (`0.7`) with features: `backend_udev`, `backend_drm`, `backend_gbm`, `backend_session_libseat`, `backend_libinput`, `backend_winit`, `renderer_gl` (provides the `GlesRenderer`), `desktop`, `wayland_frontend`. Declared under `[target.'cfg(target_os = "linux")'.dependencies]` — Wayland is Linux-only, and the workspace still has to build on macOS and Windows for the raylib GUI.
 - Text rendering: `cosmic-text` (or `fontdue` + `fontdb`).
 - Logging: `tracing`/`env_logger`.
 
@@ -64,12 +64,20 @@ udev/DRM or winit output ← vsync frame
 
 1. **Not winit+raylib for rendering.** A compositor must composite arbitrary client GL textures; that is Smithay's `egl`/`gles` domain. raylib stays only in standalone editor builds.
 2. **Editor buffers are synthetic in-tree surfaces** owned by the compositor, not real Wayland clients — they render via `ruster-render-gles` into the same GL scene as client textures.
-3. **Smithay dependency:** path-depend on the local `~/Dev/smithay` clone, or crates.io `0.7`. (Decision: path dep for development; revisit at release.)
+3. **Smithay dependency:** crates.io `0.7`, not a path dep on a local clone. A path dep to `~/Dev/smithay` only resolves on one machine, so it breaks CI and every other checkout; the released `0.7.0` is also a fixed API to code against rather than a moving `master`. Consequence: the blanket `delegate_dispatch2!` macro, `PhysicalProperties::serial_number`, `DrmOutputManager::lock()`, and `winit::event_loop::pump_events` are all post-0.7 additions and are not available — use the per-protocol `delegate_*!` macros, the four-field `PhysicalProperties`, direct `&mut` calls on `DrmOutputManager`, and `winit::platform::pump_events`.
 4. **Entry point:** a dedicated `ruster-compositor` binary crate keeps `ruster-bin`'s editor path clean.
 
 ## Roadmap (phased plans)
 
-- **Phase 0 (this plan): Compositor foundation.** Boot on DRM + winit-nested dev; map `xdg-shell` toplevels; composite client textures with glow; keyboard/pointer seat + basic focus; bare Ruster chrome (statusline + one editor frame + which-key skeleton); Lua config binds keys and launches clients.
+- **Phase 0 (this plan): Compositor foundation.** Boot on DRM + winit-nested dev; map `xdg-shell` toplevels; composite client textures; keyboard/pointer seat + basic focus; bare Ruster chrome (statusline + one editor frame + which-key skeleton); Lua config binds keys and launches clients. **— NOT YET DONE (in progress on `phase0-compositor`).** Verified on a screen in nested winit mode: boot, client map and fullscreen composite, keyboard forwarding to the client, chrome with real rasterized glyphs, focus-driven statusline title, a user Lua config binding arbitrary keys to actions, those binds driving a workspace cycle and a clean quit from a real keypress, and clean SIGINT. Renderer is Smithay's `GlesRenderer`, not `glow` (`glow` is not in the tree) — an accepted substitution.
+
+  **DRM has now booted on hardware** — seat0, `/dev/dri/card1`, connector DP-3 at `3440x1440@60`, GLES on the RTX 4090, the configured startup client launched and usable, keyboard through libinput, and the quit binding ending the session. What that boot did *not* exercise: `Ctrl+Alt+F<n>` VT switching (the escape hatch — still unproven), the VT suspend/resume cycle, and the pointer. Smithay's atomic teardown also fails to restore the previous DRM state on exit (`Invalid argument`).
+
+  Outstanding for Phase 0: **no software cursor** on any backend, and no `ruster.wm.*` Lua API (`set_keybind`, `launch_client`, `focus`, `switch_workspace`) — the config is a declarative table parsed at startup, with no callable surface. Workspace cycling moves a counter and a statusline label; no window belongs to a workspace. The editor frame shows a hardcoded welcome buffer rather than a `ruster-core` buffer — that one the plan deliberately moved to Phase 3.
+
+  An earlier revision of this line claimed Phase 0 was done. It was written against a build that rendered every frame upside down, composited no client at all, and killed its own startup client. Two further defects surfaced only when the thing was driven for real: buffer import consumed the surface's buffer assignment before map detection read it, so no client was ever marked mapped and none could receive input; and the Lua keybind matcher recognised two hardcoded bind strings while discarding the configured action name, so a config could bind nothing the compositor did not already hardcode.
+
+  An earlier revision of this line claimed Phase 0 was done. It was written against a build that rendered every frame upside down, composited no client at all, and killed its own startup client — none of which had been looked at, because the verification matrix marked every display row "not run".
 - **Phase 1: Shell layout.** The i3 container-tree with editor-frames; workspaces; split/focus/resize/swap/floating; editor buffers as leaves; statusline reflects tree state.
 - **Phase 2: Control plane.** Full `ruster.wm.*` Lua API, WM commands, workspace persistence, which-key/mini-buffer parity, frame theming.
 - **Phase 3: Editor-in-desktop.** Multi-buffer editing, terminal leaf, LSP inside a tile, xdg-desktop-portal integration.

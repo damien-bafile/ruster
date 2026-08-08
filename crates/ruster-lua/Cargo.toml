@@ -9,4 +9,5 @@ path = "src/lib.rs"
 [dependencies]
 mlua = { version = "0.10", features = ["lua54", "vendored"] }
 ruster-core = { path = "../ruster-core" }
+ruster-render = { path = "../ruster-render" }
 crossterm = "0.28"

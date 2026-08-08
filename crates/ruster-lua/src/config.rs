@@ -55,6 +55,10 @@ pub struct ThemeColors {
     pub cmdline_fg: Rgb,
     /// The cmdline's leading prompt sigil (`:`, `/`, `?`).
     pub cmdline_accent: Rgb,
+    /// Border of the focused window (defaults to `accent`).
+    pub border_focused: Rgb,
+    /// Border of an unfocused window (defaults to `divider`).
+    pub border_unfocused: Rgb,
     /// Statusline background in Normal mode.
     pub mode_normal_bg: Rgb,
     /// Statusline text in Normal mode.
@@ -99,6 +103,8 @@ impl Default for ThemeColors {
             cmdline_bg: Rgb::new(30, 30, 30),
             cmdline_fg: Rgb::new(205, 214, 244),
             cmdline_accent: Rgb::new(243, 139, 168),
+            border_focused: Rgb::new(243, 139, 168),
+            border_unfocused: Rgb::new(69, 71, 90),
             mode_normal_bg: Rgb::new(69, 71, 90),
             mode_normal_fg: Rgb::new(205, 214, 244),
             mode_insert_bg: Rgb::new(40, 72, 50),
@@ -109,6 +115,50 @@ impl Default for ThemeColors {
             mode_cmdline_fg: Rgb::new(205, 214, 244),
             mode_emacs_bg: Rgb::new(50, 50, 70),
             mode_emacs_fg: Rgb::new(205, 214, 244),
+        }
+    }
+}
+impl From<&ThemeColors> for ruster_render::Theme {
+    /// The resolved palette as the colour set the renderers draw with.
+    ///
+    /// One conversion rather than one per consumer: the editor had this
+    /// 30-field mapping written out twice, and the compositor was about to
+    /// become a third. A role added to `Theme` and forgotten in one copy is
+    /// invisible until someone looks at that surface.
+    fn from(c: &ThemeColors) -> Self {
+        let col = |rgb: Rgb| ruster_render::Color::Rgb(rgb.r, rgb.g, rgb.b);
+        ruster_render::Theme {
+            bg: col(c.bg),
+            fg: col(c.fg),
+            gutter: col(c.gutter),
+            gutter_bg: col(c.gutter_bg),
+            cursor_bg: col(c.cursor_bg),
+            cursor_fg: col(c.cursor_fg),
+            selection_bg: col(c.selection_bg),
+            selection_fg: col(c.selection_fg),
+            divider: col(c.divider),
+            statusline_fg: col(c.statusline_fg),
+            statusline_bg: col(c.statusline_bg),
+            mode_normal_bg: col(c.mode_normal_bg),
+            mode_normal_fg: col(c.mode_normal_fg),
+            mode_insert_bg: col(c.mode_insert_bg),
+            mode_insert_fg: col(c.mode_insert_fg),
+            mode_visual_bg: col(c.mode_visual_bg),
+            mode_visual_fg: col(c.mode_visual_fg),
+            mode_cmdline_bg: col(c.mode_cmdline_bg),
+            mode_cmdline_fg: col(c.mode_cmdline_fg),
+            mode_emacs_bg: col(c.mode_emacs_bg),
+            mode_emacs_fg: col(c.mode_emacs_fg),
+            accent: col(c.accent),
+            accent_fg: col(c.accent_fg),
+            whichkey_bg: col(c.whichkey_bg),
+            whichkey_fg: col(c.whichkey_fg),
+            whichkey_key: col(c.whichkey_key),
+            cmdline_bg: col(c.cmdline_bg),
+            cmdline_fg: col(c.cmdline_fg),
+            cmdline_accent: col(c.cmdline_accent),
+            border_focused: col(c.border_focused),
+            border_unfocused: col(c.border_unfocused),
         }
     }
 }
@@ -252,6 +302,8 @@ pub fn mocha_roles() -> ThemeColors {
         cmdline_bg: Rgb::new(30, 30, 46),
         cmdline_fg: Rgb::new(205, 214, 244),
         cmdline_accent: Rgb::new(203, 166, 247),
+        border_focused: Rgb::new(203, 166, 247),
+        border_unfocused: Rgb::new(49, 50, 68),
         mode_normal_bg: Rgb::new(49, 50, 68),
         mode_normal_fg: Rgb::new(205, 214, 244),
         mode_insert_bg: Rgb::new(30, 60, 45),
@@ -391,6 +443,8 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                     cmdline_bg: Rgb::new(10, 14, 10),
                     cmdline_fg: Rgb::new(51, 255, 102),
                     cmdline_accent: Rgb::new(255, 136, 0),
+                    border_focused: Rgb::new(255, 136, 0),
+                    border_unfocused: Rgb::new(17, 26, 17),
                     mode_normal_bg: Rgb::new(17, 26, 17),
                     mode_normal_fg: Rgb::new(51, 255, 102),
                     mode_insert_bg: Rgb::new(17, 26, 51),
@@ -451,6 +505,8 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                     cmdline_bg: Rgb::new(40, 40, 40),
                     cmdline_fg: Rgb::new(235, 219, 178),
                     cmdline_accent: Rgb::new(250, 189, 47),
+                    border_focused: Rgb::new(250, 189, 47),
+                    border_unfocused: Rgb::new(60, 56, 54),
                     mode_normal_bg: Rgb::new(60, 56, 54),
                     mode_normal_fg: Rgb::new(235, 219, 178),
                     mode_insert_bg: Rgb::new(40, 60, 40),
@@ -506,6 +562,8 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                     cmdline_bg: Rgb::new(26, 27, 38),
                     cmdline_fg: Rgb::new(192, 202, 245),
                     cmdline_accent: Rgb::new(122, 162, 247),
+                    border_focused: Rgb::new(122, 162, 247),
+                    border_unfocused: Rgb::new(65, 72, 104),
                     mode_normal_bg: Rgb::new(65, 72, 104),
                     mode_normal_fg: Rgb::new(192, 202, 245),
                     mode_insert_bg: Rgb::new(40, 72, 50),
@@ -560,6 +618,8 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                     cmdline_bg: Rgb::new(46, 52, 64),
                     cmdline_fg: Rgb::new(216, 222, 233),
                     cmdline_accent: Rgb::new(136, 192, 208),
+                    border_focused: Rgb::new(136, 192, 208),
+                    border_unfocused: Rgb::new(59, 66, 82),
                     mode_normal_bg: Rgb::new(59, 66, 82),
                     mode_normal_fg: Rgb::new(216, 222, 233),
                     mode_insert_bg: Rgb::new(40, 66, 50),
@@ -604,6 +664,8 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                     cmdline_bg: Rgb::new(239, 241, 245),
                     cmdline_fg: Rgb::new(76, 79, 105),
                     cmdline_accent: Rgb::new(136, 57, 239),
+                    border_focused: Rgb::new(136, 57, 239),
+                    border_unfocused: Rgb::new(204, 208, 218),
                     mode_normal_bg: Rgb::new(230, 233, 239),
                     mode_normal_fg: Rgb::new(76, 79, 105),
                     mode_insert_bg: Rgb::new(215, 235, 215),
@@ -641,6 +703,8 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                     cmdline_bg: Rgb::new(48, 52, 70),
                     cmdline_fg: Rgb::new(198, 208, 245),
                     cmdline_accent: Rgb::new(202, 158, 230),
+                    border_focused: Rgb::new(202, 158, 230),
+                    border_unfocused: Rgb::new(65, 69, 89),
                     mode_normal_bg: Rgb::new(65, 69, 89),
                     mode_normal_fg: Rgb::new(198, 208, 245),
                     mode_insert_bg: Rgb::new(48, 65, 55),
@@ -678,6 +742,8 @@ pub fn builtin_themes() -> Vec<(&'static str, Theme)> {
                     cmdline_bg: Rgb::new(36, 39, 58),
                     cmdline_fg: Rgb::new(202, 211, 245),
                     cmdline_accent: Rgb::new(198, 160, 246),
+                    border_focused: Rgb::new(198, 160, 246),
+                    border_unfocused: Rgb::new(54, 58, 79),
                     mode_normal_bg: Rgb::new(54, 58, 79),
                     mode_normal_fg: Rgb::new(202, 211, 245),
                     mode_insert_bg: Rgb::new(36, 55, 50),
@@ -718,6 +784,8 @@ pub struct ColorOverrides {
     pub cmdline_bg: String,
     pub cmdline_fg: String,
     pub cmdline_accent: String,
+    pub border_focused: String,
+    pub border_unfocused: String,
     pub mode_normal_bg: String,
     pub mode_normal_fg: String,
     pub mode_insert_bg: String,
@@ -960,6 +1028,14 @@ impl Config {
                 Text(self.color_overrides.cmdline_accent.clone()),
             ),
             (
+                ("colors", "border_focused"),
+                Text(self.color_overrides.border_focused.clone()),
+            ),
+            (
+                ("colors", "border_unfocused"),
+                Text(self.color_overrides.border_unfocused.clone()),
+            ),
+            (
                 ("colors", "cmdline_bg"),
                 Text(self.color_overrides.cmdline_bg.clone()),
             ),
@@ -1108,6 +1184,8 @@ impl Config {
                 cmdline_bg: st("colors", "cmdline_bg").unwrap_or_default(),
                 cmdline_fg: st("colors", "cmdline_fg").unwrap_or_default(),
                 cmdline_accent: st("colors", "cmdline_accent").unwrap_or_default(),
+                border_focused: st("colors", "border_focused").unwrap_or_default(),
+                border_unfocused: st("colors", "border_unfocused").unwrap_or_default(),
                 mode_normal_bg: st("colors", "mode_normal_bg").unwrap_or_default(),
                 mode_normal_fg: st("colors", "mode_normal_fg").unwrap_or_default(),
                 mode_insert_bg: st("colors", "mode_insert_bg").unwrap_or_default(),

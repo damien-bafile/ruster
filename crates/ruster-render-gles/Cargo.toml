@@ -1,0 +1,13 @@
+[package]
+name = "ruster-render-gles"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ruster-render = { path = "../ruster-render" }
+cosmic-text = "0.19"
+tracing = "0.1"
+
+# Smithay is Linux-only; off Linux this crate compiles to an empty lib.
+[target.'cfg(target_os = "linux")'.dependencies]
+smithay = { version = "0.7", default-features = false, features = ["renderer_gl", "wayland_frontend", "backend_winit"] }
