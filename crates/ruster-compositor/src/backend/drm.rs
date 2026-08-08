@@ -391,6 +391,10 @@ pub fn run_drm() -> anyhow::Result<()> {
             error!("failed to flush wayland clients: {err}");
         }
     }
+    // Before the device goes back: this is the last point at which the layout
+    // still exists, and it is after every way out of the loop rather than in the
+    // quit action, so a SIGTERM'd session is saved too.
+    state.save_session();
     // Hand the device back before anything drops.
     //
     // smithay's atomic `Drop` otherwise replays every property it captured at

@@ -3,8 +3,10 @@
 //! [`tree`] is the container tree — how windows divide an output between them —
 //! and is where Phase 1's layout lives. [`workspace`] holds nine of those trees
 //! and decides which one is on screen. [`state`] is what is left of the Phase 0
-//! flat model: the window records and the focus handle.
+//! flat model: the window records and the focus handle. [`persist`] writes all
+//! nine layouts to a file and puts them back on the next boot.
 
+pub mod persist;
 pub mod state;
 pub mod tree;
 pub mod window;

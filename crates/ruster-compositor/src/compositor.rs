@@ -134,6 +134,9 @@ pub struct CompositorState<B: Backend + 'static> {
     /// config failed to run, so there is nothing to call into — keybinds still
     /// work, since those are resolved from `keybinds` above.
     pub wm: Option<crate::lua::WmControl>,
+    /// Where the windows came from, and what the saved session is still waiting
+    /// for. See [`crate::persist`].
+    pub persist: crate::persist::Persistence,
 }
 
 impl<B: Backend + 'static> CompositorState<B> {
@@ -336,7 +339,10 @@ impl<B: Backend + 'static> CompositorState<B> {
                 self.minibuffer = Some(crate::minibuffer::MiniBuffer::new(prompt));
             }
             Action::Spawn(command) => {
-                crate::lua::spawn_command(&command, self.socket_name.as_deref())
+                // Through `persist` rather than straight to `spawn_command`, so
+                // the window this produces can be saved as something the next
+                // boot knows how to launch again.
+                self.persist.spawn(&command, self.socket_name.as_deref());
             }
             Action::Focus(dir) => {
                 if let Some(next) = focus
@@ -616,6 +622,7 @@ pub fn create_state<B: Backend + 'static>(
         help_pinned: false,
         minibuffer: None,
         wm: None,
+        persist: crate::persist::Persistence::default(),
     }
 }
 

@@ -95,6 +95,35 @@ impl Workspaces {
         index(workspace).map(|i| &self.trees[i])
     }
 
+    /// The floating windows of `workspace`, bottom of the stack first, or
+    /// nothing for a number outside 1..=9.
+    ///
+    /// [`Workspaces::layout`] answers this for the active workspace only, which
+    /// is all the compositor ever needs; saving a session needs all nine.
+    pub(crate) fn floating_on(&self, workspace: u32) -> &[(WindowId, Rect)] {
+        match index(workspace) {
+            Some(i) => &self.floating[i],
+            None => &[],
+        }
+    }
+
+    /// Install a whole set of trees and float lists at once, leaving the active
+    /// workspace alone.
+    ///
+    /// Only [`Session::restore_into`](crate::persist::Session::restore_into)
+    /// uses this: rebuilding nine trees from a file is not something the running
+    /// compositor may do, since every other path here maintains the invariant
+    /// that a window is in exactly one tree or one float list, and this one
+    /// takes that on trust from its caller.
+    pub(crate) fn replace_layout(
+        &mut self,
+        trees: [Tree; WORKSPACE_COUNT as usize],
+        floating: [Vec<(WindowId, Rect)>; WORKSPACE_COUNT as usize],
+    ) {
+        self.trees = trees;
+        self.floating = floating;
+    }
+
     /// Show `workspace`, hiding whatever was on screen.
     ///
     /// Reports whether the active workspace actually changed: a number that

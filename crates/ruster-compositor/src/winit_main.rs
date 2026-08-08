@@ -185,6 +185,10 @@ fn run_winit() -> anyhow::Result<()> {
         }
         state.display_handle.flush_clients().unwrap();
     }
+    // After the loop rather than in the quit action: SIGTERM and a closed winit
+    // window end the session too, and a layout that only survives one of the
+    // three ways out is worse than one that does not survive at all.
+    state.save_session();
     tracing::info!("shutting down");
     Ok(())
 }

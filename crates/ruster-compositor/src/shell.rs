@@ -32,12 +32,25 @@ impl<B: Backend + 'static> XdgShellHandler for CompositorState<B> {
         let id = self.shell.add_window(title, 800, 600);
         // Insert beside whatever has focus, on the workspace being shown, so a
         // new window splits the one you were looking at rather than appearing
-        // somewhere arbitrary — or on a workspace you are not watching.
+        // somewhere arbitrary — or on a workspace you are not watching. Unless
+        // the saved session was waiting for this client, in which case it goes
+        // back where it was, which may not be this workspace at all.
         let near = self.shell.focus;
-        self.workspaces.insert(id, near, Layout::Horizontal);
-        self.shell.set_focus(id);
+        let pid = crate::persist::client_pid(&surface, &self.display_handle);
+        if !self.place_restored_window(id, pid) {
+            self.workspaces.insert(id, near, Layout::Horizontal);
+        }
+        // A restored window can land on a workspace that is not on screen, and
+        // it must not take the keyboard there: every keystroke would go to a
+        // client the user cannot see. Until now every new window was inserted on
+        // the active workspace, so this could not arise.
+        if self.workspaces.is_visible(id) {
+            self.shell.set_focus(id);
+            self.pending_focus = Some(id);
+        } else {
+            self.shell.focus = self.workspaces.focus_for_active(self.shell.focus);
+        }
         self.toplevels.insert(id, surface);
-        self.pending_focus = Some(id);
         // Every existing window just got smaller; tell them before the new one
         // draws, or the first frame overlaps its neighbour.
         self.reconfigure_tiles();

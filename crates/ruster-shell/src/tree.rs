@@ -18,6 +18,7 @@
 //! configured to — reads its output and nothing else, so it is where the tests
 //! are aimed.
 
+use crate::persist::NodeSnapshot;
 use crate::window::WindowId;
 
 /// A rectangle in output-local pixels, origin top-left.
@@ -437,6 +438,67 @@ impl Tree {
         }
     }
 
+    /// Rebuild the shape `snapshot` describes, over whichever windows
+    /// `window_for` still resolves.
+    ///
+    /// A leaf whose window is gone — a client that never came back — is dropped,
+    /// and its siblings share out the space it would have had. The alternative,
+    /// holding the leaf open for a window that may never exist, leaves a
+    /// rectangle nothing draws in and no way to reclaim it.
+    ///
+    /// The ratios are renormalised on the way in, so a subtree that lost a child
+    /// still sums to 1.0 — the invariant [`Tree::layout`] tiles by — and so does
+    /// one whose ratios were merely rounded on their way through a file.
+    pub(crate) fn rebuild(
+        snapshot: &NodeSnapshot,
+        window_for: &impl Fn(usize) -> Option<WindowId>,
+    ) -> Tree {
+        let mut tree = Tree::new();
+        tree.root = tree.build(snapshot, window_for);
+        tree
+    }
+
+    fn build(
+        &mut self,
+        snapshot: &NodeSnapshot,
+        window_for: &impl Fn(usize) -> Option<WindowId>,
+    ) -> Option<NodeId> {
+        match snapshot {
+            NodeSnapshot::Leaf(app) => window_for(*app).map(|w| self.alloc(Node::Leaf(w))),
+            NodeSnapshot::Split {
+                layout,
+                ratios,
+                children,
+            } => {
+                let mut kept = Vec::new();
+                let mut kept_ratios = Vec::new();
+                for (i, child) in children.iter().enumerate() {
+                    if let Some(id) = self.build(child, window_for) {
+                        kept.push(id);
+                        kept_ratios.push(ratios.get(i).copied().unwrap_or(0.0));
+                    }
+                }
+                match kept.len() {
+                    0 => None,
+                    // A split with one child is not a split: the survivor takes
+                    // its place, exactly as `remove` collapses one.
+                    1 => kept.pop(),
+                    _ => {
+                        let split = self.alloc(Node::Split {
+                            layout: *layout,
+                            children: kept.clone(),
+                            ratios: normalise_ratios(&kept_ratios),
+                        });
+                        for child in kept {
+                            self.set_parent(child, Some(split));
+                        }
+                        Some(split)
+                    }
+                }
+            }
+        }
+    }
+
     // ---- internals -------------------------------------------------------
 
     /// Shift `delta` from the child on the `dir` side of child `here` onto
@@ -542,6 +604,25 @@ impl Tree {
 
 fn centre(r: Rect) -> (i32, i32) {
     (r.x + r.w / 2, r.y + r.h / 2)
+}
+
+/// The same shares scaled to sum to 1.0 — what [`Tree::layout`] divides by.
+///
+/// Keeping the proportions rather than dividing evenly is what makes a dropped
+/// sibling cost only its own share: a 50/25/25 row that loses the last child
+/// comes back 2:1, not 1:1. Shares that are not a positive number cannot be
+/// scaled into anything meaningful, so a set with none at all falls back to an
+/// even split rather than producing zero-width windows.
+pub(crate) fn normalise_ratios(ratios: &[f32]) -> Vec<f32> {
+    let usable = |r: &f32| r.is_finite() && *r > 0.0;
+    let total: f32 = ratios.iter().filter(|r| usable(r)).sum();
+    if total <= 0.0 {
+        return vec![1.0 / ratios.len().max(1) as f32; ratios.len()];
+    }
+    ratios
+        .iter()
+        .map(|r| if usable(r) { r / total } else { 0.0 })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1162,6 +1243,79 @@ mod tests {
         let before = t.layout(OUTPUT);
         t.resize(w(99), Direction::Right, 0.2);
         assert_eq!(t.layout(OUTPUT), before);
+    }
+
+    // ---- rebuild ---------------------------------------------------------
+
+    /// The grid, as a snapshot: two columns of two, leaves numbered 1..=4.
+    fn grid_snapshot() -> NodeSnapshot {
+        let column = |a, b| NodeSnapshot::Split {
+            layout: Layout::Vertical,
+            ratios: vec![0.5, 0.5],
+            children: vec![NodeSnapshot::Leaf(a), NodeSnapshot::Leaf(b)],
+        };
+        NodeSnapshot::Split {
+            layout: Layout::Horizontal,
+            ratios: vec![0.5, 0.5],
+            children: vec![column(1, 3), column(2, 4)],
+        }
+    }
+
+    #[test]
+    fn a_rebuilt_tree_is_the_tree_it_describes() {
+        let rebuilt = Tree::rebuild(&grid_snapshot(), &|app| Some(w(app as u32)));
+        assert_eq!(rebuilt.layout(OUTPUT), grid().layout(OUTPUT));
+    }
+
+    #[test]
+    fn a_rebuilt_tree_can_still_be_worked_on() {
+        // Laying out reads only children, so a rebuild that forgot to link
+        // parents would look perfect and then refuse every resize and lose every
+        // collapse — the failure would surface as "the restored session cannot
+        // be resized", far from here.
+        let mut rebuilt = Tree::rebuild(&grid_snapshot(), &|app| Some(w(app as u32)));
+        rebuilt.resize(w(1), Direction::Right, 0.1);
+        assert_eq!(rect_of(&rebuilt, w(1)), Rect::new(0, 0, 600, 400));
+        rebuilt.remove(w(3));
+        assert_eq!(rect_of(&rebuilt, w(1)), Rect::new(0, 0, 600, 800));
+        assert_ratios_sum_to_one(&rebuilt);
+        assert_tiles_exactly(&rebuilt.layout(OUTPUT), OUTPUT);
+    }
+
+    #[test]
+    fn a_rebuild_drops_the_leaves_it_has_no_window_for() {
+        // A whole column missing collapses the split above it, rather than
+        // leaving half the screen to a container with nothing in it.
+        let rebuilt = Tree::rebuild(&grid_snapshot(), &|app| {
+            (app != 2 && app != 4).then(|| w(app as u32))
+        });
+        assert_eq!(rebuilt.windows(), vec![w(1), w(3)]);
+        assert_tiles_exactly(&rebuilt.layout(OUTPUT), OUTPUT);
+        assert_ratios_sum_to_one(&rebuilt);
+
+        let nothing = Tree::rebuild(&grid_snapshot(), &|_| None);
+        assert!(nothing.is_empty());
+    }
+
+    #[test]
+    fn ratios_that_cannot_be_scaled_become_an_even_split() {
+        // Nothing the tree writes has a zero share, but a hand-edited file can,
+        // and dividing by their total would be a division by zero — after which
+        // every window is one pixel wide.
+        let flat = NodeSnapshot::Split {
+            layout: Layout::Horizontal,
+            ratios: vec![0.0, 0.0],
+            children: vec![NodeSnapshot::Leaf(1), NodeSnapshot::Leaf(2)],
+        };
+        let rebuilt = Tree::rebuild(&flat, &|app| Some(w(app as u32)));
+        assert_ratios_sum_to_one(&rebuilt);
+        assert_eq!(
+            rebuilt.layout(OUTPUT),
+            vec![
+                (w(1), Rect::new(0, 0, 500, 800)),
+                (w(2), Rect::new(500, 0, 500, 800)),
+            ]
+        );
     }
 
     #[test]
