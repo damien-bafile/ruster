@@ -53,38 +53,20 @@ smithay::backend::renderer::element::render_elements! {
     Surface=WaylandSurfaceRenderElement<R>,
 }
 
-/// How many binds the which-key overlay will show before it stops.
-///
-/// The overlay is a fixed panel in the top-left corner with no scrolling and no
-/// paging, so a full keymap — forty-odd binds once workspaces are numbered —
-/// would run off the screen. Showing a truthful prefix beats showing a
-/// stale-but-tidy two.
-const WHICHKEY_MAX_ROWS: usize = 12;
-
-/// The rows the which-key overlay should show, from the binds actually in force.
-///
-/// This used to be a hardcoded pair, `M-t`/`M-S-q`, rebuilt every frame and
-/// always identical — so a config that bound neither still had the overlay
-/// advertising both. Anything the overlay claims is now something the keyboard
-/// will really do, which is the whole point of the panel.
-fn whichkey_rows(keybinds: &[(String, String)]) -> Vec<(String, String)> {
-    keybinds.iter().take(WHICHKEY_MAX_ROWS).cloned().collect()
-}
-
 /// The welcome buffer shown in the editor frame until an embedded editor
 /// provides real content (Phase 3).
 ///
 /// It advertised `M-t`/`M-S-q` as fixed text for the same reason and with the
 /// same result: on a config that rebound them it was simply wrong. Now it shows
 /// how to quit, whatever quitting is bound to here.
-fn welcome_buffer(keybinds: &[(String, String)]) -> Vec<String> {
+fn welcome_buffer(keymap: &crate::keymap::Keymap) -> Vec<String> {
     let mut lines = vec![
         "RUSTER  v0.1.0".to_string(),
         "────────────".to_string(),
         "EXWM-style Wayland compositor".to_string(),
     ];
-    match keybinds.iter().find(|(_, action)| action == "quit") {
-        Some((bind, _)) => lines.push(format!("{bind}  quit")),
+    match keymap.binding_for("quit") {
+        Some(bind) => lines.push(format!("{bind}  quit")),
         // `M-S-q` quits regardless of the config, so naming it is true even
         // when nothing is bound at all. See `input::is_quit_keysym`.
         None => lines.push("M-S-q  quit".to_string()),
@@ -113,8 +95,10 @@ pub struct FrameInput<'a> {
     /// Where each visible window sits, bottom to top.
     pub geometry: &'a [(WindowId, ruster_shell::Rect)],
     pub tree_status: TreeStatus,
-    /// The keybinds actually in force, for the which-key overlay to advertise.
-    pub keybinds: &'a [(String, String)],
+    /// The bindings in force, so the welcome frame can say how to quit.
+    pub keymap: &'a crate::keymap::Keymap,
+    /// The which-key overlay, drawn only while a chord is half-typed.
+    pub whichkey: Option<ruster_render::WhichKeyView>,
 }
 
 /// Composite the focused toplevel fullscreen onto the output, draw ruster's
@@ -202,7 +186,7 @@ where
         let editor_mark = batch.mark();
         let frame_w = (size.w / 2).clamp(120, 360);
         let frame_h = (size.h / 2).clamp(80, 240);
-        let welcome = welcome_buffer(scene.keybinds);
+        let welcome = welcome_buffer(scene.keymap);
         chrome.draw_editor_frame(frame_w, frame_h, &welcome, "welcome", &mut batch);
         batch.translate_since(
             editor_mark,
@@ -210,7 +194,12 @@ where
             ((size.h - frame_h) / 2) as f32,
         );
 
-        chrome.draw_whichkey(&whichkey_rows(scene.keybinds), &mut batch);
+        // Only while something is pending. It used to be drawn every frame
+        // from a hardcoded pair, so it was permanently on screen and never
+        // about anything.
+        if let Some(view) = &scene.whichkey {
+            chrome.draw_whichkey(view, &mut batch);
+        }
 
         // Glyphs first, then panels. Within a panel the glyphs are drawn on top
         // of its background, and chrome panels never overlap each other, so
@@ -392,37 +381,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_overlay_advertises_the_binds_that_are_actually_in_force() {
-        // It used to be a hardcoded `M-t`/`M-S-q`, so a config that bound
-        // neither still had the overlay promising both — a panel whose entire
-        // job is to tell you what the keyboard does, lying about it.
-        let binds = vec![
-            ("M-o".to_string(), "focus left".to_string()),
-            ("M-e".to_string(), "workspace 2".to_string()),
-        ];
-        assert_eq!(whichkey_rows(&binds), binds);
-        assert!(
-            whichkey_rows(&[]).is_empty(),
-            "no binds, nothing to promise"
-        );
-    }
-
-    #[test]
-    fn the_overlay_stops_before_it_runs_off_the_screen() {
-        // The panel is fixed in the corner with no scrolling, and the shipped
-        // config alone is nearly forty binds.
-        let binds: Vec<(String, String)> = (0..40)
-            .map(|n| (format!("M-{n}"), format!("action {n}")))
-            .collect();
-        let rows = whichkey_rows(&binds);
-        assert_eq!(rows.len(), WHICHKEY_MAX_ROWS);
-        assert_eq!(rows[0], binds[0], "it keeps the first binds, in order");
-    }
-
-    #[test]
     fn the_welcome_buffer_names_the_quit_bind_this_session_has() {
-        let binds = vec![("C-A-x".to_string(), "quit".to_string())];
-        let lines = welcome_buffer(&binds);
+        let keymap = crate::keymap::Keymap::new(&[("C-A-x".to_string(), "quit".to_string())]);
+        let lines = welcome_buffer(&keymap);
         assert!(
             lines.iter().any(|l| l.contains("C-A-x")),
             "should name the configured quit bind, got {lines:?}"
@@ -433,7 +394,7 @@ mod tests {
     fn the_welcome_buffer_still_offers_a_way_out_with_no_config() {
         // `M-S-q` quits whatever the config says, so naming it is true even
         // here — and a screen with no way off it would be the worse failure.
-        let lines = welcome_buffer(&[]);
+        let lines = welcome_buffer(&crate::keymap::Keymap::default());
         assert!(lines.iter().any(|l| l.contains("M-S-q")), "got {lines:?}");
     }
 

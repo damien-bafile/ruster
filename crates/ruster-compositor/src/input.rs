@@ -10,7 +10,7 @@
 //! the keybinding path could not be exercised by a test.
 //!
 //! Every binding comes from `compositor.lua`, resolved through
-//! [`resolve_wm_action`] into an [`Action`] that
+//! [`Keymap`](crate::keymap::Keymap) into an [`Action`] that
 //! [`CompositorState::dispatch`](crate::compositor::CompositorState::dispatch)
 //! carries out. The one exception is `M-S-q`, which quits regardless of the
 //! config — see [`is_quit_keysym`] for why that is worth the inconsistency.
@@ -25,10 +25,13 @@ use smithay::input::keyboard::{FilterResult, Keysym, ModifiersState};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
 use smithay::reexports::wayland_server::protocol::{wl_pointer, wl_surface::WlSurface};
 use smithay::utils::{Logical, Point, Size, SERIAL_COUNTER as SCOUNTER};
+use std::time::Instant;
+
 use tracing::debug;
 
 use crate::backend::Backend;
 use crate::compositor::CompositorState;
+use crate::keymap::{ChordState, Resolved};
 use crate::lua::Action;
 use ruster_shell::{Rect, WindowId};
 
@@ -55,32 +58,6 @@ pub fn vt_switch_target(keysym: Keysym) -> Option<i32> {
     (FIRST..=LAST)
         .contains(&raw)
         .then(|| (raw - FIRST) as i32 + 1)
-}
-
-/// Resolve the WM action bound to a key press: stringify the (raw, unshifted)
-/// keysym and match it against the compositor's configured keybinds. Only quit
-/// has a hardcoded fallback, and only for the safety reason [`is_quit_keysym`]
-/// documents — every other action comes from the config alone, so a rebound key
-/// does what the config says and nothing else.
-/// Pure, so it stays unit-testable without a live display.
-///
-/// The `keysym` is expected to be the *unmodified* level-0 keysym: modifier
-/// state arrives separately in `mods`, so `Super+Shift+q` yields the raw `q`
-/// keysym plus `shift` in `mods` rather than an uppercased `Q`.
-pub fn resolve_wm_action(
-    keybinds: &[(String, String)],
-    mods: &ModifiersState,
-    keysym: Keysym,
-) -> Option<Action> {
-    let key = keysym_get_name(keysym);
-    keybinds
-        .iter()
-        .find_map(|(bind, action)| {
-            Action::keybind_matches(bind, mods, &key)
-                .then(|| Action::from_name(action))
-                .flatten()
-        })
-        .or_else(|| is_quit_keysym(keysym, mods).then_some(Action::Quit))
 }
 
 /// The window under `pointer`, and the origin of its tile, from a laid-out tree.
@@ -212,16 +189,65 @@ impl<B: Backend + 'static> CompositorState<B> {
                     }
                 }
 
-                match resolve_wm_action(&compositor.keybinds, modifiers, keysym) {
-                    // Bound keys are intercepted on press *and* release, so a
-                    // client never sees half a chord.
-                    Some(action) => {
-                        if key_state == KeyState::Pressed {
-                            compositor.dispatch(action);
-                        }
+                // Releases follow whatever their press did. Resolution is a
+                // press-time decision and the pending sequence has moved on by
+                // now, so asking again would answer differently.
+                if key_state != KeyState::Pressed {
+                    return if compositor.intercepted.remove(&keycode.raw()) {
+                        FilterResult::Intercept(())
+                    } else {
+                        FilterResult::Forward
+                    };
+                }
+
+                // An abandoned prefix stops eating keys after a second.
+                compositor.chord.expire(Instant::now());
+
+                let key = keysym_get_name(keysym);
+                let candidates = compositor.keymap.continuations(compositor.chord.pending());
+                let outcome =
+                    compositor
+                        .keymap
+                        .resolve(compositor.chord.pending(), modifiers, &key);
+
+                // The quit escape hatch is checked against a *fresh* key rather
+                // than mid-sequence: `M-S-q` must work when nothing is pending,
+                // whatever the config says, and must not hijack a sequence that
+                // legitimately contains it.
+                if outcome == Resolved::None
+                    && !compositor.chord.is_active()
+                    && is_quit_keysym(keysym, modifiers)
+                {
+                    compositor.dispatch(Action::Quit);
+                    compositor.intercepted.insert(keycode.raw());
+                    return FilterResult::Intercept(());
+                }
+
+                match outcome {
+                    Resolved::Action(action) => {
+                        compositor.chord.clear();
+                        compositor.dispatch(action);
+                        compositor.intercepted.insert(keycode.raw());
                         FilterResult::Intercept(())
                     }
-                    None => FilterResult::Forward,
+                    Resolved::Pending => {
+                        if let Some(spec) = ChordState::matching_spec(&candidates, modifiers, &key)
+                        {
+                            compositor.chord.push(spec);
+                        }
+                        compositor.intercepted.insert(keycode.raw());
+                        FilterResult::Intercept(())
+                    }
+                    // A key that continues nothing abandons the sequence. It is
+                    // swallowed rather than forwarded, because a client
+                    // receiving the tail of a mistyped chord is worse than one
+                    // missing a keystroke the user did not mean for it.
+                    Resolved::None if compositor.chord.is_active() => {
+                        compositor.chord.clear();
+                        compositor.intercepted.insert(keycode.raw());
+                        FilterResult::Intercept(())
+                    }
+                    Resolved::None => FilterResult::Forward,
                 }
             },
         );
@@ -528,10 +554,10 @@ mod tests {
             event_loop.handle(),
             TestBackend { output, resets: 0 },
         );
-        state.keybinds = vec![
+        state.keymap = crate::keymap::Keymap::new(&[
             ("M-S-q".into(), "quit".into()),
             ("M-t".into(), "cycle workspace".into()),
-        ];
+        ]);
         (event_loop, state)
     }
 
@@ -706,20 +732,38 @@ mod tests {
         assert!(is_quit_keysym(keysym, &mods));
     }
 
+    /// Resolve a single chord the way the key handler does, so these tests
+    /// exercise the real keymap rather than a lookalike beside it.
+    ///
+    /// `resolve_wm_action` used to be that lookalike: once the chord machine
+    /// took over the handler, it was reachable only from here — the same
+    /// position `apply_action` was deleted from, and for the same reason.
+    fn resolve_one(
+        keybinds: &[(String, String)],
+        mods: &ModifiersState,
+        keysym: Keysym,
+    ) -> Option<Action> {
+        match crate::keymap::Keymap::new(keybinds).resolve(&[], mods, &keysym_get_name(keysym)) {
+            Resolved::Action(action) => Some(action),
+            _ => None,
+        }
+    }
+
     #[test]
-    fn quit_still_works_when_the_config_has_rebound_it() {
+    fn quit_is_recognised_whatever_the_config_says() {
         // The escape hatch is unconditional on purpose: a config that binds
-        // quit to something broken must not be able to trap a DRM session.
-        let keybinds = vec![("M-S-x".into(), "quit".into())];
+        // quit to something broken must not be able to trap a DRM session. It
+        // lives in the key handler now rather than the resolver, so this tests
+        // the predicate the handler consults.
         let mods = ModifiersState {
             logo: true,
             shift: true,
             ..Default::default()
         };
-        assert_eq!(
-            resolve_wm_action(&keybinds, &mods, Keysym::q),
-            Some(Action::Quit)
-        );
+        assert!(is_quit_keysym(Keysym::q, &mods));
+        // And a config binding quit elsewhere does not disable it.
+        let keybinds = vec![("M-S-x".into(), "quit".into())];
+        assert_eq!(resolve_one(&keybinds, &mods, Keysym::q), None);
     }
 
     #[test]
@@ -733,11 +777,11 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            resolve_wm_action(&keybinds, &mods, Keysym::t),
+            resolve_one(&keybinds, &mods, Keysym::t),
             Some(Action::Screenshot)
         );
         // And with nothing bound to it at all, it does nothing.
-        assert_eq!(resolve_wm_action(&[], &mods, Keysym::t), None);
+        assert_eq!(resolve_one(&[], &mods, Keysym::t), None);
     }
 
     #[test]
@@ -751,16 +795,13 @@ mod tests {
             shift: true,
             ..Default::default()
         };
-        assert_eq!(
-            resolve_wm_action(&keybinds, &mods, Keysym::q),
-            Some(Action::Quit)
-        );
+        assert_eq!(resolve_one(&keybinds, &mods, Keysym::q), Some(Action::Quit));
         let cycle_mods = ModifiersState {
             logo: true,
             ..Default::default()
         };
         assert_eq!(
-            resolve_wm_action(&keybinds, &cycle_mods, Keysym::t),
+            resolve_one(&keybinds, &cycle_mods, Keysym::t),
             Some(Action::CycleWorkspace)
         );
     }
@@ -886,7 +927,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            resolve_wm_action(&keybinds, &logo, Keysym::F9),
+            resolve_one(&keybinds, &logo, Keysym::F9),
             Some(Action::CycleWorkspace),
             "a key the compositor has no built-in knowledge of"
         );
@@ -896,13 +937,13 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            resolve_wm_action(&keybinds, &ctrl_alt, Keysym::F10),
+            resolve_one(&keybinds, &ctrl_alt, Keysym::F10),
             Some(Action::Quit)
         );
         // An action name the compositor does not know binds nothing, rather
         // than falling through to some default.
         let unknown = vec![("M-F9".into(), "launch nukes".into())];
-        assert_eq!(resolve_wm_action(&unknown, &logo, Keysym::F9), None);
+        assert_eq!(resolve_one(&unknown, &logo, Keysym::F9), None);
     }
 
     #[test]
@@ -914,10 +955,7 @@ mod tests {
             logo: true,
             ..Default::default()
         };
-        assert_eq!(resolve_wm_action(&keybinds, &tab_mods, Keysym::Tab), None);
-        assert_eq!(
-            resolve_wm_action(&keybinds, &tab_mods, Keysym::NoSymbol),
-            None
-        );
+        assert_eq!(resolve_one(&keybinds, &tab_mods, Keysym::Tab), None);
+        assert_eq!(resolve_one(&keybinds, &tab_mods, Keysym::NoSymbol), None);
     }
 }

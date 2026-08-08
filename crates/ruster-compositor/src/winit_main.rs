@@ -74,6 +74,9 @@ fn run_winit() -> anyhow::Result<()> {
         // so a Lua-driven layout change shows up on this frame rather than the
         // next one.
         state.drain_wm_commands();
+        // A half-typed chord that is never finished has to clear itself, or the
+        // overlay stays up and the next key is still being read as part of it.
+        state.chord.expire(std::time::Instant::now());
         let status = winit.dispatch_new_events(|event| state.handle_event(event));
         if let PumpStatus::Exit(_) = status {
             state.running.store(false, Ordering::SeqCst);
@@ -120,7 +123,8 @@ fn run_winit() -> anyhow::Result<()> {
                     cursor_location,
                     geometry: &geometry,
                     tree_status,
-                    keybinds: &state.keybinds,
+                    keymap: &state.keymap,
+                    whichkey: ruster_compositor::keymap::whichkey_view(&state.keymap, &state.chord),
                 };
                 render_frame(
                     &scene,

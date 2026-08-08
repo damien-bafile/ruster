@@ -376,6 +376,9 @@ pub fn run_drm() -> anyhow::Result<()> {
         // repaints on vblank rather than every iteration, and `dispatch`
         // reconfigures tiles, so a queued layout change lands on the next frame.
         state.drain_wm_commands();
+        // A half-typed chord that is never finished has to clear itself, or the
+        // overlay stays up and the next key is still being read as part of it.
+        state.chord.expire(std::time::Instant::now());
         // A dispatch failure used to drop out of the loop and return `Ok`,
         // so the compositor exited 0 with nothing on stdout and no line in the
         // log — indistinguishable from a clean quit, and impossible to
@@ -434,7 +437,8 @@ impl CompositorState<RusterUdevData> {
             cursor_location,
             geometry: &geometry,
             tree_status,
-            keybinds: &self.keybinds,
+            keymap: &self.keymap,
+            whichkey: crate::keymap::whichkey_view(&self.keymap, &self.chord),
         };
         let elements = collect_render_elements(&scene, &mut self.chrome, &mut renderer);
         send_frame_callbacks(self.shell.focus, &self.toplevels, &output);

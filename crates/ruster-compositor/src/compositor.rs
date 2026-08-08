@@ -84,9 +84,21 @@ pub struct CompositorState<B: Backend + 'static> {
     pub screenshot_pending: bool,
     /// How many captures this session has taken, so they do not overwrite.
     pub screenshot_count: u32,
-    /// Configured WM keybinds as `(binding, action)` pairs, loaded from
-    /// `compositor.lua` (Task 9). Empty until the config is applied.
-    pub keybinds: Vec<(String, String)>,
+    /// The configured bindings, as chord sequences.
+    ///
+    /// The only copy. This was briefly a `Vec<(String, String)>` *and* a
+    /// `Keymap` built from it, which meant two sources of truth for the same
+    /// question — and two tests promptly set one and read the other.
+    pub keymap: crate::keymap::Keymap,
+    /// The half-typed sequence, if any.
+    pub chord: crate::keymap::ChordState,
+    /// Keycodes whose press was intercepted, so their release can be too.
+    ///
+    /// Resolution happens on press and the pending sequence has moved on by the
+    /// time the release arrives, so re-resolving would answer differently and
+    /// leak a stray release to the client — which is how a terminal ends up
+    /// with a key it thinks is still held.
+    pub intercepted: HashSet<u32>,
     /// The live Lua control plane, when a config produced one. `None` means the
     /// config failed to run, so there is nothing to call into — keybinds still
     /// work, since those are resolved from `keybinds` above.
@@ -432,7 +444,9 @@ pub fn create_state<B: Backend + 'static>(
         chrome: Some(Chrome::new(user_theme())),
         screenshot_pending: false,
         screenshot_count: 0,
-        keybinds: Vec::new(),
+        keymap: crate::keymap::Keymap::default(),
+        chord: crate::keymap::ChordState::default(),
+        intercepted: HashSet::new(),
         wm: None,
     }
 }

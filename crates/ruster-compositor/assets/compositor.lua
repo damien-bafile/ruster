@@ -38,6 +38,12 @@
 -- 2. Return a table, which is enough when nothing needs deciding. This file
 --    does that.
 --
+-- A binding may be a *sequence* of chords separated by spaces: "M-w h" means
+-- Super+w, then h. While a sequence is half-typed the which-key overlay shows
+-- what can come next; it disappears when the sequence completes, or after a
+-- second of nothing, so an abandoned prefix stops swallowing keys. A single
+-- chord is a sequence of length one, so ordinary binds are unchanged.
+--
 -- Keybinds are (binding, action) pairs. In a binding, `M` is Mod4
 -- (Super/Logo), `S` Shift, `C` Control and `A` Alt, followed by the key name:
 -- "M-S-q", "M-t", "M-F9", "C-A-space". Modifiers match exactly, so "M-t" does

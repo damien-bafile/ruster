@@ -604,7 +604,7 @@ pub fn apply_config_to_shell<B: Backend + 'static>(
 ) {
     state.wm = control;
     apply_keyboard_config(state, &shell.keyboard);
-    state.keybinds = shell.keybinds;
+    state.keymap = crate::keymap::Keymap::new(&shell.keybinds);
     if let Some(workspace) = shell.initial_workspace {
         state.switch_workspace(workspace);
     }

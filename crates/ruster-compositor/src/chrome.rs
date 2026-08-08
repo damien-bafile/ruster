@@ -9,7 +9,7 @@
 
 use std::any::Any;
 
-use ruster_render::Theme;
+use ruster_render::{Theme, WhichKeyView};
 use ruster_render_gles::atlas::{layout_text, Atlas};
 use ruster_render_gles::cursor::CursorBitmap;
 use ruster_render_gles::geometry::{rect_verts, rounded_rect_verts, GlyphQuad, Vertex};
@@ -375,19 +375,35 @@ impl Chrome {
         }
     }
 
-    pub fn draw_whichkey(&mut self, binds: &[(String, String)], batch: &mut ChromeBatch) {
+    /// Draw the which-key panel for a half-typed chord.
+    ///
+    /// Takes a [`WhichKeyView`] — the same type the editor renders — rather than
+    /// a list of pairs, which is what lets the key and its description be drawn
+    /// in different colours. They used to be concatenated into one string and
+    /// therefore one colour, because the panel had no idea which half was which.
+    pub fn draw_whichkey(&mut self, view: &WhichKeyView, batch: &mut ChromeBatch) {
         let w = 420.0;
         let row_h = 20.0;
-        let h = 12.0 + binds.len() as f32 * row_h;
+        let title_h = if view.title.is_empty() { 0.0 } else { row_h };
+        let h = 12.0 + title_h + view.rows.len() as f32 * row_h;
         let x = 12.0;
         let y = 12.0;
         let bg: (f32, f32, f32, f32) = self.theme.whichkey_bg.into();
         let fg: (f32, f32, f32, f32) = self.theme.whichkey_fg.into();
+        let key_color: (f32, f32, f32, f32) = self.theme.whichkey_key.into();
 
         batch.verts.extend(rounded_rect_verts(x, y, w, h, 6.0, bg));
-        for (i, (key, desc)) in binds.iter().enumerate() {
-            let ty = y + 10.0 + i as f32 * row_h;
-            self.text(&format!("{key}  {desc}"), 14, x + 10.0, ty, fg, batch);
+        let mut ty = y + 10.0;
+        if !view.title.is_empty() {
+            self.text(&view.title, 14, x + 10.0, ty, key_color, batch);
+            ty += row_h;
+        }
+        for entry in &view.rows {
+            // The key in the accent, the description in the panel text, so the
+            // thing you have to press is the thing that stands out.
+            let advance = self.text(&entry.key, 14, x + 10.0, ty, key_color, batch);
+            self.text(&entry.desc, 14, x + 18.0 + advance, ty, fg, batch);
+            ty += row_h;
         }
     }
 
@@ -664,16 +680,56 @@ mod tests {
     }
 
     #[test]
-    fn whichkey_panel_renders_binds() {
+    fn whichkey_panel_renders_its_view() {
         let mut chrome = Chrome::new(theme());
-        let binds = vec![
-            ("M-q".into(), "quit".into()),
-            ("M-t".into(), "cycle workspace".into()),
-        ];
+        let view = ruster_render::WhichKeyView {
+            title: "M-w".into(),
+            rows: vec![
+                ruster_render::WhichKeyEntry {
+                    key: "h".into(),
+                    desc: "focus left".into(),
+                },
+                ruster_render::WhichKeyEntry {
+                    key: "l".into(),
+                    desc: "focus right".into(),
+                },
+            ],
+            anim: 1.0,
+        };
         let mut batch = ChromeBatch::default();
-        chrome.draw_whichkey(&binds, &mut batch);
+        chrome.draw_whichkey(&view, &mut batch);
         assert!(!batch.verts.is_empty());
         assert!(!batch.glyphs.is_empty());
+    }
+
+    #[test]
+    fn whichkey_draws_the_key_and_its_description_in_different_colours() {
+        // They were one concatenated string and therefore one colour, so the
+        // key you have to press did not stand out from the sentence about it.
+        let mut chrome = Chrome::new(theme());
+        let view = ruster_render::WhichKeyView {
+            title: String::new(),
+            rows: vec![ruster_render::WhichKeyEntry {
+                key: "h".into(),
+                desc: "focus left".into(),
+            }],
+            anim: 1.0,
+        };
+        let mut batch = ChromeBatch::default();
+        chrome.draw_whichkey(&view, &mut batch);
+        let theme = theme();
+        assert_ne!(
+            theme.whichkey_key, theme.whichkey_fg,
+            "the test is meaningless if the two roles are the same colour"
+        );
+        // The atlas bakes colour into each glyph cell, so both colours having
+        // been rasterized is the evidence that both were used.
+        assert!(chrome
+            .atlas
+            .contains(14, rgb8(theme.whichkey_key.into()), 'h'));
+        assert!(chrome
+            .atlas
+            .contains(14, rgb8(theme.whichkey_fg.into()), 'f'));
     }
 
     #[test]
