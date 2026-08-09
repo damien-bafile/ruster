@@ -164,6 +164,7 @@ fn run_winit() -> anyhow::Result<()> {
                     tree_status,
                     panes: &state.panes,
                     buffers: &state.buffers,
+                    highlights: &state.highlights,
                     keymap: &state.keymap,
                     minibuffer: state.minibuffer.as_ref(),
                     whichkey: ruster_compositor::keymap::whichkey_view(

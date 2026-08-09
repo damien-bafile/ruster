@@ -99,6 +99,13 @@ pub struct FrameInput<'a> {
     pub panes: &'a crate::pane::Panes,
     /// The documents those panes are showing.
     pub buffers: &'a ruster_core::workspace::BufferStore,
+    /// The syntax parses, one per document.
+    ///
+    /// A `RefCell` because highlighting *is* a mutation — the parse is cached
+    /// and refreshed when the buffer moves on — while everything else a frame
+    /// reads is immutable, and threading `&mut` through the scene for one field
+    /// would make every other caller pay for it.
+    pub highlights: &'a std::cell::RefCell<crate::highlight::Highlights>,
     /// The bindings in force, so the welcome frame can say how to quit.
     pub keymap: &'a crate::keymap::Keymap,
     /// The which-key overlay, drawn only while a chord is half-typed.
@@ -224,6 +231,21 @@ where
                 continue;
             };
             let (first_line, lines) = pane.visible_lines(&doc.buffer);
+            // Highlighted here rather than in the pane: the parse belongs to the
+            // document, and two panes on one file share it.
+            let extension = doc
+                .file_path
+                .as_ref()
+                .and_then(|p| p.extension())
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
+            let lines = scene.highlights.borrow_mut().styled_lines(
+                pane.doc,
+                extension,
+                &doc.buffer,
+                first_line,
+                &lines,
+            );
             chrome.draw_editor_frame(
                 (rect.w as f32 * chrome_scale) as i32,
                 (rect.h as f32 * chrome_scale) as i32,

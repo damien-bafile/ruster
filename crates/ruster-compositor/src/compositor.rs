@@ -142,6 +142,8 @@ pub struct CompositorState<B: Backend + 'static> {
     /// rest of the answer is `$TERMINAL` and `PATH`, which are read when the
     /// key is pressed rather than frozen at startup.
     pub terminal: Option<String>,
+    /// Syntax parses, one per document, refreshed when a buffer changes.
+    pub highlights: std::cell::RefCell<crate::highlight::Highlights>,
     /// The seat's selection text, shared between editor panes and clients.
     pub clipboard: crate::clipboard::Clipboard,
     /// Editor panes: tree leaves that are not Wayland clients. A leaf is a
@@ -1016,6 +1018,7 @@ pub fn create_state<B: Backend + 'static>(
         repeat_generation: 0,
         keyboard_config: globals.keyboard_config,
         terminal: None,
+        highlights: std::cell::RefCell::new(crate::highlight::Highlights::default()),
         clipboard: crate::clipboard::Clipboard::default(),
         panes: crate::pane::Panes::new(),
         buffers: ruster_core::workspace::BufferStore::new(),

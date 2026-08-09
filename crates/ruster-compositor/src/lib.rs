@@ -10,6 +10,7 @@ pub mod backend;
 pub mod chrome;
 pub mod clipboard;
 pub mod compositor;
+pub mod highlight;
 pub mod input;
 pub mod keymap;
 pub mod lua;

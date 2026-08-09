@@ -10,7 +10,7 @@
 use std::any::Any;
 
 use crate::compositor::PANE_FONT_PX;
-use ruster_render::{Theme, WhichKeyEntry, WhichKeyView};
+use ruster_render::{Color, StyledLine, SyntaxStyle, Theme, WhichKeyEntry, WhichKeyView};
 use ruster_render_gles::atlas::{cell_metrics, layout_text, layout_text_in, Atlas, FontFamily};
 use ruster_render_gles::cursor::CursorBitmap;
 use ruster_render_gles::geometry::{rect_verts, rounded_rect_verts, GlyphQuad, Vertex};
@@ -60,6 +60,68 @@ impl TreeStatus {
 /// Thin enough that covering that many pixels of the client costs nothing
 /// legible, thick enough to read at a glance on a 1440p display.
 const BORDER_WIDTH: f32 = 2.0;
+
+/// One stretch of a line drawn in a single colour.
+struct Run {
+    /// Column the run starts at, in cells from the body's left edge.
+    column: usize,
+    text: String,
+    /// `None` where the highlighter had no opinion, which is most of a line.
+    color: Option<Color>,
+}
+
+/// A line split into runs: each highlighted span, and the plain text between.
+///
+/// The gaps matter as much as the spans. A highlighter colours keywords and
+/// leaves the spaces and identifiers between them alone, so drawing only the
+/// spans would draw only a fraction of the line.
+fn runs(line: &StyledLine) -> Vec<Run> {
+    let chars: Vec<char> = line.text.chars().collect();
+    let mut out = Vec::new();
+    let mut at = 0usize;
+    // Spans are taken in order and assumed not to overlap, which is what
+    // `SyntaxEngine::highlight_line` produces. One starting behind the pen is
+    // skipped rather than drawn over what is already there.
+    for (start, end, style) in &line.highlights {
+        let (start, end) = (*start, (*end).min(chars.len()));
+        if start < at || start >= end {
+            continue;
+        }
+        if start > at {
+            out.push(Run {
+                column: at,
+                text: chars[at..start].iter().collect(),
+                color: None,
+            });
+        }
+        out.push(Run {
+            column: start,
+            text: chars[start..end].iter().collect(),
+            color: syntax_color(style),
+        });
+        at = end;
+    }
+    if at < chars.len() {
+        out.push(Run {
+            column: at,
+            text: chars[at..].iter().collect(),
+            color: None,
+        });
+    }
+    out
+}
+
+/// The colour a span asks for, or `None` when it asks for nothing.
+///
+/// `Color::Default` is a highlighter saying "no opinion", and the pane's own
+/// foreground is the opinion it defers to — resolving it to a concrete colour
+/// here would hard-code the theme's text colour into every unstyled run.
+fn syntax_color(style: &SyntaxStyle) -> Option<Color> {
+    match style.fg {
+        Color::Default => None,
+        other => Some(other),
+    }
+}
 
 /// How many cells the line-number gutter needs, including its trailing space.
 ///
@@ -370,7 +432,7 @@ impl Chrome {
         &mut self,
         w: i32,
         h: i32,
-        buffer: &[String],
+        buffer: &[StyledLine],
         first_line: usize,
         title: &str,
         batch: &mut ChromeBatch,
@@ -398,7 +460,7 @@ impl Chrome {
         let rows = ((h as f32 - bar_h - 8.0) / body.cell_h).max(0.0) as usize;
         let gutter_color: (f32, f32, f32, f32) = self.theme.gutter.into();
 
-        for (row, text) in buffer.iter().take(rows).enumerate() {
+        for (row, line) in buffer.iter().take(rows).enumerate() {
             let gy = body.y + row as f32 * body.cell_h;
             if gutter_cols > 0 {
                 // Right-aligned, the way every editor draws line numbers: the
@@ -414,7 +476,22 @@ impl Chrome {
                     batch,
                 );
             }
-            self.text_in(text, PANE_FONT_PX, body.x, gy, fg, FontFamily::Mono, batch);
+            // One run per span, positioned by *cell* rather than by chaining
+            // advances from the previous run. The runs are separate draw calls,
+            // and accumulating their widths would let a rounding difference
+            // slide a character out of its column — the grid is the authority,
+            // exactly as it is for the click that lands on it.
+            for run in runs(line) {
+                self.text_in(
+                    &run.text,
+                    PANE_FONT_PX,
+                    body.x + run.column as f32 * body.cell_w,
+                    gy,
+                    run.color.map(Into::into).unwrap_or(fg),
+                    FontFamily::Mono,
+                    batch,
+                );
+            }
         }
     }
 
@@ -723,6 +800,117 @@ pub fn solid_elements_from_verts(verts: &[Vertex]) -> Vec<SolidColorRenderElemen
 
 #[cfg(test)]
 mod tests {
+    fn hl(fg: (u8, u8, u8)) -> SyntaxStyle {
+        SyntaxStyle {
+            fg: Color::Rgb(fg.0, fg.1, fg.2),
+            ..SyntaxStyle::default()
+        }
+    }
+
+    fn line(text: &str, spans: Vec<(usize, usize, SyntaxStyle)>) -> StyledLine {
+        StyledLine {
+            text: text.to_string(),
+            highlights: spans,
+        }
+    }
+
+    #[test]
+    fn the_text_between_spans_is_drawn_too() {
+        // A highlighter colours keywords and leaves what is between them alone.
+        // Drawing only the spans would draw a fraction of the line — and the
+        // fraction would still look plausible, which is worse.
+        // Two spans with plain text before, between and after them — the
+        // earlier version of this test put a span at column 0 and so never
+        // exercised an interior gap at all. It passed with the gap runs
+        // deleted entirely.
+        let runs = runs(&line(
+            "let x = 1;",
+            vec![(0, 3, hl((1, 2, 3))), (8, 9, hl((3, 2, 1)))],
+        ));
+        let text: String = runs.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(text, "let x = 1;", "every character must be drawn once");
+        let coloured: Vec<&str> = runs
+            .iter()
+            .filter(|r| r.color.is_some())
+            .map(|r| r.text.as_str())
+            .collect();
+        assert_eq!(coloured, ["let", "1"], "only the spans are coloured");
+        let plain: String = runs
+            .iter()
+            .filter(|r| r.color.is_none())
+            .map(|r| r.text.as_str())
+            .collect();
+        assert_eq!(
+            plain, " x = ;",
+            "and everything between them is still drawn"
+        );
+    }
+
+    #[test]
+    fn every_run_starts_at_the_column_it_occupies() {
+        // Runs are positioned by cell, not by chaining advances: separate draw
+        // calls whose widths were accumulated would let a rounding difference
+        // slide a character out of its column.
+        let runs = runs(&line(
+            "fn main() {}",
+            vec![(0, 2, hl((1, 0, 0))), (3, 7, hl((0, 1, 0)))],
+        ));
+        for run in &runs {
+            let expected: String = "fn main() {}"
+                .chars()
+                .skip(run.column)
+                .take(run.text.chars().count())
+                .collect();
+            assert_eq!(run.text, expected, "run at column {}", run.column);
+        }
+    }
+
+    #[test]
+    fn a_line_with_no_spans_is_one_plain_run() {
+        let runs = runs(&line("plain text", Vec::new()));
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].column, 0);
+        assert!(runs[0].color.is_none());
+    }
+
+    #[test]
+    fn an_empty_line_produces_nothing_to_draw() {
+        assert!(runs(&line("", Vec::new())).is_empty());
+    }
+
+    #[test]
+    fn a_span_that_overlaps_an_earlier_one_is_skipped() {
+        // The engine produces ordered, non-overlapping spans. If one ever
+        // arrived behind the pen, drawing it would paint over text already
+        // placed — and duplicate the characters underneath.
+        let runs = runs(&line(
+            "abcdef",
+            vec![(0, 4, hl((1, 0, 0))), (2, 5, hl((0, 1, 0)))],
+        ));
+        let text: String = runs.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(text, "abcdef", "no character drawn twice");
+    }
+
+    #[test]
+    fn a_span_with_no_colour_of_its_own_defers_to_the_pane() {
+        // `Color::Default` is the highlighter saying "no opinion". Resolving it
+        // here would bake the theme's text colour into the run and stop the
+        // pane's own foreground from applying.
+        assert_eq!(syntax_color(&SyntaxStyle::default()), None);
+        assert_eq!(syntax_color(&hl((9, 9, 9))), Some(Color::Rgb(9, 9, 9)));
+    }
+
+    /// Plain lines as the styled ones `draw_editor_frame` now takes.
+    fn styled(lines: &[String]) -> Vec<StyledLine> {
+        lines
+            .iter()
+            .map(|text| StyledLine {
+                text: text.clone(),
+                highlights: Vec::new(),
+            })
+            .collect()
+    }
+
     #[test]
     fn the_focused_window_is_bordered_differently_from_the_others() {
         // The whole point: with every window the same shape and the same
@@ -903,7 +1091,7 @@ mod tests {
         let mut chrome = Chrome::new(theme());
         let buf: Vec<String> = (0..20).map(|i| format!("line {i}")).collect();
         let mut batch = ChromeBatch::default();
-        chrome.draw_editor_frame(400, 300, &buf, 0, "welcome", &mut batch);
+        chrome.draw_editor_frame(400, 300, &styled(&buf), 0, "welcome", &mut batch);
         assert!(batch.verts.len() >= 6 * 2); // frame + title bar
         assert!(!batch.glyphs.is_empty(), "title and rows draw glyphs");
     }
@@ -996,11 +1184,25 @@ mod tests {
     fn translate_since_moves_both_panels_and_glyphs() {
         let mut chrome = Chrome::new(theme());
         let mut batch = ChromeBatch::default();
-        chrome.draw_editor_frame(400, 300, &["hi".to_string()], 0, "welcome", &mut batch);
+        chrome.draw_editor_frame(
+            400,
+            300,
+            &styled(&["hi".to_string()]),
+            0,
+            "welcome",
+            &mut batch,
+        );
         let (vert, glyph) = (batch.verts[0], batch.glyphs[0]);
 
         let mark = batch.mark();
-        chrome.draw_editor_frame(400, 300, &["hi".to_string()], 0, "welcome", &mut batch);
+        chrome.draw_editor_frame(
+            400,
+            300,
+            &styled(&["hi".to_string()]),
+            0,
+            "welcome",
+            &mut batch,
+        );
         batch.translate_since(mark, 10.0, 20.0);
 
         // Everything before the mark stays put; everything after it shifts.
