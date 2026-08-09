@@ -1464,11 +1464,63 @@ pub fn install_signal_handlers(
 ) -> anyhow::Result<()> {
     let flag = running.clone();
     let stop = signal.clone();
-    ctrlc::set_handler(move || {
-        flag.store(false, Ordering::SeqCst);
-        stop.stop();
-    })?;
+    let asked = Arc::new(AtomicBool::new(false));
+    ctrlc::set_handler(
+        move || match signal_action(asked.swap(true, Ordering::SeqCst)) {
+            SignalAction::AskToStop => {
+                flag.store(false, Ordering::SeqCst);
+                stop.stop();
+            }
+            SignalAction::ForceExit => {
+                // Deliberately not a clean shutdown: the loop has not come back to
+                // read the flag the first signal set, so there is nothing left to
+                // ask. Writing the session from a signal handler while the main
+                // thread is stopped inside a blocking call is not safe, so the
+                // session is the price of getting out.
+                eprintln!("ruster-compositor: not responding, forcing exit");
+                // `abort`, not `exit`. `std::process::exit` runs atexit handlers
+                // and static destructors, and those can want a lock the stalled
+                // main thread is holding — which is exactly what happened the
+                // first time this was written: the message printed and the
+                // process stayed up. Termination here has to be the one thing
+                // that cannot block.
+                std::process::abort();
+            }
+        },
+    )?;
     Ok(())
+}
+
+/// What a shutdown signal should do, given whether one has already been asked
+/// for.
+///
+/// Split out so the decision is testable: a handler that only ever asks nicely
+/// leaves no way out of a stalled loop, and a compositor you cannot signal is a
+/// compositor you have to find another machine to kill.
+///
+/// The stall is real and has been observed. `WinitGraphicsBackend::submit` ends
+/// in `eglSwapBuffers`, which on Wayland blocks until the host releases a
+/// buffer; when the host stops presenting to the window, the main thread stops
+/// there and never reaches the `running` check. The DRM backend does not share
+/// that call — it presents through page flips on vblank, and already declines to
+/// render while the session is inactive — but a second signal costs nothing and
+/// covers whatever else might one day block.
+fn signal_action(already_asked: bool) -> SignalAction {
+    if already_asked {
+        SignalAction::ForceExit
+    } else {
+        SignalAction::AskToStop
+    }
+}
+
+/// The two things a shutdown signal can mean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SignalAction {
+    /// Set the flag and let the loop wind down: the normal path, which writes
+    /// the session on the way out.
+    AskToStop,
+    /// Leave now. The loop is not listening.
+    ForceExit,
 }
 
 /// Log a startup header naming the version, backend and Wayland socket.
@@ -1483,6 +1535,16 @@ pub fn log_startup_header(version: &str, backend: &str, socket_name: &str) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_second_signal_forces_the_exit_the_first_asked_for() {
+        // One Ctrl-C asks; a second one leaves. Without the second, a loop that
+        // has stopped reading the flag cannot be signalled out of at all — and
+        // `submit` really can block there, inside `eglSwapBuffers`, when the
+        // host stops presenting to the window.
+        assert_eq!(signal_action(false), SignalAction::AskToStop);
+        assert_eq!(signal_action(true), SignalAction::ForceExit);
+    }
+
     use super::*;
     use crate::backend::logical_size_from;
     use ruster_shell::WindowId;
