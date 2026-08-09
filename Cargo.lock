@@ -2467,6 +2467,7 @@ dependencies = [
  "ruster-render",
  "ruster-render-gles",
  "ruster-shell",
+ "ruster-syntax",
  "smithay",
  "tracing",
  "tracing-subscriber",
