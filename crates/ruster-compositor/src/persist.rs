@@ -202,9 +202,18 @@ impl<B: Backend + 'static> CompositorState<B> {
             // rather than as a window whose command we could not identify —
             // which `rebuild` drops, silently losing it from the layout.
             if let Some(pane) = panes.get(&id) {
-                return App::pane(self.document_name(pane.doc));
+                // The path, so the file comes back rather than an empty pane
+                // wearing its name.
+                return match self.buffers.get(pane.doc).and_then(|d| d.file_path.clone()) {
+                    Some(path) => App::pane_with_path(
+                        self.document_name(pane.doc),
+                        path.to_string_lossy().into_owned(),
+                    ),
+                    None => App::pane(self.document_name(pane.doc)),
+                };
             }
             App {
+                pane_path: None,
                 command: self.persist.commands.get(&id).cloned(),
                 title: self
                     .shell
@@ -252,7 +261,20 @@ impl<B: Backend + 'static> CompositorState<B> {
                 // not in this format yet, so a restored pane comes back empty
                 // under its old name rather than with its file — recorded in
                 // the matrix rather than papered over.
-                let doc = self.buffers.create_scratch(&entry.title);
+                // Reopen the file if the session named one. A path that no
+                // longer reads comes back as an empty pane under its old name
+                // rather than aborting the restore — the rest of the layout is
+                // still worth having, and the log says which file went missing.
+                let doc = match entry.pane_path.as_deref() {
+                    Some(path) => match std::fs::read_to_string(path) {
+                        Ok(text) => self.buffers.open_file(std::path::PathBuf::from(path), text),
+                        Err(err) => {
+                            tracing::warn!(%path, %err, "restoring a pane: could not read the file");
+                            self.buffers.create_scratch(&entry.title)
+                        }
+                    },
+                    None => self.buffers.create_scratch(&entry.title),
+                };
                 self.panes.insert(id, crate::pane::EditorPane::new(doc));
                 restored_panes.push((app, id));
                 continue;

@@ -77,6 +77,12 @@ pub struct App {
     /// "we could not identify this program" — and `rebuild` drops those, so a
     /// restored layout would silently lose every pane in it.
     pub pane: bool,
+    /// The file an editor pane was showing, when it had one.
+    ///
+    /// Carried as the `pane` keyword's argument rather than in `command`: a
+    /// path is opened, not executed, and putting it where a command line goes
+    /// would eventually get one of them run.
+    pub pane_path: Option<String>,
 }
 
 impl App {
@@ -86,6 +92,15 @@ impl App {
             command: None,
             title: title.into(),
             pane: true,
+            pane_path: None,
+        }
+    }
+
+    /// An editor pane showing a file, which is reopened rather than relaunched.
+    pub fn pane_with_path(title: impl Into<String>, path: impl Into<String>) -> Self {
+        App {
+            pane_path: Some(path.into()),
+            ..App::pane(title)
         }
     }
 }
@@ -225,7 +240,12 @@ impl Session {
             // A distinct keyword, so a pane is never mistaken for a window
             // whose command we failed to identify.
             if app.pane {
-                out.push_str("pane\n");
+                // The path as the keyword's argument, so a pane with no file
+                // stays a bare `pane` and older session files still parse.
+                match &app.pane_path {
+                    Some(path) => out.push_str(&format!("pane {}\n", one_line(path))),
+                    None => out.push_str("pane\n"),
+                }
             } else {
                 out.push_str(&format!(
                     "app {}\n",
@@ -271,17 +291,23 @@ impl Session {
 
         let mut apps: Vec<App> = Vec::new();
         while let Some(line) = rest.get(at) {
-            if line.trim() == "pane" {
+            if line.trim() == "pane" || line.starts_with("pane ") {
+                let path = line
+                    .strip_prefix("pane ")
+                    .map(str::trim)
+                    .filter(|p| !p.is_empty());
                 apps.push(App {
                     command: None,
                     title: String::new(),
                     pane: true,
+                    pane_path: path.map(str::to_string),
                 });
             } else if let Some(command) = value(line, "app") {
                 apps.push(App {
                     command: (!command.is_empty()).then(|| command.to_string()),
                     title: String::new(),
                     pane: false,
+                    pane_path: None,
                 });
             } else if let Some(title) = value(line, "title") {
                 // A title with no app in front of it is not a file we wrote.
@@ -582,6 +608,55 @@ mod tests {
 
     /// An app table entry named after the window, so a restore can be checked
     #[test]
+    fn a_pane_remembers_the_file_it_was_showing() {
+        // Without the path a restored pane comes back empty wearing its old
+        // name, which looks like the file failed to load rather than like it
+        // was never recorded.
+        let mut ws = Workspaces::new();
+        ws.insert(w(1), None, Layout::Horizontal);
+        let session = Session::capture(&ws, |_| App::pane_with_path("main.rs", "/src/main.rs"));
+        let text = session.encode();
+        assert!(text.contains("pane /src/main.rs"), "got:\n{text}");
+
+        let back = Session::decode(&text).unwrap();
+        assert!(back.apps[0].pane);
+        assert_eq!(back.apps[0].pane_path.as_deref(), Some("/src/main.rs"));
+        assert_eq!(back.apps[0].title, "main.rs");
+    }
+
+    #[test]
+    fn a_scratch_pane_stays_a_bare_keyword() {
+        // Both so the file stays readable and so a session written before paths
+        // existed still parses — a format that could not read its own history
+        // would lose the layout it was meant to preserve.
+        let mut ws = Workspaces::new();
+        ws.insert(w(1), None, Layout::Horizontal);
+        let session = Session::capture(&ws, |_| App::pane("scratch"));
+        assert!(session.encode().contains("\npane\n"));
+
+        let old = "ruster-workspaces 1\nactive 1\npane\ntitle scratch\nworkspace 1\nleaf 0\n";
+        let back = Session::decode(old).expect("an older session file must still parse");
+        assert!(back.apps[0].pane);
+        assert_eq!(back.apps[0].pane_path, None);
+    }
+
+    #[test]
+    fn a_path_with_spaces_survives_the_round_trip() {
+        // The format is line-oriented and the path is the keyword's argument,
+        // so a space in it is not a separator.
+        let mut ws = Workspaces::new();
+        ws.insert(w(1), None, Layout::Horizontal);
+        let session = Session::capture(&ws, |_| {
+            App::pane_with_path("notes", "/home/a b/my notes.md")
+        });
+        let back = Session::decode(&session.encode()).unwrap();
+        assert_eq!(
+            back.apps[0].pane_path.as_deref(),
+            Some("/home/a b/my notes.md")
+        );
+    }
+
+    #[test]
     fn a_pane_survives_the_round_trip_as_a_pane() {
         // A pane saved as "a window with no command" is indistinguishable from
         // one whose program we failed to identify — and `rebuild` drops those,
@@ -597,6 +672,7 @@ mod tests {
                     command: Some("foot".into()),
                     title: "term".into(),
                     pane: false,
+                    pane_path: None,
                 }
             }
         });
@@ -623,6 +699,7 @@ mod tests {
             command: None,
             title: "mystery".into(),
             pane: false,
+            pane_path: None,
         });
         let back = Session::decode(&session.encode()).unwrap();
         assert!(!back.apps[0].pane);
@@ -635,6 +712,7 @@ mod tests {
             command: Some(format!("foot -e app{}", window.0)),
             title: format!("window {}", window.0),
             pane: false,
+            pane_path: None,
         }
     }
 
@@ -812,6 +890,7 @@ mod tests {
             command: (id == w(1)).then(|| "foot".to_string()),
             title: format!("window {}", id.0),
             pane: false,
+            pane_path: None,
         });
         assert_eq!(session.apps[1].command, None);
         assert_eq!(session.apps[1].title, "window 2");
@@ -972,6 +1051,7 @@ mod tests {
                 command: Some("sh -c 'foot -e htop'".into()),
                 title: "htop — 3 running".into(),
                 pane: false,
+                pane_path: None,
             }],
             workspaces: {
                 let mut ws: [WorkspaceSnapshot; SLOTS] = Default::default();
@@ -995,6 +1075,7 @@ mod tests {
                 command: Some("foot".into()),
                 title: "evil\nworkspace 2\nleaf 0".into(),
                 pane: false,
+                pane_path: None,
             }],
             workspaces,
             active: 1,
