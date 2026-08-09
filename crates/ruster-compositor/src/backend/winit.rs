@@ -21,6 +21,38 @@ pub struct RusterWinitData {
     pub damage_tracker: OutputDamageTracker,
     pub output: Output,
     full_redraw: u8,
+    pub redraw: RedrawGate,
+}
+
+/// Whether the host has invited us to draw a frame.
+///
+/// Rendering used to run on every pass of the event loop. On a nested Wayland
+/// session `eglSwapBuffers` blocks until the host releases a buffer, and a host
+/// that has stopped presenting the window — occluded, minimised, on another
+/// workspace — never does. That parked the whole compositor inside the swap:
+/// LSP polling, key repeat, chord expiry and queued Lua commands all sit behind
+/// it on the render thread, so an unpresented window froze every one of them.
+/// Measured at zero CPU across 12 seconds, stuck in `ppoll`.
+///
+/// So the swap is now only entered when the host asks for a frame, and the rest
+/// of the loop runs regardless of whether it ever does.
+#[derive(Debug, Default)]
+pub struct RedrawGate {
+    pending: bool,
+}
+
+impl RedrawGate {
+    /// The host asked for a frame.
+    pub fn request(&mut self) {
+        self.pending = true;
+    }
+
+    /// Consume an invitation. False means "do not render this pass" — which is
+    /// the whole point, and the reason this is a gate rather than a bool that
+    /// something could read twice.
+    pub fn take(&mut self) -> bool {
+        std::mem::take(&mut self.pending)
+    }
 }
 
 impl Backend for RusterWinitData {
@@ -48,6 +80,10 @@ impl RusterWinitData {
             damage_tracker,
             output,
             full_redraw: 4,
+            // Closed. The first frame is armed by `request_redraw` before the
+            // loop starts, so every frame without exception is one the host
+            // asked for.
+            redraw: RedrawGate::default(),
         }
     }
 
@@ -114,13 +150,56 @@ impl CompositorState<RusterWinitData> {
                 output.change_current_state(Some(mode), None, Some(Scale::Fractional(scale)), None);
                 output.set_preferred(mode);
                 self.backend_data.reset_buffers(&output);
+                // Ask for a frame rather than opening the gate directly. Forcing
+                // one here is what defeated the first version of this fix: a
+                // resize arrives at startup, so the compositor rendered a second
+                // frame the host had not invited and blocked in its swap.
+                self.backend_data.backend.window().request_redraw();
             }
             WinitEvent::Input(event) => self.process_input_event(event),
             WinitEvent::CloseRequested => {
                 info!("close requested, shutting down");
                 self.running.store(false, Ordering::SeqCst);
             }
-            WinitEvent::Focus(_) | WinitEvent::Redraw => {}
+            // The host inviting us to draw. Everything else in the loop runs
+            // whether or not this ever arrives.
+            WinitEvent::Redraw => self.backend_data.redraw.request(),
+            WinitEvent::Focus(_) => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod redraw_gate_tests {
+    use super::RedrawGate;
+
+    #[test]
+    fn an_invitation_is_consumed_by_taking_it() {
+        let mut gate = RedrawGate::default();
+        gate.request();
+        assert!(gate.take(), "the invitation should let one frame through");
+        assert!(
+            !gate.take(),
+            "a second frame without a second invitation is the stall: it enters \
+             eglSwapBuffers with no buffer released and parks the event loop"
+        );
+    }
+
+    #[test]
+    fn a_gate_that_was_never_invited_stays_shut() {
+        assert!(!RedrawGate::default().take());
+    }
+
+    /// Repeated invitations before a frame is drawn must not queue up into
+    /// several frames, or a burst of them would render faster than the host
+    /// presents and reach the blocking swap anyway.
+    #[test]
+    fn invitations_do_not_accumulate() {
+        let mut gate = RedrawGate::default();
+        gate.request();
+        gate.request();
+        gate.request();
+        assert!(gate.take());
+        assert!(!gate.take());
     }
 }

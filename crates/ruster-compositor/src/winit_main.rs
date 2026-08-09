@@ -86,6 +86,26 @@ fn report_frame_time(elapsed: Duration) {
     }
 }
 
+/// Dispatch the event loop and flush clients. False means the loop should end.
+///
+/// Shared by both paths through an iteration — the one that rendered and the one
+/// that skipped because the host had not asked for a frame. Duplicating it once
+/// meant a client-visible flush could be added to one path and silently not the
+/// other.
+fn pump(
+    event_loop: &mut EventLoop<'static, CompositorState<RusterWinitData>>,
+    state: &mut CompositorState<RusterWinitData>,
+) -> bool {
+    if event_loop
+        .dispatch(Some(Duration::from_millis(1)), state)
+        .is_err()
+    {
+        return false;
+    }
+    state.display_handle.flush_clients().unwrap();
+    true
+}
+
 fn run_winit() -> anyhow::Result<()> {
     let mut event_loop: EventLoop<'static, CompositorState<RusterWinitData>> =
         EventLoop::try_new()?;
@@ -106,6 +126,11 @@ fn run_winit() -> anyhow::Result<()> {
     let running = state.running.clone();
     install_signal_handlers(&running, event_loop.get_signal())?;
 
+    // Arm the first frame. Every frame after it is armed by the one before, so
+    // the compositor only ever enters the blocking swap on the host's
+    // invitation.
+    state.backend_data.backend.window().request_redraw();
+
     let mut winit = winit;
     while state.running.load(Ordering::SeqCst) {
         // Anything `ruster.wm.*` queued since the last pass, before rendering,
@@ -122,6 +147,19 @@ fn run_winit() -> anyhow::Result<()> {
         if let PumpStatus::Exit(_) = status {
             state.running.store(false, Ordering::SeqCst);
             break;
+        }
+
+        // Only when the host has asked for a frame. Rendering unconditionally is
+        // what stalled the compositor: the swap at the end of it blocks until
+        // the host releases a buffer, and a host that is not presenting the
+        // window never does, so everything above — LSP, key repeat, chords, Lua
+        // — stopped with it. Skipping the render leaves all of that running.
+        if !state.backend_data.redraw.take() {
+            if !pump(&mut event_loop, &mut state) {
+                state.running.store(false, Ordering::SeqCst);
+                break;
+            }
+            continue;
         }
 
         // Composite the focused toplevel and present it to the winit window.
@@ -226,12 +264,16 @@ fn run_winit() -> anyhow::Result<()> {
 
         report_frame_time(frame_started.elapsed());
 
-        let result = event_loop.dispatch(Some(Duration::from_millis(1)), &mut state);
-        if result.is_err() {
+        // Ask for the next frame. The host answers on its own presentation
+        // cadence, which is what throttles this loop to the display rather than
+        // to a spin — and if it stops answering, the loop keeps running without
+        // us, which is the whole point of the gate.
+        state.backend_data.backend.window().request_redraw();
+
+        if !pump(&mut event_loop, &mut state) {
             state.running.store(false, Ordering::SeqCst);
             break;
         }
-        state.display_handle.flush_clients().unwrap();
     }
     // After the loop rather than in the quit action: SIGTERM and a closed winit
     // window end the session too, and a layout that only survives one of the
