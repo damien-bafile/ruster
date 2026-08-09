@@ -51,6 +51,13 @@ pub enum Action {
     /// startup clients — and the only way to get a second one is to type into
     /// the first, which assumes the first is a terminal.
     Spawn(String),
+    /// Launch whichever terminal this machine has (see [`resolve_terminal`]).
+    ///
+    /// Distinct from `Spawn("foot")` because the command is not known until the
+    /// key is pressed: it depends on the config, the environment and what is
+    /// installed. Binding a literal terminal name instead is what makes the
+    /// default keymap wrong on every machine that chose a different one.
+    Terminal,
     /// Add or replace a keybinding while running.
     Bind(String, String),
     /// Open a new editor pane beside the focused leaf.
@@ -116,6 +123,9 @@ pub struct LuaShell {
     /// Workspace to start on, when the config asked for one.
     pub initial_workspace: Option<u32>,
     pub keyboard: KeyboardConfig,
+    /// The command the `terminal` action should run, when the config named one.
+    /// `None` means fall back to `$TERMINAL` and then to whatever is installed.
+    pub terminal: Option<String>,
 }
 
 /// Load `compositor.lua` from the config dir (`~/.config/ruster/`), falling
@@ -194,6 +204,12 @@ fn merge_config_table(table: &mlua::Table, shell: &mut LuaShell) -> mlua::Result
     }
     if let Ok(ws) = table.get::<u32>("workspace") {
         shell.initial_workspace = valid_workspace(ws);
+    }
+    if let Ok(t) = table.get::<String>("terminal") {
+        // An empty string is "I did not choose one", not "run the program named
+        // nothing" — otherwise `terminal = ""` would shadow $TERMINAL and the
+        // installed-terminal search with a command that can never spawn.
+        shell.terminal = (!t.trim().is_empty()).then(|| t.trim().to_string());
     }
     if let Ok(kb) = table.get::<mlua::Table>("keyboard") {
         merge_keyboard_table(&kb, &mut shell.keyboard);
@@ -579,6 +595,7 @@ impl Action {
             ("screenshot", _, _) => Some(Action::Screenshot),
             ("toggle help" | "help" | "toggle whichkey", _, _) => Some(Action::ToggleHelp),
             ("new pane" | "pane", _, _) => Some(Action::NewPane),
+            ("terminal" | "term", _, _) => Some(Action::Terminal),
             ("command" | "prompt", _, _) => {
                 Some(Action::Prompt(crate::minibuffer::Prompt::Command))
             }
@@ -633,6 +650,7 @@ pub fn apply_config_to_shell<B: Backend + 'static>(
     socket_name: &str,
 ) {
     state.wm = control;
+    state.terminal = shell.terminal.clone();
     apply_keyboard_config(state, &shell.keyboard);
     state.keymap = crate::keymap::Keymap::new(&shell.keybinds);
     if let Some(workspace) = shell.initial_workspace {
@@ -754,6 +772,101 @@ fn build_command(command: &str, socket_name: Option<&str>) -> Option<Command> {
         cmd.env("WAYLAND_DISPLAY", socket);
     }
     Some(cmd)
+}
+
+/// Terminals looked for when neither the config nor `$TERMINAL` names one, in
+/// the order they are tried.
+///
+/// All are Wayland-native. `xterm` and friends are deliberately absent: this
+/// compositor has no Xwayland, so an X11-only terminal would be found, spawned,
+/// and fail to connect to a display — a worse outcome than reporting that
+/// nothing was found. `foot` leads because it is this compositor's own default
+/// startup client, so a machine set up for ruster already has it.
+pub const KNOWN_TERMINALS: &[&str] = &[
+    "foot",
+    "alacritty",
+    "kitty",
+    "wezterm",
+    "ghostty",
+    "weston-terminal",
+];
+
+/// Which of the three places a terminal command was found in.
+///
+/// Carried back to the caller rather than logged here so [`resolve_terminal`]
+/// stays pure — and so the log can name the source, which is the difference
+/// between "ruster picked kitty" and "something, somewhere, picked kitty".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalSource {
+    /// `terminal = "..."` in `compositor.lua`.
+    Config,
+    /// The `TERMINAL` environment variable.
+    Environment,
+    /// Found on `PATH`, from [`KNOWN_TERMINALS`].
+    Installed,
+}
+
+/// The terminal command to run, and where it came from: the config's choice,
+/// else `$TERMINAL`, else the first of [`KNOWN_TERMINALS`] that `installed`
+/// says is present. `None` when the machine offers no answer at all.
+///
+/// Pure — the environment and the filesystem are both parameters — because
+/// every branch here is a branch a user hits on a machine the test suite will
+/// never run on. [`terminal_command`] supplies the real ones.
+///
+/// The config and `$TERMINAL` are taken as written and never probed. They are
+/// full command lines (`foot -e tmux`), so there is no single binary to look
+/// for; and more importantly they are what the user *said*, so substituting a
+/// different program for one of them would be the compositor quietly
+/// overruling an explicit instruction. If the named terminal is not installed,
+/// [`spawn_command`] says so by name. Only the built-in list is probed, since
+/// nobody asked for its entries in particular.
+pub fn resolve_terminal(
+    configured: Option<&str>,
+    environment: Option<&str>,
+    installed: impl Fn(&str) -> bool,
+) -> Option<(String, TerminalSource)> {
+    // `TERMINAL=` exported empty is a real thing shell profiles do, and an empty
+    // command would otherwise win over every other candidate.
+    let named = |value: Option<&str>| {
+        value
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    };
+    if let Some(command) = named(configured) {
+        return Some((command, TerminalSource::Config));
+    }
+    if let Some(command) = named(environment) {
+        return Some((command, TerminalSource::Environment));
+    }
+    KNOWN_TERMINALS
+        .iter()
+        .find(|terminal| installed(terminal))
+        .map(|terminal| (terminal.to_string(), TerminalSource::Installed))
+}
+
+/// [`resolve_terminal`] against the real environment and the real `PATH`.
+pub fn terminal_command(configured: Option<&str>) -> Option<(String, TerminalSource)> {
+    let environment = std::env::var("TERMINAL").ok();
+    resolve_terminal(configured, environment.as_deref(), on_path)
+}
+
+/// Whether `binary` is an executable file on `PATH`.
+///
+/// A file, not merely a name that exists: a directory called `kitty` on `PATH`
+/// is not a terminal. This is a probe rather than a promise — the spawn is the
+/// real test, and it reports its own failure — so it does not check the
+/// executable bit.
+///
+/// Near-identical helpers live in `ruster-tui` and `ruster-dap`; sharing one
+/// would mean the compositor depending on the editor application crate, which
+/// is a much worse trade than four lines.
+fn on_path(binary: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| dir.join(binary).is_file())
 }
 
 /// Launch each of the config's `startup_clients` on the compositor's socket.
@@ -1362,6 +1475,138 @@ mod tests {
         assert!(
             !shell.startup_clients.is_empty(),
             "default config launches a client"
+        );
+    }
+
+    /// A `PATH` probe that answers for exactly the named binaries.
+    fn installed<'a>(present: &'a [&'a str]) -> impl Fn(&str) -> bool + 'a {
+        move |binary| present.contains(&binary)
+    }
+
+    #[test]
+    fn a_configured_terminal_beats_the_environment_and_the_search() {
+        assert_eq!(
+            resolve_terminal(Some("kitty -e fish"), Some("foot"), installed(&["foot"])),
+            Some(("kitty -e fish".to_string(), TerminalSource::Config)),
+            "the config is the most specific thing a user can say"
+        );
+    }
+
+    #[test]
+    fn the_environment_decides_when_the_config_is_silent() {
+        assert_eq!(
+            resolve_terminal(None, Some("wezterm"), installed(&["foot"])),
+            Some(("wezterm".to_string(), TerminalSource::Environment)),
+            "$TERMINAL outranks a terminal nobody asked for, installed or not"
+        );
+    }
+
+    #[test]
+    fn an_installed_terminal_is_the_last_resort() {
+        assert_eq!(
+            resolve_terminal(None, None, installed(&["kitty"])),
+            Some(("kitty".to_string(), TerminalSource::Installed))
+        );
+    }
+
+    #[test]
+    fn the_search_takes_the_first_candidate_that_is_installed() {
+        // Not "any installed one": the list is ordered, and a machine with two
+        // terminals must get the same one on every press.
+        assert_eq!(
+            resolve_terminal(None, None, installed(&["kitty", "alacritty"])),
+            Some(("alacritty".to_string(), TerminalSource::Installed))
+        );
+        assert_eq!(
+            resolve_terminal(None, None, installed(&["foot", "alacritty"])),
+            Some(("foot".to_string(), TerminalSource::Installed))
+        );
+    }
+
+    #[test]
+    fn an_empty_setting_names_no_terminal() {
+        // `TERMINAL=` exported empty, or `terminal = ""` left in a config. Both
+        // would otherwise win and spawn nothing, which is the silent failure
+        // this whole resolution exists to avoid.
+        assert_eq!(
+            resolve_terminal(Some(""), Some("   "), installed(&["foot"])),
+            Some(("foot".to_string(), TerminalSource::Installed))
+        );
+    }
+
+    #[test]
+    fn a_machine_with_no_terminal_at_all_resolves_to_nothing() {
+        // Reported by the caller. Returning a hardcoded `foot` here instead
+        // would spawn a program that is known not to be there.
+        assert_eq!(resolve_terminal(None, None, installed(&[])), None);
+    }
+
+    #[test]
+    fn every_candidate_terminal_is_findable() {
+        // Reachability, not spelling — the list is its own oracle here, so a
+        // typo in an entry is beyond what any test on this machine can see.
+        // What it does catch is a search that stops short of the end of the
+        // list, or one that reports a different name than the one it matched:
+        // either leaves a candidate that can never be chosen.
+        for terminal in KNOWN_TERMINALS {
+            assert_eq!(
+                resolve_terminal(None, None, installed(&[terminal])),
+                Some((terminal.to_string(), TerminalSource::Installed)),
+                "{terminal} is unreachable"
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_is_an_action_name() {
+        assert_eq!(Action::from_name("terminal"), Some(Action::Terminal));
+        assert_eq!(Action::from_name("term"), Some(Action::Terminal));
+        assert_eq!(Action::from_name("Terminal"), Some(Action::Terminal));
+    }
+
+    #[test]
+    fn a_config_can_name_its_terminal() {
+        let shell = parse_config(r#"return { terminal = "kitty -e fish" }"#).unwrap();
+        assert_eq!(shell.terminal.as_deref(), Some("kitty -e fish"));
+        // No key at all, and an empty one, both mean "you decide".
+        assert_eq!(parse_config("return {}").unwrap().terminal, None);
+        assert_eq!(
+            parse_config(r#"return { terminal = "  " }"#)
+                .unwrap()
+                .terminal,
+            None
+        );
+    }
+
+    #[test]
+    fn the_default_config_binds_a_terminal_that_is_not_hardcoded() {
+        // The bind used to be `spawn foot`, which is a keymap that only works
+        // on machines with foot — and says nothing when it does not.
+        let shell = parse_config(include_str!("../assets/compositor.lua")).unwrap();
+        let terminal_binds: Vec<_> = shell
+            .keybinds
+            .iter()
+            .filter(|(_, action)| Action::from_name(action) == Some(Action::Terminal))
+            .collect();
+        assert_eq!(
+            terminal_binds.len(),
+            1,
+            "expected exactly one terminal bind, got {terminal_binds:?}"
+        );
+        let hardcoded: Vec<_> = shell
+            .keybinds
+            .iter()
+            .filter(|(_, action)| match Action::from_name(action) {
+                Some(Action::Spawn(command)) => command
+                    .split_whitespace()
+                    .next()
+                    .is_some_and(|program| KNOWN_TERMINALS.contains(&program)),
+                _ => false,
+            })
+            .collect();
+        assert!(
+            hardcoded.is_empty(),
+            "the default keymap should not name a terminal: {hardcoded:?}"
         );
     }
 

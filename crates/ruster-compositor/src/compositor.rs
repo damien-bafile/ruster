@@ -42,7 +42,7 @@ use smithay::wayland::{
         XdgActivationHandler, XdgActivationState, XdgActivationToken, XdgActivationTokenData,
     },
 };
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::backend::{logical_output_size, Backend};
 use crate::chrome::Chrome;
@@ -138,6 +138,10 @@ pub struct CompositorState<B: Backend + 'static> {
     /// seat is told — [`crate::lua::apply_keyboard_config`] and the seat
     /// construction below — so the two cannot drift.
     pub keyboard_config: crate::lua::KeyboardConfig,
+    /// The terminal the config named, if it named one. Kept unresolved: the
+    /// rest of the answer is `$TERMINAL` and `PATH`, which are read when the
+    /// key is pressed rather than frozen at startup.
+    pub terminal: Option<String>,
     /// The seat's selection text, shared between editor panes and clients.
     pub clipboard: crate::clipboard::Clipboard,
     /// Editor panes: tree leaves that are not Wayland clients. A leaf is a
@@ -494,6 +498,7 @@ impl<B: Backend + 'static> CompositorState<B> {
                 // boot knows how to launch again.
                 self.persist.spawn(&command, self.socket_name.as_deref());
             }
+            Action::Terminal => self.spawn_terminal(),
             Action::Focus(dir) => {
                 if let Some(next) = focus
                     .and_then(|id| self.workspaces.tree().focus_target(id, dir, area))
@@ -539,6 +544,29 @@ impl<B: Backend + 'static> CompositorState<B> {
         // The layout afterwards, which is the only evidence that separates
         // "the action ran and changed nothing" from "the key never arrived".
         debug!(geometry = ?self.geometry(), focus = ?self.shell.focus, "dispatched");
+    }
+
+    /// Launch the user's terminal, naming the one chosen and where the choice
+    /// came from.
+    ///
+    /// The naming is the point. A terminal keybind that resolves three ways can
+    /// fail three ways, and on a DRM boot — where this bind is the only route to
+    /// a second window — an unexplained nothing is indistinguishable from a
+    /// broken keymap, a missing binary and a compositor that never got the key.
+    fn spawn_terminal(&mut self) {
+        match crate::lua::terminal_command(self.terminal.as_deref()) {
+            // Down the same path as `Action::Spawn`, so a terminal opened this
+            // way is recorded for the session file like any other client.
+            Some((command, source)) => {
+                info!(%command, ?source, "terminal");
+                self.persist.spawn(&command, self.socket_name.as_deref());
+            }
+            None => warn!(
+                candidates = ?crate::lua::KNOWN_TERMINALS,
+                "no terminal found: set `terminal` in compositor.lua, or $TERMINAL, \
+                 or install one of these"
+            ),
+        }
     }
 
     /// What the statusline should say about the layout: the axis of the split
@@ -808,6 +836,7 @@ pub fn create_state<B: Backend + 'static>(
         repeat: None,
         repeat_generation: 0,
         keyboard_config: globals.keyboard_config,
+        terminal: None,
         clipboard: crate::clipboard::Clipboard::default(),
         panes: crate::pane::Panes::new(),
         popups: smithay::desktop::PopupManager::default(),

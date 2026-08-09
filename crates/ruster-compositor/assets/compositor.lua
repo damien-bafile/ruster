@@ -70,6 +70,7 @@
 --                            which is also the axis the next window here uses
 --   toggle floating          float the focused window, or re-tile it
 --   spawn <command>          launch a program on this compositor's socket
+--   terminal                 launch this machine's terminal (see below)
 --   new pane                 open an empty editor pane as a tile
 --   edit <path>              open a file in an editor pane (read-only so far)
 --   toggle help              pin the shortcut helper open, or unpin it
@@ -86,6 +87,21 @@
 -- line exactly as written, so its case, dashes and underscores survive
 -- ("spawn foot -e htop"). It is split on whitespace and there is no quoting;
 -- for anything more, spawn a shell.
+--
+-- `terminal` is `spawn` with the command worked out on the machine it runs on,
+-- which is what a *default* keybind needs: the `terminal` setting below if there
+-- is one, else $TERMINAL, else the first of foot, alacritty, kitty, wezterm,
+-- ghostty, weston-terminal found on PATH. Whichever it picks is logged with the
+-- reason it picked it, and finding none is logged too, so a terminal key that
+-- does nothing always says why. All the candidates are Wayland-native — there is
+-- no Xwayland here, so an X11-only terminal would spawn and then fail to find a
+-- display.
+--
+-- The `terminal` setting and $TERMINAL are run exactly as written, so they may
+-- carry arguments ("foot -e tmux") and are never second-guessed; if one names a
+-- program that is not installed, the failed spawn says so rather than something
+-- else opening in its place. Only the built-in list is searched for, since
+-- nothing asked for its entries by name.
 --
 -- `screenshot` writes the composited output to $XDG_RUNTIME_DIR/ruster-shot-N.png
 -- (or /tmp when that is unset, as on a bare VT). It exists because the
@@ -122,9 +138,11 @@ return {
     { "M-v",   "split vertical" },
     { "M-S-space", "toggle floating" },
 
-    -- Without a spawn bind there is no way to open a window from inside the
-    -- session: on DRM the only windows that exist are the startup clients.
-    { "M-Return", "spawn foot" },
+    -- Without this there is no way to open a window from inside the session: on
+    -- DRM the only windows that exist are the startup clients. `terminal` rather
+    -- than `spawn foot`, so the default keymap works on a machine that has a
+    -- terminal but not that one.
+    { "M-Return", "terminal" },
     { "M-S-Return",    "new pane" },
     { "M-S-slash",     "toggle help" },
     { "M-S-semicolon", "command" },
@@ -151,6 +169,12 @@ return {
     { "M-S-9", "move to workspace 9" },
   },
   startup_clients = { "foot" },
+
+  -- What the `terminal` action runs. Omit it and $TERMINAL decides; omit that
+  -- too and the first installed terminal from the built-in list is used. Set it
+  -- when neither guess is the terminal you want, or when yours needs arguments.
+  --
+  -- terminal = "foot -e tmux",
 
   -- Keyboard layout and repeat. Omit this table entirely and libxkbcommon uses
   -- the system default, which honours XKB_DEFAULT_LAYOUT and friends — so an
