@@ -473,6 +473,7 @@ impl CompositorState<RusterUdevData> {
             geometry: &geometry,
             tree_status,
             panes: &self.panes,
+            buffers: &self.buffers,
             keymap: &self.keymap,
             minibuffer: self.minibuffer.as_ref(),
             whichkey: crate::keymap::whichkey_view(

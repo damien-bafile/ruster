@@ -55,8 +55,13 @@ pub enum Action {
     Bind(String, String),
     /// Open a new editor pane beside the focused leaf.
     NewPane,
-    /// Open a file in a new editor pane.
+    /// Open a file: in the focused editor pane, or in a new one.
     Edit(String),
+    /// Write the focused pane's document back to its file.
+    Write,
+    /// Show an already-open document, named by its display name or path, in the
+    /// focused pane.
+    ShowBuffer(String),
     /// Pin the shortcut helper open, or unpin it.
     ToggleHelp,
     /// Open the `:` prompt (or `=` for Lua).
@@ -560,9 +565,19 @@ impl Action {
             return (!rest.is_empty()).then(|| Action::Spawn(rest.to_string()));
         }
         // Same reasoning as `spawn`: a path is not a keyword, and normalising
-        // it would lowercase `README.md` and turn `my-file.rs` into spaces.
-        if let Some(rest) = strip_verb(trimmed, "edit") {
-            return (!rest.is_empty()).then(|| Action::Edit(rest.to_string()));
+        // it would lowercase `README.md` and turn `my-file.rs` into spaces. The
+        // long verb is tried before the short one, and both require whitespace
+        // after the verb, so `edit x` cannot be read as `e` followed by `dit x`.
+        for verb in ["edit", "e"] {
+            if let Some(rest) = strip_verb(trimmed, verb) {
+                return (!rest.is_empty()).then(|| Action::Edit(rest.to_string()));
+            }
+        }
+        // A buffer name is a file name, so it is not normalised either.
+        for verb in ["buffer", "b"] {
+            if let Some(rest) = strip_verb(trimmed, verb) {
+                return (!rest.is_empty()).then(|| Action::ShowBuffer(rest.to_string()));
+            }
         }
         let name = trimmed.to_ascii_lowercase().replace(['_', '-'], " ");
         // Several actions take an argument, and it is always the last word, so
@@ -579,6 +594,9 @@ impl Action {
             ("screenshot", _, _) => Some(Action::Screenshot),
             ("toggle help" | "help" | "toggle whichkey", _, _) => Some(Action::ToggleHelp),
             ("new pane" | "pane", _, _) => Some(Action::NewPane),
+            // `w` as well as `write`, because the prompt this reaches is a `:`
+            // line and `:w` is the muscle memory it inherits.
+            ("write" | "w", _, _) => Some(Action::Write),
             ("command" | "prompt", _, _) => {
                 Some(Action::Prompt(crate::minibuffer::Prompt::Command))
             }

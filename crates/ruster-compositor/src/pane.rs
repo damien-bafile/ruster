@@ -19,121 +19,167 @@
 //! Stage 1 gave a pane its place in the tree; Stage 2 put a buffer in it; Stage
 //! 3 makes it editable, driving the same `VimState` and `EditSession` the editor
 //! does rather than a second editing implementation living in the compositor.
+//!
+//! Stage 4 moved the text out. A pane names a [`Document`] in the compositor's
+//! [`BufferStore`](ruster_core::workspace::BufferStore) instead of owning a
+//! `Buffer`, which is what makes two panes on one file possible — and what makes
+//! `:w` possible at all, since a `Buffer` does not know where it came from and a
+//! `Document` does. Cursor and scroll deliberately stayed here: they are what
+//! differs between two panes showing the same document, which is the same
+//! division `ruster_core::windows::Window` makes for the editor's own windows.
+//!
+//! The consequence is that every method that reads text takes the buffer as an
+//! argument. That is the point rather than a cost — a pane cannot read a
+//! document it is not pointed at, and the pane and the renderer cannot end up
+//! looking at two different copies of the same file.
 
 use crate::chrome::FrameBody;
 use ruster_core::buffer::Buffer;
 use ruster_core::cursor::CursorSet;
+use ruster_core::document::{BufferId, Document};
 use ruster_core::editor::{EditSession, EditorView};
 use ruster_core::key::KeyEvent;
-use ruster_core::undo::UndoStack;
 use ruster_core::vim::VimState;
 use ruster_shell::WindowId;
 
-/// One editor pane.
+/// One editor pane: a view onto a [`Document`], with its own cursor and scroll.
 ///
-/// Not `Clone` or `PartialEq`: a `Buffer` is neither, and a pane is identified
-/// by the `WindowId` that keys it rather than by its contents anyway.
+/// Not `Clone` or `PartialEq`: a pane is identified by the `WindowId` that keys
+/// it rather than by its contents.
 pub struct EditorPane {
-    /// What the frame is titled. Becomes the buffer name in Stage 2.
-    pub title: String,
+    /// The document this pane is showing, in the compositor's `BufferStore`.
+    ///
+    /// A handle rather than the text, so `:b` is a field assignment and two
+    /// panes on one file are two panes holding the same id — with the cursor
+    /// and scroll below still their own.
+    pub doc: BufferId,
     /// The character grid the pane's rectangle works out to, from
     /// [`cell_metrics`](ruster_render_gles::atlas::cell_metrics).
     ///
-    /// Stored rather than derived at draw time because Stage 2 needs it to
-    /// decide how much of a buffer is visible, and a scroll clamp that
-    /// disagreed with what was drawn would put the cursor off screen.
+    /// Stored rather than derived at draw time because it decides how much of a
+    /// buffer is visible, and a scroll clamp that disagreed with what was drawn
+    /// would put the cursor off screen.
     pub cols: u16,
     pub rows: u16,
-    /// The text this pane is showing.
-    ///
-    /// Owned per pane for now. Stage 4 moves documents into a shared
-    /// `BufferStore` so two panes can show one file and scroll independently —
-    /// which is why `scroll_top` lives here and not on the buffer.
-    pub buffer: Buffer,
     /// First visible buffer line.
     pub scroll_top: usize,
     /// Where the carets are. A `CursorSet` rather than one position because
     /// that is what `EditSession` edits through, and multi-cursor comes free
     /// with it rather than as a later retrofit.
     pub cursors: CursorSet,
-    pub undo: UndoStack,
     /// Modal state. The compositor drives the same `VimState` the editor does,
     /// so a motion cannot behave differently here than it does in the TUI.
     pub vim: VimState,
 }
 
-impl EditorView for EditorPane {
+/// A pane and the text it is pointed at, which is what `VimState` needs to
+/// answer a motion.
+///
+/// The pair exists because the two halves live in different places now: the
+/// cursor on the pane, the buffer in the store. `ruster_core::workspace::
+/// Workspace` implements the same trait over the same split — windows for the
+/// cursor, buffers for the text — and this is that shape with the compositor's
+/// tree in place of the editor's.
+struct PaneView<'a> {
+    pane: &'a EditorPane,
+    buffer: &'a Buffer,
+}
+
+impl EditorView for PaneView<'_> {
     fn buffer(&self) -> &Buffer {
-        &self.buffer
+        self.buffer
     }
 
     fn primary_head(&self) -> usize {
-        self.cursors.primary().head
+        self.pane.cursors.primary().head
     }
 
     fn cursors(&self) -> &CursorSet {
-        &self.cursors
+        &self.pane.cursors
     }
 
     /// The pane's own row count, so half-page motions move by what is on
     /// screen rather than by the trait's headless default of 24.
     fn viewport_height(&self) -> usize {
-        self.rows.max(1) as usize
+        self.pane.rows.max(1) as usize
     }
 }
 
 impl EditorPane {
-    pub fn new(title: impl Into<String>) -> Self {
+    /// A pane showing `doc`, from the top.
+    pub fn new(doc: BufferId) -> Self {
         EditorPane {
-            title: title.into(),
+            doc,
             cols: 0,
             rows: 0,
-            buffer: Buffer::new(),
             scroll_top: 0,
             cursors: CursorSet::single(0),
-            undo: UndoStack::new(),
             vim: VimState::default(),
-        }
-    }
-
-    /// A pane showing `text`, titled `title`.
-    pub fn with_text(title: impl Into<String>, text: &str) -> Self {
-        EditorPane {
-            buffer: Buffer::from_str(text),
-            ..EditorPane::new(title)
         }
     }
 
     /// Feed one key to the pane's editor.
     ///
-    /// The `VimState` is taken out for the duration because `handle` wants the
-    /// pane as an `&dyn EditorView` — an immutable borrow — while the state
+    /// The `VimState` is taken out for the duration because `handle` wants an
+    /// `&dyn EditorView` over the pane — an immutable borrow — while the state
     /// doing the handling lives on the pane itself. Putting it back is not
     /// optional and there is no early return between the two.
-    pub fn handle_key(&mut self, key: KeyEvent, indent: &str) {
+    ///
+    /// `modified` is set from the buffer's revision rather than from which
+    /// actions were dispatched: the classification of "does this action change
+    /// text" already exists in `ruster_core`, and a second copy of it here would
+    /// be the one that fell behind.
+    pub fn handle_key(&mut self, key: KeyEvent, doc: &mut Document) {
         let mut vim = std::mem::take(&mut self.vim);
-        let actions = vim.handle(key, self);
+        let actions = vim.handle(
+            key,
+            &PaneView {
+                pane: self,
+                buffer: &doc.buffer,
+            },
+        );
         self.vim = vim;
+        let revision = doc.buffer.revision();
         {
-            let mut session =
-                EditSession::new(&mut self.buffer, &mut self.cursors, &mut self.undo, indent);
+            let mut session = EditSession::new(
+                &mut doc.buffer,
+                &mut self.cursors,
+                &mut doc.undo,
+                &doc.indent,
+            );
             for action in actions {
                 session.execute(action);
             }
         }
-        self.follow_cursor();
+        if doc.buffer.revision() != revision {
+            doc.modified = true;
+        }
+        self.follow_cursor(&doc.buffer);
+    }
+
+    /// Point this pane at `doc`, keeping the cursor somewhere that document has.
+    ///
+    /// The clamp is not defensive: a cursor left over from a longer buffer would
+    /// index out of range in `char_to_line` the next time the pane drew, taking
+    /// the display server down with it. Scrolling to the cursor afterwards is
+    /// what stops a switch landing on a screenful of nothing.
+    pub fn show(&mut self, id: BufferId, buffer: &Buffer) {
+        self.doc = id;
+        self.cursors.clear_extra();
+        self.cursors.clamp_to(buffer.len_chars());
+        self.follow_cursor(buffer);
     }
 
     /// Scroll just enough to keep the primary cursor on screen.
     ///
     /// Without this the cursor walks off the top or bottom and the pane looks
     /// frozen — the buffer is changing, just not where anyone is looking.
-    pub fn follow_cursor(&mut self) {
+    pub fn follow_cursor(&mut self, buffer: &Buffer) {
         let rows = self.rows as usize;
         if rows == 0 {
             return;
         }
-        let line = self.buffer.char_to_line(self.cursors.primary().head);
+        let line = buffer.char_to_line(self.cursors.primary().head);
         if line < self.scroll_top {
             self.scroll_top = line;
         } else if line >= self.scroll_top + rows {
@@ -146,8 +192,8 @@ impl EditorPane {
     /// Clamped to the buffer rather than to the last scroll position, so a pane
     /// that has been scrolled to the bottom and then grown shows the extra rows
     /// instead of leaving a gap it still believes is scrolled past.
-    pub fn visible_lines(&self) -> (usize, Vec<String>) {
-        let total = self.buffer.line_count();
+    pub fn visible_lines(&self, buffer: &Buffer) -> (usize, Vec<String>) {
+        let total = buffer.line_count();
         let first = self.scroll_top.min(total.saturating_sub(1));
         let last = (first + self.rows as usize).min(total);
         let lines = (first..last)
@@ -156,7 +202,7 @@ impl EditorPane {
                 // would look right either way — but every line would measure
                 // one character too long, and Stage 3 puts the cursor and
                 // click-to-position on exactly that measurement.
-                let line = self.buffer.line_to_string(i);
+                let line = buffer.line_to_string(i);
                 line.trim_end_matches(['\n', '\r']).to_string()
             })
             .collect();
@@ -168,8 +214,8 @@ impl EditorPane {
     /// The last line stays reachable rather than the last *screenful*: a buffer
     /// shorter than the pane must not scroll at all, and one longer should stop
     /// with its final line visible rather than scrolling into blank space.
-    pub fn scroll_by(&mut self, delta: i64) {
-        let total = self.buffer.line_count();
+    pub fn scroll_by(&mut self, buffer: &Buffer, delta: i64) {
+        let total = buffer.line_count();
         let max = total.saturating_sub(1);
         let next = self.scroll_top as i64 + delta;
         self.scroll_top = next.clamp(0, max as i64) as usize;
@@ -183,8 +229,8 @@ impl EditorPane {
     /// from — so the character under the pointer is the character on screen,
     /// including after a scroll and including when the gutter has just grown a
     /// digit and shifted every column right.
-    pub fn offset_at(&self, x: f32, y: f32) -> usize {
-        let (first, lines) = self.visible_lines();
+    pub fn offset_at(&self, buffer: &Buffer, x: f32, y: f32) -> usize {
+        let (first, lines) = self.visible_lines(buffer);
         let (row, col) = FrameBody::new(first, lines.len()).cell_at(x, y);
         // Below the last line is the last line: a pane is usually taller than
         // the text in it, and a click in that space that did nothing would feel
@@ -199,7 +245,7 @@ impl EditorPane {
         // last position on *this* line. Without the clamp, clicking the empty
         // space to the right of a short line would run into the line below it.
         let col = col.min(line.chars().count());
-        self.buffer.line_start_char(first + row) + col
+        buffer.line_start_char(first + row) + col
     }
 
     /// Put the caret where a click at `(x, y)` — physical pixels from the
@@ -208,10 +254,10 @@ impl EditorPane {
     /// Extra cursors go: a click is how a multi-cursor session is ended in
     /// every editor that has one, and leaving them would type in places the
     /// user has just pointed away from.
-    pub fn click_at(&mut self, x: f32, y: f32) {
-        let at = self.offset_at(x, y);
+    pub fn click_at(&mut self, buffer: &Buffer, x: f32, y: f32) {
+        let at = self.offset_at(buffer, x, y);
         self.cursors.clear_extra();
-        self.cursors.set_head(at, &self.buffer);
+        self.cursors.set_head(at, buffer);
     }
 
     /// The grid a rectangle of `width`x`height` logical pixels works out to.
@@ -255,32 +301,53 @@ pub fn debug_assert_disjoint<T>(panes: &Panes, toplevels: &std::collections::Has
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    /// A pane over a document holding `text`, laid out `rows` tall.
+    ///
+    /// Returned as a pair because that is how the compositor holds them: the
+    /// document in the store, the pane in the side table beside the tree.
+    fn pane_over(text: &str, rows: u16) -> (EditorPane, Document) {
+        let mut pane = EditorPane::new(BufferId(1));
+        pane.rows = rows;
+        (pane, Document::from_file(PathBuf::from("f.rs"), text))
+    }
+
+    /// `n` lines numbered 1..=n.
+    fn numbered(n: usize) -> String {
+        (1..=n)
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
 
     #[test]
     fn typing_in_insert_mode_changes_the_buffer() {
         // The whole point of the stage: keys reach `VimState` and `EditSession`
         // rather than a private editing implementation living in the
         // compositor.
-        let mut pane = EditorPane::with_text("f.rs", "abc");
-        pane.rows = 10;
-        pane.handle_key(KeyEvent::Char('i'), "    ");
+        let (mut pane, mut doc) = pane_over("abc", 10);
+        pane.handle_key(KeyEvent::Char('i'), &mut doc);
         for c in "hi ".chars() {
-            pane.handle_key(KeyEvent::Char(c), "    ");
+            pane.handle_key(KeyEvent::Char(c), &mut doc);
         }
-        assert_eq!(pane.visible_lines().1[0], "hi abc");
+        assert_eq!(pane.visible_lines(&doc.buffer).1[0], "hi abc");
     }
 
     #[test]
     fn normal_mode_motions_move_without_editing() {
-        let mut pane = EditorPane::with_text("f.rs", "abc\ndef");
-        pane.rows = 10;
+        let (mut pane, mut doc) = pane_over("abc\ndef", 10);
         for _ in 0..2 {
-            pane.handle_key(KeyEvent::Char('l'), "    ");
+            pane.handle_key(KeyEvent::Char('l'), &mut doc);
         }
-        pane.handle_key(KeyEvent::Char('j'), "    ");
-        assert_eq!(pane.visible_lines().1, vec!["abc", "def"], "text unchanged");
+        pane.handle_key(KeyEvent::Char('j'), &mut doc);
         assert_eq!(
-            pane.buffer.char_to_line(pane.cursors.primary().head),
+            pane.visible_lines(&doc.buffer).1,
+            vec!["abc", "def"],
+            "text unchanged"
+        );
+        assert_eq!(
+            doc.buffer.char_to_line(pane.cursors.primary().head),
             1,
             "the cursor moved down a line"
         );
@@ -288,16 +355,97 @@ mod tests {
 
     #[test]
     fn undo_puts_back_what_was_typed() {
-        // The pane owns an `UndoStack` and hands it to `EditSession`, so undo
-        // is the editor's undo rather than something re-implemented here.
-        let mut pane = EditorPane::with_text("f.rs", "abc");
-        pane.rows = 10;
-        pane.handle_key(KeyEvent::Char('i'), "    ");
-        pane.handle_key(KeyEvent::Char('X'), "    ");
-        assert_eq!(pane.visible_lines().1[0], "Xabc");
-        pane.handle_key(KeyEvent::Esc, "    ");
-        pane.handle_key(KeyEvent::Char('u'), "    ");
-        assert_eq!(pane.visible_lines().1[0], "abc");
+        // The undo stack is the document's, so it is the editor's undo rather
+        // than something re-implemented here — and it stays with the file when
+        // the pane is pointed somewhere else and back.
+        let (mut pane, mut doc) = pane_over("abc", 10);
+        pane.handle_key(KeyEvent::Char('i'), &mut doc);
+        pane.handle_key(KeyEvent::Char('X'), &mut doc);
+        assert_eq!(pane.visible_lines(&doc.buffer).1[0], "Xabc");
+        pane.handle_key(KeyEvent::Esc, &mut doc);
+        pane.handle_key(KeyEvent::Char('u'), &mut doc);
+        assert_eq!(pane.visible_lines(&doc.buffer).1[0], "abc");
+    }
+
+    #[test]
+    fn two_panes_on_one_document_scroll_and_point_independently() {
+        // The reason cursor and scroll stayed on the pane. Sharing them would
+        // make a second view of a file a mirror of the first, which is the one
+        // thing a split is for.
+        let (mut top, mut doc) = pane_over(&numbered(50), 5);
+        let mut bottom = EditorPane::new(top.doc);
+        bottom.rows = 5;
+
+        bottom.scroll_by(&doc.buffer, 20);
+        for _ in 0..3 {
+            top.handle_key(KeyEvent::Char('j'), &mut doc);
+        }
+
+        assert_eq!(top.scroll_top, 0, "the top pane has not scrolled");
+        assert_eq!(bottom.scroll_top, 20);
+        assert_eq!(bottom.visible_lines(&doc.buffer).1[0], "21");
+        assert_eq!(
+            doc.buffer.char_to_line(top.cursors.primary().head),
+            3,
+            "only the pane that got the keys moved its cursor"
+        );
+    }
+
+    #[test]
+    fn editing_through_one_pane_is_seen_by_the_other() {
+        // One `Document`, not a copy each: two panes on a file that disagreed
+        // about its contents would each save over the other.
+        let (mut left, mut doc) = pane_over("abc", 10);
+        let mut right = EditorPane::new(left.doc);
+        // Its own viewport: the grid is per pane, and a pane with no rows shows
+        // nothing however much text the document has.
+        right.rows = 10;
+        left.handle_key(KeyEvent::Char('i'), &mut doc);
+        left.handle_key(KeyEvent::Char('X'), &mut doc);
+        assert_eq!(right.visible_lines(&doc.buffer).1[0], "Xabc");
+    }
+
+    #[test]
+    fn typing_marks_the_document_modified_and_a_motion_does_not() {
+        // What `:w` reports on. Derived from the buffer's revision rather than
+        // from a second list of which actions edit — which is the only reason a
+        // motion is not caught by it.
+        let (mut pane, mut doc) = pane_over("abc\ndef", 10);
+        pane.handle_key(KeyEvent::Char('j'), &mut doc);
+        assert!(!doc.modified, "moving the cursor changed no text");
+        pane.handle_key(KeyEvent::Char('i'), &mut doc);
+        assert!(!doc.modified, "entering insert mode is not an edit either");
+        pane.handle_key(KeyEvent::Char('X'), &mut doc);
+        assert!(doc.modified, "typing a character is");
+    }
+
+    #[test]
+    fn showing_a_shorter_document_clamps_a_cursor_that_would_be_out_of_range() {
+        // Not defensive: `char_to_line` past the end panics, and this one runs
+        // in the process that owns the screen.
+        let (mut pane, long) = pane_over(&numbered(50), 5);
+        pane.cursors = CursorSet::single(long.buffer.len_chars());
+        let short = Document::from_file(PathBuf::from("short.rs"), "hi");
+
+        pane.show(BufferId(2), &short.buffer);
+
+        assert_eq!(pane.doc, BufferId(2));
+        assert!(
+            pane.cursors.primary().head <= short.buffer.len_chars(),
+            "a cursor from the longer document survived the switch"
+        );
+        let _ = short.buffer.char_to_line(pane.cursors.primary().head);
+    }
+
+    #[test]
+    fn showing_another_document_scrolls_to_where_the_cursor_ended_up() {
+        // A pane scrolled deep into a long file and then pointed at a short one
+        // would otherwise show blank space, which looks like an empty file.
+        let (mut pane, _long) = pane_over(&numbered(200), 5);
+        pane.scroll_top = 150;
+        let short = Document::from_file(PathBuf::from("short.rs"), "a\nb\nc");
+        pane.show(BufferId(2), &short.buffer);
+        assert_eq!(pane.visible_lines(&short.buffer).1, vec!["a", "b", "c"]);
     }
 
     #[test]
@@ -305,17 +453,12 @@ mod tests {
         // Without this the cursor walks past the last visible row and the pane
         // looks frozen: the buffer is changing, just not where anyone is
         // looking.
-        let text = (1..=50)
-            .map(|n| n.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        let mut pane = EditorPane::with_text("f.rs", &text);
-        pane.rows = 5;
+        let (mut pane, mut doc) = pane_over(&numbered(50), 5);
         for _ in 0..10 {
-            pane.handle_key(KeyEvent::Char('j'), "    ");
+            pane.handle_key(KeyEvent::Char('j'), &mut doc);
         }
-        let (first, lines) = pane.visible_lines();
-        let cursor_line = pane.buffer.char_to_line(pane.cursors.primary().head);
+        let (first, lines) = pane.visible_lines(&doc.buffer);
+        let cursor_line = doc.buffer.char_to_line(pane.cursors.primary().head);
         assert!(
             (first..first + lines.len()).contains(&cursor_line),
             "cursor on line {cursor_line} but showing {first}..{}",
@@ -325,23 +468,18 @@ mod tests {
 
     #[test]
     fn the_view_follows_the_cursor_back_up() {
-        let text = (1..=50)
-            .map(|n| n.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        let mut pane = EditorPane::with_text("f.rs", &text);
-        pane.rows = 5;
+        let (mut pane, doc) = pane_over(&numbered(50), 5);
         pane.scroll_top = 30;
         pane.cursors = CursorSet::single(0);
-        pane.follow_cursor();
+        pane.follow_cursor(&doc.buffer);
         assert_eq!(pane.scroll_top, 0);
     }
 
     /// The pixel at the start of `row` (0-based, from the first visible line)
     /// and `col`, half a cell in so the test names a character rather than a
     /// boundary between two.
-    fn cell_pixel(pane: &EditorPane, row: usize, col: usize) -> (f32, f32) {
-        let (first, lines) = pane.visible_lines();
+    fn cell_pixel(pane: &EditorPane, buffer: &Buffer, row: usize, col: usize) -> (f32, f32) {
+        let (first, lines) = pane.visible_lines(buffer);
         let body = crate::chrome::FrameBody::new(first, lines.len());
         let (cw, ch) = ruster_render_gles::atlas::cell_metrics(crate::compositor::PANE_FONT_PX);
         (
@@ -352,40 +490,48 @@ mod tests {
 
     #[test]
     fn clicking_a_character_puts_the_cursor_on_it() {
-        let mut pane = EditorPane::with_text("f.rs", "alpha\nbravo\ncharlie");
-        pane.rows = 10;
-        let (x, y) = cell_pixel(&pane, 1, 3);
-        assert_eq!(pane.offset_at(x, y), pane.buffer.line_start_char(1) + 3);
+        let (pane, doc) = pane_over("alpha\nbravo\ncharlie", 10);
+        let (x, y) = cell_pixel(&pane, &doc.buffer, 1, 3);
+        assert_eq!(
+            pane.offset_at(&doc.buffer, x, y),
+            doc.buffer.line_start_char(1) + 3
+        );
     }
 
     #[test]
     fn clicking_the_gutter_names_that_line_not_the_one_before_it() {
         // The gutter is left of the text, so a naive conversion gives a
         // negative column and wraps onto the previous line.
-        let mut pane = EditorPane::with_text("f.rs", "alpha\nbravo\ncharlie");
-        pane.rows = 10;
-        let (_, y) = cell_pixel(&pane, 2, 0);
-        assert_eq!(pane.offset_at(1.0, y), pane.buffer.line_start_char(2));
+        let (pane, doc) = pane_over("alpha\nbravo\ncharlie", 10);
+        let (_, y) = cell_pixel(&pane, &doc.buffer, 2, 0);
+        assert_eq!(
+            pane.offset_at(&doc.buffer, 1.0, y),
+            doc.buffer.line_start_char(2)
+        );
     }
 
     #[test]
     fn clicking_past_the_end_of_a_line_stops_at_its_end() {
         // Without the clamp the empty space right of a short line runs into the
         // line below — the click lands on text that is nowhere near the pointer.
-        let mut pane = EditorPane::with_text("f.rs", "ab\nlonger line here");
-        pane.rows = 10;
-        let (x, y) = cell_pixel(&pane, 0, 40);
-        assert_eq!(pane.offset_at(x, y), pane.buffer.line_start_char(0) + 2);
+        let (pane, doc) = pane_over("ab\nlonger line here", 10);
+        let (x, y) = cell_pixel(&pane, &doc.buffer, 0, 40);
+        assert_eq!(
+            pane.offset_at(&doc.buffer, x, y),
+            doc.buffer.line_start_char(0) + 2
+        );
     }
 
     #[test]
     fn clicking_below_the_last_line_lands_on_the_last_line() {
         // A pane is usually taller than its text, and a click in that space
         // doing nothing would feel like a dead region of the window.
-        let mut pane = EditorPane::with_text("f.rs", "one\ntwo");
-        pane.rows = 20;
-        let (x, y) = cell_pixel(&pane, 15, 0);
-        assert_eq!(pane.offset_at(x, y), pane.buffer.line_start_char(1));
+        let (pane, doc) = pane_over("one\ntwo", 20);
+        let (x, y) = cell_pixel(&pane, &doc.buffer, 15, 0);
+        assert_eq!(
+            pane.offset_at(&doc.buffer, x, y),
+            doc.buffer.line_start_char(1)
+        );
     }
 
     #[test]
@@ -396,11 +542,13 @@ mod tests {
             .map(|n| format!("line{n}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let mut pane = EditorPane::with_text("f.rs", &text);
-        pane.rows = 10;
-        pane.scroll_by(12);
-        let (x, y) = cell_pixel(&pane, 2, 1);
-        assert_eq!(pane.offset_at(x, y), pane.buffer.line_start_char(14) + 1);
+        let (mut pane, doc) = pane_over(&text, 10);
+        pane.scroll_by(&doc.buffer, 12);
+        let (x, y) = cell_pixel(&pane, &doc.buffer, 2, 1);
+        assert_eq!(
+            pane.offset_at(&doc.buffer, x, y),
+            doc.buffer.line_start_char(14) + 1
+        );
     }
 
     #[test]
@@ -426,14 +574,13 @@ mod tests {
             .map(|n| format!("line{n}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let mut pane = EditorPane::with_text("f.rs", &text);
-        pane.rows = 10;
+        let (mut pane, doc) = pane_over(&text, 10);
         for scroll in [0usize, 95, 350] {
             pane.scroll_top = scroll;
-            let (x, y) = cell_pixel(&pane, 0, 2);
+            let (x, y) = cell_pixel(&pane, &doc.buffer, 0, 2);
             assert_eq!(
-                pane.offset_at(x, y),
-                pane.buffer.line_start_char(scroll) + 2,
+                pane.offset_at(&doc.buffer, x, y),
+                doc.buffer.line_start_char(scroll) + 2,
                 "clicking column 2 at scroll {scroll}"
             );
         }
@@ -441,19 +588,17 @@ mod tests {
 
     #[test]
     fn a_pane_shows_the_lines_its_grid_has_room_for() {
-        let mut pane = EditorPane::with_text("f.rs", "one\ntwo\nthree\nfour\nfive");
-        pane.rows = 3;
-        let (first, lines) = pane.visible_lines();
+        let (pane, doc) = pane_over("one\ntwo\nthree\nfour\nfive", 3);
+        let (first, lines) = pane.visible_lines(&doc.buffer);
         assert_eq!(first, 0);
         assert_eq!(lines, vec!["one", "two", "three"]);
     }
 
     #[test]
     fn scrolling_moves_the_window_over_the_buffer() {
-        let mut pane = EditorPane::with_text("f.rs", "one\ntwo\nthree\nfour\nfive");
-        pane.rows = 2;
-        pane.scroll_by(2);
-        let (first, lines) = pane.visible_lines();
+        let (mut pane, doc) = pane_over("one\ntwo\nthree\nfour\nfive", 2);
+        pane.scroll_by(&doc.buffer, 2);
+        let (first, lines) = pane.visible_lines(&doc.buffer);
         assert_eq!(first, 2);
         assert_eq!(lines, vec!["three", "four"]);
     }
@@ -462,13 +607,12 @@ mod tests {
     fn scrolling_stops_at_the_ends_rather_than_running_off() {
         // Past the end would show blank space below a buffer that has more to
         // read above it; before the start is simply not a position.
-        let mut pane = EditorPane::with_text("f.rs", "one\ntwo\nthree");
-        pane.rows = 2;
-        pane.scroll_by(-5);
+        let (mut pane, doc) = pane_over("one\ntwo\nthree", 2);
+        pane.scroll_by(&doc.buffer, -5);
         assert_eq!(pane.scroll_top, 0);
-        pane.scroll_by(500);
+        pane.scroll_by(&doc.buffer, 500);
         assert_eq!(pane.scroll_top, 2, "the last line stays reachable");
-        let (_, lines) = pane.visible_lines();
+        let (_, lines) = pane.visible_lines(&doc.buffer);
         assert_eq!(lines, vec!["three"]);
     }
 
@@ -477,20 +621,19 @@ mod tests {
         // The clamp is applied when reading, not when scrolling, so a pane that
         // was scrolled to the bottom and then resized taller fills the new rows
         // instead of holding a position that is no longer the bottom.
-        let mut pane = EditorPane::with_text("f.rs", "1\n2\n3\n4\n5\n6");
-        pane.rows = 2;
-        pane.scroll_by(4);
-        assert_eq!(pane.visible_lines().1, vec!["5", "6"]);
+        let (mut pane, doc) = pane_over("1\n2\n3\n4\n5\n6", 2);
+        pane.scroll_by(&doc.buffer, 4);
+        assert_eq!(pane.visible_lines(&doc.buffer).1, vec!["5", "6"]);
         pane.rows = 6;
-        assert_eq!(pane.visible_lines().1, vec!["5", "6"]);
-        pane.scroll_by(-4);
-        assert_eq!(pane.visible_lines().1.len(), 6);
+        assert_eq!(pane.visible_lines(&doc.buffer).1, vec!["5", "6"]);
+        pane.scroll_by(&doc.buffer, -4);
+        assert_eq!(pane.visible_lines(&doc.buffer).1.len(), 6);
     }
 
     #[test]
     fn an_empty_pane_shows_nothing_and_does_not_panic() {
-        let pane = EditorPane::new("scratch");
-        let (first, lines) = pane.visible_lines();
+        let (pane, doc) = pane_over("", 0);
+        let (first, lines) = pane.visible_lines(&doc.buffer);
         assert_eq!(first, 0);
         assert!(lines.is_empty(), "no rows yet, so nothing visible");
     }
@@ -521,8 +664,8 @@ mod tests {
     fn a_pane_starts_with_no_grid_until_it_is_laid_out() {
         // The layout is what decides the size; a pane that guessed one would
         // disagree with its own rectangle for the first frame.
-        let pane = EditorPane::new("scratch");
+        let pane = EditorPane::new(BufferId(7));
         assert_eq!((pane.cols, pane.rows), (0, 0));
-        assert_eq!(pane.title, "scratch");
+        assert_eq!(pane.doc, BufferId(7));
     }
 }

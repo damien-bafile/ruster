@@ -97,6 +97,8 @@ pub struct FrameInput<'a> {
     pub tree_status: TreeStatus,
     /// Editor panes, drawn where the layout put them.
     pub panes: &'a crate::pane::Panes,
+    /// The documents those panes are showing.
+    pub buffers: &'a ruster_core::workspace::BufferStore,
     /// The bindings in force, so the welcome frame can say how to quit.
     pub keymap: &'a crate::keymap::Keymap,
     /// The which-key overlay, drawn only while a chord is half-typed.
@@ -217,13 +219,17 @@ where
                 continue;
             };
             let mark = batch.mark();
-            let (first_line, lines) = pane.visible_lines();
+            // The text lives in the store; the pane holds a handle to it.
+            let Some(doc) = scene.buffers.get(pane.doc) else {
+                continue;
+            };
+            let (first_line, lines) = pane.visible_lines(&doc.buffer);
             chrome.draw_editor_frame(
                 (rect.w as f32 * chrome_scale) as i32,
                 (rect.h as f32 * chrome_scale) as i32,
                 &lines,
                 first_line,
-                &pane.title,
+                &doc.name,
                 &mut batch,
             );
             batch.translate_since(

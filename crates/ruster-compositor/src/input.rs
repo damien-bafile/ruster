@@ -510,8 +510,13 @@ impl<B: Backend + 'static> CompositorState<B> {
                 // character it landed on. One hit-test does both — the tile it
                 // focused is the tile whose origin the caret is measured from.
                 let local = self.frame_local(location, origin);
+                // The text comes from the store rather than the pane, which now
+                // holds only a handle to it. `panes` and `buffers` are distinct
+                // fields, so the mutable and immutable borrows are disjoint.
                 if let Some(pane) = self.panes.get_mut(&id) {
-                    pane.click_at(local.x as f32, local.y as f32);
+                    if let Some(doc) = self.buffers.get(pane.doc) {
+                        pane.click_at(&doc.buffer, local.x as f32, local.y as f32);
+                    }
                 }
             }
         }
@@ -546,7 +551,9 @@ impl<B: Backend + 'static> CompositorState<B> {
         // last held the pointer.
         if let Some((id, _)) = self.leaf_under(self.pointer.current_location()) {
             if let Some(pane) = self.panes.get_mut(&id) {
-                pane.scroll_by(scroll_lines(vertical_amount));
+                if let Some(doc) = self.buffers.get(pane.doc) {
+                    pane.scroll_by(&doc.buffer, scroll_lines(vertical_amount));
+                }
                 return;
             }
         }
@@ -1113,7 +1120,8 @@ mod tests {
         state.panes.get_mut(&id).unwrap().rows = 10;
 
         press(&mut state, KEY_A);
-        let text = state.panes[&id].buffer.line_to_string(0);
+        let doc = state.panes[&id].doc;
+        let text = state.buffers.get(doc).unwrap().buffer.line_to_string(0);
         assert!(
             !text.starts_with('a'),
             "`a` is an append command, not a literal: {text:?}"
@@ -1121,7 +1129,13 @@ mod tests {
         // Now in insert mode, so the next key is text.
         press(&mut state, KEY_Q);
         assert!(
-            state.panes[&id].buffer.line_to_string(0).contains('q'),
+            state
+                .buffers
+                .get(state.panes[&id].doc)
+                .unwrap()
+                .buffer
+                .line_to_string(0)
+                .contains('q'),
             "typing after `a` should insert"
         );
     }

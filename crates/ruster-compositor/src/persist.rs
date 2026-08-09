@@ -202,7 +202,7 @@ impl<B: Backend + 'static> CompositorState<B> {
             // rather than as a window whose command we could not identify —
             // which `rebuild` drops, silently losing it from the layout.
             if let Some(pane) = panes.get(&id) {
-                return App::pane(pane.title.clone());
+                return App::pane(self.document_name(pane.doc));
             }
             App {
                 command: self.persist.commands.get(&id).cloned(),
@@ -248,8 +248,12 @@ impl<B: Backend + 'static> CompositorState<B> {
             if entry.pane {
                 let area = self.output_rect();
                 let id = self.shell.add_window(entry.title.clone(), area.w, area.h);
-                self.panes
-                    .insert(id, crate::pane::EditorPane::new(entry.title.clone()));
+                // A scratch document named after what was saved. The path is
+                // not in this format yet, so a restored pane comes back empty
+                // under its old name rather than with its file — recorded in
+                // the matrix rather than papered over.
+                let doc = self.buffers.create_scratch(&entry.title);
+                self.panes.insert(id, crate::pane::EditorPane::new(doc));
                 restored_panes.push((app, id));
                 continue;
             }

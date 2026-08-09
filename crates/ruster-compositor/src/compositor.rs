@@ -144,6 +144,14 @@ pub struct CompositorState<B: Backend + 'static> {
     /// client if `toplevels` has it and a pane if this does — see `pane.rs` for
     /// why that is a side table rather than a variant on `Node::Leaf`.
     pub panes: crate::pane::Panes,
+    /// Every open document, which panes name by id.
+    ///
+    /// `ruster_core::workspace::BufferStore` and nothing else from that module:
+    /// `Workspace` brings its own `WindowTree`, and a second tiling tree inside
+    /// `ruster_shell::Tree` is exactly what the spec's "buffers and clients are
+    /// peers in one tree" rules out. The store is the half with no opinion about
+    /// layout, which is the half a compositor needs.
+    pub buffers: ruster_core::workspace::BufferStore,
     /// Popups (client menus, tooltips), tracked so they can be drawn at the
     /// position their positioner asked for rather than not at all.
     pub popups: smithay::desktop::PopupManager,
@@ -299,19 +307,24 @@ impl<B: Backend + 'static> CompositorState<B> {
     /// ordinary leaf and taking a different route would be the first step
     /// towards the two diverging.
     pub fn open_pane(&mut self) {
-        self.open_pane_with(crate::pane::EditorPane::new("scratch"));
+        // A scratch document each, not one shared one: two `new pane`s are two
+        // empty buffers in every editor, and sharing would make typing in one
+        // appear in the other.
+        let doc = self.buffers.create_scratch("scratch");
+        self.open_pane_with(doc);
     }
 
-    /// Insert `pane` beside the focused leaf and focus it.
+    /// Insert a pane showing `doc` beside the focused leaf and focus it.
     ///
     /// The one place a pane enters the tree, so an empty scratch pane and a
     /// pane opened on a file cannot end up in different shapes.
-    pub fn open_pane_with(&mut self, pane: crate::pane::EditorPane) {
+    pub fn open_pane_with(&mut self, doc: ruster_core::document::BufferId) {
         let area = self.output_rect();
-        let id = self.shell.add_window(pane.title.clone(), area.w, area.h);
+        let title = self.document_name(doc);
+        let id = self.shell.add_window(title, area.w, area.h);
         self.workspaces
             .insert(id, self.shell.focus, ruster_shell::Layout::Horizontal);
-        self.panes.insert(id, pane);
+        self.panes.insert(id, crate::pane::EditorPane::new(doc));
         crate::pane::debug_assert_disjoint(&self.panes, &self.toplevels);
         self.shell.set_focus(id);
         self.reconfigure_tiles();
@@ -322,11 +335,58 @@ impl<B: Backend + 'static> CompositorState<B> {
         tracing::info!(?id, "new pane");
     }
 
+    /// The focused leaf, when it is an editor pane.
+    pub fn focused_pane(&self) -> Option<WindowId> {
+        self.shell.focus.filter(|id| self.panes.contains_key(id))
+    }
+
     /// Whether the focused leaf is an editor pane.
     pub fn pane_has_focus(&self) -> bool {
-        self.shell
-            .focus
-            .is_some_and(|id| self.panes.contains_key(&id))
+        self.focused_pane().is_some()
+    }
+
+    /// The pane at `id` and the document it is showing.
+    ///
+    /// The pair is what every pane operation needs and what neither half holds
+    /// alone: the text is in the store, the cursor and scroll are on the pane.
+    /// One accessor so no caller open-codes the second lookup and quietly
+    /// disagrees about what a missing document means.
+    pub fn pane_document(
+        &self,
+        id: WindowId,
+    ) -> Option<(&crate::pane::EditorPane, &ruster_core::document::Document)> {
+        let pane = self.panes.get(&id)?;
+        let doc = self.buffers.get(pane.doc)?;
+        Some((pane, doc))
+    }
+
+    pub fn pane_document_mut(
+        &mut self,
+        id: WindowId,
+    ) -> Option<(
+        &mut crate::pane::EditorPane,
+        &mut ruster_core::document::Document,
+    )> {
+        let pane = self.panes.get_mut(&id)?;
+        let doc = self.buffers.get_mut(pane.doc)?;
+        Some((pane, doc))
+    }
+
+    /// What a document calls itself, for a window title or a message.
+    pub(crate) fn document_name(&self, doc: ruster_core::document::BufferId) -> String {
+        self.buffers
+            .get(doc)
+            .map(|d| d.name.clone())
+            .unwrap_or_default()
+    }
+
+    /// Say something in the mini-buffer.
+    ///
+    /// Every pane command reports this way, because the mini-buffer is the only
+    /// place the compositor can say anything at all: a pane has no status line
+    /// of its own and a DRM boot has no terminal to print to.
+    pub fn report(&mut self, message: impl Into<String>) {
+        self.minibuffer = Some(crate::minibuffer::MiniBuffer::message(message));
     }
 
     /// Feed a key to the focused pane, keeping its clipboard and the seat's in
@@ -376,36 +436,153 @@ impl<B: Backend + 'static> CompositorState<B> {
     }
 
     fn pane_key_inner(&mut self, key: ruster_core::key::KeyEvent) {
-        // Four spaces until the config has an opinion. Stage 4 reads it from
-        // the editor's settings, which already have one.
-        if let Some(id) = self.shell.focus {
-            if let Some(pane) = self.panes.get_mut(&id) {
-                pane.handle_key(key, "    ");
-            }
+        let Some(id) = self.shell.focus else {
+            return;
+        };
+        // The indent is the document's, not a constant here: it is buffer-local
+        // in the editor, seeded from config and EditorConfig, and one file
+        // indented two ways depending on which program had it open is exactly
+        // the drift a shared `Document` exists to prevent.
+        if let Some((pane, doc)) = self.pane_document_mut(id) {
+            pane.handle_key(key, doc);
         }
     }
 
-    /// Open `path` in a new pane, or report why not.
+    /// The document for `path`, reading it from disk the first time.
     ///
     /// The read happens here rather than in the pane so a file that cannot be
     /// read produces a message instead of an empty pane titled after it — an
     /// empty buffer and a missing file look identical once drawn.
-    pub fn open_file(&mut self, path: &str) {
+    ///
+    /// The file is read even when it is already open, because `BufferStore`
+    /// answers the "is it open?" question by canonical path and its answer is
+    /// the one that decides. The content is then ignored, so a second pane on a
+    /// file being edited shows the edits rather than what is on disk — the
+    /// whole point of asking the store rather than opening a document per pane.
+    fn document_for(&mut self, path: &str) -> Result<ruster_core::document::BufferId, String> {
         let expanded = expand_home(path);
         match std::fs::read_to_string(&expanded) {
-            Ok(text) => {
-                let title = std::path::Path::new(&expanded)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(path)
-                    .to_string();
-                self.open_pane_with(crate::pane::EditorPane::with_text(title, &text));
-            }
+            Ok(text) => Ok(self
+                .buffers
+                .open_file(std::path::PathBuf::from(expanded), text)),
             Err(err) => {
                 tracing::warn!(%path, %err, "could not open the file");
-                self.minibuffer = Some(crate::minibuffer::MiniBuffer::message(format!(
-                    "{path}: {err}"
-                )));
+                Err(format!("{path}: {err}"))
+            }
+        }
+    }
+
+    /// Open `path` — in the focused pane if there is one, otherwise in a new
+    /// pane — or report why not.
+    ///
+    /// Replacing the focused pane's document is what `:e` means in vim, and it
+    /// is the only way to walk a project without accumulating a tile per file.
+    /// When focus is a client there is nothing to replace: a Wayland window
+    /// cannot show a file, so the file needs a leaf of its own.
+    pub fn open_file(&mut self, path: &str) {
+        let doc = match self.document_for(path) {
+            Ok(doc) => doc,
+            Err(message) => return self.report(message),
+        };
+        match self.focused_pane() {
+            Some(pane) => self.show_document(pane, doc),
+            None => self.open_pane_with(doc),
+        }
+    }
+
+    /// Point the pane at `id` at `doc`, and re-title its leaf to match.
+    ///
+    /// The title is carried rather than stored twice: `ShellState` is what the
+    /// statusline and the session file read, and a pane that changed document
+    /// without changing it would report the file it used to be showing.
+    pub fn show_document(&mut self, id: WindowId, doc: ruster_core::document::BufferId) {
+        let Some(target) = self.buffers.get(doc) else {
+            return;
+        };
+        let name = target.name.clone();
+        let Some(pane) = self.panes.get_mut(&id) else {
+            return;
+        };
+        pane.show(doc, &target.buffer);
+        if let Some(window) = self.shell.window(id) {
+            window.set_title(name);
+        }
+    }
+
+    /// Show the open document `name` picks out in the focused pane.
+    pub fn show_named_document(&mut self, name: &str) {
+        let Some(id) = self.focused_pane() else {
+            return self.report(format!("{name}: no editor pane has focus"));
+        };
+        match self.find_document(name) {
+            Ok(doc) => self.show_document(id, doc),
+            Err(message) => self.report(message),
+        }
+    }
+
+    /// The open document `name` picks out: the one called exactly that, or the
+    /// single one whose name or path contains it.
+    ///
+    /// Ambiguity is refused rather than resolved by order. Two documents can
+    /// easily share a name — `mod.rs`, `main.rs` — and switching to whichever
+    /// happened to be opened first is a pane showing the wrong file with nothing
+    /// to say it did.
+    fn find_document(&self, name: &str) -> Result<ruster_core::document::BufferId, String> {
+        let mut partial = Vec::new();
+        for id in self.buffers.ids() {
+            let Some(doc) = self.buffers.get(*id) else {
+                continue;
+            };
+            if doc.name == name {
+                return Ok(*id);
+            }
+            let path = doc
+                .file_path
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if doc.name.contains(name) || path.contains(name) {
+                partial.push(*id);
+            }
+        }
+        match partial.len() {
+            0 => Err(format!("no open buffer matches: {name}")),
+            1 => Ok(partial[0]),
+            n => Err(format!("{n} open buffers match: {name}")),
+        }
+    }
+
+    /// Write the focused pane's document back to the file it came from.
+    ///
+    /// A pane with no path says so: it is a scratch buffer, there is nowhere to
+    /// put it, and a `:w` that quietly did nothing would be indistinguishable
+    /// from one that worked until the next boot.
+    pub fn write_pane(&mut self) {
+        let Some(id) = self.focused_pane() else {
+            return self.report("no editor pane has focus");
+        };
+        let Some((_, doc)) = self.pane_document(id) else {
+            return;
+        };
+        let Some(path) = doc.file_path.clone() else {
+            return self.report(format!("{}: no file name", doc.name));
+        };
+        // `encode_content`, not `buffer.to_string()`: the document remembers the
+        // line ending it was read with, and writing a CRLF file back as LF turns
+        // a one-character edit into a whole-file diff.
+        let content = doc.encode_content();
+        let lines = doc.buffer.line_count();
+        match std::fs::write(&path, content) {
+            Ok(()) => {
+                if let Some((_, doc)) = self.pane_document_mut(id) {
+                    doc.modified = false;
+                }
+                tracing::info!(path = %path.display(), lines, "wrote a pane's document");
+                self.report(format!("wrote {} ({lines} lines)", path.display()));
+            }
+            Err(err) => {
+                tracing::warn!(path = %path.display(), %err, "could not write the file");
+                self.report(format!("{}: {err}", path.display()));
             }
         }
     }
@@ -482,6 +659,8 @@ impl<B: Backend + 'static> CompositorState<B> {
             Action::ToggleHelp => self.help_pinned = !self.help_pinned,
             Action::NewPane => self.open_pane(),
             Action::Edit(path) => self.open_file(&path),
+            Action::Write => self.write_pane(),
+            Action::ShowBuffer(name) => self.show_named_document(&name),
             Action::Bind(binding, action) => self.keymap.bind(&binding, &action),
             Action::Prompt(prompt) => {
                 // Opening clears any message from last time; a stale result
@@ -810,6 +989,7 @@ pub fn create_state<B: Backend + 'static>(
         keyboard_config: globals.keyboard_config,
         clipboard: crate::clipboard::Clipboard::default(),
         panes: crate::pane::Panes::new(),
+        buffers: ruster_core::workspace::BufferStore::new(),
         popups: smithay::desktop::PopupManager::default(),
         help_pinned: false,
         minibuffer: None,
