@@ -1,5 +1,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent};
 
@@ -93,8 +94,9 @@ impl FontFamily {
 /// Packing is shelf-based — glyphs are laid left to right in a row whose height
 /// is the tallest glyph in it, and a new row starts when the current one fills.
 /// Once the image is full, further new glyphs draw as nothing rather than
-/// evicting live ones; at 1024² with chrome-sized text that is not reachable in
-/// practice.
+/// evicting live ones. That is not a failure anyone would notice from the
+/// screen — text simply stops appearing — so [`Atlas::dropped_glyphs`] and
+/// [`Atlas::fill_fraction`] make it something a caller (or a test) can read.
 pub struct Atlas {
     pub texture_size: u32,
     glyphs: HashMap<GlyphKey, Glyph>,
@@ -107,6 +109,7 @@ pub struct Atlas {
     shelf_x: u32,
     shelf_y: u32,
     shelf_h: u32,
+    exhaustion: Exhaustion,
 }
 
 /// Bytes per pixel in the atlas image.
@@ -114,9 +117,77 @@ const BPP: usize = 4;
 /// Padding between packed glyphs, so neighbours don't bleed in under filtering.
 const PAD: u32 = 1;
 
+/// The atlas image is this many pixels on a side.
+///
+/// Syntax highlighting was expected to force this up, because colour is part of
+/// the cell key and a theme has a dozen of them. Measured instead of assumed
+/// (`atlas_budget.rs` in `ruster-compositor`, against the real highlighter and
+/// the default theme): one screenful of Rust is **218** distinct
+/// `(size, colour, char)` cells, one whole 1,389-line file **356**, and every
+/// source file in this workspace — 233 of them, the ceiling for an atlas that
+/// never evicts — **852**, over 176 distinct characters and just **10** distinct
+/// colours. That last packs to **12%** of 1024², or under half of it with a
+/// generous chrome load on top.
+///
+/// The count saturates because a theme's palette is small and source code is
+/// ASCII: the product that looked like an explosion is bounded by the alphabet.
+/// Quadrupling to 16 MiB would buy headroom against nothing measured, and would
+/// not save the case that could genuinely overflow either size — thousands of
+/// distinct CJK glyphs — which is what [`Atlas::dropped_glyphs`] is for.
+const TEXTURE_SIZE: u32 = 1024;
+
+/// At most one atlas-exhaustion report per this interval.
+///
+/// The alternative is what this replaced: one warning per dropped glyph, which
+/// on a pane of highlighted code is per glyph *per frame*. This project has
+/// already lost a 2 MB log to a flood of that shape — 11,746 lines in five
+/// minutes — on a VT boot, where the log is the only diagnostic channel there
+/// is. A report that is throttled still says the atlas is full; a report that
+/// buries every other line does not.
+const REPORT_INTERVAL: Duration = Duration::from_secs(10);
+
+/// Glyphs dropped for want of room in the atlas, and when that was last said
+/// out loud.
+#[derive(Debug, Default)]
+struct Exhaustion {
+    dropped: u64,
+    /// `dropped` as of the last report, so a report counts what is new rather
+    /// than repeating a running total that only grows.
+    reported: u64,
+    last: Option<Instant>,
+}
+
+impl Exhaustion {
+    /// Count one dropped glyph. Returns how many have been dropped since the
+    /// last report, but only when the interval has elapsed — otherwise
+    /// `None`, and the caller stays quiet.
+    ///
+    /// Takes `now` rather than reading the clock so the throttle is testable
+    /// without sleeping for the interval.
+    fn record(&mut self, now: Instant) -> Option<u64> {
+        self.dropped += 1;
+        if self
+            .last
+            .is_some_and(|last| now.duration_since(last) < REPORT_INTERVAL)
+        {
+            return None;
+        }
+        self.last = Some(now);
+        let since = self.dropped - self.reported;
+        self.reported = self.dropped;
+        Some(since)
+    }
+}
+
 impl Atlas {
     pub fn new() -> Self {
-        let texture_size = 1024;
+        Atlas::with_texture_size(TEXTURE_SIZE)
+    }
+
+    /// An atlas of a given edge length. Only tests want this — filling a
+    /// 2048² image a glyph at a time to prove exhaustion is reported takes
+    /// long enough to be worth not doing.
+    pub fn with_texture_size(texture_size: u32) -> Self {
         Atlas {
             texture_size,
             glyphs: HashMap::new(),
@@ -127,7 +198,29 @@ impl Atlas {
             shelf_x: 0,
             shelf_y: 0,
             shelf_h: 0,
+            exhaustion: Exhaustion::default(),
         }
+    }
+
+    /// How many glyphs have been dropped because the atlas had no room.
+    ///
+    /// Non-zero means text is missing from the screen. Nothing else reports
+    /// that: a dropped glyph is [`Glyph::EMPTY`], which is also what a space
+    /// and a control character are.
+    pub fn dropped_glyphs(&self) -> u64 {
+        self.exhaustion.dropped
+    }
+
+    /// How much of the atlas image the packed shelves take up, `0.0..=1.0`.
+    ///
+    /// Measured by shelf rather than by glyph area — the rows a full shelf has
+    /// consumed are gone whether or not every pixel in them holds a bitmap, so
+    /// this is the number that predicts when the next glyph is refused.
+    pub fn fill_fraction(&self) -> f32 {
+        if self.texture_size == 0 {
+            return 1.0;
+        }
+        ((self.shelf_y + self.shelf_h) as f32 / self.texture_size as f32).min(1.0)
     }
 
     /// The atlas image: RGBA8, premultiplied alpha, row-major, no padding.
@@ -204,6 +297,7 @@ impl Atlas {
             shelf_y,
             shelf_h,
             generation,
+            exhaustion,
             ..
         } = self;
 
@@ -240,7 +334,19 @@ impl Atlas {
             *shelf_h = 0;
         }
         if *shelf_y + bh + PAD > *texture_size {
-            tracing::warn!(?c, "glyph atlas is full; glyph will not be drawn");
+            // Counted always, said out loud rarely. Naming the character was
+            // the old warning's whole payload and also what made it a flood:
+            // there is one per missing glyph per frame, and the count plus the
+            // fill is what actually tells you what to do about it.
+            if let Some(dropped) = exhaustion.record(Instant::now()) {
+                let fill_percent = (*shelf_y + *shelf_h) as f32 / *texture_size as f32 * 100.0;
+                tracing::warn!(
+                    fill_percent,
+                    dropped,
+                    texture_size,
+                    "glyph atlas is full; text is not being drawn"
+                );
+            }
             return Glyph::EMPTY;
         }
         let (ox, oy) = (*shelf_x, *shelf_y);
@@ -541,6 +647,81 @@ mod tests {
             let laid_out: String = layout.glyphs.iter().map(|(_, _, c)| *c).collect();
             assert_eq!(laid_out, word, "and it must be the same characters");
         }
+    }
+
+    /// A colour nothing else uses, so every request is a fresh cell rather
+    /// than a cache hit.
+    fn nth_color(i: u32) -> [u8; 3] {
+        [(i % 251) as u8, ((i / 251) % 251) as u8, (i / 63001) as u8]
+    }
+
+    /// Fill a small atlas until it refuses glyphs. Small because the real
+    /// 2048² image would take tens of thousands of rasterizations to fill.
+    fn filled_atlas() -> Atlas {
+        let mut atlas = Atlas::with_texture_size(64);
+        for i in 0..400 {
+            atlas.glyph(14, nth_color(i), 'M');
+        }
+        atlas
+    }
+
+    #[test]
+    fn a_full_atlas_counts_the_glyphs_it_drops() {
+        // Exhaustion is otherwise invisible: a dropped glyph is `Glyph::EMPTY`,
+        // which is also what a space is, so nothing downstream can tell that
+        // text went missing rather than that there was none.
+        let mut atlas = filled_atlas();
+        assert!(
+            atlas.fill_fraction() > 0.8,
+            "a refusing atlas should read as nearly full, not {}",
+            atlas.fill_fraction()
+        );
+        let before = atlas.dropped_glyphs();
+        assert!(before > 0, "400 cells into a 64px image must not all fit");
+
+        for i in 400..450 {
+            atlas.glyph(14, nth_color(i), 'M');
+        }
+        assert_eq!(
+            atlas.dropped_glyphs(),
+            before + 50,
+            "every refused glyph counts, not just the first"
+        );
+    }
+
+    #[test]
+    fn a_full_atlas_reports_once_rather_than_once_per_glyph() {
+        // The failure this replaces: `tracing::warn!` per missing glyph, per
+        // frame, on the only diagnostic channel a VT boot has.
+        let atlas = filled_atlas();
+        assert!(atlas.dropped_glyphs() > 1, "several glyphs were dropped");
+        assert_eq!(
+            atlas.exhaustion.reported, 1,
+            "but only the first was reported; the rest are inside the interval"
+        );
+    }
+
+    #[test]
+    fn a_report_covers_everything_dropped_since_the_last_one() {
+        // Driven with an explicit clock: the throttle is only worth anything if
+        // it eventually speaks again, and a test that waited ten real seconds
+        // to prove it would not be run.
+        let mut exhaustion = Exhaustion::default();
+        let t0 = Instant::now();
+        assert_eq!(exhaustion.record(t0), Some(1), "the first drop is news");
+        for ms in 1..1000 {
+            assert_eq!(
+                exhaustion.record(t0 + Duration::from_millis(ms)),
+                None,
+                "a drop {ms}ms into the interval must stay quiet"
+            );
+        }
+        assert_eq!(
+            exhaustion.record(t0 + REPORT_INTERVAL),
+            Some(1000),
+            "the next report counts every drop since the last, not just its own"
+        );
+        assert_eq!(exhaustion.dropped, 1001, "and none went uncounted");
     }
 
     #[test]
