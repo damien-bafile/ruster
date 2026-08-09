@@ -112,6 +112,9 @@ fn run_winit() -> anyhow::Result<()> {
         // so a Lua-driven layout change shows up on this frame rather than the
         // next one.
         state.drain_wm_commands();
+        // Whatever the language servers have said. A channel drain, so a server
+        // that has stopped answering costs nothing here.
+        state.poll_lsp();
         // A half-typed chord that is never finished has to clear itself, or the
         // overlay stays up and the next key is still being read as part of it.
         state.chord.expire(std::time::Instant::now());
@@ -165,6 +168,7 @@ fn run_winit() -> anyhow::Result<()> {
                     panes: &state.panes,
                     buffers: &state.buffers,
                     highlights: &state.highlights,
+                    lsp: &state.lsp,
                     keymap: &state.keymap,
                     minibuffer: state.minibuffer.as_ref(),
                     whichkey: ruster_compositor::keymap::whichkey_view(

@@ -10,6 +10,7 @@ pub mod position;
 pub mod protocol;
 pub mod registry;
 pub mod results;
+pub mod state;
 pub mod transport;
 
 pub use client::LspClient;

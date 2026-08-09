@@ -27,14 +27,32 @@ impl LspClient {
             .current_dir(root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            // Captured rather than discarded. A language server that fails to
+            // start — a missing toolchain, a project it cannot read — says so on
+            // stderr and nowhere else, and throwing that away leaves "no
+            // diagnostics" indistinguishable from "the server died on launch".
+            .stderr(Stdio::piped())
             .spawn()?;
 
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");
 
+        let stderr = child.stderr.take().expect("piped stderr");
+
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || transport::read_loop(stdout, tx));
+        // A thread of its own, because a full stderr pipe would otherwise block
+        // the server: the reason it is failing must not become a second reason.
+        let name = cmd.to_string();
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(stderr)
+                .lines()
+                .map_while(Result::ok)
+            {
+                tracing::warn!(server = %name, "{line}");
+            }
+        });
 
         Ok(LspClient {
             child: Some(child),

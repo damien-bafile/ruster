@@ -106,6 +106,8 @@ pub struct FrameInput<'a> {
     /// reads is immutable, and threading `&mut` through the scene for one field
     /// would make every other caller pay for it.
     pub highlights: &'a std::cell::RefCell<crate::highlight::Highlights>,
+    /// Diagnostics per document, for the signs a pane draws in its gutter.
+    pub lsp: &'a ruster_lsp::state::LspState<()>,
     /// The bindings in force, so the welcome frame can say how to quit.
     pub keymap: &'a crate::keymap::Keymap,
     /// The which-key overlay, drawn only while a chord is half-typed.
@@ -246,11 +248,14 @@ where
                 first_line,
                 &lines,
             );
+            let severities =
+                pane.line_severities(scene.lsp.diagnostics(pane.doc), first_line, lines.len());
             chrome.draw_editor_frame(
                 (rect.w as f32 * chrome_scale) as i32,
                 (rect.h as f32 * chrome_scale) as i32,
                 &lines,
                 first_line,
+                &severities,
                 &doc.name,
                 &mut batch,
             );

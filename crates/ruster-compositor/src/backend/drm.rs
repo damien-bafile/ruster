@@ -376,6 +376,9 @@ pub fn run_drm() -> anyhow::Result<()> {
         // repaints on vblank rather than every iteration, and `dispatch`
         // reconfigures tiles, so a queued layout change lands on the next frame.
         state.drain_wm_commands();
+        // Whatever the language servers have said. A channel drain, so a server
+        // that has stopped answering costs nothing here.
+        state.poll_lsp();
         // A half-typed chord that is never finished has to clear itself, or the
         // overlay stays up and the next key is still being read as part of it.
         state.chord.expire(std::time::Instant::now());
@@ -475,6 +478,7 @@ impl CompositorState<RusterUdevData> {
             panes: &self.panes,
             buffers: &self.buffers,
             highlights: &self.highlights,
+            lsp: &self.lsp,
             keymap: &self.keymap,
             minibuffer: self.minibuffer.as_ref(),
             whichkey: crate::keymap::whichkey_view(

@@ -142,6 +142,13 @@ pub struct CompositorState<B: Backend + 'static> {
     /// rest of the answer is `$TERMINAL` and `PATH`, which are read when the
     /// key is pressed rather than frozen at startup.
     pub terminal: Option<String>,
+    /// Language servers, one per language, and the diagnostics they publish.
+    ///
+    /// `LspState` is keyed by `BufferId` — the same id a pane names its document
+    /// by — which is why it moved out of `ruster-tui` rather than being rewritten
+    /// here. The type parameter is what a reply should be *used for*; the
+    /// compositor only consumes diagnostics so far, which arrive unbidden.
+    pub lsp: ruster_lsp::state::LspState<()>,
     /// Syntax parses, one per document, refreshed when a buffer changes.
     pub highlights: std::cell::RefCell<crate::highlight::Highlights>,
     /// The seat's selection text, shared between editor panes and clients.
@@ -494,6 +501,9 @@ impl<B: Backend + 'static> CompositorState<B> {
             Some(pane) => self.show_document(pane, doc),
             None => self.open_pane_with(doc),
         }
+        // After the pane exists, so a server that answers instantly has
+        // somewhere to put its diagnostics.
+        self.lsp_open(doc);
     }
 
     /// Point the pane at `id` at `doc`, and re-title its leaf to match.
@@ -556,6 +566,76 @@ impl<B: Backend + 'static> CompositorState<B> {
             1 => Ok(partial[0]),
             n => Err(format!("{n} open buffers match: {name}")),
         }
+    }
+
+    /// Tell a language server about a document a pane has opened.
+    ///
+    /// Best effort by design: a language with no server configured, or a server
+    /// that is not installed, must leave the pane working. An editor that
+    /// refused to open a file because `rust-analyzer` was missing would be worse
+    /// than one without diagnostics.
+    pub fn lsp_open(&mut self, doc: ruster_core::document::BufferId) {
+        let Some(document) = self.buffers.get(doc) else {
+            return;
+        };
+        let Some(path) = document.file_path.clone() else {
+            return;
+        };
+        let Some(lang) = language_of(&path) else {
+            return;
+        };
+        let root = ruster_lsp::state::LspState::<()>::root_for(&path);
+        let text = document.buffer.to_string();
+        let sync = self.lsp.sync(doc, &path, lang, &text, &root);
+        // Said out loud because everything about a language server is invisible
+        // otherwise: it runs in another process, and when it fails to start it
+        // does so silently. A row of "no diagnostics" is indistinguishable from
+        // a server that never launched.
+        tracing::info!(lang, path = %path.display(), root = %root.display(), ?sync, "lsp open");
+    }
+
+    /// Drain whatever the servers have said and file the diagnostics.
+    ///
+    /// Called once per event-loop pass, beside the Lua queue: `LspClient` reads
+    /// its server on a thread into an mpsc channel, so polling is a channel
+    /// drain and never blocks the compositor on a process that has stopped
+    /// answering.
+    pub fn poll_lsp(&mut self) {
+        for routed in self.lsp.poll() {
+            let ruster_lsp::ServerMessage::Notification { method, params } = &routed.message else {
+                tracing::trace!("lsp non-notification");
+                continue;
+            };
+            tracing::trace!(method, "lsp notification");
+            if method != "textDocument/publishDiagnostics" {
+                continue;
+            }
+            let (path, diags) = ruster_lsp::parse_diagnostics(params);
+            // Matched by path, because that is what the server names. The pane
+            // knows its `BufferId` and the document knows its path, so this is
+            // the one place the two are joined.
+            let doc = self.document_at_path(&path);
+            // Logged before the match rather than after, so a server reporting a
+            // path no pane holds — a symlinked root, a file opened by a
+            // different name — reads as a routing failure rather than as
+            // silence indistinguishable from a clean file.
+            tracing::debug!(%path, count = diags.len(), matched = doc.is_some(), "diagnostics");
+            let Some(doc) = doc else {
+                continue;
+            };
+            self.lsp.set_diagnostics(doc, diags);
+        }
+    }
+
+    /// The document opened from `path`, if a pane has one.
+    fn document_at_path(&self, path: &str) -> Option<ruster_core::document::BufferId> {
+        let wanted = std::path::Path::new(path);
+        self.buffers.ids().iter().copied().find(|id| {
+            match self.buffers.get(*id).and_then(|d| d.file_path.as_deref()) {
+                Some(opened) => same_file(opened, wanted),
+                None => false,
+            }
+        })
     }
 
     /// Write the focused pane's document back to the file it came from.
@@ -894,6 +974,49 @@ fn next_focus_after_unmap(mapped: &HashSet<WindowId>, unmapped: WindowId) -> Opt
     mapped.iter().filter(|id| **id != unmapped).max().copied()
 }
 
+/// The language id for a path, or `None` when nothing here speaks it.
+///
+/// Deliberately short. A language with no entry simply gets no server, which is
+/// the same outcome as a server that is not installed — and both leave the pane
+/// working.
+/// Whether a buffer opened as `opened` is the file a language server named as
+/// `reported`.
+///
+/// Not `==`. The server is told a canonicalised URI, so a buffer opened through
+/// a symlink, a relative path or a `..` comes back under a name that never
+/// matches the one it was opened with, and its diagnostics are dropped in
+/// silence. The same mismatch is what `fix(lsp): resolve symlinks when building
+/// file URIs` fixed on the editor side.
+///
+/// Literal equality stays as the fallback so a buffer whose file has been
+/// deleted or moved — where `canonicalize` fails — still matches itself.
+pub fn same_file(opened: &std::path::Path, reported: &std::path::Path) -> bool {
+    if opened == reported {
+        return true;
+    }
+    match (
+        std::fs::canonicalize(opened),
+        std::fs::canonicalize(reported),
+    ) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+fn language_of(path: &std::path::Path) -> Option<&'static str> {
+    match path.extension()?.to_str()? {
+        "rs" => Some("rust"),
+        "py" => Some("python"),
+        "ts" | "tsx" => Some("typescript"),
+        "js" | "jsx" => Some("javascript"),
+        "go" => Some("go"),
+        "c" | "h" => Some("c"),
+        "cpp" | "hpp" | "cc" => Some("cpp"),
+        "lua" => Some("lua"),
+        _ => None,
+    }
+}
+
 /// `~` expanded to the home directory.
 ///
 /// Only the leading `~`, and only when it starts a path — a file legitimately
@@ -1018,6 +1141,7 @@ pub fn create_state<B: Backend + 'static>(
         repeat_generation: 0,
         keyboard_config: globals.keyboard_config,
         terminal: None,
+        lsp: ruster_lsp::state::LspState::new(),
         highlights: std::cell::RefCell::new(crate::highlight::Highlights::default()),
         clipboard: crate::clipboard::Clipboard::default(),
         panes: crate::pane::Panes::new(),
@@ -1658,5 +1782,58 @@ mod tests {
             activation_workspace(&workspaces, &HashSet::from([WindowId(9)]), WindowId(9)),
             None
         );
+    }
+}
+#[cfg(test)]
+mod diagnostic_routing_tests {
+    use super::same_file;
+    use std::path::Path;
+
+    #[test]
+    fn a_file_matches_itself() {
+        assert!(same_file(
+            Path::new("/tmp/x/main.rs"),
+            Path::new("/tmp/x/main.rs")
+        ));
+    }
+
+    #[test]
+    fn different_files_do_not_match() {
+        assert!(!same_file(
+            Path::new("/tmp/x/a.rs"),
+            Path::new("/tmp/x/b.rs")
+        ));
+    }
+
+    /// The case that loses diagnostics: opened through a symlink, reported
+    /// canonicalised. Byte equality says no; the file is the same file.
+    #[test]
+    fn a_symlinked_path_matches_its_target() {
+        let dir = std::env::temp_dir().join(format!("ruster-samefile-{}", std::process::id()));
+        let real = dir.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let file = real.join("main.rs");
+        std::fs::write(&file, "fn main() {}").unwrap();
+        let link = dir.join("link");
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let opened = link.join("main.rs");
+        assert_ne!(
+            opened, file,
+            "the two spellings must differ, or this proves nothing"
+        );
+        assert!(same_file(&opened, &file));
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// `canonicalize` fails on a path that does not exist, and the fallback has
+    /// to keep an unsaved or deleted buffer matching itself rather than
+    /// dropping every diagnostic for it.
+    #[test]
+    fn a_nonexistent_path_still_matches_itself() {
+        let p = Path::new("/tmp/does-not-exist-ruster/main.rs");
+        assert!(same_file(p, p));
     }
 }

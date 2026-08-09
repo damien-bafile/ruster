@@ -7,6 +7,9 @@ edition = "2021"
 path = "src/lib.rs"
 
 [dependencies]
+ruster-core = { path = "../ruster-core" }
+ruster-project = { path = "../ruster-project" }
+tracing = "0.1"
 lsp-types = "0.97"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

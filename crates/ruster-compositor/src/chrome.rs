@@ -123,6 +123,21 @@ fn syntax_color(style: &SyntaxStyle) -> Option<Color> {
     }
 }
 
+/// The sign and colour for a diagnostic severity.
+///
+/// LSP counts 1 as an error and 4 as a hint. Errors and warnings get the
+/// theme's mode colours rather than new roles: those are already "something is
+/// wrong here" and "look at this" in this palette, and a diagnostic is not a
+/// different kind of attention.
+fn severity_sign(severity: u8, theme: &Theme) -> (&'static str, (f32, f32, f32, f32)) {
+    match severity {
+        1 => ("E", theme.mode_visual_bg.into()),
+        2 => ("W", theme.accent.into()),
+        3 => ("I", theme.gutter.into()),
+        _ => ("H", theme.gutter.into()),
+    }
+}
+
 /// How many cells the line-number gutter needs, including its trailing space.
 ///
 /// Sized to the largest number that will be shown rather than to the buffer, so
@@ -434,6 +449,7 @@ impl Chrome {
         h: i32,
         buffer: &[StyledLine],
         first_line: usize,
+        severities: &[Option<u8>],
         title: &str,
         batch: &mut ChromeBatch,
     ) {
@@ -462,6 +478,22 @@ impl Chrome {
 
         for (row, line) in buffer.iter().take(rows).enumerate() {
             let gy = body.y + row as f32 * body.cell_h;
+            // A sign left of the number, in the severity's colour. One column,
+            // because the gutter is already competing with the text for width
+            // and a diagnostic is a pointer to a line rather than the message
+            // itself.
+            if let Some(severity) = severities.get(row).copied().flatten() {
+                let (glyph, color) = severity_sign(severity, &self.theme);
+                self.text_in(
+                    glyph,
+                    PANE_FONT_PX,
+                    FRAME_PAD,
+                    gy,
+                    color,
+                    FontFamily::Mono,
+                    batch,
+                );
+            }
             if gutter_cols > 0 {
                 // Right-aligned, the way every editor draws line numbers: the
                 // units column has to line up or the eye cannot scan it.
@@ -1091,7 +1123,7 @@ mod tests {
         let mut chrome = Chrome::new(theme());
         let buf: Vec<String> = (0..20).map(|i| format!("line {i}")).collect();
         let mut batch = ChromeBatch::default();
-        chrome.draw_editor_frame(400, 300, &styled(&buf), 0, "welcome", &mut batch);
+        chrome.draw_editor_frame(400, 300, &styled(&buf), 0, &[], "welcome", &mut batch);
         assert!(batch.verts.len() >= 6 * 2); // frame + title bar
         assert!(!batch.glyphs.is_empty(), "title and rows draw glyphs");
     }
@@ -1189,6 +1221,7 @@ mod tests {
             300,
             &styled(&["hi".to_string()]),
             0,
+            &[],
             "welcome",
             &mut batch,
         );
@@ -1200,6 +1233,7 @@ mod tests {
             300,
             &styled(&["hi".to_string()]),
             0,
+            &[],
             "welcome",
             &mut batch,
         );

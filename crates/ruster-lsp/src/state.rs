@@ -1,4 +1,10 @@
-//! The language-server surface, lifted out of `App`.
+//! The language-server surface, lifted out of `App` and then out of the editor.
+//!
+//! It moved here from `ruster-tui` when the compositor needed it too: keyed by
+//! `BufferId`, which is what an editor window and a compositor pane both name
+//! their document by, and depending on nothing but `ruster-core` and this crate.
+//! The extraction its original doc predicted turned out to be a `git mv` — the
+//! boundary really had already existed.
 //!
 //! Four fields moved here — the manager, the per-buffer document sync state,
 //! the diagnostics map and the in-flight request table. They were already
@@ -17,8 +23,8 @@
 //! `app.rs` where it is dispatched. The alternative — moving the enum here —
 //! would drag the whole response `match` with it.
 
+use crate::{Diagnostic, LspManager, RoutedMessage, ServerKey};
 use ruster_core::document::BufferId;
-use ruster_lsp::{Diagnostic, LspManager, RoutedMessage, ServerKey};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -98,11 +104,11 @@ impl<A> LspState<A> {
                 root.join(path)
             }
         });
-        let uri = ruster_lsp::protocol::uri_from_path(&abs);
+        let uri = crate::protocol::uri_from_path(&abs);
         let key = ServerKey::new(lang, root);
         match self.docs.get_mut(&buffer) {
             None => {
-                let language_id = ruster_lsp::registry::language_id(lang).to_string();
+                let language_id = crate::registry::language_id(lang).to_string();
                 self.manager.did_open(&key, &uri, &language_id, 0, text);
                 self.docs.insert(
                     buffer,
@@ -153,7 +159,7 @@ impl<A> LspState<A> {
 
     /// Override the command used for a language, from `ruster.lsp.servers`.
     /// Must be called before the server for that language is first started.
-    pub fn set_server(&mut self, lang: &str, cfg: ruster_lsp::ServerConfig) {
+    pub fn set_server(&mut self, lang: &str, cfg: crate::ServerConfig) {
         self.manager.set_server(lang, cfg);
     }
 
@@ -371,11 +377,11 @@ mod tests {
 
     fn diag(severity: u8) -> Diagnostic {
         Diagnostic {
-            start: ruster_lsp::results::LspPositionEq {
+            start: crate::results::LspPositionEq {
                 line: 0,
                 character: 0,
             },
-            end: ruster_lsp::results::LspPositionEq {
+            end: crate::results::LspPositionEq {
                 line: 0,
                 character: 1,
             },

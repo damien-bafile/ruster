@@ -187,6 +187,34 @@ impl EditorPane {
         }
     }
 
+    /// The worst diagnostic severity on each visible line, if any.
+    ///
+    /// Severity is what decides the sign and its colour, and *worst* rather than
+    /// first: a line with a warning and an error is an error line, and showing
+    /// whichever the server happened to send first would make the sign depend on
+    /// message order.
+    pub fn line_severities(
+        &self,
+        diagnostics: &[ruster_lsp::Diagnostic],
+        first_line: usize,
+        shown: usize,
+    ) -> Vec<Option<u8>> {
+        let mut out: Vec<Option<u8>> = vec![None; shown];
+        for diag in diagnostics {
+            let line = diag.start.line as usize;
+            if line < first_line || line >= first_line + shown {
+                continue;
+            }
+            let slot = &mut out[line - first_line];
+            // Lower is worse in LSP: 1 is an error, 4 a hint.
+            *slot = Some(match *slot {
+                Some(existing) => existing.min(diag.severity),
+                None => diag.severity,
+            });
+        }
+        out
+    }
+
     /// The buffer lines currently on screen, and the number of the first.
     ///
     /// Clamped to the buffer rather than to the last scroll position, so a pane
@@ -584,6 +612,59 @@ mod tests {
                 "clicking column 2 at scroll {scroll}"
             );
         }
+    }
+
+    fn diag(line: u32, severity: u8) -> ruster_lsp::results::Diagnostic {
+        ruster_lsp::Diagnostic {
+            start: ruster_lsp::results::LspPositionEq { line, character: 0 },
+            end: ruster_lsp::results::LspPositionEq { line, character: 1 },
+            severity,
+            message: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_diagnostic_marks_the_line_it_is_on() {
+        let pane = EditorPane::new(BufferId(1));
+        let sev = pane.line_severities(&[diag(2, 1)], 0, 5);
+        assert_eq!(sev, vec![None, None, Some(1), None, None]);
+    }
+
+    #[test]
+    fn the_worst_severity_on_a_line_is_the_one_shown() {
+        // A line with a warning and an error is an error line. Taking whichever
+        // arrived first would make the sign depend on the order the server
+        // happened to send them in.
+        let pane = EditorPane::new(BufferId(1));
+        assert_eq!(
+            pane.line_severities(&[diag(0, 2), diag(0, 1)], 0, 1),
+            vec![Some(1)]
+        );
+        assert_eq!(
+            pane.line_severities(&[diag(0, 1), diag(0, 2)], 0, 1),
+            vec![Some(1)],
+            "and the other order gives the same answer"
+        );
+    }
+
+    #[test]
+    fn diagnostics_are_placed_relative_to_the_first_visible_line() {
+        // The server counts from the top of the file; the pane draws from
+        // wherever it is scrolled to. Without the offset every sign lands on
+        // the wrong row the moment a pane scrolls.
+        let pane = EditorPane::new(BufferId(1));
+        let sev = pane.line_severities(&[diag(12, 1)], 10, 4);
+        assert_eq!(sev, vec![None, None, Some(1), None]);
+    }
+
+    #[test]
+    fn diagnostics_off_screen_are_not_drawn_anywhere() {
+        // Above or below the viewport must produce nothing rather than being
+        // clamped onto the first or last row, which would report a problem on
+        // a line that has none.
+        let pane = EditorPane::new(BufferId(1));
+        assert_eq!(pane.line_severities(&[diag(3, 1)], 10, 3), vec![None; 3]);
+        assert_eq!(pane.line_severities(&[diag(99, 1)], 10, 3), vec![None; 3]);
     }
 
     #[test]

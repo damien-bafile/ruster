@@ -7,7 +7,13 @@ pub mod git_gutter;
 pub mod git_status;
 pub mod help;
 pub mod key;
-pub mod lsp_state;
+/// The language-server surface, now shared with the compositor.
+///
+/// Re-exported under its old name so the 21 call sites in `app.rs` did not have
+/// to move with it.
+pub mod lsp_state {
+    pub use ruster_lsp::state::*;
+}
 pub mod mason;
 pub mod picker;
 pub mod quickfix;

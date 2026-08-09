@@ -2463,6 +2463,7 @@ dependencies = [
  "mlua",
  "png",
  "ruster-core",
+ "ruster-lsp",
  "ruster-lua",
  "ruster-render",
  "ruster-render-gles",
@@ -2502,8 +2503,11 @@ name = "ruster-lsp"
 version = "0.1.0"
 dependencies = [
  "lsp-types",
+ "ruster-core",
+ "ruster-project",
  "serde",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]
