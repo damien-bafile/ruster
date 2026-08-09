@@ -10,7 +10,7 @@
 use std::any::Any;
 
 use crate::compositor::PANE_FONT_PX;
-use ruster_render::{Color, StyledLine, Theme, WhichKeyEntry, WhichKeyView};
+use ruster_render::{Theme, WhichKeyEntry, WhichKeyView};
 use ruster_render_gles::atlas::{cell_metrics, layout_text, layout_text_in, Atlas, FontFamily};
 use ruster_render_gles::cursor::CursorBitmap;
 use ruster_render_gles::geometry::{rect_verts, rounded_rect_verts, GlyphQuad, Vertex};
