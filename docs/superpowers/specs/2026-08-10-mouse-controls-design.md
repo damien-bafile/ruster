@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-10
 **Status:** Draft (post-brainstorming, pre-plan)
-**Owners:** TBD
+**Owners:** unassigned — open a tracking issue before implementation starts
 
 ## Purpose
 
@@ -11,7 +11,7 @@ Give `ruster` the mouse surface users expect from a modern editor — across bot
 ## Goals
 
 1. Single `MouseEvent` type used by both backends, with cell coordinates (not pixels) so the editor never branches on backend inside its core handlers.
-2. Five hit-test zones (chrome → gutter → buffer → float → outside) with one handler per zone.
+2. Five hit-test zones — float first (overlays everything), then chrome, gutter, buffer, outside — with one handler per zone.
 3. Gestures: click, drag-select (mode-aware), double-click (word), triple-click (line), wheel (scroll), Ctrl+wheel (zoom in GUI only), Shift+wheel (horizontal), Alt+click (add cursor), right-click (context menu), hover (Lua hook after 300ms stillness), cursor change on hover over interactive zones.
 4. No regressions in headless tests (`ScriptedRenderer`, `TestRenderer`).
 5. Configurable from `ruster.toml` and `ruster.mouse.*` from Lua.
@@ -297,7 +297,8 @@ each frame (60Hz):
 |---|---|
 | `crates/ruster-render/src/mouse.rs` | **NEW** — `MouseEvent`, `MouseKind`, `MouseButton`, `CursorKind` |
 | `crates/ruster-render/src/lib.rs` | + `poll_mouse`, `cell_metrics`, `set_cursor` (default no-ops); re-export from `mouse` mod |
-| `crates/ruster-tui/src/app.rs` | rewrite `handle_mouse_event`; new `hit_test`, `on_mouse_*`, `ClickTracker`, `HoverState`, `drag_anchor`; extend float enum |
+| `crates/ruster-tui/src/app.rs` | replace the 12-line `handle_mouse_event` stub at `:2917-2928` with a one-line delegation to `crate::mouse::handle_mouse_event`; add `mouse: MouseState` field; nothing else |
+| `crates/ruster-tui/src/mouse.rs` | **NEW** — houses the full dispatcher: `MouseState`, `handle_mouse_event`, `hit_test`, `ClickTracker`, `HoverState`, `drag_anchor`, `on_mouse_*`, `MenuRegistry` |
 | `crates/ruster-render-raylib/src/lib.rs` | implement `poll_mouse`, `cell_metrics`, `set_cursor`; track click times; emit `MouseEvent` from `drain_raylib` |
 | `crates/ruster-render-gles/src/` | (already has cursor sprite) — no change |
 | `crates/ruster-core/src/action.rs` | + `Action::SelectWord`, `Action::SelectLine`, `Action::SetMark(offset)`, `Action::ResizeWindow { wid, dy, dx }` |
@@ -424,4 +425,4 @@ The verification surface entries feed Phase 10's matrix; defects found in captur
 - [ ] All eight verification surfaces captured in `docs/verification/mouse-*`.
 - [ ] `cargo build` and `cargo test` green; no new clippy warnings.
 - [ ] `docs/config-reference.md`, `docs/keybindings.md`, `docs/lua-api.md` updated.
-- [ ] No growth: `App` method count stays bounded (≤ current + 8); `App::handle_mouse_event` doesn't push `app.rs` over 8,000 lines.
+- [ ] No growth: `App::handle_mouse_event` and its helpers live in a new `crates/ruster-tui/src/mouse.rs` file (not `app.rs`); `app.rs` line count growth < 200 lines, restricted to a single `mouse: MouseState` field plus a delegation call.
