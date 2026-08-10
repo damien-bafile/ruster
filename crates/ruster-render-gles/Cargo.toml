@@ -5,9 +5,11 @@ edition = "2021"
 
 [dependencies]
 ruster-render = { path = "../ruster-render" }
-cosmic-text = "0.19"
 tracing = "0.1"
 
-# Smithay is Linux-only; off Linux this crate compiles to an empty lib.
+# Smithay, and the only consumer of cosmic-text, are Linux-only. Off Linux this
+# crate compiles to an empty lib, so off-Linux builds should not pay for
+# pulling cosmic-text (and its font/swash stack) into the dep graph.
 [target.'cfg(target_os = "linux")'.dependencies]
+cosmic-text = "0.19"
 smithay = { version = "0.7", default-features = false, features = ["renderer_gl", "wayland_frontend", "backend_winit"] }

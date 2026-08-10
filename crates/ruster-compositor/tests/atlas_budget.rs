@@ -1,4 +1,11 @@
 //! scratch measurement
+//!
+//! `ruster_render_gles` is gated to Linux at the crate level (`#![cfg(target_os
+//! = "linux")]`), so this integration test cannot compile off Linux — and
+//! `cargo test --workspace --all-targets` runs on every CI matrix runner.
+//! Mirror the gate here.
+#![cfg(target_os = "linux")]
+
 use ruster_render_gles::atlas::{Atlas, FontFamily};
 use std::collections::HashSet;
 

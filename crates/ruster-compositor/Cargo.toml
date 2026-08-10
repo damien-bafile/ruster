@@ -25,11 +25,17 @@ mlua = { version = "0.10", features = ["lua54", "vendored"] }
 dirs = "5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-ctrlc = { version = "3", features = ["termination"] }
 anyhow = "1"
-png = "0.18"
 
 # Smithay is Linux-only; off Linux the lib is empty and the bin is a stub that
-# exits with an explanatory error. See `src/main.rs`.
+# exits with an explanatory error. `ctrlc` (signal handler for the compositor
+# loop) and `png` (DRM screenshot encoder) only run on that platform, so they
+# belong to the same gate and do not need to compile on macOS/Windows.
+#
+# `arboard` stays unconditional: ruster-core already pulls it on every
+# platform for the editor's clipboard, so gating the compositor's copy would
+# not save any build time.
 [target.'cfg(target_os = "linux")'.dependencies]
+ctrlc = { version = "3", features = ["termination"] }
+png = "0.18"
 smithay = { version = "0.7", default-features = false, features = ["renderer_gl", "wayland_frontend", "desktop"] }
