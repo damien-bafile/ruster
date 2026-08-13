@@ -9,8 +9,7 @@ use crate::settings::{SettingsState, SyntaxSeed};
 use crate::sidebar::{SidebarResponse, SidebarState};
 use crate::trouble::{Source as TroubleSource, TroubleItem, TroubleState};
 use crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEventKind, KeyModifiers, MouseButton,
-    MouseEvent, MouseEventKind,
+    DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEventKind, KeyModifiers, MouseEvent,
 };
 use ruster_core::action::{Action, EditOp, Motion};
 use ruster_core::buffer::Buffer;
@@ -2915,16 +2914,7 @@ impl App {
     }
 
     fn handle_mouse_event(&mut self, me: MouseEvent) {
-        if me.kind != MouseEventKind::Down(MouseButton::Left)
-            || !me.modifiers.contains(KeyModifiers::ALT)
-        {
-            return;
-        }
-        if let Some((wid, offset)) = self.buffer_offset_at(me.column, me.row) {
-            if let Some(win) = self.ws.borrow_mut().windows.window_mut(wid) {
-                win.cursors.add_cursor(offset);
-            }
-        }
+        crate::mouse::handle_mouse_event(self, ruster_render::mouse::from_crossterm(me));
     }
 
     /// Resolve a screen cell to a buffer offset, using the geometry of the last
@@ -2933,7 +2923,7 @@ impl App {
     /// `None` when the cell is not over buffer text: window chrome, the sign or
     /// number gutter, the sidebar, or past the buffer's last line. That last case
     /// matters — indexing the rope beyond the final line panics.
-    fn buffer_offset_at(
+    pub(crate) fn buffer_offset_at(
         &self,
         col: u16,
         row: u16,
@@ -11601,6 +11591,44 @@ mod tests {
             a.buffer_offset_at(text.x + 2, text.y + 1).map(|(_, o)| o),
             Some(8)
         );
+    }
+
+    /// Alt+Left-click drops an extra cursor where it lands. This guards the
+    /// dispatch path itself — the five tests around it only cover the
+    /// cell-to-offset arithmetic, so the extraction into `crate::mouse` could
+    /// have dropped the wiring without any of them noticing.
+    #[test]
+    fn alt_left_click_adds_a_cursor_at_the_clicked_offset() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+
+        let mut a = App::new("alpha\nbravo\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let text = rendered_text_area(&mut a);
+        assert_eq!(a.ws.borrow().windows.active_window().cursors.count(), 1);
+
+        let click = |kind, modifiers| MouseEvent {
+            kind,
+            column: text.x + 2,
+            row: text.y + 1,
+            modifiers,
+        };
+
+        // Without Alt the click is ignored, as before the extraction.
+        a.handle_mouse_event(click(
+            MouseEventKind::Down(MouseButton::Left),
+            KeyModifiers::empty(),
+        ));
+        assert_eq!(a.ws.borrow().windows.active_window().cursors.count(), 1);
+
+        a.handle_mouse_event(click(
+            MouseEventKind::Down(MouseButton::Left),
+            KeyModifiers::ALT,
+        ));
+        let ws = a.ws.borrow();
+        let cursors = &ws.windows.active_window().cursors;
+        assert_eq!(cursors.count(), 2);
+        // Third column of the second row: 'a' of "bravo", at offset 8.
+        assert!(cursors.iter_heads().any(|h| h == 8));
     }
 
     /// The header row and the number gutter are not buffer text. Getting this
