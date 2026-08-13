@@ -1,4 +1,5 @@
 use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::gles::GlesRenderer;
@@ -39,12 +40,14 @@ pub struct RusterWinitData {
 #[derive(Debug, Default)]
 pub struct RedrawGate {
     pending: bool,
+    last_invite: Option<Instant>,
 }
 
 impl RedrawGate {
     /// The host asked for a frame.
     pub fn request(&mut self) {
         self.pending = true;
+        self.last_invite = Some(Instant::now());
     }
 
     /// Consume an invitation. False means "do not render this pass" — which is
@@ -52,6 +55,47 @@ impl RedrawGate {
     /// something could read twice.
     pub fn take(&mut self) -> bool {
         std::mem::take(&mut self.pending)
+    }
+
+    /// How long since the host last asked for a frame. `None` means it never
+    /// has. Feeds [`poll_timeout`], which is where that gets interpreted.
+    pub fn since_invite(&self, now: Instant) -> Option<Duration> {
+        self.last_invite
+            .map(|then| now.saturating_duration_since(then))
+    }
+}
+
+/// How long the event loop may block waiting for something to happen.
+///
+/// Gating the render on an invitation stopped the compositor freezing behind
+/// `eglSwapBuffers`, but it left the loop turning over a fixed 1ms timeout —
+/// about 9,400 passes and ~1% of a core every 10 seconds, forever, for a window
+/// nobody is looking at. This is the other half of that fix.
+///
+/// The timeout cannot simply be raised, because winit's fd is *not* a calloop
+/// source: it is pumped by hand once per pass, so this value is also the worst
+/// case for noticing a keystroke. Hence the split — stay at 1ms while the host
+/// is presenting (which is when someone is plausibly typing, and when redraw
+/// invitations arrive every ~16ms anyway so the loop is paced by the display
+/// rather than by this), and back off only once the invitations have stopped.
+///
+/// A pending deferred action overrides both: sleeping past its deadline would
+/// run it late, and `ruster.wm.defer` is what the compositor uses to photograph
+/// itself, so lateness there is measurement error.
+pub fn poll_timeout(since_invite: Option<Duration>, next_deferred: Option<Duration>) -> Duration {
+    /// One frame at 60Hz.
+    const PRESENTING: Duration = Duration::from_millis(16);
+    const ACTIVE: Duration = Duration::from_millis(1);
+    const IDLE: Duration = Duration::from_millis(32);
+
+    let base = match since_invite {
+        Some(gap) if gap <= PRESENTING => ACTIVE,
+        // Never invited, or invited so long ago the host has clearly stopped.
+        _ => IDLE,
+    };
+    match next_deferred {
+        Some(until) => base.min(until),
+        None => base,
     }
 }
 
@@ -166,6 +210,74 @@ impl CompositorState<RusterWinitData> {
             WinitEvent::Redraw => self.backend_data.redraw.request(),
             WinitEvent::Focus(_) => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod poll_timeout_tests {
+    use super::poll_timeout;
+    use std::time::Duration;
+
+    const MS: fn(u64) -> Duration = Duration::from_millis;
+
+    #[test]
+    fn a_presenting_host_keeps_the_loop_responsive() {
+        // One frame ago at 60Hz: someone may be typing, and the pump timeout is
+        // the worst case for noticing it, because winit's fd is not a calloop
+        // source and is polled by hand once per pass.
+        assert_eq!(poll_timeout(Some(MS(16)), None), MS(1));
+    }
+
+    #[test]
+    fn a_host_that_has_stopped_presenting_lets_the_loop_sleep() {
+        assert_eq!(
+            poll_timeout(Some(MS(5_000)), None),
+            MS(32),
+            "spinning at 1ms for a window nobody is presenting is the ~1% CPU \
+             idle burn this exists to stop"
+        );
+    }
+
+    #[test]
+    fn a_host_that_has_never_presented_is_idle_not_active() {
+        assert_eq!(poll_timeout(None, None), MS(32));
+    }
+
+    /// The boundary is one frame at 60Hz, and it is inclusive: a gap of exactly
+    /// a frame is the steady state of a presenting host, not evidence it has
+    /// stopped.
+    #[test]
+    fn the_boundary_sits_at_one_frame_and_includes_it() {
+        assert_eq!(poll_timeout(Some(MS(15)), None), MS(1));
+        assert_eq!(poll_timeout(Some(MS(16)), None), MS(1));
+        assert_eq!(poll_timeout(Some(MS(17)), None), MS(32));
+    }
+
+    #[test]
+    fn a_deferred_action_is_never_slept_past() {
+        assert_eq!(
+            poll_timeout(Some(MS(5_000)), Some(MS(5))),
+            MS(5),
+            "idling 32ms would run a 5ms defer 27ms late, and defer is how the \
+             compositor times its own screenshots"
+        );
+    }
+
+    #[test]
+    fn a_distant_deferred_action_does_not_hold_the_loop_awake() {
+        assert_eq!(
+            poll_timeout(Some(MS(5_000)), Some(MS(900))),
+            MS(32),
+            "clamping is a ceiling, not a target"
+        );
+        assert_eq!(poll_timeout(Some(MS(16)), Some(MS(900))), MS(1));
+    }
+
+    /// An already-overdue action asks for no wait at all: come round now, run
+    /// it, and the queue empties rather than spinning.
+    #[test]
+    fn an_overdue_deferred_action_yields_immediately() {
+        assert_eq!(poll_timeout(Some(MS(5_000)), Some(Duration::ZERO)), MS(0));
     }
 }
 

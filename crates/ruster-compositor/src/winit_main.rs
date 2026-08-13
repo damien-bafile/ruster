@@ -8,7 +8,7 @@ use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
 use smithay::reexports::winit::platform::pump_events::PumpStatus;
 
-use ruster_compositor::backend::winit::RusterWinitData;
+use ruster_compositor::backend::winit::{poll_timeout, RusterWinitData};
 #[cfg(feature = "udev")]
 use ruster_compositor::compositor::drm_error_hint;
 use ruster_compositor::compositor::{
@@ -96,10 +96,12 @@ fn pump(
     event_loop: &mut EventLoop<'static, CompositorState<RusterWinitData>>,
     state: &mut CompositorState<RusterWinitData>,
 ) -> bool {
-    if event_loop
-        .dispatch(Some(Duration::from_millis(1)), state)
-        .is_err()
-    {
+    let now = std::time::Instant::now();
+    let timeout = poll_timeout(
+        state.backend_data.redraw.since_invite(now),
+        state.wm.as_ref().and_then(|wm| wm.next_due(now)),
+    );
+    if event_loop.dispatch(Some(timeout), state).is_err() {
         return false;
     }
     state.display_handle.flush_clients().unwrap();
