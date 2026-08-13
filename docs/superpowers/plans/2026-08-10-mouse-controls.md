@@ -4,7 +4,7 @@
 
 **Goal:** Add unified mouse controls (click, drag, double/triple-click, wheel, hover, context menu, cursor-shape) to ruster across both TUI and raylib GUI backends via a single `MouseEvent` type, single dispatcher, and shared Lua surface — without breaking headless tests.
 
-**Architecture:** A new `ruster_render::mouse::MouseEvent` (cell coords + mods) is produced by each backend from native input; `App::handle_mouse_event` is a single dispatcher that hit-tests (float → chrome → gutter → buffer → outside), runs Lua consume-or-pass, and routes to per-zone handlers with mode-aware drag semantics; a new `MouseState` on `App` owns `ClickTracker`, `HoverState`, and `drag_anchor`; the GUI also gets cursor-shape changes via a new `Renderer::set_cursor`. No backend branches inside core handlers — pixel math is confined to `RaylibRenderer::poll_mouse`.
+**Architecture:** A new `ruster_render::mouse::MouseEvent` (cell coords + mods) is produced by each backend from native input; `App::handle_mouse_event` is a single dispatcher that hit-tests (float → chrome → gutter → buffer → outside), runs Lua consume-or-pass, and routes to per-zone handlers with mode-aware drag semantics; a new `MouseState` on `App` owns `ClickTracker`, `HoverState`, and `drag_anchor`; the GUI also gets cursor-shape changes via a new `Renderer::set_pointer`. No backend branches inside core handlers — pixel math is confined to `RaylibRenderer::poll_mouse`.
 
 **Tech Stack:** Rust, `crossterm::event::MouseEvent` (TUI source), `raylib::GetMousePosition` / `IsMouseButtonPressed` (GUI source), `mlua` (Lua extension), `nucleo_matcher` (no change), existing `EventBus` (extended), existing `PickerState` (reused for menus).
 
@@ -16,7 +16,7 @@
 - **No new dependencies** in `Cargo.toml` (everything reuses existing crates).
 - **TUI capture:** keep `crossterm::execute!(stdout, EnableMouseCapture)` at `app.rs:3052`; new `tui_capture = false` opt-out via `config.mouse.enabled`.
 - **Headless default:** `Renderer::poll_mouse` returns `None`; `ScriptedRenderer` keeps its existing one-key-per-frame rule unchanged.
-- **Naming:** `MouseEvent` / `MouseKind` / `MouseButton` / `CursorKind` (exact spellings from spec).
+- **Naming:** `MouseEvent` / `MouseKind` / `MouseButton` / `PointerKind` (exact spellings from spec).
 - **No `#[derive]` on `MouseEvent`** with `Default` — cell coords are mandatory at construction.
 - **Phase 2 scope-out:** `[mouse.bindings]` table, drag-and-drop file open, multi-touch, mouse-driven command palette — **not** built here.
 - **Definition of done (all gates):** `cargo build` green, `cargo test` green, no new clippy warnings, eight `docs/verification/mouse-*` artifacts committed.
@@ -25,15 +25,15 @@
 
 | Path | Status | Responsibility |
 |---|---|---|
-| `crates/ruster-render/src/mouse.rs` | NEW | `MouseEvent`, `MouseKind`, `MouseButton`, `CursorKind` (cell-coord, no backend deps) |
-| `crates/ruster-render/src/lib.rs` | MODIFY | Add default-no-op `poll_mouse`, `cell_metrics`, `set_cursor` to `Renderer`; pub-mod `mouse`; re-export `CursorKind` (already there) |
+| `crates/ruster-render/src/mouse.rs` | NEW | `MouseEvent`, `MouseKind`, `MouseButton`, `PointerKind` (cell-coord, no backend deps) |
+| `crates/ruster-render/src/lib.rs` | MODIFY | Add default-no-op `poll_mouse`, `cell_metrics`, `set_pointer` to `Renderer`; pub-mod `mouse`; re-export the four mouse types (the pre-existing `CursorKind` is the *caret* shape and is left alone) |
 | `crates/ruster-render/src/script.rs` | MODIFY | `ScriptedRenderer` records `Vec<MouseEvent>` alongside keys; new helpers `simulate_mouse_click/drag/wheel`; `FrameDigest.mouse_events` field |
 | `crates/ruster-core/src/action.rs` | MODIFY | Add `Action::SelectWord`, `Action::SelectLine`, `Action::SetMark(usize)`, `Action::ResizeWindow { wid, dy, dx }` |
 | `crates/ruster-core/src/cursor.rs` | MODIFY | Add `CursorSet::select_word(&Buffer, anchor) -> Range`, `select_line(&Buffer, anchor) -> Range`, `set_region(mark: usize, point: usize)` |
 | `crates/ruster-tui/src/app.rs` | MODIFY | Replace the 12-line stub at `:2917-2928` with one-line delegation; add `mouse: MouseState`; add `is_gui: bool` (default false); add `on_resize` hook clears `drag_anchor`/`ClickTracker` |
 | `crates/ruster-tui/src/mouse.rs` | NEW | `MouseState`, `ClickTracker`, `HoverState`, `DragState`, `MenuRegistry`, `handle_mouse_event`, `hit_test`, `on_mouse_down/up/drag/move/scroll`, `default_context_menu_items` |
 | `crates/ruster-tui/src/lib.rs` | MODIFY | Add `pub mod mouse;` |
-| `crates/ruster-render-raylib/src/lib.rs` | MODIFY | Implement `poll_mouse` (pixel→cell via `cell_metrics`), `cell_metrics`, `set_cursor`; emit `MouseEvent` into event queue during `drain_raylib` |
+| `crates/ruster-render-raylib/src/lib.rs` | MODIFY | Implement `poll_mouse` (pixel→cell via `cell_metrics`), `cell_metrics`, `set_pointer`; emit `MouseEvent` into event queue during `drain_raylib` |
 | `crates/ruster-lua/src/config.rs` | MODIFY | Add `pub mouse: MouseConfig` to `Config`; populate in `Config::default()` |
 | `crates/ruster-lua/src/schema.rs` | MODIFY | Add `(mouse, enabled|hover_delay_ms|double_click_ms|wheel_lines|tui_capture|right_click_menu)` specs |
 | `crates/ruster-lua/src/event.rs` | MODIFY | `EventBus::emit_consuming(&self, lua, name, args) -> bool` (returns true if any handler returned true) |
@@ -58,39 +58,39 @@ Tasks below modify these in the listed order; later tasks reference exact symbol
 - `pub struct MouseEvent { col: u16, row: u16, kind: MouseKind, button: MouseButton, modifiers: KeyModifiers }`
 - `pub enum MouseKind { Down, Up, Drag, Move, ScrollUp, ScrollDown, ScrollLeft, ScrollRight }`
 - `pub enum MouseButton { Left, Right, Middle, None }`
-- `pub enum CursorKind { Default, IBeam, Resize, Crosshair, PointingHand }`
+- `pub enum PointerKind { Default, IBeam, Resize, Crosshair, PointingHand }`
 - `pub fn from_crossterm(ev: crossterm::event::MouseEvent) -> MouseEvent`
 
 **Steps:**
 
-- [ ] Create `crates/ruster-render/src/mouse.rs` with `MouseEvent`, `MouseKind`, `MouseButton`, `CursorKind`, `from_crossterm`, plus `Default for CursorKind = CursorKind::Default`.
-- [ ] Add `pub mod mouse;` near the top of `crates/ruster-render/src/lib.rs` (after `pub mod script;`).
-- [ ] Add `pub use mouse::{CursorKind, MouseButton, MouseEvent, MouseKind};` to `lib.rs` (keep `CursorKind` re-export already there working).
-- [ ] Add unit tests in `mouse.rs`:
+- [x] Create `crates/ruster-render/src/mouse.rs` with `MouseEvent`, `MouseKind`, `MouseButton`, `PointerKind`, `from_crossterm`, plus `Default for PointerKind = PointerKind::Default`.
+- [x] Add `pub mod mouse;` near the top of `crates/ruster-render/src/lib.rs` (after `pub mod script;`).
+- [x] Add `pub use mouse::{MouseButton, MouseEvent, MouseKind, PointerKind};` to `lib.rs` (the existing caret `CursorKind` re-export is untouched).
+- [x] Add unit tests in `mouse.rs`:
   - `mouse_kind_round_trips_via_debug`
   - `from_crossterm_maps_scroll_up`
   - `from_crossterm_maps_drag_with_left_button`
   - `mouse_button_none_only_for_move_or_scroll`
-- [ ] Run `cargo test -p ruster-render` — verify all pass.
-- [ ] Commit: `feat(render): add unified MouseEvent / MouseKind / MouseButton / CursorKind types`.
+- [x] Run `cargo test -p ruster-render` — verify all pass.
+- [x] Commit: `feat(render): add unified MouseEvent / MouseKind / MouseButton / PointerKind types`. *(`ddb8284`)*
 
 ## Task 2: Extend `Renderer` trait with default-no-op mouse seams
 
 **Files:** `crates/ruster-render/src/lib.rs`
 
-**Goal:** Add `poll_mouse`, `cell_metrics`, `set_cursor` to the trait so backends opt in. Defaults preserve headless tests.
+**Goal:** Add `poll_mouse`, `cell_metrics`, `set_pointer` to the trait so backends opt in. Defaults preserve headless tests.
 
 **Steps:**
 
-- [ ] In `crates/ruster-render/src/lib.rs` after `fn poll_input(&mut self)` (~line 1027), add:
+- [x] In `crates/ruster-render/src/lib.rs` after `fn poll_input(&mut self)` (~line 1029), add:
   ```rust
-  fn poll_mouse(&mut self) -> Option<crate::mouse::MouseEvent> { None }
+  fn poll_mouse(&mut self) -> Option<mouse::MouseEvent> { None }
   fn cell_metrics(&self) -> (f32, f32) { (1.0, 1.0) }
-  fn set_cursor(&mut self, _cursor: crate::mouse::CursorKind) -> bool { false }
+  fn set_pointer(&mut self, _pointer: mouse::PointerKind) -> bool { false }
   ```
-- [ ] Run `cargo build --workspace` — verify zero new warnings.
-- [ ] Run `cargo test --workspace` — verify `ScriptedRenderer` and `TestRenderer` still pass (they use the defaults).
-- [ ] Commit: `feat(render): add poll_mouse / cell_metrics / set_cursor defaults to Renderer`.
+- [x] Run `cargo build --workspace` — verify zero new warnings.
+- [x] Run `cargo test --workspace` — verify `ScriptedRenderer` and `TestRenderer` still pass (they use the defaults). *(1022 passed)*
+- [x] Commit: `feat(render): add poll_mouse / cell_metrics / set_pointer defaults to Renderer`. *(`98cb33b`)*
 
 ## Task 3: TUI delegation — preserve Alt+Left, route to new dispatcher
 
@@ -264,14 +264,14 @@ Tasks below modify these in the listed order; later tasks reference exact symbol
 
 **Files:** `crates/ruster-render-raylib/src/lib.rs`, `crates/ruster-tui/src/app.rs`
 
-**Goal:** Implement `poll_mouse`, `cell_metrics`, `set_cursor` on `RaylibRenderer`. Expose `App::zoom_font` (changes `config.font_size` by ±1, clamped 8..72).
+**Goal:** Implement `poll_mouse`, `cell_metrics`, `set_pointer` on `RaylibRenderer`. Expose `App::zoom_font` (changes `config.font_size` by ±1, clamped 8..72).
 
 **Steps:**
 
 - [ ] In `crates/ruster-render-raylib/src/lib.rs` `impl Renderer for RaylibRenderer` (~line 507), add:
   ```rust
   fn cell_metrics(&self) -> (f32, f32) { (self.char_w, self.line_h) }
-  fn set_cursor(&mut self, kind: ruster_render::CursorKind) -> bool {
+  fn set_pointer(&mut self, kind: ruster_render::PointerKind) -> bool {
       // Map to existing internal cursor sprite; return true on change.
       let prev = self.cursor_kind;
       self.cursor_kind = kind;
@@ -289,7 +289,7 @@ Tasks below modify these in the listed order; later tasks reference exact symbol
   - In `crates/ruster-render-raylib/src/lib.rs` `#[cfg(test)]`, test `cell_metrics_returns_font_dims`.
   - In `crates/ruster-tui/src/app.rs`, test `zoom_font_clamps_to_min_and_max`.
 - [ ] Run `cargo build --workspace` and `cargo test --workspace` — green.
-- [ ] Commit: `feat(render-raylib): implement poll_mouse/cell_metrics/set_cursor; feat(tui): add zoom_font`.
+- [ ] Commit: `feat(render-raylib): implement poll_mouse/cell_metrics/set_pointer; feat(tui): add zoom_font`.
 
 ## Task 11: Extend `ScriptedRenderer` with mouse scripting (TDD)
 
@@ -319,17 +319,17 @@ Tasks below modify these in the listed order; later tasks reference exact symbol
 
 **Files:** `crates/ruster-tui/src/mouse.rs`, `crates/ruster-tui/src/app.rs`
 
-**Goal:** Call `self.renderer.set_cursor(CursorKind)` after every hit-test in the GUI; no-op in TUI (the default `set_cursor` already returns false).
+**Goal:** Call `self.renderer.set_pointer(PointerKind)` after every hit-test in the GUI; no-op in TUI (the default `set_pointer` already returns false).
 
 **Steps:**
 
-- [ ] In `crates/ruster-tui/src/mouse.rs`, add `fn set_cursor_for_zone(app: &mut App, zone: HitZone)` mapping:
+- [ ] In `crates/ruster-tui/src/mouse.rs`, add `fn set_pointer_for_zone(app: &mut App, zone: HitZone)` mapping:
   - `Buffer(_)` → `IBeam`
   - `Chrome(SplitEdge{..})` → `Resize`
   - `Chrome(Tab(_)) | Chrome(StatusSection(_)) | Gutter(_)` → `PointingHand`
   - `Float(_) | Outside` → `Default`
 - [ ] Call after hit-test in `handle_mouse_event` only when `app.is_gui`.
-- [ ] Test (uses a stub renderer that records `set_cursor` calls):
+- [ ] Test (uses a stub renderer that records `set_pointer` calls):
   - `cursor_set_to_ibeam_in_buffer_zone_gui_only`
   - `cursor_set_to_resize_on_split_edge`
 - [ ] Run `cargo test -p ruster-tui` — green.
@@ -511,7 +511,7 @@ Tasks below modify these in the listed order; later tasks reference exact symbol
 - [ ] Confirm `app.rs` line-count growth < 200 lines (`git diff --stat`).
 - [ ] Verify spec Definition of Done checklist:
   - [ ] `crates/ruster-render/src/mouse.rs` exists
-  - [ ] `Renderer::poll_mouse`, `cell_metrics`, `set_cursor` exist with default impls
+  - [ ] `Renderer::poll_mouse`, `cell_metrics`, `set_pointer` exist with default impls
   - [ ] `RaylibRenderer` implements all three
   - [ ] `App::handle_mouse_event` dispatches; existing Alt+Left test passes
   - [ ] 8 verification surfaces captured
@@ -549,6 +549,6 @@ Tasks below modify these in the listed order; later tasks reference exact symbol
 
 **Placeholder scan:** No "TBD", "TODO", "implement later", "fill in details", "add appropriate error handling", "similar to Task N", or "write tests for the above" remains. Every step is a concrete, runnable action.
 
-**Type consistency:** `MouseEvent`/`MouseKind`/`MouseButton`/`CursorKind` defined in Task 1 and used unchanged through Task 20. `MouseState`/`ClickTracker`/`HoverState`/`DragState`/`MenuRegistry`/`ResizeState`/`MenuItem`/`Zone`/`HitZone`/`ChromeKind`/`FloatKind` defined in Tasks 4-13 and referenced by exact name downstream. `Action::SelectWord/SelectLine/SetMark/ResizeWindow` introduced in Task 6 and consumed in Tasks 7, 8, 14. `set_cursor_for_zone` (Task 12) and `set_zone_cursor` (Task 7) are different things — Task 7 has no such method; only Task 12 names it `set_cursor_for_zone`. ✓ no collision.
+**Type consistency:** `MouseEvent`/`MouseKind`/`MouseButton`/`PointerKind` defined in Task 1 and used unchanged through Task 20. `MouseState`/`ClickTracker`/`HoverState`/`DragState`/`MenuRegistry`/`ResizeState`/`MenuItem`/`Zone`/`HitZone`/`ChromeKind`/`FloatKind` defined in Tasks 4-13 and referenced by exact name downstream. `Action::SelectWord/SelectLine/SetMark/ResizeWindow` introduced in Task 6 and consumed in Tasks 7, 8, 14. `set_pointer_for_zone` (Task 12) and `set_zone_cursor` (Task 7) are different things — Task 7 has no such method; only Task 12 names it `set_pointer_for_zone`. ✓ no collision.
 
 **Drift inline noted:** `self.is_gui` field added in Task 4 (does not yet exist on `App`); `ruster-render/src/mouse.rs` is a new file (Task 1); `FloatKind::Menu` is a new variant (Task 13); `Action::SelectWord/SelectLine/SetMark/ResizeWindow` are new variants (Task 6); `CursorSet::select_word/select_line/set_region` are new methods (Task 6).
