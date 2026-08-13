@@ -9,6 +9,8 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 use crossterm::event::KeyModifiers;
+use ruster_core::action::{Action, Motion};
+use ruster_core::cursor::Range;
 use ruster_core::windows::{Rect, WindowId};
 use ruster_render::mouse::{MouseButton, MouseEvent, MouseKind};
 
@@ -239,19 +241,129 @@ fn has_neighbour_below(app: &App, rect: ruster_render::Rect) -> bool {
     })
 }
 
+/// How long after a click a second one still counts as a double-click.
+/// Replaced by `config.mouse.double_click_ms` in Task 17.
+const DOUBLE_CLICK_MS: u64 = 400;
+
+/// How far a second click may land from the first and still be a double-click.
+/// Without slack a shaky hand turns a double-click into two single ones.
+const DOUBLE_CLICK_SLACK_CELLS: u16 = 2;
+
 /// Route one mouse event to its handler.
 pub fn handle_mouse_event(app: &mut App, ev: MouseEvent) {
-    if ev.kind != MouseKind::Down
-        || ev.button != MouseButton::Left
-        || !ev.modifiers.contains(KeyModifiers::ALT)
-    {
+    let zone = hit_test(app, ev.col, ev.row);
+    if ev.kind == MouseKind::Down {
+        on_mouse_down(app, ev, zone);
+    }
+}
+
+fn on_mouse_down(app: &mut App, ev: MouseEvent, zone: HitZone) {
+    let clicks = track_click(app, &ev);
+    match zone {
+        HitZone::Buffer(wid, offset) => on_buffer_down(app, ev, wid, offset, clicks),
+        // Clicking off every window drops into the cmdline, which is the only
+        // thing down there to aim at.
+        HitZone::Outside => app.vim.set_cmdline(":"),
+        // Chrome, gutter and float handling arrive with Tasks 13 and 14.
+        HitZone::Chrome(_) | HitZone::Gutter(..) | HitZone::Float(_) => {}
+    }
+}
+
+/// Fold this press into the click streak and return how many clicks it makes:
+/// 1 for a single, 2 for a double, 3 for a triple (after which it restarts).
+fn track_click(app: &mut App, ev: &MouseEvent) -> u8 {
+    let now = Instant::now();
+    let near = |a: u16, b: u16| a.abs_diff(b) <= DOUBLE_CLICK_SLACK_CELLS;
+
+    let continues = match app.mouse.click.last_down {
+        Some((at, col, row, button)) => {
+            button == ev.button
+                && near(col, ev.col)
+                && near(row, ev.row)
+                && now.duration_since(at).as_millis() as u64 <= DOUBLE_CLICK_MS
+        }
+        None => false,
+    };
+    // A triple click ends the streak: the fourth starts a fresh single.
+    app.mouse.click.streak = if continues && app.mouse.click.streak < 3 {
+        app.mouse.click.streak + 1
+    } else {
+        1
+    };
+    app.mouse.click.last_down = Some((now, ev.col, ev.row, ev.button));
+    app.mouse.click.streak
+}
+
+fn on_buffer_down(app: &mut App, ev: MouseEvent, wid: WindowId, offset: usize, clicks: u8) {
+    if ev.button != MouseButton::Left {
         return;
     }
-    if let Some((wid, offset)) = app.buffer_offset_at(ev.col, ev.row) {
+
+    // Alt adds a caret instead of moving the one that's there.
+    if ev.modifiers.contains(KeyModifiers::ALT) {
         if let Some(win) = app.ws.borrow_mut().windows.window_mut(wid) {
             win.cursors.add_cursor(offset);
         }
+        return;
     }
+
+    // Ctrl jumps to the start of the word under the pointer.
+    if ev.modifiers.contains(KeyModifiers::CONTROL) {
+        if let Some(word) = word_range(app, wid, offset) {
+            app.ws
+                .borrow_mut()
+                .execute(Action::Move(Motion::To(word.start())));
+        }
+        return;
+    }
+
+    match clicks {
+        2 => {
+            if let Some(word) = word_range(app, wid, offset) {
+                app.ws.borrow_mut().execute(Action::SelectWord {
+                    anchor: word.anchor,
+                    head: word.head,
+                });
+            }
+        }
+        3 => {
+            if let Some(line) = line_range(app, wid, offset) {
+                app.ws.borrow_mut().execute(Action::SelectLine {
+                    anchor: line.anchor,
+                    head: line.head,
+                });
+            }
+        }
+        _ => app
+            .ws
+            .borrow_mut()
+            .execute(Action::Move(Motion::To(offset))),
+    }
+}
+
+/// The word around `offset` in `wid`'s buffer, or `None` if the window is gone.
+fn word_range(app: &App, wid: WindowId, offset: usize) -> Option<Range> {
+    with_window_buffer(app, wid, |cursors, buffer| {
+        cursors.select_word(buffer, offset)
+    })
+}
+
+/// The line around `offset` in `wid`'s buffer.
+fn line_range(app: &App, wid: WindowId, offset: usize) -> Option<Range> {
+    with_window_buffer(app, wid, |cursors, buffer| {
+        cursors.select_line(buffer, offset)
+    })
+}
+
+fn with_window_buffer<T>(
+    app: &App,
+    wid: WindowId,
+    f: impl FnOnce(&ruster_core::cursor::CursorSet, &ruster_core::buffer::Buffer) -> T,
+) -> Option<T> {
+    let ws = app.ws.borrow();
+    let win = ws.windows.window(wid)?;
+    let doc = ws.buffers.get(win.buffer)?;
+    Some(f(&win.cursors, &doc.buffer))
 }
 
 #[cfg(test)]
@@ -350,6 +462,115 @@ mod tests {
         let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
         laid_out(&mut a);
         assert_eq!(hit_test(&a, u16::MAX, u16::MAX), HitZone::Outside);
+    }
+
+    fn down(col: u16, row: u16, modifiers: KeyModifiers) -> MouseEvent {
+        MouseEvent::new(col, row, MouseKind::Down, MouseButton::Left, modifiers)
+    }
+
+    /// The primary cursor's selection, as text.
+    fn selected(a: &App) -> String {
+        let ws = a.ws.borrow();
+        let win = ws.windows.active_window();
+        let r = win.cursors.primary();
+        ws.buffers
+            .get(win.buffer)
+            .map(|d| d.buffer.slice_string(r.start(), r.end()))
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn left_click_in_buffer_moves_cursor() {
+        let mut a = App::new("alpha\nbravo\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        handle_mouse_event(
+            &mut a,
+            down(l.text.x + 2, l.text.y + 1, KeyModifiers::empty()),
+        );
+        // Third column of the second line: 'a' of "bravo", at offset 8.
+        assert_eq!(a.ws.borrow().windows.active_window().cursors.head(), 8);
+    }
+
+    #[test]
+    fn alt_left_click_adds_cursor() {
+        let mut a = App::new("alpha\nbravo\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        handle_mouse_event(&mut a, down(l.text.x + 2, l.text.y + 1, KeyModifiers::ALT));
+        let ws = a.ws.borrow();
+        let cursors = &ws.windows.active_window().cursors;
+        assert_eq!(cursors.count(), 2);
+        assert!(cursors.iter_heads().any(|h| h == 8));
+    }
+
+    #[test]
+    fn ctrl_left_click_jumps_to_word_start() {
+        let mut a = App::new("alpha bravo\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        // Land inside "bravo", which starts at offset 6.
+        handle_mouse_event(&mut a, down(l.text.x + 8, l.text.y, KeyModifiers::CONTROL));
+        assert_eq!(a.ws.borrow().windows.active_window().cursors.head(), 6);
+    }
+
+    #[test]
+    fn double_click_selects_word() {
+        let mut a = App::new("alpha bravo\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        let at = down(l.text.x + 8, l.text.y, KeyModifiers::empty());
+        handle_mouse_event(&mut a, at);
+        handle_mouse_event(&mut a, at);
+        assert_eq!(selected(&a), "bravo");
+    }
+
+    #[test]
+    fn triple_click_selects_line() {
+        let mut a = App::new("alpha bravo\ncharlie\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        let at = down(l.text.x + 2, l.text.y, KeyModifiers::empty());
+        handle_mouse_event(&mut a, at);
+        handle_mouse_event(&mut a, at);
+        handle_mouse_event(&mut a, at);
+        assert_eq!(selected(&a), "alpha bravo\n");
+    }
+
+    /// A fourth click starts a fresh streak rather than staying on the line.
+    #[test]
+    fn fourth_click_restarts_the_streak() {
+        let mut a = App::new("alpha bravo\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        let at = down(l.text.x + 8, l.text.y, KeyModifiers::empty());
+        for _ in 0..4 {
+            handle_mouse_event(&mut a, at);
+        }
+        assert_eq!(selected(&a), "", "back to a bare caret");
+        assert_eq!(a.mouse.click.streak, 1);
+    }
+
+    /// Two clicks far apart are two single clicks, not a double.
+    #[test]
+    fn clicks_far_apart_do_not_pair_into_a_double() {
+        let mut a = App::new("alpha bravo\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        handle_mouse_event(&mut a, down(l.text.x, l.text.y, KeyModifiers::empty()));
+        handle_mouse_event(&mut a, down(l.text.x + 8, l.text.y, KeyModifiers::empty()));
+        assert_eq!(a.mouse.click.streak, 1);
+        assert_eq!(selected(&a), "");
+    }
+
+    #[test]
+    fn click_in_outside_zone_focuses_cmdline() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        let l = laid_out(&mut a);
+        let blank = l.text.y + l.text.height - 1;
+        assert_eq!(hit_test(&a, l.text.x, blank), HitZone::Outside);
+        handle_mouse_event(&mut a, down(l.text.x, blank, KeyModifiers::empty()));
+        assert_eq!(a.vim.mode, ruster_core::vim::VimMode::Cmdline);
     }
 
     #[test]
