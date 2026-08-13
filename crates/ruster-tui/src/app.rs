@@ -64,6 +64,10 @@ pub struct FlashState {
 pub struct WindowLayout {
     pub window: ruster_core::windows::WindowId,
     pub buffer: BufferId,
+    /// The whole window, chrome included. `text` covers only the buffer text,
+    /// so the header row, statusline and gutter are the difference between the
+    /// two — which is what the hit-test needs to name a zone.
+    pub rect: ruster_render::Rect,
     pub text: ruster_render::TextArea,
     /// First visible buffer line, so a screen row maps back to a buffer line.
     pub scroll_top: usize,
@@ -1461,7 +1465,7 @@ pub struct App {
     git_status_polled: Option<std::time::Instant>,
     git_status_in_flight: bool,
     lua: LuaRuntime,
-    config: Config,
+    pub(crate) config: Config,
     timer: FrameTimer,
     pub has_smooth_cursor: bool,
     cursor_anim: CursorAnim,
@@ -1481,7 +1485,11 @@ pub struct App {
     /// Active flash jump mode state, if any.
     pub flash: Option<FlashState>,
     /// Window geometry from the last rendered frame, for mouse hit-testing.
-    last_layout: Vec<WindowLayout>,
+    pub(crate) last_layout: Vec<WindowLayout>,
+    /// Float geometry from the last rendered frame, topmost last, for mouse
+    /// hit-testing. Floats themselves are built fresh each frame and not kept;
+    /// only where they landed is worth remembering.
+    pub(crate) last_floats: Vec<ruster_render::Rect>,
     /// Click, drag and hover bookkeeping between mouse events.
     pub mouse: crate::mouse::MouseState,
     /// Whether the raylib backend is driving. A few mouse gestures (font zoom,
@@ -1506,7 +1514,7 @@ pub struct App {
     /// Language servers, document sync, diagnostics and in-flight requests.
     lsp: crate::lsp_state::LspState<LspAction>,
     /// Hover popup contents (syntax-highlighted lines), shown until the next key.
-    hover: Option<Vec<StyledLine>>,
+    pub(crate) hover: Option<Vec<StyledLine>>,
     /// Loaded snippet definitions (built-in + `~/.config/ruster/snippets/`).
     snippets: ruster_core::snippets::SnippetSet,
     /// Remaining tabstop offsets to visit in the active snippet, via Tab.
@@ -1990,6 +1998,7 @@ impl App {
             leader_since: None,
             flash: None,
             last_layout: Vec::new(),
+            last_floats: Vec::new(),
             mouse: crate::mouse::MouseState::default(),
             is_gui: false,
             dired: DiredState::new(dired_show_hidden),
@@ -4118,7 +4127,7 @@ impl App {
         w.execute(Action::Move(Motion::To(0)));
     }
 
-    fn render(&mut self) {
+    pub(crate) fn render(&mut self) {
         self.notify.tick();
         self.drain_git_hunks();
         self.drain_pending_results();
@@ -4478,6 +4487,7 @@ impl App {
                     self.last_layout.push(WindowLayout {
                         window: wid,
                         buffer: buf_id,
+                        rect: rrect,
                         text: ruster_render::TextArea::of(rrect, signs.width, gutter.width),
                         scroll_top: scroll,
                     });
@@ -4680,6 +4690,10 @@ impl App {
         // notification. `CmdlinePopup` and `Popup` differ only in duration; a
         // `Confirm` raises the modal dialog instead of drawing a float.
         floats.extend(self.notification_floats(cols, rows));
+        // Remember where they landed so a click can be resolved against the
+        // frame the user is actually looking at, in draw order (topmost last).
+        self.last_floats.clear();
+        self.last_floats.extend(floats.iter().map(|f| f.rect));
         let state = FrameState {
             dialog: self.dialog.as_ref().map(|d| d.view()),
             floats,
