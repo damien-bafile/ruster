@@ -3,6 +3,7 @@ mod key;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use raylib::consts::KeyboardKey;
 use raylib::prelude::*;
+use ruster_render::mouse::{MouseButton as MButton, MouseEvent, MouseKind, PointerKind};
 use ruster_render::{CursorKind, FrameState, GuiConfig, Renderer, SettingRowView};
 
 /// Draw `chars` on the cell grid, one `char_w` apart, colouring each by `colors`.
@@ -209,6 +210,23 @@ struct TextMetrics<'a> {
     char_w: f32,
 }
 
+/// Invert the cell grid: which cell does a pixel land in?
+///
+/// The GUI draws every glyph at `origin + n * advance`, so the inverse is a
+/// division. Floor rather than round — a pointer anywhere inside a cell is over
+/// that cell, not the nearer boundary. Positions left of or above the origin
+/// (the pointer in the padding, or dragged off the window) clamp to zero rather
+/// than wrapping through `u16`.
+fn pixel_to_cell(px: f32, py: f32, pad_x: f32, pad_y: f32, char_w: f32, line_h: f32) -> (u16, u16) {
+    let cell = |v: f32, pad: f32, size: f32| {
+        if size <= 0.0 {
+            return 0;
+        }
+        ((v - pad) / size).floor().clamp(0.0, u16::MAX as f32) as u16
+    };
+    (cell(px, pad_x, char_w), cell(py, pad_y, line_h))
+}
+
 pub struct RaylibRenderer {
     rl: RaylibHandle,
     thread: RaylibThread,
@@ -227,6 +245,14 @@ pub struct RaylibRenderer {
     settings_scroll: usize,
     picker_scroll: usize,
     event_buffer: Vec<KeyEvent>,
+    /// Mouse events built from raylib's per-frame state, drained one per call
+    /// like `event_buffer`.
+    mouse_buffer: Vec<MouseEvent>,
+    /// The cell the pointer was in last frame, so motion can be detected —
+    /// raylib reports a position, not a movement.
+    last_mouse_cell: Option<(u16, u16)>,
+    /// The pointer shape currently set, so redundant syscalls are skipped.
+    pointer: PointerKind,
     /// Where to write, and how many frames to let settle first.
     ///
     /// The countdown is not cosmetic. A capture on the very first frame after
@@ -442,12 +468,17 @@ impl RaylibRenderer {
             settings_scroll: 0,
             picker_scroll: 0,
             event_buffer: Vec::new(),
+            mouse_buffer: Vec::new(),
+            last_mouse_cell: None,
+            pointer: PointerKind::default(),
             pending_screenshot: None,
             screenshot_result: None,
         }
     }
 
-    fn drain_raylib(&mut self) {
+    /// Which modifier keys are held right now.
+    #[allow(clippy::wrong_self_convention)]
+    fn modifier_state(&self) -> KeyModifiers {
         let mut mods = KeyModifiers::empty();
         if self.rl.is_key_down(KeyboardKey::KEY_LEFT_SHIFT)
             || self.rl.is_key_down(KeyboardKey::KEY_RIGHT_SHIFT)
@@ -469,6 +500,93 @@ impl RaylibRenderer {
         {
             mods |= KeyModifiers::SUPER;
         }
+        mods
+    }
+
+    /// The cell the pointer is over.
+    ///
+    /// The GUI lays every glyph on a fixed grid starting at the padding origin,
+    /// so the inverse is a division. Floor rather than round: a pointer anywhere
+    /// inside a cell is over that cell, not the nearer boundary. Negative
+    /// positions (the pointer in the padding, or dragged off the window) clamp
+    /// to zero rather than wrapping through `u16`.
+    fn mouse_cell(&self) -> (u16, u16) {
+        let p = self.rl.get_mouse_position();
+        pixel_to_cell(
+            p.x,
+            p.y,
+            self.pad_x as f32,
+            self.pad_y as f32,
+            self.char_w,
+            self.line_h as f32,
+        )
+    }
+
+    /// Turn this frame's raylib mouse state into events.
+    ///
+    /// raylib reports state, not transitions, so presses and releases come from
+    /// its edge-triggered predicates and motion from comparing against the cell
+    /// we saw last frame.
+    fn drain_mouse(&mut self) {
+        use raylib::consts::MouseButton::*;
+
+        let mods = self.modifier_state();
+        let cell = self.mouse_cell();
+        let (col, row) = cell;
+        let buttons = [
+            (MOUSE_BUTTON_LEFT, MButton::Left),
+            (MOUSE_BUTTON_RIGHT, MButton::Right),
+            (MOUSE_BUTTON_MIDDLE, MButton::Middle),
+        ];
+
+        let mut held = MButton::None;
+        for (rl_button, button) in buttons {
+            if self.rl.is_mouse_button_pressed(rl_button) {
+                self.mouse_buffer
+                    .push(MouseEvent::new(col, row, MouseKind::Down, button, mods));
+            }
+            if self.rl.is_mouse_button_released(rl_button) {
+                self.mouse_buffer
+                    .push(MouseEvent::new(col, row, MouseKind::Up, button, mods));
+            }
+            if self.rl.is_mouse_button_down(rl_button) && held == MButton::None {
+                held = button;
+            }
+        }
+
+        // Motion is only worth reporting when it crosses into another cell —
+        // otherwise a still hand floods the queue at the frame rate.
+        if self.last_mouse_cell != Some(cell) {
+            self.last_mouse_cell = Some(cell);
+            let kind = if held == MButton::None {
+                MouseKind::Move
+            } else {
+                MouseKind::Drag
+            };
+            self.mouse_buffer
+                .push(MouseEvent::new(col, row, kind, held, mods));
+        }
+
+        let wheel = self.rl.get_mouse_wheel_move();
+        if wheel != 0.0 {
+            let kind = if wheel > 0.0 {
+                MouseKind::ScrollUp
+            } else {
+                MouseKind::ScrollDown
+            };
+            // One event per notch, so a fast flick scrolls proportionally.
+            for _ in 0..wheel.abs().round().max(1.0) as u32 {
+                self.mouse_buffer
+                    .push(MouseEvent::new(col, row, kind, MButton::None, mods));
+            }
+        }
+
+        // Queued in the order produced; drained from the front.
+        self.mouse_buffer.reverse();
+    }
+
+    fn drain_raylib(&mut self) {
+        let mods = self.modifier_state();
 
         // With Ctrl or Alt held, the OS text layer can't be trusted to produce
         // the base letter (it drops or composes modified keys), so Emacs/vim
@@ -1675,6 +1793,34 @@ impl Renderer for RaylibRenderer {
         self.event_buffer.pop()
     }
 
+    fn poll_mouse(&mut self) -> Option<MouseEvent> {
+        if self.mouse_buffer.is_empty() {
+            self.drain_mouse();
+        }
+        self.mouse_buffer.pop()
+    }
+
+    fn cell_metrics(&self) -> (f32, f32) {
+        (self.char_w, self.line_h as f32)
+    }
+
+    fn set_pointer(&mut self, pointer: PointerKind) -> bool {
+        if self.pointer == pointer {
+            return false;
+        }
+        self.pointer = pointer;
+        self.rl.set_mouse_cursor(match pointer {
+            PointerKind::Default => MouseCursor::MOUSE_CURSOR_DEFAULT,
+            PointerKind::IBeam => MouseCursor::MOUSE_CURSOR_IBEAM,
+            PointerKind::Crosshair => MouseCursor::MOUSE_CURSOR_CROSSHAIR,
+            PointerKind::PointingHand => MouseCursor::MOUSE_CURSOR_POINTING_HAND,
+            // Raylib has no generic resize cursor; the horizontal one reads as
+            // "drag this edge" on a split boundary.
+            PointerKind::Resize => MouseCursor::MOUSE_CURSOR_RESIZE_EW,
+        });
+        true
+    }
+
     fn should_close(&self) -> bool {
         self.rl.window_should_close()
     }
@@ -1694,6 +1840,49 @@ impl Renderer for RaylibRenderer {
         self.pad_y = gui.padding_y;
         self.theme = gui.theme;
         self.rl.set_target_fps(gui.target_fps as u32);
+    }
+}
+
+#[cfg(test)]
+mod mouse_tests {
+    use super::pixel_to_cell;
+
+    const PAD_X: f32 = 8.0;
+    const PAD_Y: f32 = 4.0;
+    const CHAR_W: f32 = 10.0;
+    const LINE_H: f32 = 24.0;
+
+    fn cell(px: f32, py: f32) -> (u16, u16) {
+        pixel_to_cell(px, py, PAD_X, PAD_Y, CHAR_W, LINE_H)
+    }
+
+    #[test]
+    fn the_origin_pixel_is_cell_zero() {
+        assert_eq!(cell(PAD_X, PAD_Y), (0, 0));
+    }
+
+    /// Anywhere inside a cell is that cell — the boundary belongs to the cell
+    /// that starts there, not the one that ends.
+    #[test]
+    fn a_pixel_inside_a_cell_belongs_to_it() {
+        assert_eq!(cell(PAD_X + 9.9, PAD_Y + 23.9), (0, 0));
+        assert_eq!(cell(PAD_X + 10.0, PAD_Y + 24.0), (1, 1));
+        assert_eq!(cell(PAD_X + 35.0, PAD_Y + 50.0), (3, 2));
+    }
+
+    /// The padding is not cell -1: a pointer above or left of the grid clamps
+    /// to the first cell rather than wrapping through u16.
+    #[test]
+    fn pixels_before_the_origin_clamp_to_zero() {
+        assert_eq!(cell(0.0, 0.0), (0, 0));
+        assert_eq!(cell(-500.0, -500.0), (0, 0));
+    }
+
+    /// A zero-width font would divide by zero; a renderer that failed to load
+    /// one should not take the mouse down with it.
+    #[test]
+    fn degenerate_metrics_do_not_divide_by_zero() {
+        assert_eq!(pixel_to_cell(100.0, 100.0, 0.0, 0.0, 0.0, 0.0), (0, 0));
     }
 }
 
