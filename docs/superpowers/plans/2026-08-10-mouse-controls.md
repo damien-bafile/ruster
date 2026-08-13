@@ -314,7 +314,7 @@ Tasks below modify these in the listed order; later tasks reference exact symbol
 
 **Steps:**
 
-- [ ] In `crates/ruster-render/src/script.rs`:
+- [x] In `crates/ruster-render/src/script.rs`:
   - Add `pub mouse_events: Vec<MouseEvent>` field to `FrameDigest` (next to `cmdline: Option<String>`).
   - Add `pub mouse: VecDeque<MouseEvent>` field to `ScriptedRenderer` (next to `keys: VecDeque<KeyEvent>`).
   - Add `pub fn push_mouse(mut self, ev: MouseEvent) -> Self` builder.
@@ -323,12 +323,12 @@ Tasks below modify these in the listed order; later tasks reference exact symbol
   - Add `pub fn simulate_mouse_wheel(&mut self, col: u16, row: u16, dir: ScrollDir, mods: KeyModifiers)`.
   - Override `poll_mouse` to drain `self.mouse` one-per-frame (same rule as `poll_input`).
   - In `render_frame`, after capture, push the mouse events consumed this frame into `state.mouse_events` — wait, `FrameDigest` doesn't have `state` post-build, so just record a clone: `FrameDigest.mouse_events.push(ev.clone())` for each mouse event drained.
-- [ ] Tests:
+- [x] Tests:
   - `one_mouse_event_per_frame_just_like_keys`
   - `simulate_mouse_click_emits_down_then_up`
   - `simulate_mouse_drag_emits_multiple_drag_events`
-- [ ] Run `cargo test -p ruster-render` — all green.
-- [ ] Commit: `feat(render): extend ScriptedRenderer with mouse scripting`.
+- [x] Run `cargo test -p ruster-render` — all green.
+- [x] Commit: `feat(render): extend ScriptedRenderer with mouse scripting`.
 
 ## Task 12: Cursor-shape changes per zone (GUI only, TDD)
 
@@ -338,17 +338,17 @@ Tasks below modify these in the listed order; later tasks reference exact symbol
 
 **Steps:**
 
-- [ ] In `crates/ruster-tui/src/mouse.rs`, add `fn set_pointer_for_zone(app: &mut App, zone: HitZone)` mapping:
+- [x] In `crates/ruster-tui/src/mouse.rs`, add `fn set_pointer_for_zone(app: &mut App, zone: HitZone)` mapping:
   - `Buffer(_)` → `IBeam`
   - `Chrome(SplitEdge{..})` → `Resize`
   - `Chrome(Tab(_)) | Chrome(StatusSection(_)) | Gutter(_)` → `PointingHand`
   - `Float(_) | Outside` → `Default`
-- [ ] Call after hit-test in `handle_mouse_event` only when `app.is_gui`.
-- [ ] Test (uses a stub renderer that records `set_pointer` calls):
+- [x] Call after hit-test in `handle_mouse_event` only when `app.is_gui`.
+- [x] Test (uses a stub renderer that records `set_pointer` calls):
   - `cursor_set_to_ibeam_in_buffer_zone_gui_only`
   - `cursor_set_to_resize_on_split_edge`
-- [ ] Run `cargo test -p ruster-tui` — green.
-- [ ] Commit: `feat(tui): cursor-shape per zone (GUI only)`.
+- [x] Run `cargo test -p ruster-tui` — green.
+- [x] Commit: `feat(tui): cursor-shape per zone (GUI only)`.
 
 ## Task 13: Right-click menu — `FloatKind::Menu` + `MenuRegistry` (TDD)
 
