@@ -114,7 +114,7 @@ Tasks below modify these in the listed order; later tasks reference exact symbol
 
 **Steps:**
 
-- [ ] In `crates/ruster-tui/src/mouse.rs`, add:
+- [x] In `crates/ruster-tui/src/mouse.rs`, add:
   ```rust
   pub struct ClickTracker { pub last_down: Option<(Instant, u16, u16, MouseButton)> }
   pub struct HoverState { pub last_pos: (u16, u16), pub last_move: Instant, pub emitted_for: Option<(u16, u16)> }
@@ -133,11 +133,11 @@ Tasks below modify these in the listed order; later tasks reference exact symbol
   pub struct MenuItem { pub label: String, pub cmd: String, pub submenu: Vec<MenuItem> }
   impl Default for MouseState { … }
   ```
-- [ ] Add `pub mouse: MouseState` field to `App` in `app.rs` near `last_layout` (~line 1485); initialize via `MouseState::default()` in `App::new`.
-- [ ] Add `pub is_gui: bool` field to `App` defaulting to `false`; set `is_gui = true` in `app.run_gui()` (the GUI entrypoint called from `crates/ruster-bin/src/main.rs:50`).
-- [ ] No behavior change yet. `crate::mouse::handle_mouse_event` ignores state.
-- [ ] Run `cargo test -p ruster-tui` — verify all existing tests still green.
-- [ ] Commit: `feat(tui): add MouseState skeleton (ClickTracker, HoverState, DragState, MenuRegistry)`.
+- [x] Add `pub mouse: MouseState` field to `App` in `app.rs` near `last_layout` (~line 1485); initialize via `MouseState::default()` in `App::new`.
+- [x] Add `pub is_gui: bool` field to `App` defaulting to `false`; set `is_gui = true` in `app.run_gui()` (the GUI entrypoint called from `crates/ruster-bin/src/main.rs:50`).
+- [x] No behavior change yet. `crate::mouse::handle_mouse_event` ignores state.
+- [x] Run `cargo test -p ruster-tui` — verify all existing tests still green.
+- [x] Commit: `feat(tui): add MouseState skeleton (ClickTracker, HoverState, DragState, MenuRegistry)`.
 
 ## Task 5: Hit-test zones — TDD each zone
 

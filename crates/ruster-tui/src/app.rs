@@ -1482,6 +1482,11 @@ pub struct App {
     pub flash: Option<FlashState>,
     /// Window geometry from the last rendered frame, for mouse hit-testing.
     last_layout: Vec<WindowLayout>,
+    /// Click, drag and hover bookkeeping between mouse events.
+    pub mouse: crate::mouse::MouseState,
+    /// Whether the raylib backend is driving. A few mouse gestures (font zoom,
+    /// pointer shape) only mean something when there is a real pointer.
+    pub is_gui: bool,
     /// Noice notification manager.
     pub notify: NotificationManager,
     /// Active floating picker (buffer list, file finder, ...), if any.
@@ -1985,6 +1990,8 @@ impl App {
             leader_since: None,
             flash: None,
             last_layout: Vec::new(),
+            mouse: crate::mouse::MouseState::default(),
+            is_gui: false,
             dired: DiredState::new(dired_show_hidden),
             file_prompt: None,
             lsp,
@@ -2917,6 +2924,17 @@ impl App {
         crate::mouse::handle_mouse_event(self, ruster_render::mouse::from_crossterm(me));
     }
 
+    /// Drop in-flight mouse state after the terminal is resized.
+    ///
+    /// Every coordinate the mouse remembers is a cell in the old geometry, so a
+    /// drag or click streak that straddles a resize would resolve against the
+    /// wrong text.
+    pub fn on_resize(&mut self) {
+        self.mouse.drag = crate::mouse::DragState::default();
+        self.mouse.click = crate::mouse::ClickTracker::default();
+        self.mouse.resize = None;
+    }
+
     /// Resolve a screen cell to a buffer offset, using the geometry of the last
     /// rendered frame (`last_layout`) rather than recomputing it.
     ///
@@ -3087,6 +3105,7 @@ impl App {
                         Some(AppEvent::Input(ev)) => match ev {
                             crossterm::event::Event::Key(k) => self.handle_key(k),
                             crossterm::event::Event::Mouse(me) => self.handle_mouse_event(me),
+                            crossterm::event::Event::Resize(_, _) => self.on_resize(),
                             _ => {}
                         },
                         None => break,
@@ -3318,10 +3337,14 @@ impl App {
     }
 
     pub fn run_gui(&mut self) {
+        self.is_gui = true;
         loop {
             let dt = self.timer.tick();
             while let Some(key) = self.renderer.poll_input() {
                 self.handle_key(key);
+            }
+            while let Some(ev) = self.renderer.poll_mouse() {
+                crate::mouse::handle_mouse_event(self, ev);
             }
             self.fire_watched_events();
             self.drain_lua_actions();
@@ -11629,6 +11652,29 @@ mod tests {
         assert_eq!(cursors.count(), 2);
         // Third column of the second row: 'a' of "bravo", at offset 8.
         assert!(cursors.iter_heads().any(|h| h == 8));
+    }
+
+    /// A resize invalidates every cell coordinate the mouse is holding on to.
+    #[test]
+    fn resize_drops_in_flight_mouse_state() {
+        let mut a = App::new("alpha\nbravo\n".into(), PathBuf::from("f.txt"));
+        a.mouse.drag.anchor = Some(3);
+        a.mouse.drag.kind = crate::mouse::DragKind::Line;
+        a.mouse.click.streak = 2;
+        a.mouse.click.last_down = Some((
+            std::time::Instant::now(),
+            4,
+            2,
+            ruster_render::mouse::MouseButton::Left,
+        ));
+
+        a.on_resize();
+
+        assert_eq!(a.mouse.drag.anchor, None);
+        assert_eq!(a.mouse.drag.kind, crate::mouse::DragKind::Char);
+        assert_eq!(a.mouse.click.streak, 0);
+        assert!(a.mouse.click.last_down.is_none());
+        assert!(a.mouse.resize.is_none());
     }
 
     /// The header row and the number gutter are not buffer text. Getting this
