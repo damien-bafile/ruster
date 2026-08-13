@@ -317,6 +317,12 @@ pub struct ScriptedRenderer {
     /// and every intermediate state (the which-key panel between `SPC` and `w`,
     /// the picker between keystrokes) would never be recorded.
     served_this_frame: bool,
+    /// Scripted mouse events, drained one per frame like `keys` and for the
+    /// same reason: a click and the frame that reacts to it have to be separate
+    /// frames or the intermediate state is never recorded.
+    mouse: VecDeque<crate::mouse::MouseEvent>,
+    /// Whether a mouse event was already served this frame.
+    served_mouse_this_frame: bool,
     log: FrameLog,
     viewport: (u16, u16),
 }
@@ -329,6 +335,8 @@ impl ScriptedRenderer {
             settle: 4,
             budget: 5_000,
             served_this_frame: false,
+            mouse: VecDeque::new(),
+            served_mouse_this_frame: false,
             log: FrameLog::default(),
             viewport: (120, 40),
         }
@@ -356,6 +364,88 @@ impl ScriptedRenderer {
         self.viewport = (cols, rows);
         self
     }
+
+    /// Queue one raw mouse event.
+    pub fn push_mouse(mut self, ev: crate::mouse::MouseEvent) -> Self {
+        self.mouse.push_back(ev);
+        self
+    }
+
+    /// Queue a press and release at one cell — what a click actually is.
+    pub fn simulate_mouse_click(
+        &mut self,
+        col: u16,
+        row: u16,
+        button: crate::mouse::MouseButton,
+        mods: crossterm::event::KeyModifiers,
+    ) {
+        use crate::mouse::{MouseEvent, MouseKind};
+        self.mouse
+            .push_back(MouseEvent::new(col, row, MouseKind::Down, button, mods));
+        self.mouse
+            .push_back(MouseEvent::new(col, row, MouseKind::Up, button, mods));
+    }
+
+    /// Queue a press, intermediate drags, and a release.
+    ///
+    /// The intermediates matter: a handler that only looks at the release would
+    /// pass a test that scripted just the endpoints, while doing nothing at all
+    /// during the drag the user can see.
+    pub fn simulate_mouse_drag(
+        &mut self,
+        from: (u16, u16),
+        to: (u16, u16),
+        button: crate::mouse::MouseButton,
+        mods: crossterm::event::KeyModifiers,
+    ) {
+        use crate::mouse::{MouseEvent, MouseKind};
+        const STEPS: u16 = 4;
+
+        self.mouse.push_back(MouseEvent::new(
+            from.0,
+            from.1,
+            MouseKind::Down,
+            button,
+            mods,
+        ));
+        // Walk the straight line between the endpoints, exclusive of the start.
+        for step in 1..=STEPS {
+            let lerp = |a: u16, b: u16| {
+                let a = a as i32;
+                (a + (b as i32 - a) * step as i32 / STEPS as i32) as u16
+            };
+            self.mouse.push_back(MouseEvent::new(
+                lerp(from.0, to.0),
+                lerp(from.1, to.1),
+                MouseKind::Drag,
+                button,
+                mods,
+            ));
+        }
+        self.mouse
+            .push_back(MouseEvent::new(to.0, to.1, MouseKind::Up, button, mods));
+    }
+
+    /// Queue `notches` wheel events in one direction.
+    pub fn simulate_mouse_wheel(
+        &mut self,
+        col: u16,
+        row: u16,
+        kind: crate::mouse::MouseKind,
+        notches: u16,
+        mods: crossterm::event::KeyModifiers,
+    ) {
+        use crate::mouse::{MouseButton, MouseEvent};
+        for _ in 0..notches {
+            self.mouse
+                .push_back(MouseEvent::new(col, row, kind, MouseButton::None, mods));
+        }
+    }
+
+    /// How many scripted mouse events are still queued.
+    pub fn pending_mouse(&self) -> usize {
+        self.mouse.len()
+    }
 }
 
 impl Renderer for ScriptedRenderer {
@@ -364,10 +454,11 @@ impl Renderer for ScriptedRenderer {
         // The frame that consumed the last key does not count against the
         // settle budget — `settle(n)` means n frames *after* the script, and
         // the whole reason to draw them is to see what that key produced.
-        if self.keys.is_empty() && !self.served_this_frame {
+        if self.keys.is_empty() && self.mouse.is_empty() && !self.served_this_frame {
             self.settle = self.settle.saturating_sub(1);
         }
         self.served_this_frame = false;
+        self.served_mouse_this_frame = false;
         self.budget = self.budget.saturating_sub(1);
     }
 
@@ -384,8 +475,17 @@ impl Renderer for ScriptedRenderer {
         Some(key)
     }
 
+    fn poll_mouse(&mut self) -> Option<crate::mouse::MouseEvent> {
+        if self.served_mouse_this_frame {
+            return None;
+        }
+        let ev = self.mouse.pop_front()?;
+        self.served_mouse_this_frame = true;
+        Some(ev)
+    }
+
     fn should_close(&self) -> bool {
-        self.budget == 0 || (self.keys.is_empty() && self.settle == 0)
+        self.budget == 0 || (self.keys.is_empty() && self.mouse.is_empty() && self.settle == 0)
     }
 }
 
@@ -397,6 +497,97 @@ mod tests {
 
     fn key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    /// One mouse event per frame, for the same reason as one key per frame:
+    /// serving the whole script at once would mean no intermediate state is
+    /// ever drawn.
+    #[test]
+    fn one_mouse_event_per_frame_just_like_keys() {
+        use crate::mouse::MouseButton;
+        let mut r = ScriptedRenderer::new(vec![]);
+        r.simulate_mouse_click(3, 4, MouseButton::Left, KeyModifiers::NONE);
+        assert_eq!(r.pending_mouse(), 2);
+
+        assert!(r.poll_mouse().is_some(), "first event of the frame");
+        assert!(
+            r.poll_mouse().is_none(),
+            "second event waits for next frame"
+        );
+
+        r.render_frame(&FrameState::default());
+        assert!(r.poll_mouse().is_some(), "next frame serves the release");
+        assert_eq!(r.pending_mouse(), 0);
+    }
+
+    #[test]
+    fn simulate_mouse_click_emits_down_then_up() {
+        use crate::mouse::{MouseButton, MouseKind};
+        let mut r = ScriptedRenderer::new(vec![]);
+        r.simulate_mouse_click(7, 2, MouseButton::Right, KeyModifiers::NONE);
+
+        let first = r.poll_mouse().expect("a press");
+        r.render_frame(&FrameState::default());
+        let second = r.poll_mouse().expect("a release");
+
+        assert_eq!(first.kind, MouseKind::Down);
+        assert_eq!(second.kind, MouseKind::Up);
+        for ev in [first, second] {
+            assert_eq!((ev.col, ev.row), (7, 2));
+            assert_eq!(ev.button, MouseButton::Right);
+        }
+    }
+
+    #[test]
+    fn simulate_mouse_drag_emits_intermediate_drags() {
+        use crate::mouse::{MouseButton, MouseKind};
+        let mut r = ScriptedRenderer::new(vec![]);
+        r.simulate_mouse_drag((0, 0), (8, 4), MouseButton::Left, KeyModifiers::NONE);
+
+        let mut events = Vec::new();
+        while r.pending_mouse() > 0 {
+            if let Some(ev) = r.poll_mouse() {
+                events.push(ev);
+            }
+            r.render_frame(&FrameState::default());
+        }
+
+        assert_eq!(events.first().map(|e| e.kind), Some(MouseKind::Down));
+        assert_eq!(events.last().map(|e| e.kind), Some(MouseKind::Up));
+        let drags: Vec<_> = events
+            .iter()
+            .filter(|e| e.kind == MouseKind::Drag)
+            .collect();
+        assert!(drags.len() > 1, "a drag is more than its endpoints");
+        // The path runs from the start to the end without overshooting.
+        assert_eq!(
+            (events.last().unwrap().col, events.last().unwrap().row),
+            (8, 4)
+        );
+        assert!(drags.iter().all(|d| d.col <= 8 && d.row <= 4));
+    }
+
+    #[test]
+    fn simulate_mouse_wheel_emits_one_event_per_notch() {
+        use crate::mouse::MouseKind;
+        let mut r = ScriptedRenderer::new(vec![]);
+        r.simulate_mouse_wheel(1, 1, MouseKind::ScrollDown, 3, KeyModifiers::NONE);
+        assert_eq!(r.pending_mouse(), 3);
+    }
+
+    /// A script with only mouse events still terminates.
+    #[test]
+    fn a_mouse_only_script_closes_once_drained() {
+        use crate::mouse::MouseButton;
+        let mut r = ScriptedRenderer::new(vec![]).settle(1);
+        r.simulate_mouse_click(1, 1, MouseButton::Left, KeyModifiers::NONE);
+        assert!(!r.should_close(), "events are still pending");
+
+        for _ in 0..10 {
+            r.poll_mouse();
+            r.render_frame(&FrameState::default());
+        }
+        assert!(r.should_close());
     }
 
     /// The whole point of the one-key-per-frame rule: a burst would hand the
