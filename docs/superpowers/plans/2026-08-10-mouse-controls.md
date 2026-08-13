@@ -100,11 +100,11 @@ Tasks below modify these in the listed order; later tasks reference exact symbol
 
 **Steps:**
 
-- [ ] Create empty skeleton `crates/ruster-tui/src/mouse.rs` with `pub fn handle_mouse_event(app: &mut App, ev: ruster_render::MouseEvent)` that calls back to the existing `app.buffer_offset_at` only for `MouseKind::Down(Left)` with `Alt` — exact same behavior as the stub. **No new state, no new logic, just a thin extraction.**
-- [ ] In `crates/ruster-tui/src/lib.rs`, add `pub mod mouse;` next to the other module declarations.
-- [ ] In `crates/ruster-tui/src/app.rs`, replace lines 2917-2928 with `crate::mouse::handle_mouse_event(self, ev.into());` (convert crossterm `MouseEvent` to `ruster_render::MouseEvent` via `crate::mouse::from_crossterm`).
-- [ ] Run `cargo test -p ruster-tui` — verify `mouse_hit_test_*` tests at `app.rs:11593+` still pass and the new dispatcher is hit (add a temporary `dbg!` then remove it; do **not** commit the `dbg!`).
-- [ ] Commit: `refactor(tui): extract App::handle_mouse_event into crate::mouse`.
+- [x] Create empty skeleton `crates/ruster-tui/src/mouse.rs` with `pub fn handle_mouse_event(app: &mut App, ev: ruster_render::MouseEvent)` that calls back to the existing `app.buffer_offset_at` only for `MouseKind::Down(Left)` with `Alt` — exact same behavior as the stub. **No new state, no new logic, just a thin extraction.**
+- [x] In `crates/ruster-tui/src/lib.rs`, add `pub mod mouse;` next to the other module declarations.
+- [x] In `crates/ruster-tui/src/app.rs`, replace lines 2917-2928 with `crate::mouse::handle_mouse_event(self, ev.into());` (convert crossterm `MouseEvent` to `ruster_render::MouseEvent` via `crate::mouse::from_crossterm`).
+- [x] Run `cargo test -p ruster-tui` — verify `mouse_hit_test_*` tests at `app.rs:11593+` still pass and the new dispatcher is hit (add a temporary `dbg!` then remove it; do **not** commit the `dbg!`).
+- [x] Commit: `refactor(tui): extract App::handle_mouse_event into crate::mouse`.
 
 ## Task 4: Add `MouseState` skeleton to `App`
 
