@@ -2933,6 +2933,23 @@ impl App {
         crate::mouse::handle_mouse_event(self, ruster_render::mouse::from_crossterm(me));
     }
 
+    /// Step the GUI font size by `dir` notches and re-apply it.
+    ///
+    /// Clamped to a range that stays legible at one end and still fits a useful
+    /// number of columns at the other.
+    pub fn zoom_font(&mut self, dir: i32) {
+        let next = (self.config.font_size as i32 + dir).clamp(8, 72) as u32;
+        if next == self.config.font_size {
+            return;
+        }
+        self.config.font_size = next;
+        // Line height tracks the font, or the text overlaps itself.
+        self.config.line_height = (next as f32 * 1.2).round() as u32;
+        let gui = self.gui_config();
+        let font = self.gui_font();
+        self.renderer.set_gui_config(&gui, font.as_deref());
+    }
+
     /// Drop in-flight mouse state after the terminal is resized.
     ///
     /// Every coordinate the mouse remembers is a cell in the old geometry, so a

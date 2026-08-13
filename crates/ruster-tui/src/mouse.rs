@@ -256,8 +256,62 @@ pub fn handle_mouse_event(app: &mut App, ev: MouseEvent) {
         MouseKind::Down => on_mouse_down(app, ev, zone),
         MouseKind::Drag => on_mouse_drag(app, ev),
         MouseKind::Up => on_mouse_up(app, ev),
-        _ => {}
+        MouseKind::ScrollUp
+        | MouseKind::ScrollDown
+        | MouseKind::ScrollLeft
+        | MouseKind::ScrollRight => on_mouse_scroll(app, ev, zone),
+        MouseKind::Move => {}
     }
+}
+
+/// How many lines one wheel notch scrolls.
+/// Replaced by `config.mouse.wheel_lines` in Task 17.
+const WHEEL_LINES: usize = 3;
+
+fn on_mouse_scroll(app: &mut App, ev: MouseEvent, zone: HitZone) {
+    // Ctrl+wheel zooms, which only means something where there are pixels.
+    if ev.modifiers.contains(KeyModifiers::CONTROL) {
+        let dir = if ev.kind == MouseKind::ScrollUp {
+            1
+        } else {
+            -1
+        };
+        if app.is_gui {
+            app.zoom_font(dir);
+        } else {
+            app.notify.push(ruster_notify::Notification::new(
+                ruster_core::message::MessageLevel::Info,
+                ruster_core::message::MessageSource::Echo,
+                "Ctrl+wheel zoom: GUI only".to_string(),
+            ));
+        }
+        return;
+    }
+
+    // Horizontal scrolling has nothing to move: windows have no horizontal
+    // scroll state. See the Task 9 note in the plan.
+    if matches!(ev.kind, MouseKind::ScrollLeft | MouseKind::ScrollRight) {
+        return;
+    }
+
+    let wid = match zone {
+        HitZone::Buffer(wid, _) | HitZone::Gutter(wid, _) => wid,
+        HitZone::Chrome(ChromeKind::Header(wid))
+        | HitZone::Chrome(ChromeKind::StatusLine(wid))
+        | HitZone::Chrome(ChromeKind::SplitEdge { wid, .. }) => wid,
+        HitZone::Float(_) | HitZone::Outside => return,
+    };
+
+    let up = ev.kind == MouseKind::ScrollUp;
+    let mut ws = app.ws.borrow_mut();
+    let Some(win) = ws.windows.window_mut(wid) else {
+        return;
+    };
+    win.scroll_top = if up {
+        win.scroll_top.saturating_sub(WHEEL_LINES)
+    } else {
+        win.scroll_top.saturating_add(WHEEL_LINES)
+    };
 }
 
 /// Extend the selection a press started.
@@ -765,6 +819,103 @@ mod tests {
             drag_to(right.text.x + 1, right.text.y, KeyModifiers::empty()),
         );
         assert_eq!(selected(&a), before);
+    }
+
+    fn wheel(col: u16, row: u16, kind: MouseKind, modifiers: KeyModifiers) -> MouseEvent {
+        MouseEvent::new(col, row, kind, MouseButton::None, modifiers)
+    }
+
+    fn scroll_top(a: &App) -> usize {
+        a.ws.borrow().windows.active_window().scroll_top
+    }
+
+    #[test]
+    fn wheel_down_then_up_moves_scroll_top_by_wheel_lines() {
+        let mut a = App::new("l\n".repeat(200), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        let at = (l.text.x, l.text.y);
+
+        handle_mouse_event(
+            &mut a,
+            wheel(at.0, at.1, MouseKind::ScrollDown, KeyModifiers::empty()),
+        );
+        assert_eq!(scroll_top(&a), WHEEL_LINES);
+
+        handle_mouse_event(
+            &mut a,
+            wheel(at.0, at.1, MouseKind::ScrollUp, KeyModifiers::empty()),
+        );
+        assert_eq!(scroll_top(&a), 0);
+    }
+
+    /// Scrolling up at the top stops there rather than wrapping around.
+    #[test]
+    fn wheel_up_at_the_top_saturates() {
+        let mut a = App::new("l\n".repeat(200), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        handle_mouse_event(
+            &mut a,
+            wheel(
+                l.text.x,
+                l.text.y,
+                MouseKind::ScrollUp,
+                KeyModifiers::empty(),
+            ),
+        );
+        assert_eq!(scroll_top(&a), 0);
+    }
+
+    #[test]
+    fn wheel_ctrl_in_tui_notifies_instead_of_zooming() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let before = a.config.font_size;
+        let l = laid_out(&mut a);
+        assert!(!a.is_gui);
+
+        handle_mouse_event(
+            &mut a,
+            wheel(
+                l.text.x,
+                l.text.y,
+                MouseKind::ScrollUp,
+                KeyModifiers::CONTROL,
+            ),
+        );
+        assert_eq!(a.config.font_size, before, "TUI has no font to zoom");
+        assert_eq!(scroll_top(&a), 0, "and it did not scroll instead");
+    }
+
+    #[test]
+    fn wheel_outside_any_window_is_a_noop() {
+        let mut a = App::new("l\n".repeat(200), PathBuf::from("f.txt"));
+        a.config.number = true;
+        laid_out(&mut a);
+        handle_mouse_event(
+            &mut a,
+            wheel(
+                u16::MAX,
+                u16::MAX,
+                MouseKind::ScrollDown,
+                KeyModifiers::empty(),
+            ),
+        );
+        assert_eq!(scroll_top(&a), 0);
+    }
+
+    #[test]
+    fn zoom_font_clamps_to_min_and_max() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        for _ in 0..100 {
+            a.zoom_font(-1);
+        }
+        assert_eq!(a.config.font_size, 8);
+        for _ in 0..200 {
+            a.zoom_font(1);
+        }
+        assert_eq!(a.config.font_size, 72);
     }
 
     #[test]
