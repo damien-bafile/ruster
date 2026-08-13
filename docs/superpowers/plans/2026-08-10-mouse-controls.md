@@ -8,6 +8,21 @@
 
 **Tech Stack:** Rust, `crossterm::event::MouseEvent` (TUI source), `raylib::GetMousePosition` / `IsMouseButtonPressed` (GUI source), `mlua` (Lua extension), `nucleo_matcher` (no change), existing `EventBus` (extended), existing `PickerState` (reused for menus).
 
+## Deviations from this plan (recorded as they were found)
+
+The plan described several things that do not exist in the codebase. Each is
+implemented as close to the intent as reality allows; see the cited commit.
+
+| Plan says | Reality | Done instead |
+|---|---|---|
+| Pointer shape enum is `CursorKind` | `CursorKind` is already the *text caret* shape (`Block`/`Bar`), used by raylib | `PointerKind`, and `Renderer::set_pointer` (`ddb8284`) |
+| Existing Alt+Left test guards Task 3 | No such test; the 5 `mouse_hit_test_*` tests only cover `buffer_offset_at` arithmetic | Wrote `alt_left_click_adds_a_cursor_at_the_clicked_offset` (`19e5bcf`) |
+| Hit-test floats via `app.floats` | That field was deleted earlier as an always-empty vector cloned per frame | `App::last_floats`, recorded during render (`278c20f`) |
+| `ChromeKind::Tab(n)`, tab-row hit-test, tab click/close | **No tabline or bufferline exists anywhere in the repo** | Chrome is `Header`/`StatusLine`/`SplitEdge`. Task 14's tab steps are blocked (`278c20f`) |
+| Drag promotes to `DragKind::Line` on crossing a line | Would make every multi-line drag select whole lines, so the mouse could never make a character selection spanning two lines | Multi-line drags stay `Char` (`d438047`) |
+| Shift+wheel scrolls horizontally | Windows have no horizontal scroll state at all | Left/right wheel accepted and ignored (`1cce7fb`) |
+| `ChromeKind::StatusSection(String)` | The statusline is rendered as one string; section geometry is not tracked | Deferred with Task 14 |
+
 ## Global Constraints
 
 - **Spec source of truth:** `docs/superpowers/specs/2026-08-10-mouse-controls-design.md` (this plan's every requirement).
@@ -147,16 +162,16 @@ Tasks below modify these in the listed order; later tasks reference exact symbol
 
 **Steps:**
 
-- [ ] Add `pub enum HitZone { Chrome(ChromeKind), Gutter(WindowId, usize), Buffer(WindowId, usize), Float(FloatId), Outside }` and `pub enum ChromeKind { Tab(usize), StatusSection(String), SplitEdge { wid: WindowId, vertical: bool } }` to `mouse.rs`.
-- [ ] Add `pub fn hit_test(app: &App, col: u16, row: u16) -> HitZone` with the priority cascade. Float hits first by checking `app.floats` (read existing `Vec<FloatView>` rendering field at `app.rs:4656+`); chrome by checking tab row at y=0, split edges via geometry; gutter by checking `TextArea::cell_at` returns `None` AND col < `TextArea::x`; buffer by `buffer_offset_at` (reuse at `app.rs:2936`); outside otherwise.
-- [ ] Add tests using the existing `rendered_text_area` helper at `app.rs:11587`:
+- [x] Add `pub enum HitZone { Chrome(ChromeKind), Gutter(WindowId, usize), Buffer(WindowId, usize), Float(FloatId), Outside }` and `pub enum ChromeKind { Tab(usize), StatusSection(String), SplitEdge { wid: WindowId, vertical: bool } }` to `mouse.rs`.
+- [x] Add `pub fn hit_test(app: &App, col: u16, row: u16) -> HitZone` with the priority cascade. Float hits first by checking `app.floats` (read existing `Vec<FloatView>` rendering field at `app.rs:4656+`); chrome by checking tab row at y=0, split edges via geometry; gutter by checking `TextArea::cell_at` returns `None` AND col < `TextArea::x`; buffer by `buffer_offset_at` (reuse at `app.rs:2936`); outside otherwise.
+- [x] Add tests using the existing `rendered_text_area` helper at `app.rs:11587`:
   - `hit_test_buffer_for_text_cell`
   - `hit_test_gutter_for_left_margin`
   - `hit_test_chrome_for_tab_row`
   - `hit_test_outside_for_statusline_blank`
   - `hit_test_float_wins_over_buffer`
-- [ ] Run `cargo test -p ruster-tui hit_test` — verify all pass.
-- [ ] Commit: `feat(tui): hit-test zones (float > chrome > gutter > buffer > outside)`.
+- [x] Run `cargo test -p ruster-tui hit_test` — verify all pass.
+- [x] Commit: `feat(tui): hit-test zones (float > chrome > gutter > buffer > outside)`.
 
 ## Task 6: Add new `Action` and `CursorSet` methods (TDD)
 
@@ -166,24 +181,24 @@ Tasks below modify these in the listed order; later tasks reference exact symbol
 
 **Steps:**
 
-- [ ] In `action.rs`, add to `pub enum Action`:
+- [x] In `action.rs`, add to `pub enum Action`:
   ```rust
   SelectWord { anchor: usize, head: usize },
   SelectLine { anchor: usize, head: usize },
   SetMark(usize),
   ResizeWindow { wid: WindowId, dy: i32, dx: i32 },
   ```
-- [ ] In `cursor.rs`, add on `CursorSet`:
+- [x] In `cursor.rs`, add on `CursorSet`:
   ```rust
   pub fn select_word(&self, buf: &Buffer, anchor: usize) -> Range;   // expand anchor outward to whitespace
   pub fn select_line(&self, buf: &Buffer, anchor: usize) -> Range;   // expand to line bounds
   pub fn set_region(&mut self, mark: usize, point: usize);          // Emacs: anchor=mark, head=point
   ```
-- [ ] Unit tests on `CursorSet::select_word` with `"foo bar"` and offsets 1, 4, 6 — verify each gives the right word bound.
-- [ ] Unit tests on `CursorSet::select_line` with `"a\nbc\nde"` and offsets 0, 3, 6.
-- [ ] Compile check across the workspace — `Action::SelectWord` etc. don't break `Action` exhaustiveness anywhere.
-- [ ] Run `cargo test --workspace` — verify all pass.
-- [ ] Commit: `feat(core): add Action::SelectWord/SelectLine/SetMark/ResizeWindow and CursorSet selection helpers`.
+- [x] Unit tests on `CursorSet::select_word` with `"foo bar"` and offsets 1, 4, 6 — verify each gives the right word bound.
+- [x] Unit tests on `CursorSet::select_line` with `"a\nbc\nde"` and offsets 0, 3, 6.
+- [x] Compile check across the workspace — `Action::SelectWord` etc. don't break `Action` exhaustiveness anywhere.
+- [x] Run `cargo test --workspace` — verify all pass.
+- [x] Commit: `feat(core): add Action::SelectWord/SelectLine/SetMark/ResizeWindow and CursorSet selection helpers`.
 
 ## Task 7: Click handlers — Left, Alt+Left, Ctrl+Left, double, triple (TDD)
 
@@ -193,7 +208,7 @@ Tasks below modify these in the listed order; later tasks reference exact symbol
 
 **Steps:**
 
-- [ ] Add `fn on_mouse_down(app: &mut App, ev: MouseEvent, zone: HitZone)` to `mouse.rs`. Dispatch:
+- [x] Add `fn on_mouse_down(app: &mut App, ev: MouseEvent, zone: HitZone)` to `mouse.rs`. Dispatch:
   - `HitZone::Buffer(wid, offset)`:
     - Plain Left → `app.ws.borrow_mut().execute(Action::Move(Motion::To(offset)))`
     - Alt+Left → `app.ws.borrow_mut().execute(Action::AddCursor(offset))` (existing)
@@ -203,16 +218,16 @@ Tasks below modify these in the listed order; later tasks reference exact symbol
   - `HitZone::Chrome(ChromeKind::Tab(n))` → call into `app.switch_to_buffer_n(n)` (route via existing `CmdAction::Buffer`).
   - `HitZone::Chrome(ChromeKind::StatusSection(_))` → no-op (phase 1; plugin hook exists in later task).
   - `HitZone::Float(_)` → defer to `Float::hit_test` (Task 13); phase 1 only closes outside-clicks.
-- [ ] Wire into `crate::mouse::handle_mouse_event` after hit-test.
-- [ ] Tests in `crates/ruster-tui/src/mouse.rs` (using `App::new`):
+- [x] Wire into `crate::mouse::handle_mouse_event` after hit-test.
+- [x] Tests in `crates/ruster-tui/src/mouse.rs` (using `App::new`):
   - `left_click_in_buffer_moves_cursor`
   - `alt_left_click_adds_cursor`
   - `ctrl_left_click_jumps_word`
   - `double_click_within_window_selects_word`
   - `triple_click_selects_line`
   - `click_in_outside_zone_focuses_cmdline`
-- [ ] Run `cargo test -p ruster-tui` — verify the existing 4 hit-test tests plus the 6 new ones, all green.
-- [ ] Commit: `feat(tui): click handlers (left, alt-left, ctrl-left, double, triple)`.
+- [x] Run `cargo test -p ruster-tui` — verify the existing 4 hit-test tests plus the 6 new ones, all green.
+- [x] Commit: `feat(tui): click handlers (left, alt-left, ctrl-left, double, triple)`.
 
 ## Task 8: Drag handlers — Neovim Visual vs Emacs region (TDD)
 
@@ -222,22 +237,22 @@ Tasks below modify these in the listed order; later tasks reference exact symbol
 
 **Steps:**
 
-- [ ] Add `fn on_mouse_drag(app: &mut App, ev: MouseEvent, zone: HitZone)`.
-- [ ] On the **first** Drag event after a Down, set `app.mouse.drag.anchor = Some(offset); app.mouse.drag.wid = Some(wid); app.mouse.drag.kind = DragKind::Char` (default).
-- [ ] If `ev.modifiers.contains(ALT)` on the first Drag, switch `kind = DragKind::Block`.
-- [ ] If by the second Drag the offset has crossed a line boundary, switch `kind = DragKind::Line`.
-- [ ] Per Drag event:
+- [x] Add `fn on_mouse_drag(app: &mut App, ev: MouseEvent, zone: HitZone)`.
+- [x] On the **first** Drag event after a Down, set `app.mouse.drag.anchor = Some(offset); app.mouse.drag.wid = Some(wid); app.mouse.drag.kind = DragKind::Char` (default).
+- [x] If `ev.modifiers.contains(ALT)` on the first Drag, switch `kind = DragKind::Block`.
+- [x] If by the second Drag the offset has crossed a line boundary, switch `kind = DragKind::Line`.
+- [x] Per Drag event:
   - Neovim Normal/Insert → `Action::BeginVisual(anchor)` once on first Drag; subsequent Drags → `Action::Move(Motion::To(offset))`.
   - Emacs → if mark not set, `Action::SetMark(anchor)` once; subsequent Drags → `CursorSet::set_region(mark, offset)` then render region via existing `SelectionView`.
   - Picker/dialog zone → consumed (no-op).
-- [ ] On `MouseKind::Up` with no movement since Down → revert to a single caret (cancel Visual/region).
-- [ ] Tests:
+- [x] On `MouseKind::Up` with no movement since Down → revert to a single caret (cancel Visual/region).
+- [x] Tests:
   - `drag_in_neovim_enters_visual_block_when_alt_held`
   - `drag_in_neovim_promotes_to_line_after_crossing_line`
   - `drag_in_emacs_sets_mark_and_extends_region`
   - `up_without_drag_keeps_caret_not_visual`
-- [ ] Run `cargo test -p ruster-tui` — verify all green.
-- [ ] Commit: `feat(tui): drag handlers with mode-aware visual/region selection`.
+- [x] Run `cargo test -p ruster-tui` — verify all green.
+- [x] Commit: `feat(tui): drag handlers with mode-aware visual/region selection`.
 
 ## Task 9: Wheel — vertical, Shift+horizontal, Ctrl+zoom (TDD)
 
@@ -247,18 +262,18 @@ Tasks below modify these in the listed order; later tasks reference exact symbol
 
 **Steps:**
 
-- [ ] Add `fn on_mouse_scroll(app: &mut App, ev: MouseEvent, zone: HitZone)`.
-- [ ] Branch:
+- [x] Add `fn on_mouse_scroll(app: &mut App, ev: MouseEvent, zone: HitZone)`.
+- [x] Branch:
   - `ev.modifiers.contains(CONTROL)` → if `app.is_gui`, call `app.zoom_font(dir)` (new method, see Task 10); else emit noice toast `"Ctrl+wheel zoom: GUI only"`.
   - `ScrollLeft | ScrollRight` → scroll horizontal on `wid` from `zone`.
   - `ScrollUp | ScrollDown` → `wid.scroll_top = wid.scroll_top.saturating_add_signed(dir * lines)` where `lines = app.config.mouse.wheel_lines`.
-- [ ] Tests:
+- [x] Tests:
   - `wheel_scroll_up_decrements_scroll_top`
   - `wheel_shift_modifier_scrolls_horizontal`
   - `wheel_ctrl_in_tui_emits_toast_not_action`
   - `wheel_outside_buffer_is_noop`
-- [ ] Run `cargo test -p ruster-tui` — all green.
-- [ ] Commit: `feat(tui): wheel handlers (vertical / shift-horizontal / ctrl-zoom GUI-only)`.
+- [x] Run `cargo test -p ruster-tui` — all green.
+- [x] Commit: `feat(tui): wheel handlers (vertical / shift-horizontal / ctrl-zoom GUI-only)`.
 
 ## Task 10: GUI zoom + cursor-shape plumbing on `RaylibRenderer`
 
@@ -268,7 +283,7 @@ Tasks below modify these in the listed order; later tasks reference exact symbol
 
 **Steps:**
 
-- [ ] In `crates/ruster-render-raylib/src/lib.rs` `impl Renderer for RaylibRenderer` (~line 507), add:
+- [x] In `crates/ruster-render-raylib/src/lib.rs` `impl Renderer for RaylibRenderer` (~line 507), add:
   ```rust
   fn cell_metrics(&self) -> (f32, f32) { (self.char_w, self.line_h) }
   fn set_pointer(&mut self, kind: ruster_render::PointerKind) -> bool {
@@ -282,14 +297,14 @@ Tasks below modify these in the listed order; later tasks reference exact symbol
       // Drain into self.event_buffer as MouseEvent items (extend the queue enum).
   }
   ```
-- [ ] Extend the existing event queue enum to include `Mouse(ruster_render::MouseEvent)` (separate from the `Vec<KeyEvent>` already at `event_buffer`).
-- [ ] In `App::run_gui` (called from `crates/ruster-bin/src/main.rs:50`), set `self.is_gui = true`.
-- [ ] In `crates/ruster-tui/src/app.rs`, add `pub fn zoom_font(&mut self, dir: i32)` that adjusts `self.config.font_size = (self.config.font_size as i32 + dir).clamp(8, 72) as u32` and re-applies via `self.renderer.set_gui_config(...)`.
-- [ ] Tests:
+- [x] Extend the existing event queue enum to include `Mouse(ruster_render::MouseEvent)` (separate from the `Vec<KeyEvent>` already at `event_buffer`).
+- [x] In `App::run_gui` (called from `crates/ruster-bin/src/main.rs:50`), set `self.is_gui = true`.
+- [x] In `crates/ruster-tui/src/app.rs`, add `pub fn zoom_font(&mut self, dir: i32)` that adjusts `self.config.font_size = (self.config.font_size as i32 + dir).clamp(8, 72) as u32` and re-applies via `self.renderer.set_gui_config(...)`.
+- [x] Tests:
   - In `crates/ruster-render-raylib/src/lib.rs` `#[cfg(test)]`, test `cell_metrics_returns_font_dims`.
   - In `crates/ruster-tui/src/app.rs`, test `zoom_font_clamps_to_min_and_max`.
-- [ ] Run `cargo build --workspace` and `cargo test --workspace` — green.
-- [ ] Commit: `feat(render-raylib): implement poll_mouse/cell_metrics/set_pointer; feat(tui): add zoom_font`.
+- [x] Run `cargo build --workspace` and `cargo test --workspace` — green.
+- [x] Commit: `feat(render-raylib): implement poll_mouse/cell_metrics/set_pointer; feat(tui): add zoom_font`.
 
 ## Task 11: Extend `ScriptedRenderer` with mouse scripting (TDD)
 
