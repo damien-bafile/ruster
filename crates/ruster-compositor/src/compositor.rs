@@ -683,7 +683,14 @@ impl<B: Backend + 'static> CompositorState<B> {
     /// it adds waits for the next pass.
     pub fn drain_wm_commands(&mut self) {
         let queued = match &self.wm {
-            Some(wm) => wm.take_actions(),
+            Some(wm) => {
+                let mut queued = wm.take_actions();
+                // Deferred actions after the immediate ones, so that within a
+                // single pass "do this now" still precedes "do this later" even
+                // when the later one has come due on the same iteration.
+                queued.extend(wm.take_due(std::time::Instant::now()));
+                queued
+            }
             None => return,
         };
         for action in queued {
