@@ -1529,9 +1529,9 @@ pub struct App {
     /// Guard so a macro can't recursively replay itself.
     replaying: bool,
     /// Which editing paradigm is active (`:set editmode neovim|emacs`).
-    editmode: EditMode,
+    pub(crate) editmode: EditMode,
     /// Emacs-mode editing state (mark, kill-ring, prefix arg).
-    emacs: ruster_core::emacs::EmacsState,
+    pub(crate) emacs: ruster_core::emacs::EmacsState,
     /// True after `C-x`, awaiting the second key of the prefix.
     emacs_ctrl_x: bool,
     /// Active incremental search: (query, forward). Emacs `C-s`/`C-r`.

@@ -252,8 +252,72 @@ const DOUBLE_CLICK_SLACK_CELLS: u16 = 2;
 /// Route one mouse event to its handler.
 pub fn handle_mouse_event(app: &mut App, ev: MouseEvent) {
     let zone = hit_test(app, ev.col, ev.row);
-    if ev.kind == MouseKind::Down {
-        on_mouse_down(app, ev, zone);
+    match ev.kind {
+        MouseKind::Down => on_mouse_down(app, ev, zone),
+        MouseKind::Drag => on_mouse_drag(app, ev),
+        MouseKind::Up => on_mouse_up(app, ev),
+        _ => {}
+    }
+}
+
+/// Extend the selection a press started.
+///
+/// The drag stays in the window it began in: a pointer that wanders into a
+/// neighbouring split keeps extending the original selection rather than
+/// silently jumping buffers.
+fn on_mouse_drag(app: &mut App, ev: MouseEvent) {
+    if ev.button != MouseButton::Left {
+        return;
+    }
+    let (Some(anchor), Some(wid)) = (app.mouse.drag.anchor, app.mouse.drag.wid) else {
+        return;
+    };
+    let Some(offset) = offset_in_window(app, wid, ev.col, ev.row) else {
+        return;
+    };
+
+    // Alt at the start of the movement makes it a block selection.
+    if app.mouse.drag.kind == DragKind::Char
+        && ev.modifiers.contains(KeyModifiers::ALT)
+        && offset != anchor
+    {
+        app.mouse.drag.kind = DragKind::Block;
+    }
+
+    match app.editmode {
+        crate::app::EditMode::Neovim => {
+            app.vim.mode = match app.mouse.drag.kind {
+                DragKind::Block => ruster_core::vim::VimMode::VisualBlock,
+                DragKind::Line => ruster_core::vim::VimMode::VisualLine,
+                DragKind::Char => ruster_core::vim::VimMode::VisualChar,
+            };
+        }
+        crate::app::EditMode::Emacs => {
+            // The region a drag builds has to be the one the kill commands see.
+            if app.emacs.mark().is_none() {
+                app.emacs.set_mark(anchor);
+            }
+        }
+    }
+
+    if let Some(win) = app.ws.borrow_mut().windows.window_mut(wid) {
+        win.cursors.set_region(anchor, offset);
+    }
+}
+
+/// Release the drag. A press that never moved leaves the caret it placed.
+fn on_mouse_up(app: &mut App, ev: MouseEvent) {
+    if ev.button != MouseButton::Left {
+        return;
+    }
+    app.mouse.drag = DragState::default();
+}
+
+/// Resolve a cell to an offset, but only when it lands in `wid`.
+fn offset_in_window(app: &App, wid: WindowId, col: u16, row: u16) -> Option<usize> {
+    match app.buffer_offset_at(col, row) {
+        Some((hit, offset)) if hit == wid => Some(offset),
+        _ => None,
     }
 }
 
@@ -334,10 +398,19 @@ fn on_buffer_down(app: &mut App, ev: MouseEvent, wid: WindowId, offset: usize, c
                 });
             }
         }
-        _ => app
-            .ws
-            .borrow_mut()
-            .execute(Action::Move(Motion::To(offset))),
+        _ => {
+            app.ws
+                .borrow_mut()
+                .execute(Action::Move(Motion::To(offset)));
+            // Arm a drag from where the press landed. Anchoring here rather
+            // than on the first Drag event means a fast drag doesn't lose the
+            // cells it crossed before the first event arrived.
+            app.mouse.drag = DragState {
+                anchor: Some(offset),
+                kind: DragKind::Char,
+                wid: Some(wid),
+            };
+        }
     }
 }
 
@@ -561,6 +634,137 @@ mod tests {
         handle_mouse_event(&mut a, down(l.text.x + 8, l.text.y, KeyModifiers::empty()));
         assert_eq!(a.mouse.click.streak, 1);
         assert_eq!(selected(&a), "");
+    }
+
+    fn drag_to(col: u16, row: u16, modifiers: KeyModifiers) -> MouseEvent {
+        MouseEvent::new(col, row, MouseKind::Drag, MouseButton::Left, modifiers)
+    }
+
+    #[test]
+    fn drag_in_neovim_selects_and_enters_visual() {
+        let mut a = App::new("alpha bravo\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        handle_mouse_event(&mut a, down(l.text.x, l.text.y, KeyModifiers::empty()));
+        handle_mouse_event(
+            &mut a,
+            drag_to(l.text.x + 5, l.text.y, KeyModifiers::empty()),
+        );
+
+        assert_eq!(selected(&a), "alpha");
+        assert_eq!(a.vim.mode, ruster_core::vim::VimMode::VisualChar);
+    }
+
+    #[test]
+    fn drag_in_neovim_enters_visual_block_when_alt_held() {
+        let mut a = App::new("alpha bravo\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        handle_mouse_event(&mut a, down(l.text.x, l.text.y, KeyModifiers::empty()));
+        handle_mouse_event(&mut a, drag_to(l.text.x + 5, l.text.y, KeyModifiers::ALT));
+
+        assert_eq!(a.mouse.drag.kind, DragKind::Block);
+        assert_eq!(a.vim.mode, ruster_core::vim::VimMode::VisualBlock);
+    }
+
+    /// Dragging across lines is still a character selection — that is what the
+    /// selection is for. Whole-line selection is the gutter's job.
+    #[test]
+    fn drag_across_lines_stays_a_character_selection() {
+        let mut a = App::new("alpha\nbravo\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        handle_mouse_event(&mut a, down(l.text.x + 2, l.text.y, KeyModifiers::empty()));
+        handle_mouse_event(
+            &mut a,
+            drag_to(l.text.x + 2, l.text.y + 1, KeyModifiers::empty()),
+        );
+
+        assert_eq!(a.mouse.drag.kind, DragKind::Char);
+        assert_eq!(selected(&a), "pha\nbr");
+    }
+
+    #[test]
+    fn drag_in_emacs_sets_mark_and_extends_region() {
+        let mut a = App::new("alpha bravo\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        a.editmode = crate::app::EditMode::Emacs;
+        let l = laid_out(&mut a);
+        handle_mouse_event(&mut a, down(l.text.x, l.text.y, KeyModifiers::empty()));
+        handle_mouse_event(
+            &mut a,
+            drag_to(l.text.x + 5, l.text.y, KeyModifiers::empty()),
+        );
+
+        assert_eq!(a.emacs.mark(), Some(0), "the drag planted the mark");
+        assert_eq!(selected(&a), "alpha");
+        // Extending further moves point, not the mark.
+        handle_mouse_event(
+            &mut a,
+            drag_to(l.text.x + 7, l.text.y, KeyModifiers::empty()),
+        );
+        assert_eq!(a.emacs.mark(), Some(0));
+        assert_eq!(selected(&a), "alpha b");
+    }
+
+    #[test]
+    fn up_without_drag_keeps_caret_not_visual() {
+        let mut a = App::new("alpha bravo\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        let at = l.text.x + 3;
+        handle_mouse_event(&mut a, down(at, l.text.y, KeyModifiers::empty()));
+        handle_mouse_event(
+            &mut a,
+            MouseEvent::new(
+                at,
+                l.text.y,
+                MouseKind::Up,
+                MouseButton::Left,
+                KeyModifiers::empty(),
+            ),
+        );
+
+        assert_eq!(selected(&a), "", "still a bare caret");
+        assert_eq!(a.vim.mode, ruster_core::vim::VimMode::Normal);
+        assert!(a.mouse.drag.anchor.is_none(), "drag state released");
+    }
+
+    /// A drag that wanders into a neighbouring split keeps extending the
+    /// selection it started, rather than jumping buffers.
+    #[test]
+    fn drag_ignores_cells_outside_the_originating_window() {
+        use ruster_core::windows::SplitDir;
+
+        let mut a = App::new("alpha bravo\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        a.ws.borrow_mut().windows.split(SplitDir::Vertical);
+        a.render();
+        let left = a
+            .last_layout
+            .iter()
+            .min_by_key(|l| l.rect.x)
+            .copied()
+            .expect("a leftmost window");
+        let right = a
+            .last_layout
+            .iter()
+            .max_by_key(|l| l.rect.x)
+            .copied()
+            .expect("a rightmost window");
+        assert_ne!(left.window, right.window);
+
+        handle_mouse_event(
+            &mut a,
+            down(left.text.x, left.text.y, KeyModifiers::empty()),
+        );
+        let before = selected(&a);
+        // A drag event over the other window changes nothing.
+        handle_mouse_event(
+            &mut a,
+            drag_to(right.text.x + 1, right.text.y, KeyModifiers::empty()),
+        );
+        assert_eq!(selected(&a), before);
     }
 
     #[test]

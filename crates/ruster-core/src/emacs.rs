@@ -56,6 +56,12 @@ impl EmacsState {
         self.mark
     }
 
+    /// Plant the mark, as `C-SPC` does. A mouse drag needs this: the region it
+    /// builds has to be the same region the kill and yank commands act on.
+    pub fn set_mark(&mut self, at: usize) {
+        self.mark = Some(at);
+    }
+
     /// Clear the mark and any pending prefix (the `C-g` "keyboard-quit").
     pub fn cancel(&mut self) {
         self.mark = None;
