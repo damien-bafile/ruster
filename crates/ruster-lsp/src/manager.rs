@@ -84,6 +84,16 @@ impl LspManager {
         self.clients.contains_key(key)
     }
 
+    /// Whether any server is running at all.
+    ///
+    /// The event loop asks: servers deliver over an mpsc channel rather than a
+    /// pollable fd, so their messages are the one thing that only arrives when
+    /// something thinks to look. With no server running there is nothing to
+    /// look for, and the loop can sleep until a real event source wakes it.
+    pub fn has_servers(&self) -> bool {
+        !self.clients.is_empty()
+    }
+
     /// Ensure a server for `lang` rooted at `root` is spawned and initializing.
     /// Returns whether a client is now present (false if there's no server for
     /// the language or spawning failed).

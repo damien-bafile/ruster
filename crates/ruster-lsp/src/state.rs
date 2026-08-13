@@ -163,6 +163,11 @@ impl<A> LspState<A> {
         self.manager.set_server(lang, cfg);
     }
 
+    /// Whether any language server is running. See [`LspManager::has_servers`].
+    pub fn has_servers(&self) -> bool {
+        self.manager.has_servers()
+    }
+
     pub fn poll(&mut self) -> Vec<RoutedMessage> {
         self.manager.poll()
     }

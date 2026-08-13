@@ -1,5 +1,5 @@
 use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use smithay::backend::renderer::damage::OutputDamageTracker;
 use smithay::backend::renderer::gles::GlesRenderer;
@@ -40,14 +40,12 @@ pub struct RusterWinitData {
 #[derive(Debug, Default)]
 pub struct RedrawGate {
     pending: bool,
-    last_invite: Option<Instant>,
 }
 
 impl RedrawGate {
     /// The host asked for a frame.
     pub fn request(&mut self) {
         self.pending = true;
-        self.last_invite = Some(Instant::now());
     }
 
     /// Consume an invitation. False means "do not render this pass" — which is
@@ -56,47 +54,57 @@ impl RedrawGate {
     pub fn take(&mut self) -> bool {
         std::mem::take(&mut self.pending)
     }
-
-    /// How long since the host last asked for a frame. `None` means it never
-    /// has. Feeds [`poll_timeout`], which is where that gets interpreted.
-    pub fn since_invite(&self, now: Instant) -> Option<Duration> {
-        self.last_invite
-            .map(|then| now.saturating_duration_since(then))
-    }
 }
 
-/// How long the event loop may block waiting for something to happen.
+/// What the event loop still has to wake up for on a clock.
 ///
-/// Gating the render on an invitation stopped the compositor freezing behind
-/// `eglSwapBuffers`, but it left the loop turning over a fixed 1ms timeout —
-/// about 9,400 passes and ~1% of a core every 10 seconds, forever, for a window
-/// nobody is looking at. This is the other half of that fix.
-///
-/// The timeout cannot simply be raised, because winit's fd is *not* a calloop
-/// source: it is pumped by hand once per pass, so this value is also the worst
-/// case for noticing a keystroke. Hence the split — stay at 1ms while the host
-/// is presenting (which is when someone is plausibly typing, and when redraw
-/// invitations arrive every ~16ms anyway so the loop is paced by the display
-/// rather than by this), and back off only once the invitations have stopped.
-///
-/// A pending deferred action overrides both: sleeping past its deadline would
-/// run it late, and `ruster.wm.defer` is what the compositor uses to photograph
-/// itself, so lateness there is measurement error.
-pub fn poll_timeout(since_invite: Option<Duration>, next_deferred: Option<Duration>) -> Duration {
-    /// One frame at 60Hz.
-    const PRESENTING: Duration = Duration::from_millis(16);
-    const ACTIVE: Duration = Duration::from_millis(1);
-    const IDLE: Duration = Duration::from_millis(32);
+/// Everything here is something that is *not* an event source. Winit's window
+/// and the Wayland clients are both registered with calloop, so input, redraw
+/// invitations and client requests wake the loop by themselves — the timeout
+/// has nothing to do with input latency or frame rate.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Servicing {
+    /// A language server is running. Its messages arrive on an mpsc channel
+    /// rather than a pollable fd, so they are only noticed when something looks.
+    pub lsp: bool,
+    /// A chord prefix is half-typed and has to time out on its own, or the
+    /// overlay stays up and the next key is read as part of it.
+    pub chord: bool,
+    /// Until the earliest pending `ruster.wm.defer`, if any.
+    pub next_deferred: Option<Duration>,
+}
 
-    let base = match since_invite {
-        Some(gap) if gap <= PRESENTING => ACTIVE,
-        // Never invited, or invited so long ago the host has clearly stopped.
-        _ => IDLE,
-    };
-    match next_deferred {
-        Some(until) => base.min(until),
-        None => base,
-    }
+/// How long the loop may block. `None` means "until something happens".
+///
+/// This is the shape niri and Hyprland both use: nothing is polled on a
+/// timeout, everything that can wake the loop is a source or a timer, and the
+/// loop sleeps otherwise. The first version of this function was a heuristic
+/// guessing whether the host was still presenting, because winit was pumped by
+/// hand and its timeout therefore bounded how fast a keystroke could be seen.
+/// It cost a quarter of the frame rate: at 60Hz the gap between invitations
+/// straddled the boundary, so the loop kept dropping into its idle cadence and
+/// missing frames — 41-50 fps against a locked 60. Registering winit with
+/// calloop deleted the entire tradeoff rather than tuning it.
+///
+/// A tick remains only for the things that genuinely have no fd. Making the LSP
+/// channel a `calloop::channel` would remove the last of them and let this
+/// return `None` whenever no chord and no defer is pending.
+pub fn poll_timeout(servicing: Servicing) -> Option<Duration> {
+    /// Frequent enough that diagnostics appear to land immediately, rare enough
+    /// to be invisible next to the render.
+    const LSP_TICK: Duration = Duration::from_millis(16);
+    /// A chord expires after a second; checking four times as often keeps the
+    /// overlay's disappearance from looking like a stutter.
+    const CHORD_TICK: Duration = Duration::from_millis(250);
+
+    [
+        servicing.lsp.then_some(LSP_TICK),
+        servicing.chord.then_some(CHORD_TICK),
+        servicing.next_deferred,
+    ]
+    .into_iter()
+    .flatten()
+    .min()
 }
 
 impl Backend for RusterWinitData {
@@ -215,69 +223,90 @@ impl CompositorState<RusterWinitData> {
 
 #[cfg(test)]
 mod poll_timeout_tests {
-    use super::poll_timeout;
+    use super::{poll_timeout, Servicing};
     use std::time::Duration;
 
     const MS: fn(u64) -> Duration = Duration::from_millis;
 
+    /// The whole point of registering winit with calloop: with nothing on a
+    /// clock to service, the loop sleeps until a source wakes it. It does not
+    /// wake up to ask whether anything happened.
     #[test]
-    fn a_presenting_host_keeps_the_loop_responsive() {
-        // One frame ago at 60Hz: someone may be typing, and the pump timeout is
-        // the worst case for noticing it, because winit's fd is not a calloop
-        // source and is polled by hand once per pass.
-        assert_eq!(poll_timeout(Some(MS(16)), None), MS(1));
+    fn with_nothing_to_service_the_loop_blocks() {
+        assert_eq!(poll_timeout(Servicing::default()), None);
     }
 
+    /// A language server's messages arrive on an mpsc channel, which has no fd
+    /// for calloop to poll, so this is the one thing still on a tick.
     #[test]
-    fn a_host_that_has_stopped_presenting_lets_the_loop_sleep() {
+    fn a_running_language_server_keeps_a_tick() {
         assert_eq!(
-            poll_timeout(Some(MS(5_000)), None),
-            MS(32),
-            "spinning at 1ms for a window nobody is presenting is the ~1% CPU \
-             idle burn this exists to stop"
+            poll_timeout(Servicing {
+                lsp: true,
+                ..Servicing::default()
+            }),
+            Some(MS(16))
         );
     }
 
     #[test]
-    fn a_host_that_has_never_presented_is_idle_not_active() {
-        assert_eq!(poll_timeout(None, None), MS(32));
-    }
-
-    /// The boundary is one frame at 60Hz, and it is inclusive: a gap of exactly
-    /// a frame is the steady state of a presenting host, not evidence it has
-    /// stopped.
-    #[test]
-    fn the_boundary_sits_at_one_frame_and_includes_it() {
-        assert_eq!(poll_timeout(Some(MS(15)), None), MS(1));
-        assert_eq!(poll_timeout(Some(MS(16)), None), MS(1));
-        assert_eq!(poll_timeout(Some(MS(17)), None), MS(32));
-    }
-
-    #[test]
-    fn a_deferred_action_is_never_slept_past() {
+    fn a_half_typed_chord_has_to_be_able_to_expire() {
         assert_eq!(
-            poll_timeout(Some(MS(5_000)), Some(MS(5))),
-            MS(5),
-            "idling 32ms would run a 5ms defer 27ms late, and defer is how the \
-             compositor times its own screenshots"
+            poll_timeout(Servicing {
+                chord: true,
+                ..Servicing::default()
+            }),
+            Some(MS(250)),
+            "a chord that cannot time out leaves the overlay up and eats the \
+             next key as part of the sequence"
         );
     }
 
     #[test]
-    fn a_distant_deferred_action_does_not_hold_the_loop_awake() {
+    fn a_deferred_action_wakes_the_loop_at_its_deadline() {
         assert_eq!(
-            poll_timeout(Some(MS(5_000)), Some(MS(900))),
-            MS(32),
-            "clamping is a ceiling, not a target"
+            poll_timeout(Servicing {
+                next_deferred: Some(MS(900)),
+                ..Servicing::default()
+            }),
+            Some(MS(900))
         );
-        assert_eq!(poll_timeout(Some(MS(16)), Some(MS(900))), MS(1));
     }
 
-    /// An already-overdue action asks for no wait at all: come round now, run
-    /// it, and the queue empties rather than spinning.
+    /// Whichever is soonest — sleeping to any other deadline runs something
+    /// late.
+    #[test]
+    fn the_soonest_deadline_wins() {
+        assert_eq!(
+            poll_timeout(Servicing {
+                lsp: true,
+                chord: true,
+                next_deferred: Some(MS(900)),
+            }),
+            Some(MS(16))
+        );
+        assert_eq!(
+            poll_timeout(Servicing {
+                lsp: false,
+                chord: true,
+                next_deferred: Some(MS(5)),
+            }),
+            Some(MS(5)),
+            "a defer due in 5ms must not wait out the 250ms chord tick"
+        );
+    }
+
+    /// An overdue action asks for no wait: come round now and run it.
     #[test]
     fn an_overdue_deferred_action_yields_immediately() {
-        assert_eq!(poll_timeout(Some(MS(5_000)), Some(Duration::ZERO)), MS(0));
+        assert_eq!(
+            poll_timeout(Servicing {
+                lsp: true,
+                chord: true,
+                next_deferred: Some(Duration::ZERO),
+            }),
+            Some(Duration::ZERO)
+        );
     }
 }
 

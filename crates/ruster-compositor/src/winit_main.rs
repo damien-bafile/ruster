@@ -6,9 +6,8 @@ use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::{winit, SwapBuffersError};
 use smithay::reexports::calloop::EventLoop;
 use smithay::reexports::wayland_server::Display;
-use smithay::reexports::winit::platform::pump_events::PumpStatus;
 
-use ruster_compositor::backend::winit::{poll_timeout, RusterWinitData};
+use ruster_compositor::backend::winit::{poll_timeout, RusterWinitData, Servicing};
 #[cfg(feature = "udev")]
 use ruster_compositor::compositor::drm_error_hint;
 use ruster_compositor::compositor::{
@@ -92,16 +91,32 @@ fn report_frame_time(elapsed: Duration) {
 /// that skipped because the host had not asked for a frame. Duplicating it once
 /// meant a client-visible flush could be added to one path and silently not the
 /// other.
+///
+/// The dispatch blocks. Winit and the Wayland clients are both calloop sources,
+/// so a keystroke, a redraw invitation or a client request wakes it at once;
+/// the timeout covers only what has no fd of its own.
 fn pump(
     event_loop: &mut EventLoop<'static, CompositorState<RusterWinitData>>,
     state: &mut CompositorState<RusterWinitData>,
 ) -> bool {
+    // Never sleep when we have already been told to stop. The `while` above
+    // only reaches its condition again after this returns, so blocking here
+    // with `running` already false waits for an event that may never come:
+    // a deferred `quit` fired on time against a host that had stopped
+    // presenting, and the process then sat alive for another thirteen seconds
+    // until an unrelated event happened to wake it. Signals are fine — those
+    // come through calloop's own source and wake the dispatch — but anything
+    // the loop decides for itself has to be noticed here.
+    if !state.running.load(Ordering::SeqCst) {
+        return false;
+    }
     let now = std::time::Instant::now();
-    let timeout = poll_timeout(
-        state.backend_data.redraw.since_invite(now),
-        state.wm.as_ref().and_then(|wm| wm.next_due(now)),
-    );
-    if event_loop.dispatch(Some(timeout), state).is_err() {
+    let timeout = poll_timeout(Servicing {
+        lsp: state.lsp.has_servers(),
+        chord: state.chord.is_active(),
+        next_deferred: state.wm.as_ref().and_then(|wm| wm.next_due(now)),
+    });
+    if event_loop.dispatch(timeout, state).is_err() {
         return false;
     }
     state.display_handle.flush_clients().unwrap();
@@ -128,12 +143,24 @@ fn run_winit() -> anyhow::Result<()> {
     let running = state.running.clone();
     install_signal_handlers(&running, event_loop.get_signal())?;
 
+    // Winit as a calloop source rather than something pumped by hand once per
+    // pass. This is what lets the dispatch below actually block: input and
+    // redraw invitations arrive on winit's own fd and wake the loop, so the
+    // timeout stops being the worst case for noticing a keystroke — and stops
+    // having to be traded off against frame rate. Smithay's `WinitEventLoop`
+    // registers the fd and drains anything already queued in `before_sleep`,
+    // so nothing is stranded by going to sleep. niri and Hyprland are both
+    // shaped this way: everything that can wake the compositor is a source.
+    event_loop
+        .handle()
+        .insert_source(winit, |event, _, state| state.handle_event(event))
+        .map_err(|err| anyhow::anyhow!("failed to register the winit backend: {err}"))?;
+
     // Arm the first frame. Every frame after it is armed by the one before, so
     // the compositor only ever enters the blocking swap on the host's
     // invitation.
     state.backend_data.backend.window().request_redraw();
 
-    let mut winit = winit;
     while state.running.load(Ordering::SeqCst) {
         // Anything `ruster.wm.*` queued since the last pass, before rendering,
         // so a Lua-driven layout change shows up on this frame rather than the
@@ -145,11 +172,6 @@ fn run_winit() -> anyhow::Result<()> {
         // A half-typed chord that is never finished has to clear itself, or the
         // overlay stays up and the next key is still being read as part of it.
         state.chord.expire(std::time::Instant::now());
-        let status = winit.dispatch_new_events(|event| state.handle_event(event));
-        if let PumpStatus::Exit(_) = status {
-            state.running.store(false, Ordering::SeqCst);
-            break;
-        }
 
         // Only when the host has asked for a frame. Rendering unconditionally is
         // what stalled the compositor: the swap at the end of it blocks until
