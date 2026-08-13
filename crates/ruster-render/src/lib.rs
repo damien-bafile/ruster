@@ -1,5 +1,7 @@
+pub mod mouse;
 pub mod script;
 
+pub use mouse::{MouseButton, MouseEvent, MouseKind, PointerKind};
 pub use script::{FrameDigest, ScriptedRenderer, WindowDigest};
 
 /// Editing mode for statusline coloring.
