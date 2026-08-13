@@ -12,7 +12,7 @@ use crossterm::event::KeyModifiers;
 use ruster_core::action::{Action, Motion};
 use ruster_core::cursor::Range;
 use ruster_core::windows::{Rect, WindowId};
-use ruster_render::mouse::{MouseButton, MouseEvent, MouseKind};
+use ruster_render::mouse::{MouseButton, MouseEvent, MouseKind, PointerKind};
 
 use crate::app::App;
 
@@ -252,6 +252,7 @@ const DOUBLE_CLICK_SLACK_CELLS: u16 = 2;
 /// Route one mouse event to its handler.
 pub fn handle_mouse_event(app: &mut App, ev: MouseEvent) {
     let zone = hit_test(app, ev.col, ev.row);
+    set_pointer_for_zone(app, zone);
     match ev.kind {
         MouseKind::Down => on_mouse_down(app, ev, zone),
         MouseKind::Drag => on_mouse_drag(app, ev),
@@ -262,6 +263,23 @@ pub fn handle_mouse_event(app: &mut App, ev: MouseEvent) {
         | MouseKind::ScrollRight => on_mouse_scroll(app, ev, zone),
         MouseKind::Move => {}
     }
+}
+
+/// Shape the pointer to say what the cell under it will do.
+///
+/// GUI only — a terminal has no pointer of its own to reshape, and the default
+/// `Renderer::set_pointer` returns false there anyway.
+fn set_pointer_for_zone(app: &mut App, zone: HitZone) {
+    if !app.is_gui {
+        return;
+    }
+    let pointer = match zone {
+        HitZone::Buffer(..) => PointerKind::IBeam,
+        HitZone::Chrome(ChromeKind::SplitEdge { .. }) => PointerKind::Resize,
+        HitZone::Chrome(_) | HitZone::Gutter(..) => PointerKind::PointingHand,
+        HitZone::Float(_) | HitZone::Outside => PointerKind::Default,
+    };
+    app.renderer.set_pointer(pointer);
 }
 
 /// How many lines one wheel notch scrolls.
@@ -926,6 +944,106 @@ mod tests {
         assert_eq!(hit_test(&a, l.text.x, blank), HitZone::Outside);
         handle_mouse_event(&mut a, down(l.text.x, blank, KeyModifiers::empty()));
         assert_eq!(a.vim.mode, ruster_core::vim::VimMode::Cmdline);
+    }
+
+    /// A renderer that records the pointer shapes asked of it. Wraps nothing —
+    /// the pointer is the only thing under test.
+    #[derive(Default)]
+    struct PointerSpy {
+        shapes: std::rc::Rc<std::cell::RefCell<Vec<PointerKind>>>,
+        viewport: (u16, u16),
+    }
+
+    impl ruster_render::Renderer for PointerSpy {
+        fn render_frame(&mut self, _state: &ruster_render::FrameState) {}
+        fn viewport_cells(&self) -> (u16, u16) {
+            self.viewport
+        }
+        fn set_pointer(&mut self, pointer: PointerKind) -> bool {
+            self.shapes.borrow_mut().push(pointer);
+            true
+        }
+    }
+
+    /// Swap in a spy renderer and return the log it writes to.
+    fn spy_on_pointer(a: &mut App) -> std::rc::Rc<std::cell::RefCell<Vec<PointerKind>>> {
+        let shapes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        a.renderer = Box::new(PointerSpy {
+            shapes: shapes.clone(),
+            viewport: a.renderer.viewport_cells(),
+        });
+        a.is_gui = true;
+        shapes
+    }
+
+    #[test]
+    fn pointer_is_ibeam_over_buffer_text() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        let shapes = spy_on_pointer(&mut a);
+
+        handle_mouse_event(
+            &mut a,
+            MouseEvent::new(
+                l.text.x,
+                l.text.y,
+                MouseKind::Move,
+                MouseButton::None,
+                KeyModifiers::empty(),
+            ),
+        );
+        assert_eq!(shapes.borrow().as_slice(), &[PointerKind::IBeam]);
+    }
+
+    #[test]
+    fn pointer_is_resize_on_a_split_edge() {
+        use ruster_core::windows::SplitDir;
+
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        a.ws.borrow_mut().windows.split(SplitDir::Vertical);
+        a.render();
+        let left = a
+            .last_layout
+            .iter()
+            .min_by_key(|l| l.rect.x)
+            .copied()
+            .expect("a leftmost window");
+        let shapes = spy_on_pointer(&mut a);
+
+        handle_mouse_event(
+            &mut a,
+            MouseEvent::new(
+                left.rect.x + left.rect.width - 1,
+                left.rect.y + left.rect.height / 2,
+                MouseKind::Move,
+                MouseButton::None,
+                KeyModifiers::empty(),
+            ),
+        );
+        assert_eq!(shapes.borrow().as_slice(), &[PointerKind::Resize]);
+    }
+
+    /// The TUI has no pointer to reshape, so it must not ask.
+    #[test]
+    fn pointer_is_never_set_in_the_tui() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        let shapes = spy_on_pointer(&mut a);
+        a.is_gui = false;
+
+        handle_mouse_event(
+            &mut a,
+            MouseEvent::new(
+                l.text.x,
+                l.text.y,
+                MouseKind::Move,
+                MouseButton::None,
+                KeyModifiers::empty(),
+            ),
+        );
+        assert!(shapes.borrow().is_empty());
     }
 
     #[test]
