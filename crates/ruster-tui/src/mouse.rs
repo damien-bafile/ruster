@@ -171,11 +171,7 @@ pub enum ChromeKind {
 /// so the hit-test cannot disagree with what is on screen.
 pub fn hit_test(app: &App, col: u16, row: u16) -> HitZone {
     // Floats are drawn above everything; the topmost one wins.
-    if let Some(idx) = app
-        .last_floats
-        .iter()
-        .rposition(|r| contains(*r, col, row))
-    {
+    if let Some(idx) = app.last_floats.iter().rposition(|r| contains(*r, col, row)) {
         return HitZone::Float(idx);
     }
 
@@ -338,7 +334,10 @@ mod tests {
         );
 
         // ...is claimed by the hover popup once one is drawn there.
-        a.hover = Some(vec![ruster_render::StyledLine { text: "hovering".into(), highlights: Vec::new() }]);
+        a.hover = Some(vec![ruster_render::StyledLine {
+            text: "hovering".into(),
+            highlights: Vec::new(),
+        }]);
         a.render();
         let f = *a.last_floats.first().expect("hover raised a float");
         assert!(contains(f, f.x, f.y), "float has a non-empty rect");

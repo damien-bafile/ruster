@@ -97,6 +97,13 @@ impl<'a> EditSession<'a> {
             // Workspace handles it before delegating here.
             Action::Scroll(_) => {}
             Action::CmdlineResult(_) => {}
+            Action::SelectWord { anchor, head } | Action::SelectLine { anchor, head } => {
+                self.cursors.set_region(anchor, head);
+            }
+            Action::SetMark(at) => self.cursors.set_visual_anchor(at),
+            // Window geometry is not something an EditSession borrows;
+            // Workspace handles it before delegating here.
+            Action::ResizeWindow { .. } => {}
             Action::Textobject { .. } => {}
             Action::IndentLine => {
                 let line = self.cursor_line();
