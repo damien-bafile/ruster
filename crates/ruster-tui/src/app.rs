@@ -71,6 +71,9 @@ pub struct WindowLayout {
     pub text: ruster_render::TextArea,
     /// First visible buffer line, so a screen row maps back to a buffer line.
     pub scroll_top: usize,
+    /// First visible column, so a screen column maps back to a column in the
+    /// line. Zero unless a long line has dragged the window sideways.
+    pub scroll_left: usize,
 }
 
 /// Infinite iterator over adaptive labels: a-z, aa-az, ba-bz, …
@@ -526,6 +529,48 @@ fn find_in_path(name: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Rebase a window's view onto its first visible column.
+///
+/// Both backends draw a line's character `n` at text column `n` and compare the
+/// cursor column against the same index, so the only way to show a horizontally
+/// scrolled window is to hand them a view whose columns already start at
+/// `cols`. Everything positioned by column therefore has to move together —
+/// text, highlights, carets, selection and flash labels — or the overlays end
+/// up pointing at characters that are no longer under them.
+///
+/// The line text goes through [`StyledLine::slice_from`] rather than a plain
+/// truncation because the highlight spans are character offsets into the line
+/// and have to be clipped and rebased with it.
+fn scroll_view_sideways(view: &mut WindowView, cols: usize) {
+    for line in &mut view.lines {
+        *line = line.slice_from(cols);
+    }
+    // The clamp in `render` guarantees the primary cursor is at or right of
+    // `cols`; extra carets have no such promise, and one left of the view must
+    // disappear rather than pile up on column zero.
+    view.cursor.1 = view.cursor.1.saturating_sub(cols as u16);
+    view.extra_cursors.retain(|&(_, col)| col as usize >= cols);
+    for (_, col) in &mut view.extra_cursors {
+        *col -= cols as u16;
+    }
+    view.flash_labels.retain(|l| l.col as usize >= cols);
+    for label in &mut view.flash_labels {
+        label.col -= cols as u16;
+    }
+    if let Some(sel) = &mut view.selection {
+        // A selection that ends left of the view on its last line covers
+        // nothing there. Saturating that column to zero would paint one stray
+        // cell, so retire the line instead and let the selection end on the one
+        // before it, which it does cover to the end.
+        if sel.end.0 > sel.start.0 && (sel.end.1 as usize) < cols {
+            sel.end = (sel.end.0 - 1, u16::MAX);
+        } else {
+            sel.end.1 = sel.end.1.saturating_sub(cols as u16);
+        }
+        sel.start.1 = sel.start.1.saturating_sub(cols as u16);
+    }
 }
 
 fn plain_lines(content: &str) -> Vec<StyledLine> {
@@ -3039,7 +3084,7 @@ impl App {
             // the end of a line lands on its last character.
             let content_len = doc.buffer.line_content_len(buf_line);
             let offset = doc.buffer.line_start_char(buf_line)
-                + (text_col as usize).min(content_len.saturating_sub(1));
+                + (l.scroll_left + text_col as usize).min(content_len.saturating_sub(1));
             return Some((l.window, offset));
         }
         None
@@ -4594,7 +4639,7 @@ impl App {
             let rects = w.windows.compute_rects(buf_area);
             for (wid, rect) in rects {
                 let is_active = wid == active_id;
-                let (buf_id, head, anchor, mut scroll, extra_heads) = {
+                let (buf_id, head, anchor, mut scroll, mut hscroll, extra_heads) = {
                     let win = w.windows.window(wid).expect("window exists");
                     let primary = win.cursors.primary();
                     // Heads of every cursor except the primary, for multi-cursor
@@ -4610,6 +4655,7 @@ impl App {
                         primary.head,
                         primary.anchor,
                         win.scroll_top,
+                        win.scroll_left,
                         extra_heads,
                     )
                 };
@@ -4880,6 +4926,27 @@ impl App {
                     vec![]
                 };
                 let rrect = RRect::new(rect.x, rect.y, rect.width, rect.height);
+                // Only now is the text area settled — the sign column and the
+                // gutter eat into it, and both are decided above.
+                let text_area = ruster_render::TextArea::of(rrect, signs.width, gutter.width);
+                // Keep the cursor visible horizontally, the mirror of the
+                // vertical clamp further up. Nothing wraps, so a cursor past the
+                // right edge would otherwise be invisible and untrackable rather
+                // than merely off to one side.
+                let text_w = text_area.width as usize;
+                if text_w > 0 {
+                    if ccol < hscroll {
+                        hscroll = ccol;
+                    } else if ccol >= hscroll + text_w {
+                        hscroll = ccol - text_w + 1;
+                    }
+                }
+                if let Some(win) = w.windows.window_mut(wid) {
+                    win.scroll_left = hscroll;
+                    // Recorded for the same reason as `height`: `zl`/`zh` have
+                    // no other way to learn how wide the view came out.
+                    win.width = text_w;
+                }
                 // A terminal window draws its own grid, so there is no buffer
                 // text to click into.
                 if terminal.is_none() {
@@ -4887,11 +4954,12 @@ impl App {
                         window: wid,
                         buffer: buf_id,
                         rect: rrect,
-                        text: ruster_render::TextArea::of(rrect, signs.width, gutter.width),
+                        text: text_area,
                         scroll_top: scroll,
+                        scroll_left: hscroll,
                     });
                 }
-                views.push(WindowView {
+                let mut view = WindowView {
                     rect: rrect,
                     header: name.clone(),
                     lines,
@@ -4908,7 +4976,11 @@ impl App {
                     selection,
                     terminal,
                     flash_labels,
-                });
+                };
+                if hscroll > 0 {
+                    scroll_view_sideways(&mut view, hscroll);
+                }
+                views.push(view);
             }
         }
         if let Some(srect) = sidebar_rect {
@@ -9695,6 +9767,295 @@ mod tests {
         a.handle_key(CtKey::new(KeyCode::Esc, none));
         a.handle_key(CtKey::new(KeyCode::Char('V'), none));
         assert_eq!(a.vim.mode, VimMode::VisualLine);
+    }
+
+    /// A renderer that keeps the active window's view from the last frame.
+    ///
+    /// Horizontal scrolling is applied on the way *into* the frame — the
+    /// backends receive a view whose columns already start at the first visible
+    /// one — so asserting on editor state alone would miss the half of the work
+    /// that matters.
+    struct FrameSpy {
+        lines: Rc<RefCell<Vec<StyledLine>>>,
+        cursor: Rc<RefCell<(u16, u16)>>,
+        viewport: (u16, u16),
+    }
+
+    impl Renderer for FrameSpy {
+        fn render_frame(&mut self, state: &FrameState) {
+            if let Some(w) = state.windows.iter().find(|w| w.active) {
+                *self.lines.borrow_mut() = w.lines.clone();
+                *self.cursor.borrow_mut() = w.cursor;
+            }
+        }
+        fn viewport_cells(&self) -> (u16, u16) {
+            self.viewport
+        }
+    }
+
+    /// Swap in a spy renderer and hand back what it records.
+    #[allow(clippy::type_complexity)]
+    fn spy_on_frames(a: &mut App) -> (Rc<RefCell<Vec<StyledLine>>>, Rc<RefCell<(u16, u16)>>) {
+        let lines = Rc::new(RefCell::new(Vec::new()));
+        let cursor = Rc::new(RefCell::new((0, 0)));
+        a.renderer = Box::new(FrameSpy {
+            lines: lines.clone(),
+            cursor: cursor.clone(),
+            viewport: a.renderer.viewport_cells(),
+        });
+        (lines, cursor)
+    }
+
+    /// A line with no highlights on it.
+    fn plain(text: &str) -> StyledLine {
+        StyledLine {
+            text: text.into(),
+            highlights: Vec::new(),
+        }
+    }
+
+    fn hscroll_of(a: &App) -> usize {
+        a.ws.borrow().windows.active_window().scroll_left
+    }
+
+    /// The width of the active window's text area in the last frame.
+    fn text_width(a: &App) -> usize {
+        a.last_layout
+            .first()
+            .expect("one window was laid out")
+            .text
+            .width as usize
+    }
+
+    /// The horizontal twin of `scroll_top`: a cursor walking off the right edge
+    /// drags the view after it, and walking back brings the view back.
+    #[test]
+    fn the_view_follows_the_cursor_off_the_right_edge_and_back() {
+        let mut a = App::new("x".repeat(500), PathBuf::from("f.txt"));
+        a.render();
+        let width = text_width(&a);
+        assert!(width > 4, "the window has room for text");
+
+        // Three columns past the right edge.
+        a.ws.borrow_mut()
+            .execute(Action::Move(Motion::To(width + 2)));
+        a.render();
+        assert_eq!(hscroll_of(&a), 3, "the view followed it");
+
+        a.ws.borrow_mut().execute(Action::Move(Motion::To(0)));
+        a.render();
+        assert_eq!(hscroll_of(&a), 0, "and came back");
+    }
+
+    /// The frame carries text starting at the first visible column, with the
+    /// cursor addressed in the same columns — anything else and the backends,
+    /// which draw character `n` at column `n`, would disagree with the state.
+    #[test]
+    fn a_scrolled_frame_carries_text_from_the_first_visible_column() {
+        let line: String = "abcdefghij".repeat(60);
+        let mut a = App::new(line.clone(), PathBuf::from("f.txt"));
+        a.render();
+        let width = text_width(&a);
+        let (lines, cursor) = spy_on_frames(&mut a);
+
+        a.ws.borrow_mut()
+            .execute(Action::Move(Motion::To(width + 4)));
+        a.render();
+        let cols = hscroll_of(&a);
+        assert_eq!(cols, 5);
+
+        let drawn = lines.borrow()[0].text.clone();
+        assert_eq!(
+            drawn,
+            line[cols..],
+            "the frame starts at the first visible column"
+        );
+        assert_eq!(
+            *cursor.borrow(),
+            (0, (width - 1) as u16),
+            "the cursor sits on the right edge, in view columns"
+        );
+    }
+
+    /// Slicing the text without rebasing the highlight spans would leave every
+    /// syntax colour sitting where its characters used to be. The spans are
+    /// character offsets, so this is checked by comparing the text each span
+    /// covers, before and after the scroll.
+    #[test]
+    fn syntax_highlights_still_cover_their_own_characters_after_scrolling() {
+        let src = "let a = 1; ".repeat(40);
+        let mut a = App::new(src, PathBuf::from("f.rs"));
+        a.render();
+        let width = text_width(&a);
+        let (lines, _) = spy_on_frames(&mut a);
+
+        a.render();
+        let full = lines.borrow()[0].clone();
+        assert!(
+            !full.highlights.is_empty(),
+            "the fixture is only meaningful if it is highlighted at all"
+        );
+        // What each span covers, as text, keyed by where it starts.
+        let covered = |line: &StyledLine| -> Vec<(usize, String)> {
+            let chars: Vec<char> = line.text.chars().collect();
+            line.highlights
+                .iter()
+                .map(|&(o, l, _)| (o, chars[o..o + l].iter().collect()))
+                .collect()
+        };
+        let before = covered(&full);
+
+        a.ws.borrow_mut()
+            .execute(Action::Move(Motion::To(width + 4)));
+        a.render();
+        let cols = hscroll_of(&a);
+        assert!(cols > 0);
+        let after = covered(&lines.borrow()[0]);
+
+        for (offset, text) in before {
+            if offset < cols {
+                continue; // scrolled off the left edge, or clipped by it
+            }
+            assert!(
+                after.contains(&(offset - cols, text.clone())),
+                "span over {text:?} at column {offset} lost its characters; got {after:?}"
+            );
+        }
+    }
+
+    /// Short lines beside a long one have scrolled out of view entirely rather
+    /// than being cut at an offset they never reached.
+    #[test]
+    fn lines_shorter_than_the_scroll_render_empty() {
+        let mut a = App::new(
+            format!("{}\nshort\n", "x".repeat(500)),
+            PathBuf::from("f.txt"),
+        );
+        a.render();
+        let width = text_width(&a);
+        let (lines, _) = spy_on_frames(&mut a);
+
+        a.ws.borrow_mut()
+            .execute(Action::Move(Motion::To(width + 20)));
+        a.render();
+        assert!(hscroll_of(&a) > 5);
+        assert_eq!(lines.borrow()[1].text, "", "\"short\" is off to the left");
+    }
+
+    /// A view with columns to spare is handed over untouched — the common case,
+    /// and the one where slicing every line would be wasted work.
+    #[test]
+    fn an_unscrolled_frame_is_not_sliced() {
+        let mut a = App::new("alpha\nbravo\n".into(), PathBuf::from("f.txt"));
+        let (lines, _) = spy_on_frames(&mut a);
+        a.render();
+        assert_eq!(hscroll_of(&a), 0);
+        assert_eq!(lines.borrow()[0].text, "alpha");
+    }
+
+    /// A window with a wide gutter has fewer text columns than window columns.
+    /// Clamping against the window width would scroll a cursor that was already
+    /// visible, or leave one off the edge.
+    #[test]
+    fn the_clamp_measures_the_text_area_not_the_whole_window() {
+        let mut a = App::new("x".repeat(500), PathBuf::from("f.txt"));
+        a.config.number = true;
+        a.render();
+        let l = *a.last_layout.first().expect("laid out");
+        assert!(
+            l.text.width < l.rect.width,
+            "the number gutter took columns"
+        );
+        // The last column the text area can show, with no scrolling needed.
+        a.ws.borrow_mut()
+            .execute(Action::Move(Motion::To(l.text.width as usize - 1)));
+        a.render();
+        assert_eq!(hscroll_of(&a), 0, "still the last visible column");
+
+        a.ws.borrow_mut()
+            .execute(Action::Move(Motion::To(l.text.width as usize)));
+        a.render();
+        assert_eq!(hscroll_of(&a), 1, "one past it scrolls by one");
+    }
+
+    /// Extra carets left of the view are dropped rather than piling up on
+    /// column zero, where they would be drawn over characters they are nowhere
+    /// near.
+    #[test]
+    fn scrolling_a_view_sideways_drops_carets_and_labels_left_of_it() {
+        let mut view = WindowView {
+            lines: vec![StyledLine {
+                text: "abcdefghij".into(),
+                highlights: Vec::new(),
+            }],
+            cursor: (0, 7),
+            extra_cursors: vec![(0, 2), (0, 8)],
+            flash_labels: vec![
+                FlashLabelRender {
+                    row: 0,
+                    col: 1,
+                    text: "a".into(),
+                    color: ruster_render::Color::Default,
+                },
+                FlashLabelRender {
+                    row: 0,
+                    col: 9,
+                    text: "b".into(),
+                    color: ruster_render::Color::Default,
+                },
+            ],
+            ..Default::default()
+        };
+        scroll_view_sideways(&mut view, 4);
+
+        assert_eq!(view.lines[0].text, "efghij");
+        assert_eq!(view.cursor, (0, 3));
+        assert_eq!(view.extra_cursors, vec![(0, 4)], "the one at 2 is gone");
+        assert_eq!(view.flash_labels.len(), 1);
+        assert_eq!(view.flash_labels[0].col, 5);
+    }
+
+    /// A selection whose last line ends left of the view covers nothing there.
+    /// Saturating that column to zero would paint one stray cell on a line the
+    /// selection does not reach.
+    #[test]
+    fn a_selection_ending_left_of_the_view_gives_up_its_last_line() {
+        let mut view = WindowView {
+            lines: vec![plain(""); 3],
+            selection: Some(SelectionView {
+                start: (0, 20),
+                end: (2, 3),
+                kind: ruster_render::SelectionKind::Char,
+            }),
+            ..Default::default()
+        };
+        scroll_view_sideways(&mut view, 10);
+        let sel = view.selection.expect("still a selection");
+        assert_eq!(sel.start, (0, 10), "the start moved with the text");
+        assert_eq!(
+            sel.end.0, 1,
+            "the last line it covers is the one before the empty one"
+        );
+        assert!(sel.end.1 > 0, "and it covers that line to the end");
+    }
+
+    /// A selection that starts left of the view still covers the view from its
+    /// left edge, so its start clamps to column zero rather than vanishing.
+    #[test]
+    fn a_selection_starting_left_of_the_view_clamps_to_the_first_column() {
+        let mut view = WindowView {
+            lines: vec![plain(""); 2],
+            selection: Some(SelectionView {
+                start: (0, 2),
+                end: (1, 40),
+                kind: ruster_render::SelectionKind::Char,
+            }),
+            ..Default::default()
+        };
+        scroll_view_sideways(&mut view, 10);
+        let sel = view.selection.expect("still a selection");
+        assert_eq!(sel.start, (0, 0));
+        assert_eq!(sel.end, (1, 30));
     }
 
     #[test]

@@ -261,6 +261,17 @@ impl StyledLine {
         StyledLine { text, highlights }
     }
 
+    /// Everything from character `from` onward, highlights clipped and rebased.
+    ///
+    /// This is what a horizontally scrolled window shows: a line shorter than
+    /// `from` has scrolled entirely out of view and yields an empty line rather
+    /// than a panic, which is the common case when one long line drags the whole
+    /// window sideways past its shorter neighbours.
+    pub fn slice_from(&self, from: usize) -> StyledLine {
+        let chars: Vec<char> = self.text.chars().collect();
+        self.slice(from.min(chars.len()), chars.len(), &chars)
+    }
+
     /// Break into lines of at most `width` characters, preserving highlights.
     ///
     /// Prose breaks at the last space that fits, so words stay whole; a token
@@ -483,8 +494,9 @@ pub enum SelectionKind {
     Block,
 }
 
-/// A visual-mode selection in buffer coordinates. `start`/`end` are
-/// `(line, col)` and both ends are **inclusive**.
+/// A visual-mode selection. `start`/`end` are `(line, col)` and both ends are
+/// **inclusive**; as everywhere in a [`WindowView`], the columns count from the
+/// first visible one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SelectionView {
     pub start: (u16, u16),
@@ -584,14 +596,21 @@ pub struct FlashLabelRender {
 /// `Default` exists so construction sites can fill in only what they care about
 /// with `..Default::default()`; adding a field here otherwise means editing every
 /// literal, which is how `flash_labels` came to be missing from some of them.
+///
+/// Rows are buffer lines; **columns are relative to the window's horizontal
+/// scroll**. `lines` already starts at the first visible column, and every
+/// column in here — cursors, selection, flash labels — counts from that same
+/// origin, so a backend can draw character `n` of a line at text column `n`
+/// without knowing the scroll exists. Anything left of the view has been
+/// dropped before it got here.
 #[derive(Default)]
 pub struct WindowView {
     pub rect: Rect,
     pub lines: Vec<StyledLine>,
-    /// Absolute cursor position in buffer coords: (line, col).
+    /// Cursor position: (buffer line, column within the visible text).
     pub cursor: (u16, u16),
-    /// Additional multi-cursor carets in buffer coords, drawn as blocks. Empty
-    /// in the common single-cursor case.
+    /// Additional multi-cursor carets, drawn as blocks. Empty in the common
+    /// single-cursor case.
     pub extra_cursors: Vec<(u16, u16)>,
     pub cursor_kind: CursorKind,
     pub cursor_visible: bool,
@@ -1574,6 +1593,69 @@ mod tests {
                 .map(|&(o, l)| (o, l, crate::SyntaxStyle::default()))
                 .collect(),
         }
+    }
+
+    /// One span, as `(offset, length)` — the shape a horizontal cut has to keep
+    /// in step with the text.
+    fn spans(line: &StyledLine) -> Vec<(usize, usize)> {
+        line.highlights.iter().map(|&(o, l, _)| (o, l)).collect()
+    }
+
+    /// The whole point of slicing through `StyledLine`: the spans travel with
+    /// the characters they colour instead of staying at their old columns.
+    #[test]
+    fn slice_from_rebases_the_highlights_onto_the_new_start() {
+        // "keyword" highlighted at columns 4..11.
+        let cut = styled("    keyword rest", &[(4, 7)]).slice_from(4);
+        assert_eq!(cut.text, "keyword rest");
+        assert_eq!(spans(&cut), vec![(0, 7)], "moved, and the same length");
+    }
+
+    /// A span straddling the cut keeps only the part still on screen.
+    #[test]
+    fn slice_from_clips_a_span_that_starts_left_of_the_cut() {
+        let cut = styled("abcdefgh", &[(1, 6)]).slice_from(4); // covers b..g
+        assert_eq!(cut.text, "efgh");
+        assert_eq!(spans(&cut), vec![(0, 3)]);
+    }
+
+    /// A span entirely left of the cut is dropped, not clamped to column zero.
+    #[test]
+    fn slice_from_drops_a_span_left_of_the_cut() {
+        assert!(styled("abcdefgh", &[(0, 3)])
+            .slice_from(4)
+            .highlights
+            .is_empty());
+    }
+
+    /// A line shorter than the offset has scrolled out of view entirely — the
+    /// ordinary case for the short lines beside one very long one.
+    #[test]
+    fn slice_from_past_the_end_of_a_line_is_empty() {
+        let cut = styled("short", &[(0, 5)]).slice_from(40);
+        assert_eq!(cut.text, "");
+        assert!(cut.highlights.is_empty());
+    }
+
+    /// The boundary either side of the last character.
+    #[test]
+    fn slice_from_at_the_line_length_is_empty_and_one_short_is_not() {
+        let line = styled("abcde", &[]);
+        assert_eq!(line.slice_from(5).text, "");
+        assert_eq!(line.slice_from(4).text, "e");
+    }
+
+    /// Offsets are characters, not bytes: cutting 2 into a line of 3-byte
+    /// characters drops two characters, where byte indexing would panic.
+    #[test]
+    fn slice_from_counts_characters_not_bytes() {
+        let cut = styled("日本語です", &[(1, 2)]).slice_from(2); // span over 本語
+        assert_eq!(cut.text, "語です");
+        assert_eq!(
+            spans(&cut),
+            vec![(0, 1)],
+            "only the half of the span still on screen, over 語"
+        );
     }
 
     #[test]

@@ -95,7 +95,7 @@ impl<'a> EditSession<'a> {
             Action::ClearExtraCursors => self.cursors.clear_extra(),
             // Scrolling is window state, which an EditSession does not borrow;
             // Workspace handles it before delegating here.
-            Action::Scroll(_) => {}
+            Action::Scroll(_) | Action::ScrollHorizontal(_) => {}
             Action::CmdlineResult(_) => {}
             Action::SelectWord { anchor, head } | Action::SelectLine { anchor, head } => {
                 self.cursors.set_region(anchor, head);

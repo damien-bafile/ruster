@@ -409,12 +409,6 @@ fn on_mouse_scroll(app: &mut App, ev: MouseEvent, zone: HitZone) {
         return;
     }
 
-    // Horizontal scrolling has nothing to move: windows have no horizontal
-    // scroll state. See the Task 9 note in the plan.
-    if matches!(ev.kind, MouseKind::ScrollLeft | MouseKind::ScrollRight) {
-        return;
-    }
-
     let wid = match zone {
         HitZone::Buffer(wid, _) | HitZone::Gutter(wid, _) => wid,
         HitZone::Chrome(ChromeKind::Header(wid))
@@ -423,8 +417,24 @@ fn on_mouse_scroll(app: &mut App, ev: MouseEvent, zone: HitZone) {
         HitZone::Float(_) | HitZone::Outside => return,
     };
 
-    let up = ev.kind == MouseKind::ScrollUp;
     let lines = app.config.mouse.wheel_lines as usize;
+
+    // A sideways notch moves as many columns as an upright one moves lines:
+    // `wheel_lines` is how far one notch goes, not how far one notch goes
+    // vertically, and a separate setting would only be another thing to tune.
+    // `scroll_columns` carries the caret along, which is as load-bearing here as
+    // it is below — see the comment on the vertical caret move.
+    if matches!(ev.kind, MouseKind::ScrollLeft | MouseKind::ScrollRight) {
+        let delta = if ev.kind == MouseKind::ScrollRight {
+            lines as i32
+        } else {
+            -(lines as i32)
+        };
+        app.ws.borrow_mut().scroll_columns(wid, delta);
+        return;
+    }
+
+    let up = ev.kind == MouseKind::ScrollUp;
     let mut ws = app.ws.borrow_mut();
     // Reborrow so `windows` and `buffers` can be held at once — they are
     // disjoint fields, but only an explicit split lets borrowck see that.
@@ -1302,6 +1312,170 @@ mod tests {
         );
         assert_eq!(a.config.font_size, before, "TUI has no font to zoom");
         assert_eq!(scroll_top(&a), 0, "and it did not scroll instead");
+    }
+
+    fn scroll_left(a: &App) -> usize {
+        a.ws.borrow().windows.active_window().scroll_left
+    }
+
+    /// One long line, wider than any window, so there is somewhere to scroll to.
+    fn app_with_a_long_line() -> App {
+        let mut a = App::new("x".repeat(500) + "\n", PathBuf::from("f.txt"));
+        a.config.number = true;
+        a
+    }
+
+    #[test]
+    fn wheel_right_then_left_moves_scroll_left_by_wheel_lines() {
+        let mut a = app_with_a_long_line();
+        let l = laid_out(&mut a);
+        let at = (l.text.x, l.text.y);
+
+        handle_mouse_event(
+            &mut a,
+            wheel(at.0, at.1, MouseKind::ScrollRight, KeyModifiers::empty()),
+        );
+        assert_eq!(scroll_left(&a), a.config.mouse.wheel_lines as usize);
+
+        handle_mouse_event(
+            &mut a,
+            wheel(at.0, at.1, MouseKind::ScrollLeft, KeyModifiers::empty()),
+        );
+        assert_eq!(scroll_left(&a), 0);
+    }
+
+    /// The sideways wheel carries the caret for the same reason the vertical one
+    /// does: `render` clamps the horizontal scroll to keep the caret visible and
+    /// writes the clamp back, so a scroll that left the caret behind would be
+    /// undone before it ever reached the screen.
+    #[test]
+    fn the_sideways_wheel_carries_the_caret_so_the_scroll_survives_a_render() {
+        let mut a = app_with_a_long_line();
+        let l = laid_out(&mut a);
+        handle_mouse_event(
+            &mut a,
+            wheel(
+                l.text.x,
+                l.text.y,
+                MouseKind::ScrollRight,
+                KeyModifiers::empty(),
+            ),
+        );
+        let cols = a.config.mouse.wheel_lines as usize;
+        assert_eq!(scroll_left(&a), cols);
+
+        a.render();
+        assert_eq!(scroll_left(&a), cols, "the scroll survived the frame");
+    }
+
+    #[test]
+    fn wheel_left_at_the_first_column_saturates() {
+        let mut a = app_with_a_long_line();
+        let l = laid_out(&mut a);
+        handle_mouse_event(
+            &mut a,
+            wheel(
+                l.text.x,
+                l.text.y,
+                MouseKind::ScrollLeft,
+                KeyModifiers::empty(),
+            ),
+        );
+        assert_eq!(scroll_left(&a), 0);
+    }
+
+    /// A line with nothing past the window edge has nowhere to scroll to, and
+    /// must not drag the caret off into the void trying.
+    #[test]
+    fn the_sideways_wheel_does_nothing_on_a_short_line() {
+        let mut a = App::new("short\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        handle_mouse_event(
+            &mut a,
+            wheel(
+                l.text.x,
+                l.text.y,
+                MouseKind::ScrollRight,
+                KeyModifiers::empty(),
+            ),
+        );
+        assert_eq!(scroll_left(&a), 0);
+        assert!(
+            a.ws.borrow().windows.active_window().cursors.head() < 5,
+            "the caret stayed inside the line"
+        );
+    }
+
+    /// The wheel scrolls the window under the pointer, which is not necessarily
+    /// the focused one.
+    #[test]
+    fn the_sideways_wheel_scrolls_the_window_under_the_pointer() {
+        use ruster_core::windows::SplitDir;
+
+        let mut a = app_with_a_long_line();
+        a.ws.borrow_mut().windows.split(SplitDir::Vertical);
+        a.render();
+        let left = a
+            .last_layout
+            .iter()
+            .min_by_key(|l| l.rect.x)
+            .copied()
+            .expect("a leftmost window");
+        let active = a.ws.borrow().windows.active();
+        assert_ne!(left.window, active, "the pointer is over the other window");
+
+        handle_mouse_event(
+            &mut a,
+            wheel(
+                left.text.x,
+                left.text.y,
+                MouseKind::ScrollRight,
+                KeyModifiers::empty(),
+            ),
+        );
+        let ws = a.ws.borrow();
+        assert_eq!(
+            ws.windows.window(left.window).unwrap().scroll_left,
+            a.config.mouse.wheel_lines as usize
+        );
+        assert_eq!(ws.windows.window(active).unwrap().scroll_left, 0);
+    }
+
+    /// A horizontally scrolled window still resolves a click to the character
+    /// actually under it — the offset has to count from the first visible
+    /// column, not from the start of the line.
+    #[test]
+    fn a_click_in_a_scrolled_window_lands_on_the_visible_character() {
+        // Distinct characters so the offset is checkable by eye.
+        let mut a = App::new(
+            "abcdefghijklmnopqrstuvwxyz".repeat(20) + "\n",
+            PathBuf::from("f.txt"),
+        );
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        handle_mouse_event(
+            &mut a,
+            wheel(
+                l.text.x,
+                l.text.y,
+                MouseKind::ScrollRight,
+                KeyModifiers::empty(),
+            ),
+        );
+        a.render();
+        let cols = scroll_left(&a);
+        assert!(cols > 0, "the view moved sideways");
+
+        // The leftmost text cell is now the character at column `cols`.
+        assert_eq!(
+            hit_test(&a, l.text.x, l.text.y),
+            HitZone::Buffer(l.window, cols)
+        );
+        assert_eq!(
+            hit_test(&a, l.text.x + 4, l.text.y),
+            HitZone::Buffer(l.window, cols + 4)
+        );
     }
 
     #[test]
