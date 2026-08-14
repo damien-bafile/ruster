@@ -3087,7 +3087,11 @@ impl App {
         require_terminal()?;
         crossterm::terminal::enable_raw_mode()?;
         crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen)?;
-        crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
+        // Capturing the mouse takes it away from the terminal's own
+        // text selection, which some users would rather keep.
+        if self.config.mouse.enabled && self.config.mouse.tui_capture {
+            crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
+        }
         self.renderer = Box::new(TuiRenderer::new()?);
 
         let rt = tokio::runtime::Builder::new_current_thread()

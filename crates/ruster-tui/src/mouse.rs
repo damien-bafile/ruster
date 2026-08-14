@@ -282,16 +282,15 @@ fn has_neighbour_below(app: &App, rect: ruster_render::Rect) -> bool {
     })
 }
 
-/// How long after a click a second one still counts as a double-click.
-/// Replaced by `config.mouse.double_click_ms` in Task 17.
-const DOUBLE_CLICK_MS: u64 = 400;
-
 /// How far a second click may land from the first and still be a double-click.
 /// Without slack a shaky hand turns a double-click into two single ones.
 const DOUBLE_CLICK_SLACK_CELLS: u16 = 2;
 
 /// Route one mouse event to its handler.
 pub fn handle_mouse_event(app: &mut App, ev: MouseEvent) {
+    if !app.config.mouse.enabled {
+        return;
+    }
     let zone = hit_test(app, ev.col, ev.row);
     set_pointer_for_zone(app, zone);
 
@@ -317,10 +316,6 @@ pub fn handle_mouse_event(app: &mut App, ev: MouseEvent) {
     }
 }
 
-/// How long the pointer must be still before `hover` fires.
-/// Replaced by `config.mouse.hover_delay_ms` in Task 17.
-const HOVER_DELAY_MS: u128 = 300;
-
 fn on_mouse_move(app: &mut App, ev: MouseEvent) {
     let pos = (ev.col, ev.row);
     if app.mouse.hover.last_pos != pos {
@@ -341,7 +336,7 @@ pub fn hover_tick(app: &mut App) {
     if app.mouse.hover.emitted_for == Some(pos) {
         return;
     }
-    if app.mouse.hover.last_move.elapsed().as_millis() < HOVER_DELAY_MS {
+    if app.mouse.hover.last_move.elapsed().as_millis() < app.config.mouse.hover_delay_ms as u128 {
         return;
     }
     // Buffer text only: hovering chrome has nothing to say about the document.
@@ -379,10 +374,6 @@ fn set_pointer_for_zone(app: &mut App, zone: HitZone) {
     app.renderer.set_pointer(pointer);
 }
 
-/// How many lines one wheel notch scrolls.
-/// Replaced by `config.mouse.wheel_lines` in Task 17.
-const WHEEL_LINES: usize = 3;
-
 fn on_mouse_scroll(app: &mut App, ev: MouseEvent, zone: HitZone) {
     // Ctrl+wheel zooms, which only means something where there are pixels.
     if ev.modifiers.contains(KeyModifiers::CONTROL) {
@@ -418,14 +409,15 @@ fn on_mouse_scroll(app: &mut App, ev: MouseEvent, zone: HitZone) {
     };
 
     let up = ev.kind == MouseKind::ScrollUp;
+    let lines = app.config.mouse.wheel_lines as usize;
     let mut ws = app.ws.borrow_mut();
     let Some(win) = ws.windows.window_mut(wid) else {
         return;
     };
     win.scroll_top = if up {
-        win.scroll_top.saturating_sub(WHEEL_LINES)
+        win.scroll_top.saturating_sub(lines)
     } else {
-        win.scroll_top.saturating_add(WHEEL_LINES)
+        win.scroll_top.saturating_add(lines)
     };
 }
 
@@ -514,7 +506,11 @@ fn on_mouse_down(app: &mut App, ev: MouseEvent, zone: HitZone) {
     let clicks = track_click(app, &ev);
 
     if ev.button == MouseButton::Right {
-        open_context_menu(app, zone);
+        // Off, right-click does nothing here — which is what frees it for a
+        // Lua handler to claim.
+        if app.config.mouse.right_click_menu {
+            open_context_menu(app, zone);
+        }
         return;
     }
 
@@ -717,7 +713,8 @@ fn track_click(app: &mut App, ev: &MouseEvent) -> u8 {
             button == ev.button
                 && near(col, ev.col)
                 && near(row, ev.row)
-                && now.duration_since(at).as_millis() as u64 <= DOUBLE_CLICK_MS
+                && now.duration_since(at).as_millis() as u64
+                    <= app.config.mouse.double_click_ms as u64
         }
         None => false,
     };
@@ -1159,7 +1156,7 @@ mod tests {
             &mut a,
             wheel(at.0, at.1, MouseKind::ScrollDown, KeyModifiers::empty()),
         );
-        assert_eq!(scroll_top(&a), WHEEL_LINES);
+        assert_eq!(scroll_top(&a), a.config.mouse.wheel_lines as usize);
 
         handle_mouse_event(
             &mut a,
@@ -1782,7 +1779,7 @@ mod tests {
         hover_tick(&mut a);
         assert_eq!(hover_count(&a), 0, "not yet — the pointer just moved");
 
-        rest_for(&mut a, HOVER_DELAY_MS as u64 + 50);
+        rest_for(&mut a, 350);
         hover_tick(&mut a);
         assert_eq!(hover_count(&a), 1);
         assert_eq!(a.lua.lua.globals().get::<usize>("hover_offset").unwrap(), 2);
@@ -1801,7 +1798,7 @@ mod tests {
         watch_hover(&mut a);
 
         handle_mouse_event(&mut a, moved_to(l.text.x + 2, l.text.y));
-        rest_for(&mut a, HOVER_DELAY_MS as u64 + 50);
+        rest_for(&mut a, 350);
         for _ in 0..10 {
             hover_tick(&mut a);
         }
@@ -1817,11 +1814,11 @@ mod tests {
         watch_hover(&mut a);
 
         handle_mouse_event(&mut a, moved_to(l.text.x + 2, l.text.y));
-        rest_for(&mut a, HOVER_DELAY_MS as u64 + 50);
+        rest_for(&mut a, 350);
         hover_tick(&mut a);
 
         handle_mouse_event(&mut a, moved_to(l.text.x + 6, l.text.y));
-        rest_for(&mut a, HOVER_DELAY_MS as u64 + 50);
+        rest_for(&mut a, 350);
         hover_tick(&mut a);
         assert_eq!(hover_count(&a), 2);
     }
@@ -1834,9 +1831,121 @@ mod tests {
         watch_hover(&mut a);
 
         handle_mouse_event(&mut a, moved_to(l.text.x, l.rect.y));
-        rest_for(&mut a, HOVER_DELAY_MS as u64 + 50);
+        rest_for(&mut a, 350);
         hover_tick(&mut a);
         assert_eq!(hover_count(&a), 0);
+    }
+
+    #[test]
+    fn mouse_disabled_ignores_every_event() {
+        let mut a = App::new("alpha bravo\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        a.config.mouse.enabled = false;
+
+        handle_mouse_event(&mut a, down(l.text.x + 4, l.text.y, KeyModifiers::empty()));
+        handle_mouse_event(&mut a, right_down(l.text.x + 4, l.text.y));
+        handle_mouse_event(
+            &mut a,
+            wheel(
+                l.text.x,
+                l.text.y,
+                MouseKind::ScrollDown,
+                KeyModifiers::empty(),
+            ),
+        );
+
+        assert_eq!(a.ws.borrow().windows.active_window().cursors.head(), 0);
+        assert!(a.picker.is_none());
+        assert_eq!(scroll_top(&a), 0);
+    }
+
+    #[test]
+    fn right_click_menu_can_be_turned_off() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        a.config.mouse.right_click_menu = false;
+
+        handle_mouse_event(&mut a, right_down(l.text.x, l.text.y));
+        assert!(a.picker.is_none());
+    }
+
+    /// A Lua handler still sees right-clicks with the built-in menu disabled —
+    /// that is the point of the switch.
+    #[test]
+    fn a_disabled_menu_still_lets_lua_see_the_right_click() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        a.config.mouse.right_click_menu = false;
+        a.lua
+            .lua
+            .load(r#"saw = false; ruster.on("mouse_down", function(ev) saw = ev.button end)"#)
+            .exec()
+            .expect("handler registered");
+
+        handle_mouse_event(&mut a, right_down(l.text.x, l.text.y));
+        assert_eq!(a.lua.lua.globals().get::<String>("saw").unwrap(), "right");
+    }
+
+    #[test]
+    fn wheel_lines_is_configurable() {
+        let mut a = App::new("l\n".repeat(200), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        a.config.mouse.wheel_lines = 7;
+
+        handle_mouse_event(
+            &mut a,
+            wheel(
+                l.text.x,
+                l.text.y,
+                MouseKind::ScrollDown,
+                KeyModifiers::empty(),
+            ),
+        );
+        assert_eq!(scroll_top(&a), 7);
+    }
+
+    #[test]
+    fn hover_delay_is_configurable() {
+        let mut a = App::new("alpha bravo\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        watch_hover(&mut a);
+        a.config.mouse.hover_delay_ms = 1000;
+
+        handle_mouse_event(&mut a, moved_to(l.text.x + 2, l.text.y));
+        rest_for(&mut a, 350);
+        hover_tick(&mut a);
+        assert_eq!(hover_count(&a), 0, "350ms is not yet 1000ms");
+
+        rest_for(&mut a, 1100);
+        hover_tick(&mut a);
+        assert_eq!(hover_count(&a), 1);
+    }
+
+    /// A short window makes two deliberate clicks stay two single clicks.
+    #[test]
+    fn double_click_window_is_configurable() {
+        let mut a = App::new("alpha bravo\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        a.config.mouse.double_click_ms = 50;
+
+        let at = down(l.text.x + 8, l.text.y, KeyModifiers::empty());
+        handle_mouse_event(&mut a, at);
+        // Pretend the second click came well after the window closed.
+        a.mouse.click.last_down = a
+            .mouse
+            .click
+            .last_down
+            .map(|(t, c, r, b)| (t - std::time::Duration::from_millis(200), c, r, b));
+        handle_mouse_event(&mut a, at);
+
+        assert_eq!(a.mouse.click.streak, 1);
+        assert_eq!(selected(&a), "");
     }
 
     #[test]

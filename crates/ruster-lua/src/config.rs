@@ -798,6 +798,37 @@ pub struct ColorOverrides {
     pub mode_emacs_fg: String,
 }
 
+/// Mouse and pointer behaviour.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MouseConfig {
+    /// Master switch. Off means no mouse event reaches any handler.
+    pub enabled: bool,
+    /// How still the pointer must be before `hover` fires.
+    pub hover_delay_ms: u32,
+    /// Longest gap between clicks that still counts as a double or triple.
+    pub double_click_ms: u32,
+    /// Lines one wheel notch scrolls.
+    pub wheel_lines: u32,
+    /// Whether the TUI grabs the mouse. Off leaves the terminal's own text
+    /// selection working instead.
+    pub tui_capture: bool,
+    /// Whether right-click raises the context menu.
+    pub right_click_menu: bool,
+}
+
+impl Default for MouseConfig {
+    fn default() -> Self {
+        MouseConfig {
+            enabled: true,
+            hover_delay_ms: 300,
+            double_click_ms: 400,
+            wheel_lines: 3,
+            tui_capture: true,
+            right_click_menu: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct NoiceConfig {
     pub mini_enabled: bool,
@@ -896,6 +927,7 @@ pub struct Config {
     /// Write the session on exit, so `:SessionRestore` has something to read.
     pub session_autosave: bool,
     pub noice: NoiceConfig,
+    pub mouse: MouseConfig,
     /// Per-language syntax color overrides: `lang key -> (group -> hex)`. Carried
     /// separately from the flat schema (edited via the Settings syntax editor).
     pub syntax_overrides:
@@ -1083,6 +1115,21 @@ impl Config {
                 ("colors", "mode_emacs_fg"),
                 Text(self.color_overrides.mode_emacs_fg.clone()),
             ),
+            (("mouse", "enabled"), Bool(self.mouse.enabled)),
+            (
+                ("mouse", "hover_delay_ms"),
+                Int(self.mouse.hover_delay_ms as i64),
+            ),
+            (
+                ("mouse", "double_click_ms"),
+                Int(self.mouse.double_click_ms as i64),
+            ),
+            (("mouse", "wheel_lines"), Int(self.mouse.wheel_lines as i64)),
+            (("mouse", "tui_capture"), Bool(self.mouse.tui_capture)),
+            (
+                ("mouse", "right_click_menu"),
+                Bool(self.mouse.right_click_menu),
+            ),
         ]
     }
 
@@ -1214,6 +1261,14 @@ impl Config {
                 ) as u64,
                 max_history: u("noice", "max_history", d.noice.max_history as u32) as usize,
             },
+            mouse: MouseConfig {
+                enabled: bl("mouse", "enabled", d.mouse.enabled),
+                hover_delay_ms: u("mouse", "hover_delay_ms", d.mouse.hover_delay_ms),
+                double_click_ms: u("mouse", "double_click_ms", d.mouse.double_click_ms),
+                wheel_lines: u("mouse", "wheel_lines", d.mouse.wheel_lines),
+                tui_capture: bl("mouse", "tui_capture", d.mouse.tui_capture),
+                right_click_menu: bl("mouse", "right_click_menu", d.mouse.right_click_menu),
+            },
         }
     }
 }
@@ -1284,6 +1339,7 @@ impl Default for Config {
             session_autoload: false,
             session_autosave: true,
             noice: NoiceConfig::default(),
+            mouse: MouseConfig::default(),
             syntax_overrides: std::collections::HashMap::new(),
         }
     }
