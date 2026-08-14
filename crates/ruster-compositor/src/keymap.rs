@@ -256,6 +256,26 @@ mod tests {
     use super::*;
     use ruster_shell::Direction;
 
+    #[test]
+    fn the_shipped_code_intelligence_chords_resolve() {
+        // `M-g d` and `M-g h` are the only two-chord bindings shipped, so they
+        // are the only ones that would notice if sequence handling regressed —
+        // and the config guard cannot see them: it checks that a binding parses,
+        // which `M-g d` does even when read as one chord named "g d".
+        let shell = crate::lua::parse_config(include_str!("../assets/compositor.lua")).unwrap();
+        let km = Keymap::new(&shell.keybinds);
+        let pending: Vec<String> = vec!["M-g".to_string()];
+        assert_eq!(km.resolve(&[], &logo(), "g"), Resolved::Pending);
+        assert_eq!(
+            km.resolve(&pending, &ModifiersState::default(), "d"),
+            Resolved::Action(Action::Definition)
+        );
+        assert_eq!(
+            km.resolve(&pending, &ModifiersState::default(), "h"),
+            Resolved::Action(Action::Hover)
+        );
+    }
+
     fn logo() -> ModifiersState {
         ModifiersState {
             logo: true,

@@ -153,6 +153,17 @@ return {
     -- terminal but not that one.
     { "M-Return", "terminal" },
     { "M-S-Return",    "new pane" },
+
+    -- Code intelligence, for an editor pane. Under a `M-g` prefix because `gd`
+    -- is where a vim user already looks for a definition, and because the
+    -- single-key space is spoken for by window management — `M-S-k` would have
+    -- been the obvious home for hover and it is already `swap up`.
+    --
+    -- Both need a language server for the pane's file, and say so in the
+    -- mini-buffer when there is none. Press `M-g` alone to see them: a prefix
+    -- with nothing after it is what the which-key overlay is for.
+    { "M-g d", "definition" },
+    { "M-g h", "hover" },
     { "M-S-slash",     "toggle help" },
     { "M-S-semicolon", "command" },
     { "M-S-equal",     "lua" },
