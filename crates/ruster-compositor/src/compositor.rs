@@ -1280,10 +1280,25 @@ impl<B: Backend + 'static> CompositorHandler for CompositorState<B> {
 
     fn commit(&mut self, surface: &wl_surface::WlSurface) {
         // The popup manager needs every commit: it is what advances a popup
-        // from "created" to "mapped" and sends the initial configure. Without
-        // it a tracked popup never gets configured, so the client never draws
-        // into it and the menu stays empty.
+        // from "created" to "mapped".
         self.popups.commit(surface);
+        // Sending the initial configure is *not* part of that, though this used
+        // to claim it was. `track_popup` only records the popup and
+        // `PopupManager::commit` only moves it between two lists — neither
+        // touches the protocol. So the client was told its menu was tracked and
+        // never told how big it was, and a client with no size attaches no
+        // buffer: the popup was positioned, unconstrained, hit-tested, drawn in
+        // the right order and empty, which on screen is indistinguishable from
+        // the untracked popups this was written to fix. Found by right-clicking
+        // in weston-terminal and reading the log against the pixels: `popup
+        // tracked x=56 y=66 w=276 h=156` with nothing on screen at all.
+        if let Some(smithay::desktop::PopupKind::Xdg(popup)) = self.popups.find_popup(surface) {
+            if !popup.is_initial_configure_sent() {
+                if let Err(err) = popup.send_configure() {
+                    tracing::warn!(%err, "could not send a popup's initial configure");
+                }
+            }
+        }
         // Read the buffer assignment BEFORE importing it. This ordering is load
         // bearing: `on_commit_buffer_handler` calls `attrs.buffer.take()`, so
         // once it has run the surface reports no buffer this commit and the

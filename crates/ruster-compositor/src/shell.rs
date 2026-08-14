@@ -96,11 +96,26 @@ impl<B: Backend + 'static> XdgShellHandler for CompositorState<B> {
         // this the bottom of every menu near the bottom of the screen is
         // unreachable.
         let output = self.output_rect();
+        let geometry = unconstrain_popup(&positioner, output);
         surface.with_pending_state(|state| {
-            state.geometry = unconstrain_popup(&positioner, output);
+            state.geometry = geometry;
         });
         if let Err(err) = self.popups.track_popup(PopupKind::Xdg(surface)) {
             tracing::warn!(%err, "could not track popup");
+        } else {
+            // Only the failure was audible before, which is the wrong half: the
+            // bug this replaced was a popup that never appeared, and a silent
+            // success is indistinguishable from a client that never asked. The
+            // geometry is the useful part — it is what the unconstrain decided,
+            // so a menu that lands off-screen can be told apart from one the
+            // client positioned badly.
+            tracing::info!(
+                x = geometry.loc.x,
+                y = geometry.loc.y,
+                w = geometry.size.w,
+                h = geometry.size.h,
+                "popup tracked"
+            );
         }
     }
 
