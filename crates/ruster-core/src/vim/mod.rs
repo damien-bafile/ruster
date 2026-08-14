@@ -184,6 +184,55 @@ impl VimState {
         self.register = Some(text);
     }
 
+    /// Enter a visual mode with `anchor` as the fixed end.
+    ///
+    /// For selections made outside the key path — a mouse drag, `:selectall`.
+    /// Assigning `mode` alone is not enough: the anchor would stay unset, and
+    /// the first motion key would re-anchor on the cursor's current position,
+    /// collapsing the selection the moment the user tried to adjust it.
+    pub fn set_visual(&mut self, mode: VimMode, anchor: usize) {
+        self.mode = mode;
+        self.anchor = Some(anchor);
+    }
+
+    /// Leave visual mode exactly as `Esc` does.
+    ///
+    /// Clearing the anchor is the point: a stale anchor survives into the next
+    /// `v`, which would then select from wherever the last selection began.
+    pub fn leave_visual(&mut self) {
+        self.mode = VimMode::Normal;
+        self.anchor = None;
+        self.count = None;
+    }
+
+    /// The char ranges the current visual selection covers, ascending, or empty
+    /// outside a visual mode.
+    ///
+    /// Several ranges rather than one span because a block-wise selection is
+    /// one clipped range per line — a single `(start, end)` pair would claim
+    /// the untouched text to the left and right of the block as well. Callers
+    /// that copy join the ranges with newlines; callers that delete must work
+    /// backwards through them so earlier offsets stay valid.
+    pub fn visual_ranges(&self, editor: &dyn EditorView) -> Vec<(usize, usize)> {
+        match self.mode {
+            VimMode::VisualBlock => {
+                let mut ranges = self.block_ranges(editor);
+                ranges.reverse(); // block_ranges is bottom-up
+                ranges
+            }
+            VimMode::VisualChar | VimMode::VisualLine => {
+                let (start, end) = self.visual_range(editor);
+                let end = end.min(editor.buffer().len_chars());
+                if end > start {
+                    vec![(start, end)]
+                } else {
+                    Vec::new()
+                }
+            }
+            _ => Vec::new(),
+        }
+    }
+
     pub fn clipboard_get(&self) -> Option<String> {
         self.clipboard_buf.borrow().clone().or_else(|| {
             self.clipboard
@@ -1494,5 +1543,104 @@ mod tests {
         assert!(actions
             .iter()
             .any(|a| matches!(a, Action::ClearExtraCursors)));
+    }
+
+    #[test]
+    fn visual_ranges_is_empty_outside_visual_mode() {
+        let e = Editor::from_str("hello");
+        let v = VimState::new();
+        assert!(v.visual_ranges(&e).is_empty());
+    }
+
+    #[test]
+    fn visual_ranges_covers_the_cursor_character() {
+        let mut e = Editor::from_str("hello");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('v'), &e) {
+            e.execute(a);
+        }
+        // `v` alone selects the character under the cursor, so the range is not
+        // empty even though anchor and head are the same offset.
+        assert_eq!(v.visual_ranges(&e), vec![(0, 1)]);
+        for a in v.handle(KeyEvent::Char('l'), &e) {
+            e.execute(a);
+        }
+        assert_eq!(v.visual_ranges(&e), vec![(0, 2)]);
+        assert_eq!(e.buffer().slice_string(0, 2), "he");
+    }
+
+    #[test]
+    fn visual_ranges_of_a_block_are_one_span_per_line() {
+        let mut e = Editor::from_str("abcd\nefgh\nijkl");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for key in [
+            KeyEvent::Ctrl('v'),
+            KeyEvent::Char('j'),
+            KeyEvent::Char('l'),
+        ] {
+            for a in v.handle(key, &e) {
+                e.execute(a);
+            }
+        }
+        // Columns 0..2 of the first two lines — never the newline between them.
+        assert_eq!(v.visual_ranges(&e), vec![(0, 2), (5, 7)]);
+    }
+
+    #[test]
+    fn visual_ranges_of_a_line_selection_includes_the_newline() {
+        let mut e = Editor::from_str("ab\ncd\n");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('V'), &e) {
+            e.execute(a);
+        }
+        assert_eq!(v.visual_ranges(&e), vec![(0, 3)]);
+    }
+
+    #[test]
+    fn visual_ranges_clamps_to_the_buffer_end() {
+        // The last character of the buffer: the inclusive head would otherwise
+        // put the range end one past the rope.
+        let mut e = Editor::from_str("ab");
+        let mut v = VimState::new();
+        for a in v.handle(KeyEvent::Char('v'), &e) {
+            e.execute(a);
+        }
+        let ranges = v.visual_ranges(&e);
+        assert!(ranges.iter().all(|&(_, end)| end <= e.buffer().len_chars()));
+    }
+
+    #[test]
+    fn set_visual_survives_a_motion_key() {
+        let mut e = Editor::from_str("hello");
+        let mut v = VimState::new();
+        e.execute(Action::Move(Motion::To(0)));
+        v.set_visual(VimMode::VisualChar, 0);
+        e.execute(Action::Move(Motion::To(3)));
+        // Extending after an externally-made selection keeps the anchor at 0
+        // instead of re-anchoring on the cursor.
+        for a in v.handle(KeyEvent::Char('l'), &e) {
+            e.execute(a);
+        }
+        assert_eq!(v.visual_ranges(&e), vec![(0, 5)]);
+    }
+
+    #[test]
+    fn leave_visual_forgets_the_anchor() {
+        let mut e = Editor::from_str("hello");
+        let mut v = VimState::new();
+        e.execute(Action::Move(Motion::To(0)));
+        v.set_visual(VimMode::VisualChar, 0);
+        v.leave_visual();
+        assert_eq!(v.mode, VimMode::Normal);
+        assert!(v.visual_ranges(&e).is_empty());
+        // A fresh `v` at another offset must select from there, not from 0.
+        e.execute(Action::Move(Motion::To(3)));
+        for a in v.handle(KeyEvent::Char('v'), &e) {
+            e.execute(a);
+        }
+        assert_eq!(v.visual_ranges(&e), vec![(3, 4)]);
     }
 }
