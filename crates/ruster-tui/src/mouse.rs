@@ -313,8 +313,53 @@ pub fn handle_mouse_event(app: &mut App, ev: MouseEvent) {
         | MouseKind::ScrollDown
         | MouseKind::ScrollLeft
         | MouseKind::ScrollRight => on_mouse_scroll(app, ev, zone),
-        MouseKind::Move => {}
+        MouseKind::Move => on_mouse_move(app, ev),
     }
+}
+
+/// How long the pointer must be still before `hover` fires.
+/// Replaced by `config.mouse.hover_delay_ms` in Task 17.
+const HOVER_DELAY_MS: u128 = 300;
+
+fn on_mouse_move(app: &mut App, ev: MouseEvent) {
+    let pos = (ev.col, ev.row);
+    if app.mouse.hover.last_pos != pos {
+        app.mouse.hover.last_pos = pos;
+        // Moving re-arms hover: the delay is measured from the last movement,
+        // not from the first.
+        app.mouse.hover.emitted_for = None;
+    }
+    app.mouse.hover.last_move = Instant::now();
+}
+
+/// Fire `hover` once the pointer has been still long enough over buffer text.
+///
+/// Called once per frame rather than from the event handler because stillness
+/// is the absence of events — nothing arrives to notice it.
+pub fn hover_tick(app: &mut App) {
+    let pos = app.mouse.hover.last_pos;
+    if app.mouse.hover.emitted_for == Some(pos) {
+        return;
+    }
+    if app.mouse.hover.last_move.elapsed().as_millis() < HOVER_DELAY_MS {
+        return;
+    }
+    // Buffer text only: hovering chrome has nothing to say about the document.
+    let zone = hit_test(app, pos.0, pos.1);
+    if !matches!(zone, HitZone::Buffer(..)) {
+        return;
+    }
+    app.mouse.hover.emitted_for = Some(pos);
+
+    let ev = MouseEvent::new(
+        pos.0,
+        pos.1,
+        MouseKind::Move,
+        MouseButton::None,
+        KeyModifiers::empty(),
+    );
+    let payload = lua_payload(app, &ev, zone);
+    app.lua.dispatch_hover(&payload);
 }
 
 /// Shape the pointer to say what the cell under it will do.
@@ -1690,6 +1735,108 @@ mod tests {
             a.lua.lua.globals().get::<String>("seen").unwrap(),
             "wheel_down wheel_up "
         );
+    }
+
+    fn moved_to(col: u16, row: u16) -> MouseEvent {
+        MouseEvent::new(
+            col,
+            row,
+            MouseKind::Move,
+            MouseButton::None,
+            KeyModifiers::empty(),
+        )
+    }
+
+    /// Pretend the pointer has been still for `ms`.
+    fn rest_for(a: &mut App, ms: u64) {
+        a.mouse.hover.last_move = Instant::now() - std::time::Duration::from_millis(ms);
+    }
+
+    fn watch_hover(a: &mut App) {
+        a.lua
+            .lua
+            .load(
+                r#"hovers = 0
+                   ruster.on("hover", function(ev)
+                       hovers = hovers + 1
+                       hover_offset = ev.offset
+                       hover_zone = ev.zone
+                   end)"#,
+            )
+            .exec()
+            .expect("handler registered");
+    }
+
+    fn hover_count(a: &App) -> i64 {
+        a.lua.lua.globals().get::<i64>("hovers").unwrap()
+    }
+
+    #[test]
+    fn hover_fires_once_the_pointer_has_been_still() {
+        let mut a = App::new("alpha bravo\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        watch_hover(&mut a);
+
+        handle_mouse_event(&mut a, moved_to(l.text.x + 2, l.text.y));
+        hover_tick(&mut a);
+        assert_eq!(hover_count(&a), 0, "not yet — the pointer just moved");
+
+        rest_for(&mut a, HOVER_DELAY_MS as u64 + 50);
+        hover_tick(&mut a);
+        assert_eq!(hover_count(&a), 1);
+        assert_eq!(a.lua.lua.globals().get::<usize>("hover_offset").unwrap(), 2);
+        assert_eq!(
+            a.lua.lua.globals().get::<String>("hover_zone").unwrap(),
+            "buffer"
+        );
+    }
+
+    /// Stillness fires once, not once per frame.
+    #[test]
+    fn hover_does_not_re_fire_at_the_same_position() {
+        let mut a = App::new("alpha bravo\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        watch_hover(&mut a);
+
+        handle_mouse_event(&mut a, moved_to(l.text.x + 2, l.text.y));
+        rest_for(&mut a, HOVER_DELAY_MS as u64 + 50);
+        for _ in 0..10 {
+            hover_tick(&mut a);
+        }
+        assert_eq!(hover_count(&a), 1);
+    }
+
+    /// Moving re-arms it, so the next rest fires again.
+    #[test]
+    fn hover_fires_again_after_the_pointer_moves() {
+        let mut a = App::new("alpha bravo\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        watch_hover(&mut a);
+
+        handle_mouse_event(&mut a, moved_to(l.text.x + 2, l.text.y));
+        rest_for(&mut a, HOVER_DELAY_MS as u64 + 50);
+        hover_tick(&mut a);
+
+        handle_mouse_event(&mut a, moved_to(l.text.x + 6, l.text.y));
+        rest_for(&mut a, HOVER_DELAY_MS as u64 + 50);
+        hover_tick(&mut a);
+        assert_eq!(hover_count(&a), 2);
+    }
+
+    /// Chrome has nothing to say about the document.
+    #[test]
+    fn hover_skips_non_buffer_zones() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        let l = laid_out(&mut a);
+        watch_hover(&mut a);
+
+        handle_mouse_event(&mut a, moved_to(l.text.x, l.rect.y));
+        rest_for(&mut a, HOVER_DELAY_MS as u64 + 50);
+        hover_tick(&mut a);
+        assert_eq!(hover_count(&a), 0);
     }
 
     #[test]

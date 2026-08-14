@@ -3145,6 +3145,7 @@ impl App {
             }
 
             self.fire_watched_events();
+            crate::mouse::hover_tick(self);
             self.drain_lua_actions();
 
             let dt = self.timer.tick();
@@ -3377,6 +3378,7 @@ impl App {
                 crate::mouse::handle_mouse_event(self, ev);
             }
             self.fire_watched_events();
+            crate::mouse::hover_tick(self);
             self.drain_lua_actions();
             let secs = dt.as_secs_f64();
             self.lua.set_frame_dt(secs);
