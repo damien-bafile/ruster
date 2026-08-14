@@ -27,6 +27,15 @@
 --      ruster.wm.quit()
 --      ruster.wm.switch_workspace(2)  -- the starting workspace from a config,
 --                                     -- and a plain switch at runtime
+--      ruster.wm.defer(1500, "screenshot")  -- any action name, later
+--
+--    `defer` exists because a config is read before the first frame, which is
+--    too early for anything that has to wait on a round trip: a screenshot of a
+--    pane's diagnostics has to happen once the language server has answered.
+--    Deferred actions run after the immediate queue on the pass their deadline
+--    falls in, and two deferred to the same moment keep the order they were
+--    scheduled in — `defer(0, "edit x")` then `defer(0, "screenshot")` means
+--    "then", not "at the same time".
 --
 --    and to read the session back:
 --

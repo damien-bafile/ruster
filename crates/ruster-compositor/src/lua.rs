@@ -8,6 +8,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::process::{Command, Stdio};
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use mlua::Lua;
 use smithay::input::keyboard::{ModifiersState, XkbConfig};
@@ -309,6 +310,34 @@ pub struct WmControl {
     lua: Lua,
     queue: Rc<RefCell<VecDeque<Action>>>,
     status: Rc<RefCell<WmStatus>>,
+    deferred: Rc<RefCell<Vec<(Instant, Action)>>>,
+}
+
+/// Move every action whose deadline has passed out of `pending`, oldest first.
+///
+/// Split out from the timer plumbing so the ordering rule is testable: two
+/// actions deferred to the same moment have to come back in the order they were
+/// scheduled, because `ruster.wm.defer(0, "edit x")` followed by
+/// `ruster.wm.defer(0, "screenshot")` means "then", not "at the same time".
+pub fn take_due(pending: &mut Vec<(Instant, Action)>, now: Instant) -> Vec<Action> {
+    let mut due = Vec::new();
+    pending.retain(|(at, action)| {
+        if *at <= now {
+            due.push(action.clone());
+            false
+        } else {
+            true
+        }
+    });
+    due
+}
+
+/// How long until the earliest pending deferred action, if any.
+pub fn next_due(pending: &[(Instant, Action)], now: Instant) -> Option<Duration> {
+    pending
+        .iter()
+        .map(|(at, _)| at.saturating_duration_since(now))
+        .min()
 }
 
 impl WmControl {
@@ -319,7 +348,8 @@ impl WmControl {
         let recorded = Rc::new(RefCell::new(LuaShell::default()));
         let queue: Rc<RefCell<VecDeque<Action>>> = Rc::new(RefCell::new(VecDeque::new()));
         let status = Rc::new(RefCell::new(WmStatus::default()));
-        install_wm_api(&lua, &recorded, &queue, &status)?;
+        let deferred: Rc<RefCell<Vec<(Instant, Action)>>> = Rc::new(RefCell::new(Vec::new()));
+        install_wm_api(&lua, &recorded, &queue, &status, &deferred)?;
 
         // Evaluate as a value, not a table: a config that only calls the API
         // returns nothing, and demanding a table would make it a parse error.
@@ -328,7 +358,15 @@ impl WmControl {
         if let mlua::Value::Table(table) = returned {
             merge_config_table(&table, &mut shell)?;
         }
-        Ok((WmControl { lua, queue, status }, shell))
+        Ok((
+            WmControl {
+                lua,
+                queue,
+                status,
+                deferred,
+            },
+            shell,
+        ))
     }
 
     /// Everything queued since the last call, in the order it was queued.
@@ -338,6 +376,16 @@ impl WmControl {
     /// dispatching is the entire point.
     pub fn take_actions(&self) -> Vec<Action> {
         self.queue.borrow_mut().drain(..).collect()
+    }
+
+    /// Deferred actions whose moment has come.
+    pub fn take_due(&self, now: Instant) -> Vec<Action> {
+        take_due(&mut self.deferred.borrow_mut(), now)
+    }
+
+    /// How long the event loop may sleep before a deferred action is late.
+    pub fn next_due(&self, now: Instant) -> Option<Duration> {
+        next_due(&self.deferred.borrow(), now)
     }
 
     /// Publish what the compositor currently looks like, for `ruster.wm.status`.
@@ -366,8 +414,35 @@ fn install_wm_api(
     shell: &Rc<RefCell<LuaShell>>,
     queue: &Rc<RefCell<VecDeque<Action>>>,
     status: &Rc<RefCell<WmStatus>>,
+    deferred: &Rc<RefCell<Vec<(Instant, Action)>>>,
 ) -> mlua::Result<()> {
     let wm = lua.create_table()?;
+
+    // `ruster.wm.defer(ms, "action")` — the same action vocabulary, later.
+    //
+    // The config is read before the first frame, which is too early for
+    // anything that needs a round trip: a screenshot of a pane's diagnostics
+    // has to be taken about a second after startup, once the language server
+    // has answered. Without this the compositor can screenshot itself but has
+    // no way to say *when*, which is why several surfaces are implemented,
+    // unit-tested, and still have never been looked at.
+    let d = deferred.clone();
+    wm.set(
+        "defer",
+        lua.create_function(move |_, (ms, name): (u64, String)| {
+            match Action::from_name(&name) {
+                Some(action) => {
+                    let at = Instant::now() + Duration::from_millis(ms);
+                    d.borrow_mut().push((at, action));
+                    Ok(true)
+                }
+                None => {
+                    tracing::warn!(%name, "ruster.wm.defer: not an action");
+                    Ok(false)
+                }
+            }
+        })?,
+    )?;
 
     // Records *and* queues, like `switch_workspace`. Recording is what a config
     // read at startup needs; queueing is what makes the same call work at
@@ -1635,5 +1710,129 @@ mod tests {
         let shell = parse_config("return {}").unwrap();
         assert!(shell.keybinds.is_empty());
         assert!(shell.startup_clients.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod defer_tests {
+    use super::*;
+
+    fn at(base: Instant, ms: u64) -> Instant {
+        base + Duration::from_millis(ms)
+    }
+
+    #[test]
+    fn nothing_is_due_before_its_deadline() {
+        let base = Instant::now();
+        let mut pending = vec![(at(base, 100), Action::Quit)];
+        assert!(take_due(&mut pending, at(base, 99)).is_empty());
+        assert_eq!(pending.len(), 1, "an action not yet due must stay pending");
+    }
+
+    #[test]
+    fn a_deadline_that_has_arrived_is_due() {
+        let base = Instant::now();
+        let mut pending = vec![(at(base, 100), Action::Quit)];
+        // Exactly on the deadline, not merely past it: the event loop wakes on
+        // the timeout it was given, so `at == now` is the *common* case and a
+        // strict `<` would push every deferred action a whole pass late.
+        assert_eq!(take_due(&mut pending, at(base, 100)), vec![Action::Quit]);
+        assert!(pending.is_empty(), "a fired action must not fire twice");
+    }
+
+    #[test]
+    fn only_the_due_ones_come_back() {
+        let base = Instant::now();
+        let mut pending = vec![
+            (at(base, 10), Action::Quit),
+            (at(base, 500), Action::CycleWorkspace),
+        ];
+        assert_eq!(take_due(&mut pending, at(base, 20)), vec![Action::Quit]);
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].1, Action::CycleWorkspace);
+    }
+
+    /// Two actions deferred to the same moment are a sequence, not a set.
+    /// `defer(0, "edit x")` then `defer(0, "screenshot")` means the screenshot
+    /// shows the file — reversing them photographs the wrong screen, which is
+    /// exactly the self-verification this feature exists for.
+    #[test]
+    fn same_instant_actions_keep_their_scheduling_order() {
+        let base = Instant::now();
+        let mut pending = vec![
+            (at(base, 10), Action::Spawn("first".into())),
+            (at(base, 10), Action::Spawn("second".into())),
+            (at(base, 10), Action::Spawn("third".into())),
+        ];
+        let due = take_due(&mut pending, at(base, 10));
+        assert_eq!(
+            due,
+            vec![
+                Action::Spawn("first".into()),
+                Action::Spawn("second".into()),
+                Action::Spawn("third".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_empty_queue_asks_for_no_wakeup() {
+        assert_eq!(next_due(&[], Instant::now()), None);
+    }
+
+    #[test]
+    fn the_wakeup_is_the_earliest_deadline_not_the_first_scheduled() {
+        let base = Instant::now();
+        let pending = vec![
+            (at(base, 900), Action::Quit),
+            (at(base, 50), Action::CycleWorkspace),
+        ];
+        assert_eq!(
+            next_due(&pending, base),
+            Some(Duration::from_millis(50)),
+            "sleeping until the first-scheduled deadline would run the 50ms \
+             action 850ms late"
+        );
+    }
+
+    /// An overdue action asks for a zero wait rather than underflowing — the
+    /// loop should come round immediately, not park.
+    #[test]
+    fn an_overdue_action_asks_for_no_wait() {
+        let base = Instant::now();
+        let pending = vec![(base, Action::Quit)];
+        assert_eq!(
+            next_due(&pending, at(base, 5_000)),
+            Some(Duration::ZERO)
+        );
+    }
+
+    #[test]
+    fn defer_queues_a_known_action_and_rejects_an_unknown_one() {
+        let (wm, _) = WmControl::from_source(
+            r#"
+            ruster.wm.defer(0, "quit")
+            ruster.wm.defer(0, "not an action at all")
+            return {}
+            "#,
+        )
+        .unwrap();
+        let due = wm.take_due(Instant::now());
+        assert_eq!(
+            due,
+            vec![Action::Quit],
+            "the unparseable name should be dropped with a warning, not queued"
+        );
+    }
+
+    /// The deferred queue is separate from the immediate one, so a `defer` must
+    /// not arrive early via `take_actions`.
+    #[test]
+    fn a_deferred_action_is_not_an_immediate_one() {
+        let (wm, _) =
+            WmControl::from_source(r#"ruster.wm.defer(50000, "quit") return {}"#).unwrap();
+        assert!(wm.take_actions().is_empty());
+        assert!(wm.take_due(Instant::now()).is_empty());
+        assert!(wm.next_due(Instant::now()).is_some());
     }
 }

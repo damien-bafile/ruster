@@ -125,14 +125,23 @@ fn syntax_color(style: &SyntaxStyle) -> Option<Color> {
 
 /// The sign and colour for a diagnostic severity.
 ///
-/// LSP counts 1 as an error and 4 as a hint. Errors and warnings get the
-/// theme's mode colours rather than new roles: those are already "something is
-/// wrong here" and "look at this" in this palette, and a diagnostic is not a
-/// different kind of attention.
+/// LSP counts 1 as an error and 4 as a hint. The letter carries the severity;
+/// the colour is a ladder of prominence behind it — the alarm colour, ordinary
+/// text, then the gutter's own dim grey for the two that are only advice.
+///
+/// Every one of these is a *foreground* role. The first version drew errors in
+/// `mode_visual_bg`, which is a background swatch: RGB(72,50,80) as text on a
+/// RGB(30,30,30) pane, measured at (55,35,70) on screen after blending. It was
+/// drawn, it was correct, and it was invisible. A background colour is chosen
+/// to sit behind text and can never be the right choice for the text itself.
+///
+/// The palette has no `diagnostic_*` roles of its own, which is what this
+/// should use; adding them means the Lua override plumbing and the theme parity
+/// test, and belongs with the rest of the Phase 2 theming work.
 fn severity_sign(severity: u8, theme: &Theme) -> (&'static str, (f32, f32, f32, f32)) {
     match severity {
-        1 => ("E", theme.mode_visual_bg.into()),
-        2 => ("W", theme.accent.into()),
+        1 => ("E", theme.accent.into()),
+        2 => ("W", theme.fg.into()),
         3 => ("I", theme.gutter.into()),
         _ => ("H", theme.gutter.into()),
     }
@@ -149,6 +158,26 @@ fn gutter_width(first_line: usize, shown: usize) -> usize {
     }
     let last = first_line + shown;
     last.to_string().len() + 1
+}
+
+/// The diagnostic sign's own column, left of the line numbers.
+///
+/// It has to be its own column. Drawing the sign at the gutter's origin and
+/// then the right-aligned number at the same origin painted one over the other:
+/// the numbers won, and three real diagnostics rendered as an unchanged frame.
+const SIGN_COLS: usize = 1;
+
+/// Total gutter width: the sign column plus the numbers.
+///
+/// One function because two callers need the same answer — [`FrameBody::new`],
+/// which decides where text begins and therefore which cell a click lands on,
+/// and the draw itself. Measuring the gutter twice is how the grid on screen
+/// and the grid under the mouse drift apart.
+fn gutter_cols(first_line: usize, shown: usize) -> usize {
+    match gutter_width(first_line, shown) {
+        0 => 0,
+        numbers => numbers + SIGN_COLS,
+    }
 }
 
 /// Height of an editor frame's title bar, in physical pixels.
@@ -189,7 +218,7 @@ impl FrameBody {
     pub fn new(first_line: usize, shown: usize) -> Self {
         let (cell_w, cell_h) = cell_metrics(PANE_FONT_PX);
         FrameBody {
-            x: FRAME_PAD + gutter_width(first_line, shown) as f32 * cell_w,
+            x: FRAME_PAD + gutter_cols(first_line, shown) as f32 * cell_w,
             y: FRAME_BAR_H + FRAME_PAD,
             cell_w,
             cell_h,
@@ -472,9 +501,12 @@ impl Chrome {
         // numbers, and using a chrome constant would drift a row out of
         // alignment every few lines. The old `line_h: 24` field went with it.
         let body = FrameBody::new(first_line, buffer.len());
-        let gutter_cols = gutter_width(first_line, buffer.len());
+        let number_cols = gutter_width(first_line, buffer.len());
         let rows = ((h as f32 - bar_h - 8.0) / body.cell_h).max(0.0) as usize;
         let gutter_color: (f32, f32, f32, f32) = self.theme.gutter.into();
+        // Numbers start past the sign column, which is what keeps the two from
+        // being drawn on top of each other.
+        let numbers_x = FRAME_PAD + SIGN_COLS as f32 * body.cell_w;
 
         for (row, line) in buffer.iter().take(rows).enumerate() {
             let gy = body.y + row as f32 * body.cell_h;
@@ -494,14 +526,14 @@ impl Chrome {
                     batch,
                 );
             }
-            if gutter_cols > 0 {
+            if number_cols > 0 {
                 // Right-aligned, the way every editor draws line numbers: the
                 // units column has to line up or the eye cannot scan it.
-                let number = format!("{:>width$} ", first_line + row + 1, width = gutter_cols - 1);
+                let number = format!("{:>width$} ", first_line + row + 1, width = number_cols - 1);
                 self.text_in(
                     &number,
                     PANE_FONT_PX,
-                    FRAME_PAD,
+                    numbers_x,
                     gy,
                     gutter_color,
                     FontFamily::Mono,
@@ -1291,4 +1323,105 @@ mod tests {
             );
         }
     }
+    /// The diagnostic sign and the line numbers must not share a cell.
+    ///
+    /// They did: both were drawn at the gutter's origin, so the number was
+    /// painted over the sign and three real rust-analyzer diagnostics rendered
+    /// as a frame identical to one with none. Nothing caught it, because
+    /// `line_severities` was correct — the data reached the draw and the draw
+    /// threw it away.
+    #[test]
+    fn the_sign_column_is_not_the_number_column() {
+        let (cell_w, _) = cell_metrics(PANE_FONT_PX);
+        let numbers_x = FRAME_PAD + SIGN_COLS as f32 * cell_w;
+        assert!(
+            numbers_x >= FRAME_PAD + cell_w,
+            "the numbers start at {numbers_x}, on top of the sign at {FRAME_PAD}"
+        );
+    }
+
+    /// And the text must start clear of both, or the sign column would be
+    /// stolen from the first character of every line instead.
+    #[test]
+    fn text_starts_past_the_whole_gutter() {
+        let (cell_w, _) = cell_metrics(PANE_FONT_PX);
+        let body = FrameBody::new(0, 6);
+        let numbers_end = FRAME_PAD + gutter_cols(0, 6) as f32 * cell_w;
+        assert_eq!(body.x, numbers_end);
+        assert!(
+            body.x >= FRAME_PAD + (SIGN_COLS as f32 + 1.0) * cell_w,
+            "text at {} leaves no room for a sign plus a digit", body.x
+        );
+    }
+
+    /// An empty pane has no numbers, so it has no sign column either — a lone
+    /// blank column indented every empty buffer for nothing.
+    #[test]
+    fn an_empty_pane_has_no_gutter_at_all() {
+        assert_eq!(gutter_cols(0, 0), 0);
+        assert_eq!(FrameBody::new(0, 0).x, FRAME_PAD);
+    }
+
+    /// The sign column is a constant overhead, not one that grows: only the
+    /// numbers widen as a pane scrolls past a power of ten.
+    #[test]
+    fn only_the_numbers_widen_with_the_line_count() {
+        assert_eq!(gutter_cols(0, 9) + 1, gutter_cols(0, 10));
+        assert_eq!(
+            gutter_cols(0, 9) - gutter_width(0, 9),
+            gutter_cols(0, 1000) - gutter_width(0, 1000)
+        );
+    }
+
+    /// A diagnostic sign has to be legible against the pane it is drawn on.
+    ///
+    /// This is the test that was missing. `line_severities` was unit-tested and
+    /// correct, the draw was reached with the right data, and errors still came
+    /// out as RGB(55,35,70) on RGB(30,30,30) — because the colour was
+    /// `mode_visual_bg`, a background swatch. Nothing compared the two.
+    #[test]
+    fn every_severity_sign_is_legible_on_the_pane_background() {
+        let theme = Theme::default();
+        let (br, bg_, bb) = match theme.bg {
+            Color::Rgb(r, g, b) => (r as f32, g as f32, b as f32),
+            other => panic!("expected an rgb background, got {other:?}"),
+        };
+        // Relative luminance, then WCAG contrast. A sign is a small glyph, so
+        // 3:1 is the floor rather than the 4.5:1 body text would want.
+        fn lum(c: f32) -> f32 {
+            let c = c / 255.0;
+            if c <= 0.03928 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        }
+        let rel = |r: f32, g: f32, b: f32| 0.2126 * lum(r) + 0.7152 * lum(g) + 0.0722 * lum(b);
+        let back = rel(br, bg_, bb);
+        for severity in 1u8..=4 {
+            let (glyph, (r, g, b, _)) = severity_sign(severity, &theme);
+            let front = rel(r * 255.0, g * 255.0, b * 255.0);
+            let (hi, lo) = if front > back { (front, back) } else { (back, front) };
+            let contrast = (hi + 0.05) / (lo + 0.05);
+            assert!(
+                contrast >= 3.0,
+                "severity {severity} draws {glyph} at contrast {contrast:.2}:1 against the \
+                 pane background — below the 3:1 floor, which is how an error sign gets \
+                 drawn every frame and never seen"
+            );
+        }
+    }
+
+    /// Errors must not look like warnings. The letter distinguishes them, but a
+    /// reader scanning a gutter reads colour first.
+    #[test]
+    fn an_error_does_not_share_a_colour_with_a_warning() {
+        let theme = Theme::default();
+        assert_ne!(
+            severity_sign(1, &theme).1,
+            severity_sign(2, &theme).1,
+            "an error and a warning are the two a reader most needs to tell apart"
+        );
+    }
+
 }
