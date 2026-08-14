@@ -212,6 +212,15 @@ pub enum ChromeKind {
 ///
 /// Everything is answered from the last rendered frame rather than recomputed,
 /// so the hit-test cannot disagree with what is on screen.
+///
+/// Buffer text is resolved before chrome, which matters where the two want the
+/// same cell. Adjacent panes abut with no divider column of their own, so a
+/// pane's last column is both its rightmost text and the boundary with its
+/// neighbour. Text wins there: letting the boundary win would make the last
+/// character of every line in a split unclickable, which costs more than it
+/// buys. The boundary is therefore grabbed on the header or statusline row —
+/// where there is no text to compete with — and [`set_pointer_for_zone`] shows
+/// the resize pointer exactly on the cells where the grab will work.
 pub fn hit_test(app: &App, col: u16, row: u16) -> HitZone {
     // Floats are drawn above everything; the topmost one wins.
     if let Some(idx) = app.last_floats.iter().rposition(|r| contains(*r, col, row)) {
@@ -411,14 +420,43 @@ fn on_mouse_scroll(app: &mut App, ev: MouseEvent, zone: HitZone) {
     let up = ev.kind == MouseKind::ScrollUp;
     let lines = app.config.mouse.wheel_lines as usize;
     let mut ws = app.ws.borrow_mut();
-    let Some(win) = ws.windows.window_mut(wid) else {
+    // Reborrow so `windows` and `buffers` can be held at once — they are
+    // disjoint fields, but only an explicit split lets borrowck see that.
+    let ws = &mut *ws;
+
+    let (buffer_id, old_top, head) = match ws.windows.window(wid) {
+        Some(w) => (w.buffer, w.scroll_top, w.cursors.head()),
+        None => return,
+    };
+    let Some(doc) = ws.buffers.get(buffer_id) else {
         return;
     };
-    win.scroll_top = if up {
-        win.scroll_top.saturating_sub(lines)
+    let last_line = doc.buffer.line_count().saturating_sub(1);
+
+    let new_top = if up {
+        old_top.saturating_sub(lines)
     } else {
-        win.scroll_top.saturating_add(lines)
+        old_top.saturating_add(lines).min(last_line)
     };
+    let moved = new_top as isize - old_top as isize;
+    if moved == 0 {
+        return;
+    }
+
+    // The caret moves with the view, the way C-d and C-u do it.
+    //
+    // Not cosmetic: `render` clamps scroll_top to keep the caret on screen and
+    // writes the clamp back, so scrolling the view out from under a stationary
+    // caret is undone before the next frame — the wheel would look dead
+    // whenever the caret happened to be visible, which is usually.
+    let caret_line = doc.buffer.char_to_line(head.min(doc.buffer.len_chars()));
+    let next_line = (caret_line as isize + moved).clamp(0, last_line as isize) as usize;
+    let next_offset = doc.buffer.line_start_char(next_line);
+
+    if let Some(win) = ws.windows.window_mut(wid) {
+        win.scroll_top = new_top;
+        win.cursors.set_head(next_offset, &doc.buffer);
+    }
 }
 
 /// Extend the selection a press started.
@@ -1165,6 +1203,35 @@ mod tests {
         assert_eq!(scroll_top(&a), 0);
     }
 
+    /// The caret rides along with the wheel.
+    ///
+    /// Regression: it did not, and `render` clamps scroll_top to keep the caret
+    /// on screen and writes the clamp back — so the view snapped straight back
+    /// and the wheel looked dead. Caught by the mouse-wheel-scroll verification
+    /// capture, which showed line 1 still at the top after four notches.
+    #[test]
+    fn the_wheel_carries_the_caret_so_the_scroll_survives_a_render() {
+        let mut a = App::new("l\n".repeat(200), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+
+        handle_mouse_event(
+            &mut a,
+            wheel(
+                l.text.x,
+                l.text.y,
+                MouseKind::ScrollDown,
+                KeyModifiers::empty(),
+            ),
+        );
+        let lines = a.config.mouse.wheel_lines as usize;
+        assert_eq!(scroll_top(&a), lines);
+
+        // The render is what used to undo it.
+        a.render();
+        assert_eq!(scroll_top(&a), lines, "the scroll survived the frame");
+    }
+
     /// Scrolling up at the top stops there rather than wrapping around.
     #[test]
     fn wheel_up_at_the_top_saturates() {
@@ -1454,7 +1521,11 @@ mod tests {
     fn dragging_a_split_edge_resizes_the_window() {
         use ruster_core::windows::SplitDir;
 
-        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        // A buffer long enough to fill the pane, so the text rows really are
+        // text. An earlier version used a one-line buffer, where every row
+        // below the first was empty and fell through to the boundary by
+        // accident — the test passed without exercising what it names.
+        let mut a = App::new("l\n".repeat(200), PathBuf::from("f.txt"));
         a.ws.borrow_mut().windows.split(SplitDir::Vertical);
         let before = first_width(&mut a);
         let left = a
@@ -1464,13 +1535,14 @@ mod tests {
             .copied()
             .expect("a leftmost window");
         let edge_col = left.rect.x + left.rect.width - 1;
-        let mid_row = left.rect.y + left.rect.height / 2;
+        // The header row: on a text row this column is text (see hit_test).
+        let header_row = left.rect.y;
 
-        handle_mouse_event(&mut a, down(edge_col, mid_row, KeyModifiers::empty()));
+        handle_mouse_event(&mut a, down(edge_col, header_row, KeyModifiers::empty()));
         assert!(a.mouse.resize.is_some(), "the drag grabbed the edge");
         handle_mouse_event(
             &mut a,
-            drag_to(edge_col + 6, mid_row, KeyModifiers::empty()),
+            drag_to(edge_col + 6, header_row, KeyModifiers::empty()),
         );
 
         let after = first_width(&mut a);
@@ -1480,7 +1552,7 @@ mod tests {
             &mut a,
             MouseEvent::new(
                 edge_col + 6,
-                mid_row,
+                header_row,
                 MouseKind::Up,
                 MouseButton::Left,
                 KeyModifiers::empty(),
@@ -1489,12 +1561,13 @@ mod tests {
         assert!(a.mouse.resize.is_none(), "released");
     }
 
-    /// Dragging an edge must not also start a text selection.
+    /// Over text the edge column is text, so the last character of a line in a
+    /// split stays clickable instead of being eaten by the boundary.
     #[test]
-    fn a_split_edge_drag_selects_no_text() {
+    fn the_edge_column_is_still_text_on_a_text_row() {
         use ruster_core::windows::SplitDir;
 
-        let mut a = App::new("alpha bravo\n".into(), PathBuf::from("f.txt"));
+        let mut a = App::new("l\n".repeat(200), PathBuf::from("f.txt"));
         a.ws.borrow_mut().windows.split(SplitDir::Vertical);
         a.render();
         let left = a
@@ -1504,12 +1577,37 @@ mod tests {
             .copied()
             .expect("a leftmost window");
         let edge_col = left.rect.x + left.rect.width - 1;
-        let mid_row = left.rect.y + left.rect.height / 2;
+        let text_row = left.text.y + 1;
 
-        handle_mouse_event(&mut a, down(edge_col, mid_row, KeyModifiers::empty()));
+        assert!(matches!(
+            hit_test(&a, edge_col, text_row),
+            HitZone::Buffer(..)
+        ));
+        handle_mouse_event(&mut a, down(edge_col, text_row, KeyModifiers::empty()));
+        assert!(a.mouse.resize.is_none(), "no drag was armed over text");
+    }
+
+    /// Dragging an edge must not also start a text selection.
+    #[test]
+    fn a_split_edge_drag_selects_no_text() {
+        use ruster_core::windows::SplitDir;
+
+        let mut a = App::new("l\n".repeat(200), PathBuf::from("f.txt"));
+        a.ws.borrow_mut().windows.split(SplitDir::Vertical);
+        a.render();
+        let left = a
+            .last_layout
+            .iter()
+            .min_by_key(|l| l.rect.x)
+            .copied()
+            .expect("a leftmost window");
+        let edge_col = left.rect.x + left.rect.width - 1;
+        let header_row = left.rect.y;
+
+        handle_mouse_event(&mut a, down(edge_col, header_row, KeyModifiers::empty()));
         handle_mouse_event(
             &mut a,
-            drag_to(edge_col + 4, mid_row, KeyModifiers::empty()),
+            drag_to(edge_col + 4, header_row, KeyModifiers::empty()),
         );
         assert_eq!(selected(&a), "");
     }
@@ -1519,7 +1617,7 @@ mod tests {
     fn a_resize_cannot_collapse_a_pane() {
         use ruster_core::windows::SplitDir;
 
-        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        let mut a = App::new("l\n".repeat(200), PathBuf::from("f.txt"));
         a.ws.borrow_mut().windows.split(SplitDir::Vertical);
         a.render();
         let left = a
@@ -1528,13 +1626,13 @@ mod tests {
             .min_by_key(|l| l.rect.x)
             .copied()
             .expect("a leftmost window");
-        let mid_row = left.rect.y + left.rect.height / 2;
+        let header_row = left.rect.y;
         let edge_col = left.rect.x + left.rect.width - 1;
 
-        handle_mouse_event(&mut a, down(edge_col, mid_row, KeyModifiers::empty()));
+        handle_mouse_event(&mut a, down(edge_col, header_row, KeyModifiers::empty()));
         // Yank it far past the left wall, repeatedly.
         for _ in 0..10 {
-            handle_mouse_event(&mut a, drag_to(0, mid_row, KeyModifiers::empty()));
+            handle_mouse_event(&mut a, drag_to(0, header_row, KeyModifiers::empty()));
         }
         a.render();
         for l in &a.last_layout {
@@ -1964,10 +2062,10 @@ mod tests {
             .copied()
             .expect("a leftmost window");
         let edge_col = left.rect.x + left.rect.width - 1;
-        let mid_row = left.rect.y + left.rect.height / 2;
+        let header_row = left.rect.y;
 
         assert_eq!(
-            hit_test(&a, edge_col, mid_row),
+            hit_test(&a, edge_col, header_row),
             HitZone::Chrome(ChromeKind::SplitEdge {
                 wid: left.window,
                 vertical: true,

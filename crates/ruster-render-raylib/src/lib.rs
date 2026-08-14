@@ -251,6 +251,13 @@ pub struct RaylibRenderer {
     /// The cell the pointer was in last frame, so motion can be detected —
     /// raylib reports a position, not a movement.
     last_mouse_cell: Option<(u16, u16)>,
+    /// Whether this frame's mouse state has already been turned into events.
+    ///
+    /// raylib reports the mouse as *state*, and its edge-triggered predicates
+    /// stay true for the whole frame — so draining twice in one frame yields
+    /// the same press twice. The caller drains in a `while let` loop, which
+    /// without this guard never terminates: one click hangs the editor.
+    mouse_drained: bool,
     /// The pointer shape currently set, so redundant syscalls are skipped.
     pointer: PointerKind,
     /// Where to write, and how many frames to let settle first.
@@ -470,6 +477,7 @@ impl RaylibRenderer {
             event_buffer: Vec::new(),
             mouse_buffer: Vec::new(),
             last_mouse_cell: None,
+            mouse_drained: false,
             pointer: PointerKind::default(),
             pending_screenshot: None,
             screenshot_result: None,
@@ -630,6 +638,8 @@ impl Renderer for RaylibRenderer {
     }
 
     fn render_frame(&mut self, state: &FrameState) {
+        // A new frame means new mouse state to read.
+        self.mouse_drained = false;
         let screen_w = self.rl.get_screen_width();
         let screen_h = self.rl.get_screen_height();
         let char_w = self.char_w;
@@ -1794,7 +1804,9 @@ impl Renderer for RaylibRenderer {
     }
 
     fn poll_mouse(&mut self) -> Option<MouseEvent> {
-        if self.mouse_buffer.is_empty() {
+        // Once per frame, not once per call — see `mouse_drained`.
+        if self.mouse_buffer.is_empty() && !self.mouse_drained {
+            self.mouse_drained = true;
             self.drain_mouse();
         }
         self.mouse_buffer.pop()

@@ -44,6 +44,16 @@ TUI_ROWS=40
 KEY_LEAD_MS=1800
 KEY_STEP_MS=500
 
+# Mouse pacing. The lead is much longer than the keystroke one because pointer
+# events are aimed at a *window*, and a window takes several seconds to become
+# visible to the accessibility API that reports where it is — measured at ~6s
+# for a debug build that also has a font to load. Keystrokes go to whatever is
+# frontmost and need no such lookup, which is why they get away with 1.8s.
+# Undershooting here is not a flaky click: the deferred quit fires first and the
+# editor is gone before the pointer arrives.
+MOUSE_LEAD_MS=7000
+MOUSE_STEP_MS=250
+
 # Floor for the TUI settle. Below this the capture races the app's first frame.
 TUI_MIN_WAIT_MS=2500
 
@@ -62,6 +72,13 @@ TUI_MIN_WAIT_MS=2500
 #           language server that has not finished indexing and gets an honest
 #           null back, which renders as "No hover info" and reads as a bug.
 #   KEYS  — keys to send after the app settles (tmux notation); needs real input
+#   MOUSE — mouse gestures to perform after the app settles. Two spellings,
+#           because the backends address the screen differently: MOUSE_TUI is in
+#           0-based cells (scripts/tui-mouse.sh) and MOUSE_GUI is in pixels
+#           relative to the window's content area (scripts/gui-mouse.sh), which
+#           is the only way to aim without knowing the font's glyph advance.
+#           Setting MOUSE sets both to the same string; set them separately when
+#           the two need different coordinates, which is usually.
 #   OPEN  — what to open: "fixture" (default), "repo" (a dirty scratch repo),
 #           "none" (bare launch, for the dashboard), or "self" (this checkout)
 #   SEED  — extra state to plant in the throwaway config dir before launch.
@@ -79,12 +96,34 @@ SURFACES=(
   trouble todos settings themes help messages mason projects
   noice-toast noice-panel noice-popup dialog
   hover debugger terminal sessions gotoline
+  mouse-click mouse-double-click-word mouse-drag-visual mouse-wheel-scroll
+  mouse-right-click-menu mouse-hover-popup mouse-gutter-click mouse-split-resize
 )
+
+# Where the buffer text starts, with the number gutter on.
+#
+# TUI: column 4 (a three-wide gutter and a space), row 1 (the header is row 0).
+# GUI: the same origin in pixels. Measured off a reference capture rather than
+# derived — the glyph advance depends on which font actually loaded, which only
+# the renderer knows. Text starts at x=44, the advance is ~9.9px and the line
+# height 24; the origin below is nudged half a cell in so rounding drift over
+# twenty-odd columns still lands inside the intended cell.
+TUI_TEXT_COL=4
+TUI_TEXT_ROW=1
+GUI_TEXT_X=43
+GUI_TEXT_Y=38
+GUI_CELL_W=10
+GUI_CELL_H=24
+
+# A cell offset from the text origin, in each backend's own units.
+tui_at() { echo "$((TUI_TEXT_COL + $1)) $((TUI_TEXT_ROW + $2))"; }
+gui_at() { echo "$((GUI_TEXT_X + $1 * GUI_CELL_W)) $((GUI_TEXT_Y + $2 * GUI_CELL_H))"; }
 
 NUMBERS="gutter = { number = true }"
 
 spec() {
   LUA=""; CONF=""; DEFER=""; KEYS=""; OPEN="fixture"; NEEDS=""; SEED=""; WAIT=1200
+  MOUSE=""; MOUSE_TUI=""; MOUSE_GUI=""; LUA_RAW=""
   case "$1" in
     dashboard)      OPEN="none" ;;
     editor)         CONF="$NUMBERS" ;;
@@ -123,8 +162,70 @@ spec() {
     # directory `:SessionSave` can only report that there is nothing to save.
     sessions)       OPEN="project"; LUA=":SessionSave|:messages" ;;
     gotoline)       CONF="$NUMBERS"; LUA=":16" ;;
+
+    # --- mouse ---------------------------------------------------------------
+    # Each drives the gesture named in the surface, then leaves the result on
+    # screen. The number gutter is on throughout so the caret's line is legible
+    # in the artifact — without it "the caret moved" is not something a reader
+    # can check.
+    mouse-click)
+      CONF="$NUMBERS"
+      MOUSE_TUI="click $(tui_at 12 10)"
+      MOUSE_GUI="click $(gui_at 12 10)" ;;
+    mouse-double-click-word)
+      CONF="$NUMBERS"
+      # Inside `std::collections::HashMap` on line 11: one whitespace-delimited
+      # word, so the whole qualified name highlights.
+      MOUSE_TUI="click $(tui_at 8 10) left 2"
+      MOUSE_GUI="click $(gui_at 8 10) left 2" ;;
+    mouse-drag-visual)
+      CONF="$NUMBERS"
+      MOUSE_TUI="down $(tui_at 4 10) drag $(tui_at 14 10) drag $(tui_at 24 11) up $(tui_at 24 11)"
+      MOUSE_GUI="down $(gui_at 4 10) drag $(gui_at 14 10) drag $(gui_at 24 11) up $(gui_at 24 11)" ;;
+    mouse-wheel-scroll)
+      CONF="$NUMBERS"
+      MOUSE_TUI="wheel $(tui_at 10 5) -4"
+      MOUSE_GUI="wheel $(gui_at 10 5) -4" ;;
+    mouse-right-click-menu)
+      CONF="$NUMBERS"
+      MOUSE_TUI="click $(tui_at 12 10) right"
+      MOUSE_GUI="click $(gui_at 12 10) right" ;;
+    mouse-hover-popup)
+      # Hover only fires an event; something has to render for the artifact to
+      # show anything, so the handler echoes what it was given.
+      #
+      # The toast has to outlive the gap between the gesture and the shot. In
+      # the GUI that gap is seconds — the window takes ~6s to become
+      # addressable, and the shot is timed off a fixed lead — so the default
+      # two-second toast had already expired by the time the frame was taken.
+      CONF="$NUMBERS, noice = { info_timeout = 30000 }"
+      LUA_RAW='ruster.on("hover", function(ev)
+  ruster.cmd(":echo hover: line " .. ev.line .. " col " .. ev.col_in_line)
+end)'
+      MOUSE_TUI="move $(tui_at 12 10) sleep 900"
+      MOUSE_GUI="move $(gui_at 12 10) sleep 900" ;;
+    mouse-gutter-click)
+      CONF="$NUMBERS"
+      # Column 1 is inside the gutter, well left of the text.
+      MOUSE_TUI="click 1 15"
+      MOUSE_GUI="click 20 $((GUI_TEXT_Y + 14 * GUI_CELL_H))" ;;
+    mouse-split-resize)
+      CONF="$NUMBERS"; LUA=":vsplit"
+      # Grab the boundary on the header row and pull it left. Row 0 rather than
+      # a text row: adjacent panes abut with no divider column, so over text
+      # that column is text — see the note on hit_test.
+      MOUSE_TUI="down 59 0 drag 47 0 up 47 0"
+      # The boundary of a 1200px-wide vsplit sits at ~600; the header row is the
+      # first text row of the window, above the buffer.
+      MOUSE_GUI="down 596 8 drag 476 8 up 476 8" ;;
+
     *) echo "unknown surface: $1" >&2; return 1 ;;
   esac
+  # MOUSE is the shorthand for "the same gesture in both backends"; the
+  # per-backend spellings win where a surface sets them.
+  [ -n "$MOUSE" ] && [ -z "$MOUSE_TUI" ] && MOUSE_TUI="$MOUSE"
+  [ -n "$MOUSE" ] && [ -z "$MOUSE_GUI" ] && MOUSE_GUI="$MOUSE"
+  return 0
 }
 
 # The dialog is the one surface no ex command reaches, so it gets a literal.
@@ -251,6 +352,11 @@ EOF
     printf '%s\n%s\n' "$ROOT" "$ROOT/crates/ruster-tui" > "$cfg/ruster/recent-projects"
   fi
   : > "$cfg/ruster/init.lua"
+  # A surface needing real Lua rather than a queue of ex commands writes it
+  # verbatim — registering an event handler is not something `ruster.cmd` can do.
+  if [ -n "${LUA_RAW:-}" ]; then
+    printf '%s\n' "$LUA_RAW" >> "$cfg/ruster/init.lua"
+  fi
   if [ "$LUA" = "@dialog" ]; then
     printf '%s\n' "$DIALOG_LUA" >> "$cfg/ruster/init.lua"
   elif [ -n "$LUA" ]; then
@@ -308,6 +414,12 @@ capture_tui() {
     sleep 1
   fi
 
+  if [ -n "$MOUSE_TUI" ]; then
+    # shellcheck disable=SC2086 — MOUSE_TUI is deliberately word-split.
+    TMUX_BIN="$TMUX_BIN" "$ROOT/scripts/tui-mouse.sh" "$sess" $MOUSE_TUI
+    sleep 1
+  fi
+
   "$TMUX_BIN" capture-pane -p -t "$sess" > "$dest"
   "$TMUX_BIN" kill-session -t "$sess" 2>/dev/null || true
 
@@ -347,6 +459,13 @@ capture_gui() {
     local keys_done=$((KEY_LEAD_MS + nkeys * KEY_STEP_MS + 700))
     [ "$keys_done" -gt "$shot_at" ] && shot_at="$keys_done"
   fi
+  # Same reasoning for mouse gestures, with the longer lead above.
+  if [ -n "$MOUSE_GUI" ]; then
+    local nev
+    nev=$(printf '%s\n' $MOUSE_GUI | wc -w | tr -d ' ')
+    local mouse_done=$((MOUSE_LEAD_MS + nev * MOUSE_STEP_MS + 1500))
+    [ "$mouse_done" -gt "$shot_at" ] && shot_at="$mouse_done"
+  fi
   local quit_at=$((shot_at + 900))
   local extra
   extra="$(cat <<EOF
@@ -358,13 +477,19 @@ EOF
 
   rm -f "$dest"
   local budget=$(( (quit_at / 1000) + 10 ))
-  local rc=0 keys_rc=0
-  if [ -n "$KEYS" ]; then
+  local rc=0 keys_rc=0 mouse_rc=0
+  if [ -n "$KEYS" ] || [ -n "$MOUSE_GUI" ]; then
     ( cd "$WORKDIR" && XDG_CONFIG_HOME="$cfg" timeout "$budget" "$BIN" $TARGET >/dev/null 2>&1 ) &
     local pid=$!
     sleep "$(awk "BEGIN{print $KEY_LEAD_MS/1000}")"
-    # shellcheck disable=SC2086 — KEYS is deliberately word-split into arguments.
-    "$ROOT/scripts/gui-keys.sh" $KEYS || keys_rc=$?
+    if [ -n "$KEYS" ]; then
+      # shellcheck disable=SC2086 — KEYS is deliberately word-split into arguments.
+      "$ROOT/scripts/gui-keys.sh" $KEYS || keys_rc=$?
+    fi
+    if [ -n "$MOUSE_GUI" ]; then
+      # shellcheck disable=SC2086 — MOUSE_GUI is deliberately word-split.
+      "$ROOT/scripts/gui-mouse.sh" $MOUSE_GUI || mouse_rc=$?
+    fi
     wait $pid || rc=$?
   else
     ( cd "$WORKDIR" && XDG_CONFIG_HOME="$cfg" timeout "$budget" "$BIN" $TARGET >/dev/null 2>&1 ) || rc=$?
@@ -375,6 +500,11 @@ EOF
   if [ "$keys_rc" -ne 0 ]; then
     rm -f "$dest"
     echo "  gui: FAILED (keystrokes were not delivered; see scripts/gui-keys.sh)" >&2
+    return 1
+  fi
+  if [ "$mouse_rc" -ne 0 ]; then
+    rm -f "$dest"
+    echo "  gui: FAILED (mouse events were not delivered; see scripts/gui-mouse.sh)" >&2
     return 1
   fi
 
