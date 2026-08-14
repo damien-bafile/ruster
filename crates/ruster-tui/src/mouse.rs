@@ -123,13 +123,19 @@ impl MenuRegistry {
 /// Every `cmd` is a real cmdline command — the menu runs them down the same
 /// path as typing them, so an item that works here works there and vice versa.
 ///
-/// Notably absent are Cut/Copy/Paste/Select All: the editor has no clipboard
-/// commands at all (yank and put are key-driven register operations, and system
-/// clipboard integration lives only in the compositor). Inventing commands for
-/// them belongs to a clipboard task, not this one.
+/// Cut/Copy/Paste/Select All lead, in that order, because that is the order
+/// every other application puts them in and a menu is read by shape before it
+/// is read by word. They act on the selection the right-click did not disturb —
+/// opening the menu is not a click on the text — and fall back to the cursor's
+/// line when there is none, so an item is never inert.
 fn default_menu_items(zone: Zone) -> Vec<MenuItem> {
     match zone {
         Zone::Buffer => vec![
+            MenuItem::new("Cut", "cut"),
+            MenuItem::new("Copy", "copy"),
+            MenuItem::new("Paste", "paste"),
+            MenuItem::new("Select All", "selectall"),
+            MenuItem::new("Toggle Comment", "comment"),
             MenuItem::new("Format Buffer", "fmt"),
             MenuItem::new("Save", "w"),
             MenuItem::new("Split Vertical", "vsplit"),
@@ -504,11 +510,16 @@ fn on_mouse_drag(app: &mut App, ev: MouseEvent) {
 
     match app.editmode {
         crate::app::EditMode::Neovim => {
-            app.vim.mode = match app.mouse.drag.kind {
+            let mode = match app.mouse.drag.kind {
                 DragKind::Block => ruster_core::vim::VimMode::VisualBlock,
                 DragKind::Line => ruster_core::vim::VimMode::VisualLine,
                 DragKind::Char => ruster_core::vim::VimMode::VisualChar,
             };
+            // The anchor goes with the mode. Setting the mode alone left the
+            // vim layer's own anchor unset, so the first motion key after a
+            // drag re-anchored on the cursor and collapsed the selection to a
+            // single character — the drag looked like it had never happened.
+            app.vim.set_visual(mode, anchor);
         }
         crate::app::EditMode::Emacs => {
             // The region a drag builds has to be the one the kill commands see.
@@ -1063,6 +1074,28 @@ mod tests {
         assert_eq!(a.vim.mode, ruster_core::vim::VimMode::VisualChar);
     }
 
+    /// A drag has to leave a selection the keyboard can go on adjusting, not
+    /// one that evaporates on the next key.
+    #[test]
+    fn a_drag_selection_extends_instead_of_collapsing() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey};
+        let mut a = App::new("alpha bravo\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        handle_mouse_event(&mut a, down(l.text.x, l.text.y, KeyModifiers::empty()));
+        handle_mouse_event(
+            &mut a,
+            drag_to(l.text.x + 4, l.text.y, KeyModifiers::empty()),
+        );
+        a.handle_key(CtKey::new(KeyCode::Char('l'), KeyModifiers::empty()));
+
+        assert_eq!(
+            a.vim.visual_ranges(&*a.ws.borrow()),
+            vec![(0, 6)],
+            "still anchored where the drag began"
+        );
+    }
+
     #[test]
     fn drag_in_neovim_enters_visual_block_when_alt_held() {
         let mut a = App::new("alpha bravo\n".into(), PathBuf::from("f.txt"));
@@ -1487,6 +1520,47 @@ mod tests {
         let labels = menu_labels(&mut a);
         assert_eq!(labels.last().map(String::as_str), Some("Say Hi"));
         assert!(labels.len() > 1, "defaults are still there: {labels:?}");
+    }
+
+    #[test]
+    fn the_buffer_menu_leads_with_the_clipboard_items() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        handle_mouse_event(&mut a, right_down(l.text.x, l.text.y));
+
+        let labels = menu_labels(&mut a);
+        assert_eq!(
+            &labels[..4],
+            &["Cut", "Copy", "Paste", "Select All"],
+            "the order every other application uses: {labels:?}"
+        );
+        assert!(labels.iter().any(|l| l == "Toggle Comment"));
+    }
+
+    /// The whole point of the menu items: a selection made with the pointer,
+    /// copied with the pointer, without a keystroke anywhere in between.
+    #[test]
+    fn choosing_copy_from_the_menu_copies_the_drag_selection() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey};
+        let mut a = App::new("alpha bravo\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        handle_mouse_event(&mut a, down(l.text.x, l.text.y, KeyModifiers::empty()));
+        handle_mouse_event(
+            &mut a,
+            drag_to(l.text.x + 4, l.text.y, KeyModifiers::empty()),
+        );
+        // Right-click opens the menu over the selection without disturbing it.
+        handle_mouse_event(&mut a, right_down(l.text.x + 2, l.text.y));
+        assert_eq!(menu_labels(&mut a)[1], "Copy");
+        a.handle_key(CtKey::new(KeyCode::Down, KeyModifiers::empty()));
+        a.handle_key(CtKey::new(KeyCode::Enter, KeyModifiers::empty()));
+
+        // "alpha", not "alph": the head is inclusive in visual mode, and what
+        // is copied has to be what the highlight on screen covers.
+        assert_eq!(a.vim.clipboard_get().as_deref(), Some("alpha"));
+        assert!(a.picker.is_none(), "the menu closed behind the choice");
     }
 
     /// Every default item has to be a command the cmdline actually accepts, or

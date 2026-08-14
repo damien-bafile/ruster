@@ -50,6 +50,22 @@ const TYPED_ONLY: &[(&str, &str)] = &[
         "`K` and `SPC c k`; the `:` form exists so a float can be raised on demand",
     ),
     // Reached by a dedicated key rather than the leader tree.
+    (
+        "Copy",
+        "`y` / `\"+y` in neovim, `M-w` in emacs, and Copy in the right-click menu",
+    ),
+    (
+        "Cut",
+        "`d` / `x` in neovim, `C-w` in emacs, and Cut in the right-click menu",
+    ),
+    (
+        "Paste",
+        "`p` in neovim, `C-y` in emacs, and Paste in the right-click menu",
+    ),
+    (
+        "SelectAll",
+        "`ggVG` in neovim, and Select All in the right-click menu",
+    ),
     ("QuickfixNext", "`]q`"),
     ("QuickfixPrev", "`[q`"),
     ("QuickfixOpen", "opened by the runner that fills it"),

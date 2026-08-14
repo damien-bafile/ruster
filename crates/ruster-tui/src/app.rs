@@ -1035,6 +1035,7 @@ enum LeaderAction {
     Definition,
     References,
     Format,
+    ToggleComment,
     Rename,
     DocumentSymbol,
     Diagnostics,
@@ -1133,6 +1134,10 @@ static CODE_GROUP: &[(char, LeaderNode)] = &[
         LeaderNode::Action("references", LeaderAction::References),
     ),
     ('f', LeaderNode::Action("format", LeaderAction::Format)),
+    (
+        'c',
+        LeaderNode::Action("toggle comment", LeaderAction::ToggleComment),
+    ),
     ('n', LeaderNode::Action("rename", LeaderAction::Rename)),
     (
         'o',
@@ -7305,6 +7310,7 @@ impl App {
             LeaderAction::Format => {
                 self.lsp_format();
             }
+            LeaderAction::ToggleComment => self.toggle_comment(),
             LeaderAction::Rename => {
                 // Seed the cmdline with :rename for the new name.
                 self.echo("Use :rename <new-name>".to_string());
@@ -13767,6 +13773,19 @@ index 1..2 100644
         a.emacs.push_kill("XY".to_string());
         run(&mut a, ":paste");
         assert_eq!(a.ws.borrow().buffer().to_string(), "XYalpha\n");
+    }
+
+    /// The one command here with no key of its own in either paradigm, so the
+    /// leader route is the only way to reach it without typing.
+    #[test]
+    fn leader_c_c_toggles_the_comment() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("fn main() {}\n".into(), PathBuf::from("main.rs"));
+        for c in [' ', 'c', 'c'] {
+            a.handle_key(CtKey::new(KeyCode::Char(c), none));
+        }
+        assert_eq!(a.ws.borrow().buffer().to_string(), "// fn main() {}\n");
     }
 
     #[test]
