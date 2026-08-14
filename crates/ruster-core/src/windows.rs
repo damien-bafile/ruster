@@ -388,6 +388,16 @@ impl WindowTree {
     }
 
     /// Move focus to the nearest window in `dir` (no-op if none exists).
+    /// Focus a window by id, ignoring ids that are not in the tree. Returns
+    /// whether focus moved.
+    pub fn focus_id(&mut self, id: WindowId) -> bool {
+        if self.active == id || !self.windows.contains_key(&id) {
+            return false;
+        }
+        self.active = id;
+        true
+    }
+
     pub fn focus(&mut self, dir: FocusDir) {
         // Adjacency is scale-invariant, so compute over a large virtual area.
         let rects = self.compute_all_rects(Rect::new(0, 0, 10_000, 10_000));
@@ -432,6 +442,80 @@ impl WindowTree {
         self.compute_all_rects(area)
     }
 
+    /// Move the split edge on `wid`'s right or bottom by `dx`/`dy` cells.
+    ///
+    /// `area` is the frame the layout is computed against — the same one passed
+    /// to [`compute_rects`](Self::compute_rects) — because a ratio only means
+    /// something relative to the space being divided.
+    ///
+    /// Returns whether anything moved. The edge that moves is the one belonging
+    /// to the innermost split that has `wid` on its *first* side: that is the
+    /// edge drawn at `wid`'s right or bottom, which is the one under the
+    /// pointer when a drag starts there. Both panes keep a minimum width, so an
+    /// enthusiastic drag cannot collapse one to nothing.
+    pub fn resize(&mut self, wid: WindowId, area: Rect, dx: i32, dy: i32) -> bool {
+        /// Smallest a pane may be squeezed to, in cells.
+        const MIN_CELLS: f32 = 4.0;
+
+        fn walk(
+            layout: &mut Layout,
+            area: Rect,
+            wid: WindowId,
+            want: SplitDir,
+            delta: i32,
+        ) -> bool {
+            let Layout::Split {
+                dir,
+                ratio,
+                first,
+                second,
+            } = layout
+            else {
+                return false;
+            };
+
+            let (first_area, second_area) = split_areas(*dir, *ratio, area);
+            // Innermost first: a nested split's edge is nearer the pointer than
+            // its parent's.
+            if walk(first, first_area, wid, want, delta)
+                || walk(second, second_area, wid, want, delta)
+            {
+                return true;
+            }
+
+            if *dir != want || !contains_window(first, wid) {
+                return false;
+            }
+            let span = match want {
+                SplitDir::Vertical => area.width,
+                SplitDir::Horizontal => area.height,
+            } as f32;
+            if span <= 0.0 {
+                return false;
+            }
+            let lo = MIN_CELLS / span;
+            let hi = 1.0 - lo;
+            if lo >= hi {
+                return false;
+            }
+            let next = (*ratio + delta as f32 / span).clamp(lo, hi);
+            if (next - *ratio).abs() < f32::EPSILON {
+                return false;
+            }
+            *ratio = next;
+            true
+        }
+
+        let mut moved = false;
+        if dx != 0 {
+            moved |= walk(&mut self.root, area, wid, SplitDir::Vertical, dx);
+        }
+        if dy != 0 {
+            moved |= walk(&mut self.root, area, wid, SplitDir::Horizontal, dy);
+        }
+        moved
+    }
+
     /// Rectangles for all leaves ignoring fullscreen (used for focus geometry).
     fn compute_all_rects(&self, area: Rect) -> Vec<(WindowId, Rect)> {
         let mut out = Vec::new();
@@ -448,6 +532,42 @@ fn overlaps_h(a: &Rect, b: &Rect) -> bool {
     a.x < b.x + b.width && b.x < a.x + a.width
 }
 
+/// Whether `layout` contains `wid` anywhere beneath it.
+fn contains_window(layout: &Layout, wid: WindowId) -> bool {
+    match layout {
+        Layout::Leaf(id) => *id == wid,
+        Layout::Split { first, second, .. } => {
+            contains_window(first, wid) || contains_window(second, wid)
+        }
+    }
+}
+
+/// The two halves `area` divides into at `ratio`. The single definition of
+/// where a split edge falls, shared by layout and resize so the edge a drag
+/// moves is the edge that was drawn.
+fn split_areas(dir: SplitDir, ratio: f32, area: Rect) -> (Rect, Rect) {
+    match dir {
+        SplitDir::Vertical => {
+            let w1 = ((area.width as f32) * ratio)
+                .round()
+                .clamp(0.0, area.width as f32) as u16;
+            (
+                Rect::new(area.x, area.y, w1, area.height),
+                Rect::new(area.x + w1, area.y, area.width - w1, area.height),
+            )
+        }
+        SplitDir::Horizontal => {
+            let h1 = ((area.height as f32) * ratio)
+                .round()
+                .clamp(0.0, area.height as f32) as u16;
+            (
+                Rect::new(area.x, area.y, area.width, h1),
+                Rect::new(area.x, area.y + h1, area.width, area.height - h1),
+            )
+        }
+    }
+}
+
 fn layout_rects(layout: &Layout, area: Rect, out: &mut Vec<(WindowId, Rect)>) {
     match layout {
         Layout::Leaf(id) => out.push((*id, area)),
@@ -456,24 +576,11 @@ fn layout_rects(layout: &Layout, area: Rect, out: &mut Vec<(WindowId, Rect)>) {
             ratio,
             first,
             second,
-        } => match dir {
-            SplitDir::Vertical => {
-                let w1 = ((area.width as f32) * ratio).round() as u16;
-                let w1 = w1.clamp(0, area.width);
-                let first_area = Rect::new(area.x, area.y, w1, area.height);
-                let second_area = Rect::new(area.x + w1, area.y, area.width - w1, area.height);
-                layout_rects(first, first_area, out);
-                layout_rects(second, second_area, out);
-            }
-            SplitDir::Horizontal => {
-                let h1 = ((area.height as f32) * ratio).round() as u16;
-                let h1 = h1.clamp(0, area.height);
-                let first_area = Rect::new(area.x, area.y, area.width, h1);
-                let second_area = Rect::new(area.x, area.y + h1, area.width, area.height - h1);
-                layout_rects(first, first_area, out);
-                layout_rects(second, second_area, out);
-            }
-        },
+        } => {
+            let (first_area, second_area) = split_areas(*dir, *ratio, area);
+            layout_rects(first, first_area, out);
+            layout_rects(second, second_area, out);
+        }
     }
 }
 

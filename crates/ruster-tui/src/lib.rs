@@ -15,6 +15,7 @@ pub mod lsp_state {
     pub use ruster_lsp::state::*;
 }
 pub mod mason;
+pub mod mouse;
 pub mod picker;
 pub mod quickfix;
 pub mod renderer;

@@ -72,6 +72,65 @@ impl CursorSet {
         self.cursors[self.primary] = Range { anchor, head };
     }
 
+    /// Set the primary cursor to span `[mark, point]` — Emacs' region, where
+    /// the mark is the fixed end and point is the end that moves.
+    pub fn set_region(&mut self, mark: usize, point: usize) {
+        self.cursors[self.primary] = Range {
+            anchor: mark,
+            head: point,
+        };
+    }
+
+    /// The word around `anchor`, expanded outward until whitespace.
+    ///
+    /// "Word" here is deliberately whitespace-delimited rather than
+    /// punctuation-aware: a double-click on `foo.bar` selects the whole thing,
+    /// which is what a path or a qualified name wants.
+    ///
+    /// An `anchor` sitting on whitespace selects the run of whitespace itself,
+    /// so the result is never empty for a non-empty buffer.
+    pub fn select_word(&self, buffer: &Buffer, anchor: usize) -> Range {
+        let len = buffer.len_chars();
+        if len == 0 {
+            return Range::caret(0);
+        }
+        let at = anchor.min(len - 1);
+        // Match like against like, so a click on a gap grabs the gap.
+        let on_space = buffer.char_at(at).is_whitespace();
+        let same = |i: usize| buffer.char_at(i).is_whitespace() == on_space;
+
+        let mut start = at;
+        while start > 0 && same(start - 1) {
+            start -= 1;
+        }
+        let mut end = at;
+        while end + 1 < len && same(end + 1) {
+            end += 1;
+        }
+        Range {
+            anchor: start,
+            head: end + 1,
+        }
+    }
+
+    /// The whole line around `anchor`, including its trailing newline so that
+    /// a triple-click selects something that can be cut as a line.
+    pub fn select_line(&self, buffer: &Buffer, anchor: usize) -> Range {
+        let len = buffer.len_chars();
+        let at = anchor.min(len);
+        let line = buffer.char_to_line(at);
+        let start = buffer.line_start_char(line);
+        let end = if line + 1 < buffer.line_count() {
+            buffer.line_start_char(line + 1)
+        } else {
+            len
+        };
+        Range {
+            anchor: start,
+            head: end,
+        }
+    }
+
     fn collapse_at(&mut self, at: usize) {
         self.cursors[self.primary] = Range::caret(at);
     }
@@ -226,6 +285,76 @@ impl CursorSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn select_word_expands_to_whitespace() {
+        let b = Buffer::from_str("foo bar");
+        let cs = CursorSet::single(0);
+        // Inside the first word, from either end or the middle.
+        for at in [0, 1, 2] {
+            let r = cs.select_word(&b, at);
+            assert_eq!((r.start(), r.end()), (0, 3), "offset {at}");
+        }
+        // Inside the second word.
+        for at in [4, 5, 6] {
+            let r = cs.select_word(&b, at);
+            assert_eq!((r.start(), r.end()), (4, 7), "offset {at}");
+        }
+        // On the gap: the gap itself, so the selection is never empty.
+        let r = cs.select_word(&b, 3);
+        assert_eq!((r.start(), r.end()), (3, 4));
+    }
+
+    #[test]
+    fn select_word_handles_an_empty_buffer() {
+        let b = Buffer::from_str("");
+        let cs = CursorSet::single(0);
+        let r = cs.select_word(&b, 0);
+        assert_eq!((r.start(), r.end()), (0, 0));
+    }
+
+    /// Punctuation stays inside the word, so a click on a path or a qualified
+    /// name grabs all of it.
+    #[test]
+    fn select_word_keeps_punctuation_inside_the_word() {
+        let b = Buffer::from_str("use foo.bar::baz end");
+        let cs = CursorSet::single(0);
+        let r = cs.select_word(&b, 8);
+        assert_eq!(b.slice_string(r.start(), r.end()), "foo.bar::baz");
+    }
+
+    #[test]
+    fn select_line_spans_the_line_and_its_newline() {
+        let b = Buffer::from_str("a\nbc\nde");
+        let cs = CursorSet::single(0);
+        // "a\n"
+        let r = cs.select_line(&b, 0);
+        assert_eq!((r.start(), r.end()), (0, 2));
+        // "bc\n" — offset 3 is the 'c'.
+        let r = cs.select_line(&b, 3);
+        assert_eq!((r.start(), r.end()), (2, 5));
+        // "de", the last line, which has no trailing newline.
+        let r = cs.select_line(&b, 6);
+        assert_eq!((r.start(), r.end()), (5, 7));
+    }
+
+    #[test]
+    fn set_region_fixes_the_mark_and_moves_point() {
+        let b = Buffer::from_str("hello world");
+        let mut cs = CursorSet::single(0);
+        cs.set_region(2, 7);
+        assert_eq!(cs.primary().anchor, 2);
+        assert_eq!(cs.primary().head, 7);
+        assert_eq!(
+            b.slice_string(cs.primary().start(), cs.primary().end()),
+            "llo w"
+        );
+
+        // Point can move behind the mark; the mark does not follow.
+        cs.set_region(2, 0);
+        assert_eq!(cs.primary().anchor, 2);
+        assert_eq!((cs.primary().start(), cs.primary().end()), (0, 2));
+    }
 
     /// Buffers that exercise the awkward cases for offset<->line mapping:
     /// empty, no trailing newline, bare and repeated newlines, multi-byte

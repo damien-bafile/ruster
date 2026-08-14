@@ -546,3 +546,41 @@ shell (vim, less, fzf); `terminal.escape` takes any key in the
 
 The terminal resizes to its window automatically and is closed when ruster quits.
 On Windows it needs ConPTY (Windows 10 1809+); see [windows.md](windows.md).
+
+## Mouse
+
+Works in both backends. The whole surface can be turned off with
+`mouse.enabled = false`; see [config-reference.md](config-reference.md).
+
+| Gesture | Action |
+|---------|--------|
+| Left-click in text | Move the caret there |
+| `Alt` + left-click | Add another caret (multi-cursor) |
+| `Ctrl` + left-click | Jump to the start of the word under the pointer |
+| Double-click | Select the word |
+| Triple-click | Select the line |
+| Left-drag | Extend a selection — Visual in Neovim mode, the region in Emacs mode |
+| `Alt` + left-drag | Block selection |
+| Left-click in the gutter | Move the caret to that line |
+| Left-click a window header or statusline | Focus that window |
+| Drag a split boundary | Resize the panes either side of it |
+| Right-click | Context menu for what is under the pointer |
+| Wheel | Scroll the window under the pointer, `mouse.wheel_lines` at a time |
+| `Ctrl` + wheel | Zoom the font (GUI only; the TUI says so) |
+| Rest the pointer over text | Fires `ruster.on("hover")` after `mouse.hover_delay_ms` |
+
+The wheel scrolls whichever window the pointer is over, not the focused one, so
+a second split can be read without leaving the first.
+
+A double-click selects a whitespace-delimited word, so `foo.bar::baz` comes as
+one piece — which is usually what you want from a path or a qualified name.
+
+**Right-click menu.** The items depend on the zone: buffer, gutter, or window
+chrome. Plugins add their own with `ruster.context_menu.add`; see
+[lua-api.md](lua-api.md). The menu is an ordinary picker, so it filters as you
+type and takes the same keys. Setting `mouse.right_click_menu = false` frees
+right-click for a Lua handler.
+
+**Terminal text selection.** Capturing the mouse takes it away from the
+terminal's own selection. `mouse.tui_capture = false` gives it back, at the cost
+of the gestures above in TUI mode.

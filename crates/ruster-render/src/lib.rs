@@ -1,5 +1,7 @@
+pub mod mouse;
 pub mod script;
 
+pub use mouse::{MouseButton, MouseEvent, MouseKind, PointerKind};
 pub use script::{FrameDigest, ScriptedRenderer, WindowDigest};
 
 /// Editing mode for statusline coloring.
@@ -1026,6 +1028,23 @@ pub trait Renderer {
     }
     fn poll_input(&mut self) -> Option<crossterm::event::KeyEvent> {
         None
+    }
+    /// The next pending mouse event, in cell coordinates. Defaults to `None` so
+    /// that headless backends stay mouse-free without opting out.
+    fn poll_mouse(&mut self) -> Option<mouse::MouseEvent> {
+        None
+    }
+    /// Pixel size of one cell: (width, height). Only a pixel-addressed backend
+    /// has a real answer; the default of one-pixel cells makes the pixel→cell
+    /// division an identity, which is what a cell-addressed backend wants.
+    fn cell_metrics(&self) -> (f32, f32) {
+        (1.0, 1.0)
+    }
+    /// Set the shape of the mouse pointer, returning whether it changed. A
+    /// backend with no pointer to reshape returns `false`, which lets callers
+    /// skip the redraw.
+    fn set_pointer(&mut self, _pointer: mouse::PointerKind) -> bool {
+        false
     }
     fn should_close(&self) -> bool {
         false

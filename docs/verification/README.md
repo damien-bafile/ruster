@@ -119,6 +119,79 @@ Status is what the artifacts currently show, not what is intended.
 | `terminal` | `:term` | shell prompt, TERMINAL mode | ok |
 | `sessions` | `:SessionSave` | confirmation in the log | ok (`Session saved (N files)`) |
 | `gotoline` | `:16` | cursor and statusline agree | ok |
+| `mouse-click` | left-click line 11 | caret moves there; statusline `11,13` | ok (GUI reads `11,14` — see below) |
+| `mouse-double-click-word` | double-click in `std::collections::HashMap` | the whole qualified name selected | ok |
+| `mouse-drag-visual` | press, drag across two lines, release | character selection spanning lines, `-- VISUAL --` | ok |
+| `mouse-wheel-scroll` | four notches down | view scrolled, caret carried along | ok — the caret riding along is the fix for a real bug, below |
+| `mouse-right-click-menu` | right-click in the buffer | `Buffer` menu: Format Buffer, Save, splits, Close Window | ok |
+| `mouse-hover-popup` | move, then hold still | `hover: line N col M` toast from a Lua handler | ok (GUI column differs by one) |
+| `mouse-gutter-click` | left-click the gutter | caret at the start of that line | ok |
+| `mouse-split-resize` | drag the boundary left on the header row | left pane narrows, 60→48 cells | ok |
+| `mouse-multicursor` | Alt+click three lines, then `iX` | an `X` inserted on each of the three | **TUI only** — see below |
+
+### Driving the mouse
+
+Neither existing driver could produce a pointer event: `ruster.cmd` queues ex
+commands and `gui-keys.sh` sends keystrokes. Two more were written for these
+rows, and a surface spec names its gesture per backend because the two address
+the screen differently:
+
+- **TUI** — `scripts/tui-mouse.sh` writes SGR (1006) escape sequences into the
+  tmux pane. A terminal mouse event *is* an escape sequence, so this is exactly
+  what a real mouse would have produced. Coordinates are 0-based cells.
+- **GUI** — `scripts/gui-mouse.sh` (built from `gui-mouse.c` against
+  CoreGraphics) posts real `CGEvent`s. Coordinates are pixels relative to the
+  window's content area, because aiming in cells would need the font's glyph
+  advance, which only the renderer knows. Needs Accessibility permission for
+  whatever runs it; it refuses rather than silently doing nothing.
+
+The one-column disagreement between backends on some rows is pixel-to-cell
+rounding in the GUI aim, not a difference in behaviour: the cell metrics in the
+spec are measured off a reference capture, not derived.
+
+**A modified click cannot be driven in the GUI.** Measured, not assumed. The
+raylib backend reads modifiers from the keyboard (`is_key_down(KEY_LEFT_ALT)`),
+not from the pointer event, so setting `kCGEventFlagMaskAlternate` on a
+synthetic click changes nothing — and holding the physical key through System
+Events does not register either, the same limitation `gui-keys.sh` already
+documents for Ctrl chords. A Lua `mouse_down` handler confirms it: the event
+arrives with `alt=false` both ways.
+
+The consequence is a real coverage gap, not a cosmetic one. **Alt+click
+multi-cursor and Ctrl+wheel zoom have no GUI capture and cannot get one from
+this harness.** They are covered by unit tests, and `mouse-multicursor` proves
+Alt+click end-to-end in the TUI — where the modifier is a field in the mouse
+escape sequence and therefore genuinely drivable. A GUI row was deliberately not
+added: it would have photographed three plain clicks while claiming to be
+multi-cursor, which is worse than an absent artifact. Verifying these two in the
+GUI needs a hand on real hardware.
+
+**The GUI lead is 7 seconds, and that is not padding.** A raylib window takes
+~6s to become visible to the accessibility API that reports where it is. The
+first version timed the shot off the 1.8s keystroke lead, so the deferred `:q!`
+fired and the editor was gone before the pointer arrived.
+
+### Two bugs these rows found
+
+Both were invisible to the test suite and would have shipped.
+
+**Any GUI click hung the editor.** `IsMouseButtonPressed` stays true for the
+whole frame, and the frame loop drains with `while let Some(ev) = poll_mouse()`
+— so the same press was re-read forever. Fixed by draining once per frame
+(`mouse_drained` in `ruster-render-raylib`). No headless test could catch this:
+it needs a real raylib window.
+
+**The wheel did nothing whenever the caret was visible.** `render` clamps
+`scroll_top` to keep the caret on screen and writes the clamp back, so a scroll
+away from a stationary caret was undone before the next frame. Fixed by
+carrying the caret with the view, the way `C-d`/`C-u` already do it; pinned by
+`the_wheel_carries_the_caret_so_the_scroll_survives_a_render`.
+
+A third defect was found in the tests rather than the code: the split-edge tests
+used a one-line buffer, where every row below the first was empty and fell
+through to the boundary by accident. They now use a full buffer and grab the
+boundary on the header row, which is where it is actually grabbable — over text
+that column is text, so the last character of a line in a split stays clickable.
 
 ## Two ways a capture lies
 

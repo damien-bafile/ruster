@@ -176,6 +176,12 @@ Keys are addressed as `group.key`.
 | `noice.success_timeout` | integer | 2000 | Milliseconds a success toast stays up |
 | `noice.warning_timeout` | integer | 5000 | Milliseconds a warning stays up |
 | `noice.max_history` | integer | 1000 | Messages retained for `:messages` and `:Noice split` |
+| `mouse.enabled` | boolean | true | Master switch for all mouse input |
+| `mouse.hover_delay_ms` | integer | 300 | Stillness before `ruster.on("hover")` fires |
+| `mouse.double_click_ms` | integer | 400 | Longest gap between clicks that still counts as a double or triple |
+| `mouse.wheel_lines` | integer | 3 | How far one wheel notch scrolls |
+| `mouse.tui_capture` | boolean | true | Off lets the terminal's own text selection win instead |
+| `mouse.right_click_menu` | boolean | true | Off frees right-click for a Lua handler |
 | `build.command` | string | _(detect)_ | Command for `:build`; empty detects from the project type |
 | `test.command` | string | _(detect)_ | Command for `:test`; empty detects from the project type |
 | `dap.adapter` | string | _(detect)_ | Debug adapter program for `:debug`; empty detects from the file's language |
