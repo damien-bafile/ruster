@@ -1228,6 +1228,118 @@ mod tests {
         );
     }
 
+    /// A small, *valid* cargo project with one function called from another.
+    ///
+    /// The diagnostics fixture at `/tmp/lsp-demo` is deliberately broken, which
+    /// is right for diagnostics and wrong here: `undefined_function` has no
+    /// definition to jump to and nothing useful to say on hover. Built by the
+    /// test rather than assumed on disk, so the only thing it needs from the
+    /// machine is `rust-analyzer` itself.
+    #[cfg(test)]
+    fn live_fixture() -> Option<std::path::PathBuf> {
+        if std::process::Command::new("rust-analyzer")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_err()
+        {
+            eprintln!("skipping: rust-analyzer is not on PATH");
+            return None;
+        }
+        let root = std::env::temp_dir().join("ruster-live-lsp");
+        std::fs::create_dir_all(root.join("src")).ok()?;
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"ruster-live-lsp\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
+        )
+        .ok()?;
+        std::fs::write(
+            root.join("src/main.rs"),
+            "fn helper() -> i32 {\n    42\n}\n\nfn main() {\n    let value = helper();\n    println!(\"{value}\");\n}\n",
+        )
+        .ok()?;
+        Some(root)
+    }
+
+    /// The whole of Stage 7 against a real server, with no display anywhere.
+    ///
+    /// Every layer below this is green and proves nothing about the whole: the
+    /// unit tests hand `goto_definition` a handcrafted `Location` and hand
+    /// `show_hover` a handcrafted string, so neither would notice if the request
+    /// were never sent, routed to the wrong server, or answered and dropped.
+    /// This sends both requests through a running `rust-analyzer` and waits for
+    /// the pane to move and the panel to fill.
+    ///
+    /// Ignored by default — it needs the toolchain and takes tens of seconds.
+    /// Run with:
+    ///   cargo test -p ruster-compositor -- --ignored --nocapture live_lsp
+    #[test]
+    #[ignore = "needs rust-analyzer, and takes tens of seconds to index"]
+    fn live_lsp_definition_and_hover_answer_a_real_server() {
+        let Some(root) = live_fixture() else { return };
+        let path = root.join("src/main.rs");
+        let text = std::fs::read_to_string(&path).unwrap();
+        // First occurrence is the definition's own name, last is the call.
+        let definition_at = text.find("helper").expect("fixture has a definition");
+        let call_at = text.rfind("helper(").expect("fixture has a call");
+
+        let (_loop, mut state) = test_state();
+        state.open_pane();
+        let id = state.shell.focus.expect("a pane was just focused");
+        state.panes.get_mut(&id).unwrap().rows = 20;
+        state.open_file(&path.to_string_lossy());
+        assert!(
+            state.lsp.doc(state.panes[&id].doc).is_some(),
+            "the pane's document should have been announced to a server"
+        );
+
+        // Re-asked periodically: a server that is still indexing answers `null`
+        // rather than waiting, so a single request is a coin toss on timing.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+        let mut jumped = false;
+        while std::time::Instant::now() < deadline && !jumped {
+            state.panes.get_mut(&id).unwrap().cursors =
+                ruster_core::cursor::CursorSet::single(call_at);
+            state.lsp_definition();
+            for _ in 0..30 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                state.poll_lsp();
+                if state.panes[&id].cursors.primary().head == definition_at {
+                    jumped = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            jumped,
+            "definition never moved the caret from the call at {call_at} to the \
+             definition at {definition_at}"
+        );
+        eprintln!("definition: caret moved {call_at} -> {definition_at}");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while std::time::Instant::now() < deadline && state.hover.is_none() {
+            state.panes.get_mut(&id).unwrap().cursors =
+                ruster_core::cursor::CursorSet::single(call_at);
+            state.lsp_hover();
+            for _ in 0..30 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                state.poll_lsp();
+                if state.hover.is_some() {
+                    break;
+                }
+            }
+        }
+        let hover = state.hover.as_ref().expect("hover never produced a panel");
+        let said = hover.lines.join("\n");
+        eprintln!("hover said:\n{said}");
+        assert!(
+            said.contains("helper") || said.contains("i32"),
+            "a hover on a call to `helper() -> i32` should mention one of them: {said:?}"
+        );
+    }
+
     #[test]
     fn a_screenshot_that_never_gets_a_frame_says_so() {
         // The silence this replaces: a verification run dispatched four actions
