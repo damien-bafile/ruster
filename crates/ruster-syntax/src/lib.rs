@@ -460,6 +460,54 @@ pub fn lang_ext_for_path(path: &std::path::Path) -> String {
         .unwrap_or_default()
 }
 
+/// The token that starts a line comment in `ext`, or `None` when the language
+/// has no line comment — or is not one we know.
+///
+/// Deliberately wider than [`lang_key`], which only answers for languages with
+/// a compiled-in grammar: commenting a line needs nothing but the token, so
+/// refusing to comment C++ or SQL because no highlighter ships for them would
+/// withhold a feature for an unrelated reason.
+///
+/// `None` for markup whose only comment form is a delimited block (`html`,
+/// `md`, `css`): wrapping every line in `<!--` … `-->` is a different edit with
+/// a different inverse, and guessing a line token that the language does not
+/// have would corrupt the file rather than annoy the user.
+pub fn line_comment_prefix(ext: &str) -> Option<&'static str> {
+    Some(match ext {
+        "rs" | "c" | "h" | "cpp" | "cc" | "cxx" | "hpp" | "hh" | "js" | "mjs" | "cjs" | "jsx"
+        | "ts" | "tsx" | "go" | "java" | "kt" | "swift" | "zig" | "scala" | "dart" | "cs"
+        | "glsl" | "vert" | "frag" | "proto" => "//",
+        "py" | "sh" | "bash" | "zsh" | "fish" | "toml" | "yaml" | "yml" | "rb" | "pl" | "r"
+        | "just" | "justfile" | "makefile" | "mk" | "dockerfile" | "gitignore" | "conf" | "ini"
+        | "cfg" | "nix" | "ex" | "exs" | "jl" | "tf" => "#",
+        "lua" | "sql" | "hs" | "elm" | "ada" | "adb" | "ads" | "vhd" | "vhdl" => "--",
+        "scm" | "ss" | "sld" | "sls" | "sch" | "scheme" | "el" | "lisp" | "clj" | "cljs"
+        | "rkt" => ";",
+        "vim" | "vimrc" => "\"",
+        "erl" | "hrl" | "tex" | "cls" | "sty" => "%",
+        _ => return None,
+    })
+}
+
+/// The line-comment token for a path, by extension and then by whole file name
+/// so that `Makefile`, `Dockerfile` and `justfile` are covered too.
+///
+/// Not routed through [`lang_ext_for_path`]: that collapses to the file name
+/// for any extension without a grammar, so `main.cpp` would arrive here as
+/// `"main.cpp"` and comment nothing — which is precisely the set of languages
+/// this table exists to cover.
+pub fn line_comment_for_path(path: &std::path::Path) -> Option<&'static str> {
+    if let Some(prefix) = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .and_then(|e| line_comment_prefix(&e.to_lowercase()))
+    {
+        return Some(prefix);
+    }
+    let name = path.file_name()?.to_str()?.to_lowercase();
+    line_comment_prefix(name.trim_start_matches('.'))
+}
+
 /// The grammar to parse `file_ext` with, and any complaint worth surfacing.
 ///
 /// A user grammar in `~/.config/ruster/grammars/` wins over the compiled-in
@@ -1056,6 +1104,61 @@ mod tests {
             !bracket_highlights.is_empty(),
             "expected bracket highlights"
         );
+    }
+
+    #[test]
+    fn line_comment_prefix_covers_the_three_common_families() {
+        for ext in ["rs", "c", "cpp", "js", "ts"] {
+            assert_eq!(line_comment_prefix(ext), Some("//"), "{ext}");
+        }
+        for ext in ["py", "sh", "bash", "toml", "yaml", "yml"] {
+            assert_eq!(line_comment_prefix(ext), Some("#"), "{ext}");
+        }
+        for ext in ["lua", "sql", "hs"] {
+            assert_eq!(line_comment_prefix(ext), Some("--"), "{ext}");
+        }
+    }
+
+    #[test]
+    fn line_comment_prefix_declines_block_only_and_unknown_languages() {
+        // Markup with no line comment at all, and filetypes we simply do not
+        // know: both must decline rather than guess a token.
+        for ext in ["html", "md", "css", "txt", "", "wat"] {
+            assert_eq!(line_comment_prefix(ext), None, "{ext}");
+        }
+    }
+
+    #[test]
+    fn line_comment_for_path_uses_extension_case_insensitively() {
+        use std::path::Path;
+        assert_eq!(line_comment_for_path(Path::new("a/b/main.RS")), Some("//"));
+        assert_eq!(line_comment_for_path(Path::new("build.zig")), Some("//"));
+        assert_eq!(line_comment_for_path(Path::new("notes.txt")), None);
+    }
+
+    #[test]
+    fn line_comment_for_path_falls_back_to_the_file_name() {
+        use std::path::Path;
+        // Extensionless build files are the common case for `#`, and a dotted
+        // name must not be read as an extension.
+        assert_eq!(line_comment_for_path(Path::new("Makefile")), Some("#"));
+        assert_eq!(line_comment_for_path(Path::new("justfile")), Some("#"));
+        assert_eq!(line_comment_for_path(Path::new(".justfile")), Some("#"));
+        assert_eq!(line_comment_for_path(Path::new("Dockerfile")), Some("#"));
+        assert_eq!(line_comment_for_path(Path::new("")), None);
+    }
+
+    /// The path-shaped filetypes the syntax layer knows are *not* a superset of
+    /// the ones a comment toggle can serve, which is why `line_comment_for_path`
+    /// does not route through `lang_ext_for_path`.
+    #[test]
+    fn line_comment_covers_extensions_without_a_grammar() {
+        use std::path::Path;
+        for name in ["a.cpp", "a.sh", "a.sql", "a.hs"] {
+            let p = Path::new(name);
+            assert_eq!(lang_key(&lang_ext_for_path(p)), "", "{name} has no grammar");
+            assert!(line_comment_for_path(p).is_some(), "{name} still comments");
+        }
     }
 }
 
