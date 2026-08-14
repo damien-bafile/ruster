@@ -4191,9 +4191,10 @@ impl App {
     /// Take the bufferline's row off the top of the window area and build the
     /// strip that goes in it, recording where each tab landed.
     ///
-    /// Returns `None` when the strip is off or there is no room for it: a row
-    /// spent on tabs is a row the buffer does not get, and on a two-row area
-    /// that trade is not worth making.
+    /// Returns `None` when the strip is off or there is no room for it. A
+    /// window needs three rows before it shows any text at all — header,
+    /// a text row, statusline — so on four rows or fewer the strip would be
+    /// spending the only line of buffer there is.
     fn carve_bufferline(
         &mut self,
         area: &mut ruster_core::windows::Rect,

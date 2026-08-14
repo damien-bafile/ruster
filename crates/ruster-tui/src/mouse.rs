@@ -239,9 +239,10 @@ pub fn hit_test(app: &App, col: u16, row: u16) -> HitZone {
         return HitZone::Buffer(wid, offset);
     }
 
-    // The bufferline sits on a row carved out of the window area, so it
-    // competes with nothing — but it is also the only thing that knows which
-    // buffer a column stands for, the strip having scrolled to fit.
+    // The bufferline has a row of its own, carved out of the window area, so
+    // it competes with nothing here. Which buffer a column stands for is only
+    // knowable from the spans the frame recorded: the strip scrolls to keep the
+    // active tab whole, so the nth column is not the nth buffer.
     if let Some(idx) = app
         .last_tabs
         .iter()
@@ -276,9 +277,9 @@ pub fn hit_test(app: &App, col: u16, row: u16) -> HitZone {
             return HitZone::Chrome(ChromeKind::Header(wid));
         }
         if row == last_row {
-            // A named section wins over the bar it sits on, but not over the
-            // resize edge above: dragging a split apart matters more than a
-            // click on a label, and the edge cases are checked first.
+            // A named section wins over the bare bar it sits on — but not over
+            // the resize edge, which is checked above this: dragging a split
+            // apart matters more than clicking a label.
             if let Some(section) = section_at(app, wid, col, row) {
                 return HitZone::Chrome(ChromeKind::StatusSection { wid, section });
             }
