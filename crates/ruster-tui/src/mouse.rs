@@ -123,10 +123,12 @@ impl MenuRegistry {
 /// Every `cmd` is a real cmdline command — the menu runs them down the same
 /// path as typing them, so an item that works here works there and vice versa.
 ///
-/// Notably absent are Cut/Copy/Paste/Select All: the editor has no clipboard
-/// commands at all (yank and put are key-driven register operations, and system
-/// clipboard integration lives only in the compositor). Inventing commands for
-/// them belongs to a clipboard task, not this one.
+/// Notably absent are Cut/Copy/Paste/Select All. The *capability* is there —
+/// `VimState` and `EmacsState` both talk to the system clipboard through
+/// `arboard` — but it is reachable only by key (`"+y`, the kill ring), and this
+/// menu can only run cmdline commands. Exposing those operations as commands
+/// would light up these items and cost little; it is a clipboard task, not a
+/// mouse one.
 fn default_menu_items(zone: Zone) -> Vec<MenuItem> {
     match zone {
         Zone::Buffer => vec![
