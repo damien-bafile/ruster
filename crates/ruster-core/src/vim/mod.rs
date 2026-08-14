@@ -106,6 +106,8 @@ pub struct VimState {
     pub mode: VimMode,
     count: Option<u32>,
     pending_g: bool,
+    /// True after `z`, waiting for the scroll command that completes it.
+    pending_z: bool,
     pending: OpState,
     pending_textobj: Option<char>,
     register: Option<String>,
@@ -148,6 +150,7 @@ impl VimState {
         self.mode == VimMode::Normal
             && self.count.is_none()
             && !self.pending_g
+            && !self.pending_z
             && matches!(self.pending, OpState::Idle)
             && self.pending_textobj.is_none()
             && !self.pending_replace
@@ -160,6 +163,7 @@ impl VimState {
             mode: VimMode::Normal,
             count: None,
             pending_g: false,
+            pending_z: false,
             pending: OpState::Idle,
             pending_textobj: None,
             register: None,
@@ -395,6 +399,20 @@ impl VimState {
             return;
         }
 
+        // The `z` scroll commands. Only the sideways pair is bound: `zz`/`zt`
+        // and friends recentre vertically, which is a different clamp and not
+        // what this prefix was added for.
+        if self.pending_z {
+            self.pending_z = false;
+            match key {
+                KeyEvent::Char('l') => out.push(Action::ScrollHorizontal(n as i32)),
+                KeyEvent::Char('h') => out.push(Action::ScrollHorizontal(-(n as i32))),
+                _ => {}
+            }
+            self.count = None;
+            return;
+        }
+
         match key {
             KeyEvent::Esc => {
                 if editor.cursors().count() > 1 {
@@ -444,6 +462,10 @@ impl VimState {
             }
             KeyEvent::Char('g') => {
                 self.pending_g = true;
+            }
+            // The count survives into the next key: `3zl` is three columns.
+            KeyEvent::Char('z') => {
+                self.pending_z = true;
             }
             KeyEvent::Char('w') => {
                 self.do_word_motion(editor, n, next_word_start, out);
@@ -1465,6 +1487,80 @@ mod tests {
         let actions: Vec<Action> = v.handle(KeyEvent::Ctrl('u'), &e);
         assert!(actions.contains(&Action::Move(Motion::Line(-half))));
         assert!(actions.contains(&Action::Scroll(-half)));
+    }
+
+    #[test]
+    fn zl_and_zh_scroll_sideways() {
+        let e = Editor::from_str("a long line");
+        let mut v = VimState::new();
+        assert!(v.handle(KeyEvent::Char('z'), &e).is_empty(), "z waits");
+        assert_eq!(
+            v.handle(KeyEvent::Char('l'), &e),
+            vec![Action::ScrollHorizontal(1)]
+        );
+        v.handle(KeyEvent::Char('z'), &e);
+        assert_eq!(
+            v.handle(KeyEvent::Char('h'), &e),
+            vec![Action::ScrollHorizontal(-1)]
+        );
+    }
+
+    /// The count belongs to the whole `3zl` sequence, so `z` must not eat it.
+    #[test]
+    fn a_count_before_z_reaches_the_scroll() {
+        let e = Editor::from_str("a long line");
+        let mut v = VimState::new();
+        v.handle(KeyEvent::Char('3'), &e);
+        v.handle(KeyEvent::Char('z'), &e);
+        assert_eq!(
+            v.handle(KeyEvent::Char('l'), &e),
+            vec![Action::ScrollHorizontal(3)]
+        );
+    }
+
+    /// An unbound key after `z` cancels the prefix rather than leaving it armed
+    /// to swallow the next `l` the user types as a motion.
+    #[test]
+    fn an_unknown_key_after_z_cancels_the_prefix() {
+        let e = Editor::from_str("a long line");
+        let mut v = VimState::new();
+        v.handle(KeyEvent::Char('z'), &e);
+        assert!(v.handle(KeyEvent::Char('q'), &e).is_empty());
+        assert!(v.is_normal_idle(), "nothing left pending");
+        assert_eq!(
+            v.handle(KeyEvent::Char('l'), &e),
+            vec![Action::Move(Motion::Grapheme(1))],
+            "the next l is a motion again"
+        );
+    }
+
+    /// A half-typed `z` is not idle: the app intercepts bare keys in idle
+    /// Normal mode, and would steal the `l` that completes the sequence.
+    #[test]
+    fn a_pending_z_is_not_normal_idle() {
+        let e = Editor::from_str("a long line");
+        let mut v = VimState::new();
+        v.handle(KeyEvent::Char('z'), &e);
+        assert!(!v.is_normal_idle());
+    }
+
+    /// End to end: `zl` moves the view of a real window, not just the action
+    /// list — `ScrollHorizontal` is window state that `EditSession` cannot
+    /// reach, so it has to be intercepted by `Workspace`.
+    #[test]
+    fn zl_scrolls_the_active_window() {
+        let mut w = crate::workspace::Workspace::from_file(
+            std::path::PathBuf::from("/tmp/ruster_zl.txt"),
+            "x".repeat(200),
+        );
+        w.windows.active_window_mut().width = 20;
+        let mut v = VimState::new();
+        for key in [KeyEvent::Char('z'), KeyEvent::Char('l')] {
+            for a in v.handle(key, &w) {
+                w.execute(a);
+            }
+        }
+        assert_eq!(w.windows.active_window().scroll_left, 1);
     }
 
     #[test]

@@ -30,6 +30,14 @@ pub enum Action {
     /// the text. Paired with a matching cursor motion by `C-d`/`C-u` so the
     /// cursor keeps its row on screen, the way vim behaves.
     Scroll(i32),
+    /// Scroll the active window by `n` columns — `zl`/`zh`.
+    ///
+    /// Unlike [`Action::Scroll`], no caller pairs this with a cursor motion:
+    /// the cursor is dragged along only when the scroll would push it out of
+    /// the view, which is what vim does and what the renderer's clamp needs to
+    /// see, since it would otherwise undo the scroll to keep the cursor
+    /// visible.
+    ScrollHorizontal(i32),
     /// Move through the undo tree in creation order rather than along the
     /// current branch — `g-` (`false`) and `g+` (`true`). Reaches states that
     /// were abandoned by branching, which plain redo cannot.
