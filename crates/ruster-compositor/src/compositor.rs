@@ -136,11 +136,21 @@ pub struct CompositorState<B: Backend + 'static> {
     /// The compositor's UI chrome (statusline, editor frame, which-key), drawn
     /// above the client surfaces (Task 8).
     pub chrome: Option<Chrome>,
-    /// Set by the screenshot keybind, cleared by the render loop once it has
+    /// When a screenshot was asked for, cleared by the render loop once it has
     /// captured. The capture needs the renderer and the finished framebuffer,
     /// neither of which the key handler has, so the request has to wait for the
     /// frame rather than be served where it is made.
-    pub screenshot_pending: bool,
+    ///
+    /// The *time* rather than a bare flag because waiting for a frame is not the
+    /// same as getting one. Rendering is gated on the host inviting a frame, and
+    /// a nested window the host is not presenting — occluded, on another
+    /// workspace, or simply not mapped where anyone can see it — is never
+    /// invited. The request then sits here forever: the action dispatches, logs
+    /// that it dispatched, writes nothing, and says nothing about it. That is
+    /// how a verification run came back with four actions on time, no PNG, and
+    /// no error to explain the gap. [`screenshot_overdue`] turns that into a
+    /// warning.
+    pub screenshot_pending: Option<std::time::Instant>,
     /// How many captures this session has taken, so they do not overwrite.
     pub screenshot_count: u32,
     /// The configured bindings, as chord sequences.
@@ -653,6 +663,41 @@ impl<B: Backend + 'static> CompositorState<B> {
         Some((id, pos, key, uri))
     }
 
+    /// How long a capture may wait for a frame before it is called a failure.
+    ///
+    /// Generous on purpose: a request made while the host happens not to be
+    /// presenting should still be served when it next does, and a host under
+    /// load can be a good few frames late. This is only meant to catch the case
+    /// where no frame is coming at all.
+    const SCREENSHOT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+    /// Say so when a screenshot has been waiting for a frame that is not coming.
+    ///
+    /// Called once per event-loop pass. Returns whether it gave up, which is
+    /// what the tests assert on — the warning itself is the point of the
+    /// function, but a log line is not something a test can hold.
+    pub fn screenshot_overdue(&mut self, now: std::time::Instant) -> bool {
+        let Some(asked) = self.screenshot_pending else {
+            return false;
+        };
+        if now.duration_since(asked) < Self::SCREENSHOT_TIMEOUT {
+            return false;
+        }
+        // Cleared rather than left pending. A capture that lands thirty seconds
+        // late, when the host finally presents, is a PNG of a moment nobody
+        // asked about — and on a verification run it would be filed as evidence
+        // of the frame that was meant to be captured.
+        self.screenshot_pending = None;
+        tracing::warn!(
+            waited_ms = now.duration_since(asked).as_millis() as u64,
+            "screenshot not taken: no frame has been rendered since it was asked for. \
+             Rendering waits for the host to invite a frame, and a nested window that is \
+             occluded or on another workspace is never invited"
+        );
+        self.report("screenshot: no frame to capture".to_string());
+        true
+    }
+
     /// Ask where the symbol under the cursor is defined.
     ///
     /// Best effort like everything else here: a file with no server, a cursor on
@@ -976,7 +1021,7 @@ impl<B: Backend + 'static> CompositorState<B> {
             Action::Workspace(n) => {
                 self.switch_workspace(n);
             }
-            Action::Screenshot => self.screenshot_pending = true,
+            Action::Screenshot => self.screenshot_pending = Some(std::time::Instant::now()),
             Action::ToggleHelp => self.help_pinned = !self.help_pinned,
             Action::NewPane => self.open_pane(),
             Action::Edit(path) => self.open_file(&path),
@@ -1369,7 +1414,7 @@ pub fn create_state<B: Backend + 'static>(
         // Cargo.toml, so every colour the editor lets you configure was ignored
         // here.
         chrome: Some(Chrome::new(user_theme())),
-        screenshot_pending: false,
+        screenshot_pending: None,
         screenshot_count: 0,
         keymap: crate::keymap::Keymap::default(),
         chord: crate::keymap::ChordState::default(),

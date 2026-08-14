@@ -502,8 +502,7 @@ impl CompositorState<RusterUdevData> {
             Ok(result) => {
                 // Before `queue_frame`, which takes the output mutably and so
                 // ends the borrow this result holds on it.
-                if self.screenshot_pending {
-                    self.screenshot_pending = false;
+                if self.screenshot_pending.take().is_some() {
                     self.screenshot_count += 1;
                     let path = crate::screenshot::capture_path(self.screenshot_count);
                     let size = output.current_mode().map(|m| m.size).unwrap_or_default();

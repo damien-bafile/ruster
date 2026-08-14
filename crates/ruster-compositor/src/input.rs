@@ -1229,6 +1229,37 @@ mod tests {
     }
 
     #[test]
+    fn a_screenshot_that_never_gets_a_frame_says_so() {
+        // The silence this replaces: a verification run dispatched four actions
+        // on time, wrote no PNG, and logged nothing to explain the gap, because
+        // rendering waits for the host to invite a frame and a window the host
+        // is not presenting is never invited.
+        let (_loop, mut state) = test_state();
+        let asked = std::time::Instant::now();
+        state.dispatch(Action::Screenshot);
+        assert!(state.screenshot_pending.is_some(), "the request is queued");
+
+        assert!(
+            !state.screenshot_overdue(asked + std::time::Duration::from_millis(500)),
+            "half a second is a slow host, not a broken one"
+        );
+        assert!(
+            state.screenshot_pending.is_some(),
+            "and the request must survive to be served by the next frame"
+        );
+
+        assert!(
+            state.screenshot_overdue(asked + std::time::Duration::from_secs(3)),
+            "three seconds with no frame is a capture that is not coming"
+        );
+        assert!(
+            state.screenshot_pending.is_none(),
+            "giving up must clear it, or the capture lands later as a PNG of \
+             a moment nobody asked about"
+        );
+    }
+
+    #[test]
     fn a_hover_panel_keeps_the_code_and_drops_the_fence() {
         let (_loop, mut state) = test_state();
         state.open_pane();

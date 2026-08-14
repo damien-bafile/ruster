@@ -172,6 +172,11 @@ fn run_winit() -> anyhow::Result<()> {
         // A half-typed chord that is never finished has to clear itself, or the
         // overlay stays up and the next key is still being read as part of it.
         state.chord.expire(std::time::Instant::now());
+        // Above the redraw gate deliberately: a capture that is waiting for a
+        // frame the host will never invite has to be given up on *here*, where
+        // the loop still runs, rather than inside the rendering it is waiting
+        // for.
+        state.screenshot_overdue(std::time::Instant::now());
 
         // Only when the host has asked for a frame. Rendering unconditionally is
         // what stalled the compositor: the swap at the end of it blocks until
@@ -196,8 +201,7 @@ fn run_winit() -> anyhow::Result<()> {
         // rest of the frame.
         let geometry = state.geometry();
         let tree_status = state.tree_status();
-        let shot = state.screenshot_pending.then(|| {
-            state.screenshot_pending = false;
+        let shot = state.screenshot_pending.take().map(|_| {
             state.screenshot_count += 1;
             (
                 ruster_compositor::screenshot::capture_path(state.screenshot_count),
