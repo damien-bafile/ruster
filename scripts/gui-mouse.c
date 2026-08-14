@@ -9,6 +9,12 @@
 //     drag  <x> <y>             move with the button held (between down and up)
 //     wheel <x> <y> <notches>   scroll; positive is up
 //     sleep <ms>
+//     mods  <alt|ctrl|shift|cmd|none>...   modifiers held by later events
+//
+// `mods` is a mode, not an event: it applies to everything after it until the
+// next `mods`. Holding the physical key instead does not work — a CGEvent
+// carries its own modifier flags and does not inherit the keyboard's state, so
+// a click posted while Option is down still arrives unmodified.
 //
 // Why this exists: the mouse surface only exists between real pointer events,
 // and neither of the other drivers can produce one. `ruster.cmd` queues ex
@@ -56,11 +62,16 @@ static CGEventType drag_event(CGMouseButton b) {
     return kCGEventLeftMouseDragged;
 }
 
+// Modifier flags applied to every event, set by the `mods` command.
+static CGEventFlags g_flags = 0;
+
 // Post one event and let the target app's run loop pick it up. Without the
 // pause a burst of events can be coalesced or delivered out of order, which
 // turns a scripted double-click into an unpredictable one.
 static void post(CGEventRef e) {
     if (!e) return;
+    // Applied here rather than at each call site so no event can forget them.
+    if (g_flags) CGEventSetFlags(e, CGEventGetFlags(e) | g_flags);
     CGEventPost(kCGHIDEventTap, e);
     CFRelease(e);
     usleep(40 * 1000);
@@ -99,6 +110,28 @@ int main(int argc, char **argv) {
         if (strcmp(cmd, "sleep") == 0) {
             if (i >= argc) goto missing;
             usleep((useconds_t)(atoi(argv[i++]) * 1000));
+            continue;
+        }
+
+        if (strcmp(cmd, "mods") == 0) {
+            g_flags = 0;
+            // Consume every modifier name that follows.
+            while (i < argc) {
+                if (strcmp(argv[i], "alt") == 0 || strcmp(argv[i], "option") == 0) {
+                    g_flags |= kCGEventFlagMaskAlternate;
+                } else if (strcmp(argv[i], "ctrl") == 0 || strcmp(argv[i], "control") == 0) {
+                    g_flags |= kCGEventFlagMaskControl;
+                } else if (strcmp(argv[i], "shift") == 0) {
+                    g_flags |= kCGEventFlagMaskShift;
+                } else if (strcmp(argv[i], "cmd") == 0 || strcmp(argv[i], "command") == 0) {
+                    g_flags |= kCGEventFlagMaskCommand;
+                } else if (strcmp(argv[i], "none") == 0) {
+                    g_flags = 0;
+                } else {
+                    break;
+                }
+                i++;
+            }
             continue;
         }
 

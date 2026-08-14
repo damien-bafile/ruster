@@ -127,6 +127,7 @@ Status is what the artifacts currently show, not what is intended.
 | `mouse-hover-popup` | move, then hold still | `hover: line N col M` toast from a Lua handler | ok (GUI column differs by one) |
 | `mouse-gutter-click` | left-click the gutter | caret at the start of that line | ok |
 | `mouse-split-resize` | drag the boundary left on the header row | left pane narrows, 60→48 cells | ok |
+| `mouse-multicursor` | Alt+click three lines, then `iX` | an `X` inserted on each of the three | **TUI only** — see below |
 
 ### Driving the mouse
 
@@ -147,6 +148,23 @@ the screen differently:
 The one-column disagreement between backends on some rows is pixel-to-cell
 rounding in the GUI aim, not a difference in behaviour: the cell metrics in the
 spec are measured off a reference capture, not derived.
+
+**A modified click cannot be driven in the GUI.** Measured, not assumed. The
+raylib backend reads modifiers from the keyboard (`is_key_down(KEY_LEFT_ALT)`),
+not from the pointer event, so setting `kCGEventFlagMaskAlternate` on a
+synthetic click changes nothing — and holding the physical key through System
+Events does not register either, the same limitation `gui-keys.sh` already
+documents for Ctrl chords. A Lua `mouse_down` handler confirms it: the event
+arrives with `alt=false` both ways.
+
+The consequence is a real coverage gap, not a cosmetic one. **Alt+click
+multi-cursor and Ctrl+wheel zoom have no GUI capture and cannot get one from
+this harness.** They are covered by unit tests, and `mouse-multicursor` proves
+Alt+click end-to-end in the TUI — where the modifier is a field in the mouse
+escape sequence and therefore genuinely drivable. A GUI row was deliberately not
+added: it would have photographed three plain clicks while claiming to be
+multi-cursor, which is worse than an absent artifact. Verifying these two in the
+GUI needs a hand on real hardware.
 
 **The GUI lead is 7 seconds, and that is not padding.** A raylib window takes
 ~6s to become visible to the accessibility API that reports where it is. The

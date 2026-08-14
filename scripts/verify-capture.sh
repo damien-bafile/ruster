@@ -98,6 +98,7 @@ SURFACES=(
   hover debugger terminal sessions gotoline
   mouse-click mouse-double-click-word mouse-drag-visual mouse-wheel-scroll
   mouse-right-click-menu mouse-hover-popup mouse-gutter-click mouse-split-resize
+  mouse-multicursor
 )
 
 # Where the buffer text starts, with the number gutter on.
@@ -209,6 +210,17 @@ end)'
       # Column 1 is inside the gutter, well left of the text.
       MOUSE_TUI="click 1 15"
       MOUSE_GUI="click 20 $((GUI_TEXT_Y + 14 * GUI_CELL_H))" ;;
+    mouse-multicursor)
+      CONF="$NUMBERS"
+      # Alt+click three lines: three carets. TUI only — the GUI reads modifiers
+      # from the keyboard state, which no synthetic event can set, so a GUI
+      # capture here would photograph three plain clicks and quietly claim to
+      # be multi-cursor. See scripts/gui-mouse.sh.
+      MOUSE_TUI="click $(tui_at 4 10) mods alt click $(tui_at 4 11) click $(tui_at 4 13)"
+      # Then type. Three carets insert in three places, which plain text shows —
+      # the highlight that marks a caret does not survive `capture-pane -p`, so
+      # without this the artifact could not tell three cursors from one.
+      KEYS="i X Escape" ;;
     mouse-split-resize)
       CONF="$NUMBERS"; LUA=":vsplit"
       # Grab the boundary on the header row and pull it left. Row 0 rather than
@@ -408,15 +420,17 @@ capture_tui() {
   [ "$wait_ms" -lt "$TUI_MIN_WAIT_MS" ] && wait_ms="$TUI_MIN_WAIT_MS"
   sleep "$(awk "BEGIN{print $wait_ms/1000}")"
 
-  if [ -n "$KEYS" ]; then
-    # shellcheck disable=SC2086 — KEYS is deliberately word-split into tmux args.
-    "$TMUX_BIN" send-keys -t "$sess" $KEYS
-    sleep 1
-  fi
-
+  # Mouse before keys: the combination that means anything is a gesture and
+  # then typing into what it selected, not the other way round.
   if [ -n "$MOUSE_TUI" ]; then
     # shellcheck disable=SC2086 — MOUSE_TUI is deliberately word-split.
     TMUX_BIN="$TMUX_BIN" "$ROOT/scripts/tui-mouse.sh" "$sess" $MOUSE_TUI
+    sleep 1
+  fi
+
+  if [ -n "$KEYS" ]; then
+    # shellcheck disable=SC2086 — KEYS is deliberately word-split into tmux args.
+    "$TMUX_BIN" send-keys -t "$sess" $KEYS
     sleep 1
   fi
 

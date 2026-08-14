@@ -91,6 +91,11 @@ while [ $# -gt 0 ]; do
   case "$cmd" in
     sleep)
       args+=(sleep "$1"); shift ;;
+    mods)
+      args+=(mods)
+      while [ $# -gt 0 ] && [[ "$1" =~ ^(alt|option|ctrl|control|shift|cmd|command|none)$ ]]; do
+        args+=("$1"); shift
+      done ;;
     move|drag|click|down|up)
       x="$1"; y="$2"; shift 2
       args+=("$cmd" "$((WIN_X + x))" "$((WIN_Y + TITLEBAR + y))")

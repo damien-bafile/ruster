@@ -35,9 +35,17 @@ TMUX_BIN="${TMUX_BIN:-tmux}"
 SESSION="${1:?usage: tui-mouse.sh <session> <command>...}"
 shift
 
+# Modifiers held by subsequent events, as the SGR bitfield adds them.
+#
+# Unlike the GUI, these genuinely work: a terminal reports the modifier as part
+# of the mouse sequence, so writing the bit is exactly what a real Alt+click
+# produces. (The GUI reads modifiers from the keyboard state instead, which no
+# synthetic event can set — see scripts/gui-mouse.sh.)
+MODS=0
+
 # Write one SGR sequence into the pane.
 send() {
-  local cb="$1" col="$2" row="$3" final="$4"
+  local cb="$(( $1 + MODS ))" col="$2" row="$3" final="$4"
   # -l sends the string literally; without it tmux would interpret the escape.
   "$TMUX_BIN" send-keys -t "$SESSION" -l \
     "$(printf '\033[<%d;%d;%d%s' "$cb" "$((col + 1))" "$((row + 1))" "$final")"
@@ -60,6 +68,20 @@ while [ $# -gt 0 ]; do
   case "$cmd" in
     sleep)
       sleep "$(awk "BEGIN{print $1/1000}")"; shift ;;
+
+    mods)
+      # A mode, not an event: applies until the next `mods`.
+      MODS=0
+      while [ $# -gt 0 ]; do
+        case "$1" in
+          shift) MODS=$((MODS + 4)) ;;
+          alt|option) MODS=$((MODS + 8)) ;;
+          ctrl|control) MODS=$((MODS + 16)) ;;
+          none) MODS=0 ;;
+          *) break ;;
+        esac
+        shift
+      done ;;
 
     move)
       col="$1"; row="$2"; shift 2
