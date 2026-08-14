@@ -99,12 +99,53 @@ pub struct MenuRegistry {
 }
 
 impl MenuRegistry {
-    pub fn items_for(&self, zone: Zone) -> &[MenuItem] {
+    /// The default items plus anything plugins registered for `zone`.
+    pub fn items_for(&self, zone: Zone) -> Vec<MenuItem> {
+        let mut items = default_menu_items(zone);
+        if let Some(extra) = self.items.get(&zone) {
+            items.extend(extra.iter().cloned());
+        }
+        items
+    }
+
+    /// Items registered by plugins for `zone`, without the defaults.
+    pub fn registered(&self, zone: Zone) -> &[MenuItem] {
         self.items.get(&zone).map(Vec::as_slice).unwrap_or_default()
     }
 
     pub fn add(&mut self, zone: Zone, item: MenuItem) {
         self.items.entry(zone).or_default().push(item);
+    }
+}
+
+/// The built-in right-click items for a zone.
+///
+/// Every `cmd` is a real cmdline command — the menu runs them down the same
+/// path as typing them, so an item that works here works there and vice versa.
+///
+/// Notably absent are Cut/Copy/Paste/Select All: the editor has no clipboard
+/// commands at all (yank and put are key-driven register operations, and system
+/// clipboard integration lives only in the compositor). Inventing commands for
+/// them belongs to a clipboard task, not this one.
+fn default_menu_items(zone: Zone) -> Vec<MenuItem> {
+    match zone {
+        Zone::Buffer => vec![
+            MenuItem::new("Format Buffer", "fmt"),
+            MenuItem::new("Save", "w"),
+            MenuItem::new("Split Vertical", "vsplit"),
+            MenuItem::new("Split Horizontal", "sp"),
+            MenuItem::new("Close Window", "close"),
+        ],
+        Zone::Gutter => vec![
+            MenuItem::new("Diagnostics", "Trouble"),
+            MenuItem::new("Toggle Git Signs", "Gitsigns"),
+        ],
+        Zone::Chrome | Zone::Tab => vec![
+            MenuItem::new("Buffer List", "ls"),
+            MenuItem::new("Delete Buffer", "bd"),
+            MenuItem::new("Close Window", "close"),
+            MenuItem::new("Close Other Windows", "only"),
+        ],
     }
 }
 
@@ -395,6 +436,12 @@ fn offset_in_window(app: &App, wid: WindowId, col: u16, row: u16) -> Option<usiz
 
 fn on_mouse_down(app: &mut App, ev: MouseEvent, zone: HitZone) {
     let clicks = track_click(app, &ev);
+
+    if ev.button == MouseButton::Right {
+        open_context_menu(app, zone);
+        return;
+    }
+
     match zone {
         HitZone::Buffer(wid, offset) => on_buffer_down(app, ev, wid, offset, clicks),
         // Clicking off every window drops into the cmdline, which is the only
@@ -402,6 +449,52 @@ fn on_mouse_down(app: &mut App, ev: MouseEvent, zone: HitZone) {
         HitZone::Outside => app.vim.set_cmdline(":"),
         // Chrome, gutter and float handling arrive with Tasks 13 and 14.
         HitZone::Chrome(_) | HitZone::Gutter(..) | HitZone::Float(_) => {}
+    }
+}
+
+/// The menu zone a hit belongs to, or `None` where right-click means nothing.
+fn menu_zone(zone: HitZone) -> Option<Zone> {
+    match zone {
+        HitZone::Buffer(..) => Some(Zone::Buffer),
+        HitZone::Gutter(..) => Some(Zone::Gutter),
+        HitZone::Chrome(_) => Some(Zone::Chrome),
+        // A float is already a menu or a popup; stacking another on it would
+        // orphan the first.
+        HitZone::Float(_) | HitZone::Outside => None,
+    }
+}
+
+/// Raise the context menu for `zone`.
+///
+/// The menu is an ordinary picker of `RunCmd` items rather than a float of its
+/// own: that gets keyboard navigation, filtering, the existing rendering in
+/// both backends, and one dispatch path shared with the cmdline — all of which
+/// a bespoke menu widget would have to reimplement.
+fn open_context_menu(app: &mut App, zone: HitZone) {
+    let Some(zone) = menu_zone(zone) else {
+        return;
+    };
+    let items: Vec<crate::picker::PickerItem> = app
+        .mouse
+        .menu
+        .items_for(zone)
+        .into_iter()
+        .map(|i| {
+            crate::picker::PickerItem::new(i.label, crate::picker::PickerAction::RunCmd(i.cmd))
+        })
+        .collect();
+    if items.is_empty() {
+        return;
+    }
+    app.picker = Some(crate::picker::PickerState::new(menu_title(zone), items));
+}
+
+fn menu_title(zone: Zone) -> &'static str {
+    match zone {
+        Zone::Buffer => "Buffer",
+        Zone::Gutter => "Gutter",
+        Zone::Chrome => "Window",
+        Zone::Tab => "Tab",
     }
 }
 
@@ -1044,6 +1137,102 @@ mod tests {
             ),
         );
         assert!(shapes.borrow().is_empty());
+    }
+
+    fn right_down(col: u16, row: u16) -> MouseEvent {
+        MouseEvent::new(
+            col,
+            row,
+            MouseKind::Down,
+            MouseButton::Right,
+            KeyModifiers::empty(),
+        )
+    }
+
+    /// Labels of the open picker, in order.
+    fn menu_labels(a: &mut App) -> Vec<String> {
+        a.picker
+            .as_mut()
+            .map(|p| p.view().rows.iter().map(|r| r.label.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn right_click_in_buffer_opens_the_buffer_menu() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        assert!(a.picker.is_none());
+
+        handle_mouse_event(&mut a, right_down(l.text.x, l.text.y));
+        let labels = menu_labels(&mut a);
+        assert!(
+            labels.iter().any(|s| s == "Format Buffer"),
+            "got {labels:?}"
+        );
+    }
+
+    #[test]
+    fn right_click_in_the_gutter_opens_the_gutter_menu() {
+        let mut a = App::new("alpha\nbravo\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        handle_mouse_event(&mut a, right_down(l.text.x - 1, l.text.y));
+        let labels = menu_labels(&mut a);
+        assert!(labels.iter().any(|s| s == "Diagnostics"), "got {labels:?}");
+    }
+
+    /// Right-clicking nothing raises nothing, rather than an empty box.
+    #[test]
+    fn right_click_outside_opens_no_menu() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        let l = laid_out(&mut a);
+        let blank = l.text.y + l.text.height - 1;
+        handle_mouse_event(&mut a, right_down(l.text.x, blank));
+        assert!(a.picker.is_none());
+    }
+
+    /// Right-click must not move the caret the way a left-click does.
+    #[test]
+    fn right_click_leaves_the_caret_alone() {
+        let mut a = App::new("alpha bravo\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        handle_mouse_event(&mut a, right_down(l.text.x + 8, l.text.y));
+        assert_eq!(a.ws.borrow().windows.active_window().cursors.head(), 0);
+    }
+
+    #[test]
+    fn plugin_items_are_appended_to_the_defaults() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        a.mouse
+            .menu
+            .add(Zone::Buffer, MenuItem::new("Say Hi", "echo hi"));
+        let l = laid_out(&mut a);
+        handle_mouse_event(&mut a, right_down(l.text.x, l.text.y));
+
+        let labels = menu_labels(&mut a);
+        assert_eq!(labels.last().map(String::as_str), Some("Say Hi"));
+        assert!(labels.len() > 1, "defaults are still there: {labels:?}");
+    }
+
+    /// Every default item has to be a command the cmdline actually accepts, or
+    /// the menu offers something that fails when chosen.
+    #[test]
+    fn every_default_menu_command_parses() {
+        let a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        for zone in [Zone::Buffer, Zone::Gutter, Zone::Chrome, Zone::Tab] {
+            for item in default_menu_items(zone) {
+                assert!(
+                    a.parse_cmdline(&format!(":{}", item.cmd)).is_ok(),
+                    "{:?} item {:?} runs unknown command {:?}",
+                    zone,
+                    item.label,
+                    item.cmd
+                );
+            }
+        }
     }
 
     #[test]

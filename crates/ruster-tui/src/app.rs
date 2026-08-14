@@ -711,13 +711,13 @@ impl CursorAnim {
 /// The value part of a general `:set` command. `Toggle` flips the current value
 /// of a boolean option; `Exact` sets any option to a specific parsed value.
 #[derive(Debug, Clone, PartialEq)]
-enum SetNamedVal {
+pub(crate) enum SetNamedVal {
     Exact(SettingValue),
     Toggle,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum CmdAction {
+pub(crate) enum CmdAction {
     Save(bool),
     SaveAs(String),
     Quit,
@@ -1498,7 +1498,7 @@ pub struct App {
     /// Noice notification manager.
     pub notify: NotificationManager,
     /// Active floating picker (buffer list, file finder, ...), if any.
-    picker: Option<PickerState>,
+    pub(crate) picker: Option<PickerState>,
     /// Streaming results for the active picker (`:Files` walk, `:Rg` output),
     /// drained into the picker each frame. Backend-agnostic (polled in render).
     pending_results: Option<std::sync::mpsc::Receiver<PickerItem>>,
@@ -4790,7 +4790,7 @@ impl App {
         (line as u16, col as u16)
     }
 
-    fn parse_cmdline(&self, cmdline: &str) -> Result<CmdAction, String> {
+    pub(crate) fn parse_cmdline(&self, cmdline: &str) -> Result<CmdAction, String> {
         let trimmed = cmdline.trim_start_matches(':').trim();
         if trimmed.is_empty() {
             return Err("Empty command".to_string());
