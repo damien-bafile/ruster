@@ -1490,6 +1490,9 @@ pub struct App {
     /// hit-testing. Floats themselves are built fresh each frame and not kept;
     /// only where they landed is worth remembering.
     pub(crate) last_floats: Vec<ruster_render::Rect>,
+    /// The area the window tree was divided into on the last frame, for
+    /// resolving split-edge drags against the geometry actually drawn.
+    pub(crate) last_window_area: ruster_core::windows::Rect,
     /// Click, drag and hover bookkeeping between mouse events.
     pub mouse: crate::mouse::MouseState,
     /// Whether the raylib backend is driving. A few mouse gestures (font zoom,
@@ -1999,6 +2002,7 @@ impl App {
             flash: None,
             last_layout: Vec::new(),
             last_floats: Vec::new(),
+            last_window_area: ruster_core::windows::Rect::new(0, 0, 0, 0),
             mouse: crate::mouse::MouseState::default(),
             is_gui: false,
             dired: DiredState::new(dired_show_hidden),
@@ -4205,6 +4209,10 @@ impl App {
         // mouse hit-test reads it back.
         self.last_layout.clear();
         let sidebar_rect = self.sidebar.carve(&mut buf_area);
+        // The area the window tree divides. A split ratio only means something
+        // against this, so a resize has to use the same rectangle the frame was
+        // laid out with.
+        self.last_window_area = buf_area;
         let flash_info = self.flash.as_ref().map(|f| (f.labels.clone(), f.pending));
         {
             let mut w = self.ws.borrow_mut();

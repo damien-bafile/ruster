@@ -382,6 +382,25 @@ fn on_mouse_drag(app: &mut App, ev: MouseEvent) {
     if ev.button != MouseButton::Left {
         return;
     }
+
+    // A split edge being dragged takes precedence: the pointer is over chrome,
+    // not text, so there is no selection to extend.
+    if let Some(resize) = app.mouse.resize {
+        let dx = ev.col as i32 - resize.start_col as i32;
+        let dy = ev.row as i32 - resize.start_row as i32;
+        let area = app.last_window_area;
+        if app.ws.borrow_mut().windows.resize(resize.wid, area, dx, dy) {
+            // Re-anchor so the next event's delta is measured from here, rather
+            // than re-applying the whole drag every frame.
+            app.mouse.resize = Some(ResizeState {
+                start_col: ev.col,
+                start_row: ev.row,
+                ..resize
+            });
+        }
+        return;
+    }
+
     let (Some(anchor), Some(wid)) = (app.mouse.drag.anchor, app.mouse.drag.wid) else {
         return;
     };
@@ -424,6 +443,7 @@ fn on_mouse_up(app: &mut App, ev: MouseEvent) {
         return;
     }
     app.mouse.drag = DragState::default();
+    app.mouse.resize = None;
 }
 
 /// Resolve a cell to an offset, but only when it lands in `wid`.
@@ -447,9 +467,44 @@ fn on_mouse_down(app: &mut App, ev: MouseEvent, zone: HitZone) {
         // Clicking off every window drops into the cmdline, which is the only
         // thing down there to aim at.
         HitZone::Outside => app.vim.set_cmdline(":"),
-        // Chrome, gutter and float handling arrive with Tasks 13 and 14.
-        HitZone::Chrome(_) | HitZone::Gutter(..) | HitZone::Float(_) => {}
+        // Grab the edge so the drag that follows knows what it is moving.
+        HitZone::Chrome(ChromeKind::SplitEdge { wid, .. }) => {
+            if ev.button == MouseButton::Left {
+                if let Some(l) = app.last_layout.iter().find(|l| l.window == wid) {
+                    app.mouse.resize = Some(ResizeState {
+                        wid,
+                        start_col: ev.col,
+                        start_row: ev.row,
+                        original: to_core_rect(l.rect),
+                    });
+                }
+            }
+        }
+        // Clicking a window's own chrome focuses it, which is the least
+        // surprising thing a click on a title bar can do.
+        HitZone::Chrome(ChromeKind::Header(wid)) | HitZone::Chrome(ChromeKind::StatusLine(wid)) => {
+            app.ws.borrow_mut().windows.focus_id(wid);
+        }
+        HitZone::Gutter(wid, line) => {
+            // Put the caret at the start of the line whose gutter was clicked.
+            let offset = with_window_buffer(app, wid, |_, buffer| {
+                buffer.line_start_char(line.min(buffer.line_count().saturating_sub(1)))
+            });
+            if let Some(offset) = offset {
+                app.ws.borrow_mut().windows.focus_id(wid);
+                app.ws
+                    .borrow_mut()
+                    .execute(Action::Move(Motion::To(offset)));
+            }
+        }
+        // A float handles its own input; a click through to what is underneath
+        // would act on something the user cannot see.
+        HitZone::Float(_) => {}
     }
+}
+
+fn to_core_rect(r: ruster_render::Rect) -> Rect {
+    Rect::new(r.x, r.y, r.width, r.height)
 }
 
 /// The menu zone a hit belongs to, or `None` where right-click means nothing.
@@ -1233,6 +1288,142 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Width of the first window, for watching a resize take effect.
+    fn first_width(a: &mut App) -> u16 {
+        a.render();
+        a.last_layout
+            .iter()
+            .min_by_key(|l| l.rect.x)
+            .map(|l| l.rect.width)
+            .expect("a leftmost window")
+    }
+
+    #[test]
+    fn dragging_a_split_edge_resizes_the_window() {
+        use ruster_core::windows::SplitDir;
+
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        a.ws.borrow_mut().windows.split(SplitDir::Vertical);
+        let before = first_width(&mut a);
+        let left = a
+            .last_layout
+            .iter()
+            .min_by_key(|l| l.rect.x)
+            .copied()
+            .expect("a leftmost window");
+        let edge_col = left.rect.x + left.rect.width - 1;
+        let mid_row = left.rect.y + left.rect.height / 2;
+
+        handle_mouse_event(&mut a, down(edge_col, mid_row, KeyModifiers::empty()));
+        assert!(a.mouse.resize.is_some(), "the drag grabbed the edge");
+        handle_mouse_event(
+            &mut a,
+            drag_to(edge_col + 6, mid_row, KeyModifiers::empty()),
+        );
+
+        let after = first_width(&mut a);
+        assert!(after > before, "{before} -> {after}");
+
+        handle_mouse_event(
+            &mut a,
+            MouseEvent::new(
+                edge_col + 6,
+                mid_row,
+                MouseKind::Up,
+                MouseButton::Left,
+                KeyModifiers::empty(),
+            ),
+        );
+        assert!(a.mouse.resize.is_none(), "released");
+    }
+
+    /// Dragging an edge must not also start a text selection.
+    #[test]
+    fn a_split_edge_drag_selects_no_text() {
+        use ruster_core::windows::SplitDir;
+
+        let mut a = App::new("alpha bravo\n".into(), PathBuf::from("f.txt"));
+        a.ws.borrow_mut().windows.split(SplitDir::Vertical);
+        a.render();
+        let left = a
+            .last_layout
+            .iter()
+            .min_by_key(|l| l.rect.x)
+            .copied()
+            .expect("a leftmost window");
+        let edge_col = left.rect.x + left.rect.width - 1;
+        let mid_row = left.rect.y + left.rect.height / 2;
+
+        handle_mouse_event(&mut a, down(edge_col, mid_row, KeyModifiers::empty()));
+        handle_mouse_event(
+            &mut a,
+            drag_to(edge_col + 4, mid_row, KeyModifiers::empty()),
+        );
+        assert_eq!(selected(&a), "");
+    }
+
+    /// A pane cannot be dragged away to nothing.
+    #[test]
+    fn a_resize_cannot_collapse_a_pane() {
+        use ruster_core::windows::SplitDir;
+
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        a.ws.borrow_mut().windows.split(SplitDir::Vertical);
+        a.render();
+        let left = a
+            .last_layout
+            .iter()
+            .min_by_key(|l| l.rect.x)
+            .copied()
+            .expect("a leftmost window");
+        let mid_row = left.rect.y + left.rect.height / 2;
+        let edge_col = left.rect.x + left.rect.width - 1;
+
+        handle_mouse_event(&mut a, down(edge_col, mid_row, KeyModifiers::empty()));
+        // Yank it far past the left wall, repeatedly.
+        for _ in 0..10 {
+            handle_mouse_event(&mut a, drag_to(0, mid_row, KeyModifiers::empty()));
+        }
+        a.render();
+        for l in &a.last_layout {
+            assert!(l.rect.width >= 4, "pane collapsed: {:?}", l.rect);
+        }
+    }
+
+    #[test]
+    fn clicking_a_window_header_focuses_that_window() {
+        use ruster_core::windows::SplitDir;
+
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        a.ws.borrow_mut().windows.split(SplitDir::Vertical);
+        a.render();
+        let other = a
+            .last_layout
+            .iter()
+            .find(|l| l.window != a.ws.borrow().windows.active())
+            .copied()
+            .expect("a second window");
+
+        handle_mouse_event(
+            &mut a,
+            down(other.rect.x + 1, other.rect.y, KeyModifiers::empty()),
+        );
+        assert_eq!(a.ws.borrow().windows.active(), other.window);
+    }
+
+    #[test]
+    fn clicking_the_gutter_moves_the_caret_to_that_line() {
+        let mut a = App::new("alpha\nbravo\ncharlie\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        // Gutter of the third visible line: "charlie" starts at offset 12.
+        handle_mouse_event(
+            &mut a,
+            down(l.text.x - 1, l.text.y + 2, KeyModifiers::empty()),
+        );
+        assert_eq!(a.ws.borrow().windows.active_window().cursors.head(), 12);
     }
 
     #[test]
