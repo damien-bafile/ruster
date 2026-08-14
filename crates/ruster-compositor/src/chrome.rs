@@ -1350,7 +1350,8 @@ mod tests {
         assert_eq!(body.x, numbers_end);
         assert!(
             body.x >= FRAME_PAD + (SIGN_COLS as f32 + 1.0) * cell_w,
-            "text at {} leaves no room for a sign plus a digit", body.x
+            "text at {} leaves no room for a sign plus a digit",
+            body.x
         );
     }
 
@@ -1401,7 +1402,11 @@ mod tests {
         for severity in 1u8..=4 {
             let (glyph, (r, g, b, _)) = severity_sign(severity, &theme);
             let front = rel(r * 255.0, g * 255.0, b * 255.0);
-            let (hi, lo) = if front > back { (front, back) } else { (back, front) };
+            let (hi, lo) = if front > back {
+                (front, back)
+            } else {
+                (back, front)
+            };
             let contrast = (hi + 0.05) / (lo + 0.05);
             assert!(
                 contrast >= 3.0,
@@ -1423,5 +1428,4 @@ mod tests {
             "an error and a warning are the two a reader most needs to tell apart"
         );
     }
-
 }

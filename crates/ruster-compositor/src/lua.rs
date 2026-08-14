@@ -429,8 +429,8 @@ fn install_wm_api(
     let d = deferred.clone();
     wm.set(
         "defer",
-        lua.create_function(move |_, (ms, name): (u64, String)| {
-            match Action::from_name(&name) {
+        lua.create_function(
+            move |_, (ms, name): (u64, String)| match Action::from_name(&name) {
                 Some(action) => {
                     let at = Instant::now() + Duration::from_millis(ms);
                     d.borrow_mut().push((at, action));
@@ -440,8 +440,8 @@ fn install_wm_api(
                     tracing::warn!(%name, "ruster.wm.defer: not an action");
                     Ok(false)
                 }
-            }
-        })?,
+            },
+        )?,
     )?;
 
     // Records *and* queues, like `switch_workspace`. Recording is what a config
@@ -1801,10 +1801,7 @@ mod defer_tests {
     fn an_overdue_action_asks_for_no_wait() {
         let base = Instant::now();
         let pending = vec![(base, Action::Quit)];
-        assert_eq!(
-            next_due(&pending, at(base, 5_000)),
-            Some(Duration::ZERO)
-        );
+        assert_eq!(next_due(&pending, at(base, 5_000)), Some(Duration::ZERO));
     }
 
     #[test]
