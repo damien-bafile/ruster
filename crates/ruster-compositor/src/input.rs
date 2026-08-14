@@ -357,8 +357,18 @@ impl<B: Backend + 'static> CompositorState<B> {
                                 modified: handle.modified_sym(),
                             },
                         );
+                        compositor.intercepted.insert(keycode.raw());
+                    } else {
+                        // A release clears what its press recorded, here as
+                        // everywhere else. Inserting on a release instead left
+                        // the keycode marked for the rest of the session — and
+                        // the key that *opened* the prompt is released while the
+                        // prompt is up, so it was always that key. The next time
+                        // it was pressed its press went to the client and its
+                        // release was swallowed, which the client reads as a key
+                        // held down forever: open `:`, press Escape, type `:`.
+                        compositor.intercepted.remove(&keycode.raw());
                     }
-                    compositor.intercepted.insert(keycode.raw());
                     return FilterResult::Intercept(());
                 }
 
@@ -1398,6 +1408,45 @@ mod tests {
         assert!(!rect.contains(190, 110), "beyond the right edge");
         assert!(!rect.contains(110, 160), "below the bottom edge");
         assert!(!rect.contains(109, 109), "up and left of the corner");
+    }
+
+    /// Reported from use: open the `:` prompt, press Escape, then type a plain
+    /// `:` — and the terminal behaves as though the key is stuck down.
+    ///
+    /// It is. The key that opened the prompt is recorded as intercepted by its
+    /// press, and its *release* then arrives while the prompt is open — where
+    /// the prompt's own branch intercepts it and returns before reaching the
+    /// only code that clears the record. The keycode stays in `intercepted` for
+    /// the rest of the session, so the next release of that same physical key
+    /// is swallowed while its press was forwarded. The client is told the key
+    /// went down and never that it came up.
+    #[test]
+    fn a_key_that_opened_the_prompt_does_not_stay_stuck_afterwards() {
+        const KEY_SEMICOLON: u32 = 39 + 8;
+        let (_loop, mut state) = test_state();
+        state.keymap =
+            crate::keymap::Keymap::new(&[("M-S-semicolon".to_string(), "command".to_string())]);
+
+        // Super+Shift+; opens the prompt, and the `;` is released while it is up.
+        press(&mut state, KEY_LEFTMETA);
+        press(&mut state, KEY_LEFTSHIFT);
+        press(&mut state, KEY_SEMICOLON);
+        assert!(
+            state.minibuffer.as_ref().is_some_and(|m| m.is_open()),
+            "the binding should have opened the prompt"
+        );
+        release(&mut state, KEY_SEMICOLON);
+        release(&mut state, KEY_LEFTSHIFT);
+        release(&mut state, KEY_LEFTMETA);
+
+        state.minibuffer = None; // what Escape does
+
+        assert!(
+            !state.intercepted.contains(&KEY_SEMICOLON),
+            "the key that opened the prompt is still marked intercepted, so the \
+             next release of it will be swallowed and the client will believe it \
+             is held down"
+        );
     }
 
     #[test]
