@@ -943,6 +943,19 @@ fn parse_substitute(trimmed: &str) -> Option<CmdAction> {
     })
 }
 
+/// Open the undo batch the clipboard and comment commands edit inside, with a
+/// single caret.
+///
+/// The caret count changes what an edit *means*: an `EditOp` is applied at
+/// every cursor, and a `DeleteRange` with several of them is reinterpreted as
+/// "delete this many characters at each caret". A cut in a multi-cursor buffer
+/// would therefore take text nobody selected, at positions nothing in the
+/// command mentions. These commands act on one selection, so they say so.
+fn begin_single_caret_batch(w: &mut Workspace) {
+    w.execute(Action::ClearExtraCursors);
+    w.execute(Action::BeginBatch);
+}
+
 /// Delete `ranges` from `w`, last range first.
 ///
 /// Order is the whole point: every deletion shifts the offsets after it, and
@@ -4296,7 +4309,7 @@ impl App {
         self.put_on_clipboard(&text);
         {
             let mut w = self.ws.borrow_mut();
-            w.execute(Action::BeginBatch);
+            begin_single_caret_batch(&mut w);
             delete_ranges(&mut w, &ranges);
             w.execute(Action::EndBatch);
         }
@@ -4322,7 +4335,7 @@ impl App {
         let ranges = self.selection_ranges();
         {
             let mut w = self.ws.borrow_mut();
-            w.execute(Action::BeginBatch);
+            begin_single_caret_batch(&mut w);
             delete_ranges(&mut w, &ranges);
             // Deleting leaves the caret where the text was, which is where the
             // replacement belongs; `InsertString` has no position of its own.
@@ -4465,7 +4478,7 @@ impl App {
 
         {
             let mut w = self.ws.borrow_mut();
-            w.execute(Action::BeginBatch);
+            begin_single_caret_batch(&mut w);
             // Bottom-up: each edit shifts every offset below it, and these were
             // all measured before any of them ran.
             for (line, col, remove, insert) in edits.iter().rev() {
@@ -13673,6 +13686,18 @@ index 1..2 100644
         run(&mut a, ":cut");
         a.ws.borrow_mut().execute(Action::Undo);
         assert_eq!(a.ws.borrow().buffer().to_string(), "alpha\nbeta\n");
+    }
+
+    /// An extra caret must not turn one cut into several: `DeleteRange` is
+    /// applied at every cursor, so the edit would land where nothing was asked
+    /// for.
+    #[test]
+    fn cut_with_extra_cursors_removes_one_line_only() {
+        let mut a = App::new("alpha\nbeta\ngamma\n".into(), PathBuf::from("f.txt"));
+        a.ws.borrow_mut().execute(Action::AddCursor(6));
+        run(&mut a, ":cut");
+        assert_eq!(a.ws.borrow().buffer().to_string(), "alpha\ngamma\n");
+        assert_eq!(a.ws.borrow().windows.active_window().cursors.count(), 1);
     }
 
     #[test]
