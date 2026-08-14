@@ -179,7 +179,16 @@ impl<B: Backend + 'static> XdgShellHandler for CompositorState<B> {
                     }
                     pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
                 }
-                tracing::debug!("popup took a grab");
+                // Asked of the seat rather than assumed from having called
+                // `set_grab`: the two are not the same claim, and this is the
+                // only part of the keyboard grab that can be checked without a
+                // key actually arriving — which, nested, it does not, because
+                // the host keeps keyboard focus elsewhere.
+                tracing::debug!(
+                    keyboard = seat.get_keyboard().map(|k| k.is_grabbed()).unwrap_or(false),
+                    pointer = seat.get_pointer().map(|p| p.is_grabbed()).unwrap_or(false),
+                    "popup took a grab"
+                );
             }
             Err(err) => tracing::debug!(%err, "popup grab refused"),
         }
