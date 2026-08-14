@@ -1,9 +1,9 @@
 # Phase 3 — Editor-in-desktop
 
-**Status:** all eight stages written, 2026-08-14. Stages 0–6 are verified with
-rows in `docs/compositor.md`; **Stage 7's code is done and its round-trip is
-not**, which is the one thing left in this plan and is marked ⛔ there rather
-than quietly counted as finished.
+**Status:** complete, 2026-08-14. All eight stages written and verified, each with a row in
+`docs/compositor.md`. Stage 7's round trip runs against a live server —
+`cargo test -p ruster-compositor -- --ignored live_lsp` — and is ignored by
+default, so the standing rule that no test may require a live server holds.
 
 The paragraph that used to be here said "not started", and described a
 `ruster-compositor` that imported nothing from `ruster-core`. It stayed that way
@@ -19,7 +19,7 @@ a status header has: nobody reads the top of a plan they are in the middle of.
 | 4 multi-buffer and persistence | ✅ shared `BufferStore`; a restored pane comes back with its file |
 | 5 syntax | ✅ reuses `SyntaxEngine`; runs are the spans *and* the text between them |
 | 6 the terminal leaf | ✅ satisfied honestly by spawning a client — no VT parser in the display server |
-| 7 LSP inside a tile | ⛔ diagnostics, go-to-definition and hover are written and unit-tested; **nothing has yet spoken to a running `rust-analyzer`** |
+| 7 LSP inside a tile | ✅ diagnostics in the gutter, go-to-definition and hover, driven through a real `rust-analyzer`: `definition: caret moved 59 -> 3`, and a hover panel holding the server's own `fn helper() -> i32` |
 
 **Goal (from the spec):** multi-buffer editing, terminal leaf, LSP inside a
 tile, xdg-desktop-portal integration. Or, in the spec's own words for the

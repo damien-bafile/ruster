@@ -1,20 +1,20 @@
 # Compositor feature plan — after Phase 2's first half
 
-## Where this actually stands
-
-Phase 0 and Phase 1 are done and verified nested. Phase 2 is half done: actions
-carry arguments and run through one `dispatch`, which-key and the welcome frame
-report the binds really in force, windows have focus borders, and the compositor
-finally reads the user's theme. Everything below is what is left, ordered by
-what stops the thing being usable rather than by what is interesting.
-
-Two sources ground this list. The first is `docs/compositor.md`, whose ⛔ rows
-are the claims nobody has tested. The second is the hardware log: `foot` prints
-a diagnostic for every protocol it wanted and did not find, and that list is a
-free, honest inventory of what a real client misses. Nothing here is speculative
-— each item is either a matrix row, a client complaint, or a `TODO` in the tree.
-
----
+> **Stale in its particulars, kept for its ordering.** Written 2026-08-08, when
+> Tier 3 was untouched and the recommendation below was "1.1, then XKB, then
+> 1.2/1.3". All of Tier 1 is done, all of Tier 2's small handlers are done, and
+> Tier 3 — the project's actual thesis — is complete and verified, including a
+> live `rust-analyzer` round trip. Updated 2026-08-14.
+>
+> **What is left of this plan:** two Tier 2 items, fractional scaling (M) and
+> `text-input`/IME (L), and the whole of Tier 4. Everything above them has a row
+> in `docs/compositor.md`.
+>
+> The judgement below is what survives, and it held up: XKB really was a
+> correctness bug wearing a feature's clothes, the small protocol handlers really
+> were a good batch for a session without hardware — wiring them found that the
+> clipboard had been dead since the compositor was written — and Tier 3 really
+> was better started once the control plane stopped moving.
 
 ## Tier 0 — Debt that blocks a hardware session
 
@@ -129,11 +129,15 @@ handler impls), then popups, then scaling. IME last — it is a project.
 
 ---
 
-## Tier 3 — Editor-in-desktop (spec Phase 3)
+## Tier 3 — Editor-in-desktop (spec Phase 3) — **done**
 
-The premise of the whole thing, and untouched: `ruster-compositor` imports
-nothing from `ruster-core` today, and the editor frame draws a hardcoded welcome
-buffer.
+Complete as of 2026-08-14; see `2026-08-08-compositor-phase3.md` for the stage
+table and `docs/compositor.md` for the row per claim. The sections below are the
+original scoping, left as written. Two of its predictions are worth keeping: the
+leaf-type change was avoided entirely and never became necessary, and Stage 7 was
+called "where Phase 3 will slip" — it did not, because by the time it arrived
+`lsp_state` had already been extracted and carried the request/response
+machinery with it.
 
 ### 3.1 A real buffer in a tile
 
