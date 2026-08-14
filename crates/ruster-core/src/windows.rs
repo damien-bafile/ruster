@@ -387,6 +387,25 @@ impl WindowTree {
         };
     }
 
+    /// Point every window showing `from` at `to`, clamping their cursors to a
+    /// buffer of `to_len` characters. Returns how many windows moved.
+    ///
+    /// Closing a document has to leave *no* window referring to it. The
+    /// renderer resolves each window's buffer every frame, so a window left
+    /// pointing at a closed one is not a blank pane — it is a panic on the next
+    /// frame.
+    pub fn replace_buffer(&mut self, from: BufferId, to: BufferId, to_len: usize) -> usize {
+        let mut moved = 0;
+        for win in self.windows.values_mut() {
+            if win.buffer == from {
+                win.buffer = to;
+                win.cursors.clamp_to(to_len);
+                moved += 1;
+            }
+        }
+        moved
+    }
+
     /// Move focus to the nearest window in `dir` (no-op if none exists).
     /// Focus a window by id, ignoring ids that are not in the tree. Returns
     /// whether focus moved.

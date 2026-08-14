@@ -188,6 +188,8 @@ impl MenuItem {
 pub enum HitZone {
     /// A floating box, by index into the last frame's floats (topmost wins).
     Float(usize),
+    /// A bufferline tab, by index into the last frame's tabs.
+    Tab(usize),
     Chrome(ChromeKind),
     /// The sign/number gutter of a window, and the buffer line beside it.
     Gutter(WindowId, usize),
@@ -230,6 +232,17 @@ pub fn hit_test(app: &App, col: u16, row: u16) -> HitZone {
     // Buffer text before chrome: it is the largest zone and the common case.
     if let Some((wid, offset)) = app.buffer_offset_at(col, row) {
         return HitZone::Buffer(wid, offset);
+    }
+
+    // The bufferline sits on a row carved out of the window area, so it
+    // competes with nothing — but it is also the only thing that knows which
+    // buffer a column stands for, the strip having scrolled to fit.
+    if let Some(idx) = app
+        .last_tabs
+        .iter()
+        .position(|t| row == t.row && col >= t.col && col < t.col + t.width)
+    {
+        return HitZone::Tab(idx);
     }
 
     for l in &app.last_layout {
@@ -377,7 +390,7 @@ fn set_pointer_for_zone(app: &mut App, zone: HitZone) {
     let pointer = match zone {
         HitZone::Buffer(..) => PointerKind::IBeam,
         HitZone::Chrome(ChromeKind::SplitEdge { .. }) => PointerKind::Resize,
-        HitZone::Chrome(_) | HitZone::Gutter(..) => PointerKind::PointingHand,
+        HitZone::Chrome(_) | HitZone::Gutter(..) | HitZone::Tab(_) => PointerKind::PointingHand,
         HitZone::Float(_) | HitZone::Outside => PointerKind::Default,
     };
     app.renderer.set_pointer(pointer);
@@ -414,7 +427,9 @@ fn on_mouse_scroll(app: &mut App, ev: MouseEvent, zone: HitZone) {
         HitZone::Chrome(ChromeKind::Header(wid))
         | HitZone::Chrome(ChromeKind::StatusLine(wid))
         | HitZone::Chrome(ChromeKind::SplitEdge { wid, .. }) => wid,
-        HitZone::Float(_) | HitZone::Outside => return,
+        // A tab strip has no scroll state of its own: it follows the active
+        // buffer, so there is nothing here for the wheel to move.
+        HitZone::Float(_) | HitZone::Tab(_) | HitZone::Outside => return,
     };
 
     let up = ev.kind == MouseKind::ScrollUp;
@@ -554,6 +569,18 @@ fn on_mouse_down(app: &mut App, ev: MouseEvent, zone: HitZone) {
 
     match zone {
         HitZone::Buffer(wid, offset) => on_buffer_down(app, ev, wid, offset, clicks),
+        // The two things a tab strip has always done, in every editor that has
+        // one: left switches to the buffer, middle closes it.
+        HitZone::Tab(idx) => {
+            let Some(tab) = app.last_tabs.get(idx).copied() else {
+                return;
+            };
+            match ev.button {
+                MouseButton::Left => app.show_buffer(tab.buffer),
+                MouseButton::Middle => app.close_buffer(tab.buffer),
+                _ => {}
+            }
+        }
         // Clicking off every window drops into the cmdline, which is the only
         // thing down there to aim at.
         HitZone::Outside => app.vim.set_cmdline(":"),
@@ -615,6 +642,7 @@ fn zone_name(zone: HitZone) -> &'static str {
     match zone {
         HitZone::Buffer(..) => "buffer",
         HitZone::Gutter(..) => "gutter",
+        HitZone::Tab(_) => "tab",
         HitZone::Chrome(_) => "chrome",
         HitZone::Float(_) => "float",
         HitZone::Outside => "outside",
@@ -699,6 +727,7 @@ fn menu_zone(zone: HitZone) -> Option<Zone> {
     match zone {
         HitZone::Buffer(..) => Some(Zone::Buffer),
         HitZone::Gutter(..) => Some(Zone::Gutter),
+        HitZone::Tab(_) => Some(Zone::Tab),
         HitZone::Chrome(_) => Some(Zone::Chrome),
         // A float is already a menu or a popup; stacking another on it would
         // orphan the first.
@@ -2044,6 +2073,129 @@ mod tests {
 
         assert_eq!(a.mouse.click.streak, 1);
         assert_eq!(selected(&a), "");
+    }
+
+    /// Open a second file and render, returning the tab spans of that frame.
+    fn with_two_buffers(a: &mut App) -> Vec<crate::app::TabSpan> {
+        a.ws.borrow_mut()
+            .buffers
+            .open_file(PathBuf::from("second.txt"), "bravo\n".into());
+        a.render();
+        a.last_tabs.clone()
+    }
+
+    fn buffer_names(a: &App) -> Vec<String> {
+        let ws = a.ws.borrow();
+        ws.buffers
+            .ids()
+            .iter()
+            .filter_map(|&id| ws.buffers.get(id).map(|d| d.name.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn hit_test_tab_for_a_bufferline_cell() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        let tabs = with_two_buffers(&mut a);
+        let t = tabs.first().copied().expect("the strip has tabs");
+        assert_eq!(hit_test(&a, t.col, t.row), HitZone::Tab(0));
+        // One cell inside the second tab, not the first.
+        let second = tabs.get(1).copied().expect("two buffers, two tabs");
+        assert_eq!(hit_test(&a, second.col, second.row), HitZone::Tab(1));
+    }
+
+    /// Past the last tab there is bar, not tab: a click there must not act on
+    /// whichever buffer happened to be last.
+    #[test]
+    fn hit_test_past_the_last_tab_is_not_a_tab() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        let tabs = with_two_buffers(&mut a);
+        let last = tabs.last().copied().expect("the strip has tabs");
+        let after = last.col + last.width;
+        assert!(!matches!(hit_test(&a, after, last.row), HitZone::Tab(_)));
+    }
+
+    #[test]
+    fn left_clicking_a_tab_switches_to_that_buffer() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        let tabs = with_two_buffers(&mut a);
+        let target = tab_for(&a, &tabs, "second.txt");
+        assert_ne!(a.ws.borrow().active_buffer(), target.buffer);
+
+        handle_mouse_event(&mut a, down(target.col, target.row, KeyModifiers::empty()));
+        assert_eq!(a.ws.borrow().active_buffer(), target.buffer);
+    }
+
+    /// The tab standing for `name`, from the frame just drawn.
+    fn tab_for(a: &App, tabs: &[crate::app::TabSpan], name: &str) -> crate::app::TabSpan {
+        let ws = a.ws.borrow();
+        tabs.iter()
+            .copied()
+            .find(|t| ws.buffers.get(t.buffer).is_some_and(|d| d.name == name))
+            .unwrap_or_else(|| panic!("no tab for {name}"))
+    }
+
+    #[test]
+    fn middle_clicking_a_tab_closes_that_buffer() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        let tabs = with_two_buffers(&mut a);
+        let target = tab_for(&a, &tabs, "second.txt");
+        let before = buffer_names(&a).len();
+
+        handle_mouse_event(
+            &mut a,
+            MouseEvent::new(
+                target.col,
+                target.row,
+                MouseKind::Down,
+                MouseButton::Middle,
+                KeyModifiers::empty(),
+            ),
+        );
+        assert!(a.ws.borrow().buffers.get(target.buffer).is_none());
+        assert_eq!(buffer_names(&a).len(), before - 1);
+    }
+
+    /// The Dashboard is pinned, and middle-clicking must not do what `:bd`
+    /// refuses to do.
+    #[test]
+    fn middle_clicking_a_pinned_tab_leaves_it_open() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        let tabs = with_two_buffers(&mut a);
+        let pinned = tab_for(&a, &tabs, "Dashboard");
+
+        handle_mouse_event(
+            &mut a,
+            MouseEvent::new(
+                pinned.col,
+                pinned.row,
+                MouseKind::Down,
+                MouseButton::Middle,
+                KeyModifiers::empty(),
+            ),
+        );
+        assert!(a.ws.borrow().buffers.get(pinned.buffer).is_some());
+    }
+
+    /// The strip is only drawn when it is on, so with it off those cells belong
+    /// to the window that got the row back.
+    #[test]
+    fn no_tabs_are_recorded_when_the_bufferline_is_off() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        a.config.bufferline = false;
+        with_two_buffers(&mut a);
+        assert!(a.last_tabs.is_empty());
+    }
+
+    #[test]
+    fn right_clicking_a_tab_opens_the_tab_menu() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        let tabs = with_two_buffers(&mut a);
+        let t = tabs.first().copied().expect("the strip has tabs");
+
+        handle_mouse_event(&mut a, right_down(t.col, t.row));
+        let labels = menu_labels(&mut a);
+        assert!(labels.iter().any(|s| s == "Buffer List"), "got {labels:?}");
     }
 
     #[test]

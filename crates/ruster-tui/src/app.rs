@@ -6705,25 +6705,49 @@ impl App {
     }
 
     fn delete_active_buffer(&mut self) {
+        let cur = self.ws.borrow().active_buffer();
+        self.close_buffer(cur);
+    }
+
+    /// Show `id` in the active window. Ignores ids that are no longer open, so
+    /// a click on a tab from a stale frame does nothing rather than something
+    /// wrong.
+    pub(crate) fn show_buffer(&mut self, id: BufferId) {
         let mut w = self.ws.borrow_mut();
-        let cur = w.active_buffer();
-        let other = w.buffers.ids().iter().copied().find(|&id| id != cur);
-        match other {
-            Some(o) => {
-                if w.buffers.get(cur).map(|d| d.modified).unwrap_or(false) {
-                    drop(w);
-                    self.echo_warn("E89: buffer modified (add ! to override)".to_string());
-                    return;
-                }
-                w.set_active_buffer(o);
-                w.buffers.close(cur);
-                drop(w);
-                self.forget_buffer(cur);
-            }
-            None => {
-                drop(w);
-                self.echo_warn("E514: cannot close last buffer".to_string());
-            }
+        if w.buffers.get(id).is_some() {
+            w.set_active_buffer(id);
+        }
+    }
+
+    /// Close `id`, refusing what `:bd` refuses: the last buffer, and one with
+    /// unsaved changes.
+    ///
+    /// Every window showing it is pointed at another buffer first. Only the
+    /// *active* window used to be, which meant `:bd` on a file open in two
+    /// splits left the second one viewing a closed document — and the next
+    /// frame panicked resolving it.
+    pub(crate) fn close_buffer(&mut self, id: BufferId) {
+        let mut w = self.ws.borrow_mut();
+        if w.buffers.get(id).is_none() {
+            return;
+        }
+        let Some(other) = w.buffers.ids().iter().copied().find(|&x| x != id) else {
+            drop(w);
+            self.echo_warn("E514: cannot close last buffer".to_string());
+            return;
+        };
+        if w.buffers.get(id).is_some_and(|d| d.modified) {
+            drop(w);
+            self.echo_warn("E89: buffer modified (add ! to override)".to_string());
+            return;
+        }
+        // Repoint only once the close has actually happened: `close` refuses
+        // pinned documents, and moving windows off a buffer that then stays
+        // open would be a switch the user never asked for.
+        if w.buffers.close(id) {
+            w.replace_buffer(id, other);
+            drop(w);
+            self.forget_buffer(id);
         }
     }
 
@@ -13282,5 +13306,58 @@ index 1..2 100644
             0,
             "no level-based toast"
         );
+    }
+
+    /// Regression: `:bd` pointed only the *active* window at the surviving
+    /// buffer, so the same file open in two splits left the second window
+    /// viewing a closed document — and the next frame panicked resolving it
+    /// ("buffer exists"). Closing has to leave nothing referring to it.
+    #[test]
+    fn deleting_a_buffer_open_in_two_windows_leaves_neither_dangling() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        a.ws.borrow_mut()
+            .windows
+            .split(ruster_core::windows::SplitDir::Vertical);
+        let _survivor = a.ws.borrow_mut().buffers.create_scratch("other");
+        let doomed = a.ws.borrow().active_buffer();
+
+        a.apply_cmd(CmdAction::BufferDelete);
+
+        assert!(a.ws.borrow().buffers.get(doomed).is_none(), "it closed");
+        // The render is what used to panic.
+        a.render();
+        assert_eq!(a.last_layout.len(), 2, "both windows are still laid out");
+        for l in &a.last_layout {
+            assert_ne!(l.buffer, doomed, "no window is left on the closed buffer");
+        }
+    }
+
+    #[test]
+    fn a_modified_buffer_is_not_closed_out_from_under_the_windows() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        let _other = a.ws.borrow_mut().buffers.create_scratch("other");
+        let id = a.ws.borrow().active_buffer();
+        a.ws.borrow_mut().active_doc_mut().modified = true;
+
+        a.close_buffer(id);
+        assert!(a.ws.borrow().buffers.get(id).is_some(), "refused");
+        assert_eq!(
+            a.ws.borrow().active_buffer(),
+            id,
+            "and left the view where it was"
+        );
+    }
+
+    /// A tab from a frame drawn before the buffer was closed must not act on a
+    /// stale id.
+    #[test]
+    fn showing_a_closed_buffer_does_nothing() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        let gone = a.ws.borrow_mut().buffers.create_scratch("other");
+        let before = a.ws.borrow().active_buffer();
+        a.close_buffer(gone);
+
+        a.show_buffer(gone);
+        assert_eq!(a.ws.borrow().active_buffer(), before);
     }
 }

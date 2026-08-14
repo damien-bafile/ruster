@@ -255,6 +255,15 @@ impl Workspace {
     /// Point the active window at `id`, clamping its cursor(s) to the new
     /// buffer's bounds so a stale position from a longer buffer can't index out
     /// of range (which would panic in `char_to_line` during render).
+    /// Point every window showing `from` at `to`, so nothing is left viewing a
+    /// buffer that is about to be closed. No-op when `to` is not a live buffer.
+    pub fn replace_buffer(&mut self, from: BufferId, to: BufferId) -> usize {
+        let Some(max) = self.buffers.get(to).map(|d| d.buffer.len_chars()) else {
+            return 0;
+        };
+        self.windows.replace_buffer(from, to, max)
+    }
+
     pub fn set_active_buffer(&mut self, id: BufferId) {
         let max = match self.buffers.get(id) {
             Some(doc) => doc.buffer.len_chars(),
