@@ -197,6 +197,8 @@ pub struct CompositorState<B: Backend + 'static> {
     /// The hover panel on screen, if a reply has arrived and nothing has
     /// dismissed it yet.
     pub hover: Option<HoverPanel>,
+    /// Screen captures a client has asked for and a frame has not yet served.
+    pub screencopy: crate::screencopy::ScreencopyState,
     /// Syntax parses, one per document, refreshed when a buffer changes.
     pub highlights: std::cell::RefCell<crate::highlight::Highlights>,
     /// The seat's selection text, shared between editor panes and clients.
@@ -299,6 +301,18 @@ impl<B: Backend + 'static> CompositorState<B> {
     pub fn output_rect(&self) -> Rect {
         let size = logical_output_size(self.backend_data.output()).unwrap_or_default();
         Rect::new(0, 0, size.w, size.h)
+    }
+
+    /// The output's size in real pixels, which is what a framebuffer read
+    /// returns and therefore what a screencopy client must size its buffer to.
+    ///
+    /// Distinct from [`output_rect`](Self::output_rect), which is logical: on a
+    /// scaled output the two differ, and handing a client the logical size would
+    /// have it allocate a buffer the capture overruns.
+    pub fn output_size_physical(
+        &self,
+    ) -> Option<smithay::utils::Size<i32, smithay::utils::Physical>> {
+        self.backend_data.output().current_mode().map(|m| m.size)
     }
 
     /// Feed one keypress to the open prompt.
@@ -1425,6 +1439,7 @@ pub fn create_state<B: Backend + 'static>(
         terminal: None,
         lsp: ruster_lsp::state::LspState::new(),
         hover: None,
+        screencopy: crate::screencopy::ScreencopyState::default(),
         highlights: std::cell::RefCell::new(crate::highlight::Highlights::default()),
         clipboard: crate::clipboard::Clipboard::default(),
         panes: crate::pane::Panes::new(),
@@ -1475,7 +1490,15 @@ fn user_theme() -> Theme {
 /// Insert the core display globals for `CompositorState<B>`.
 fn init_globals<B: Backend + 'static>(dh: &DisplayHandle, seat_name: String) -> InitGlobals<B> {
     let compositor_state = WlCompositorState::new::<CompositorState<B>>(dh);
-    let shm_state = ShmState::new::<CompositorState<B>>(dh, vec![]);
+    // `Xbgr8888` on top of the two formats wl_shm always has. Screencopy offers
+    // it — it is the byte order `copy_framebuffer` already returns — and a
+    // format offered by one global and refused by another is not a capture
+    // anyone can take: `grim` asked for exactly what it was told, and wl_shm
+    // answered `format Xbgr8888 not supported`.
+    let shm_state = ShmState::new::<CompositorState<B>>(
+        dh,
+        vec![smithay::reexports::wayland_server::protocol::wl_shm::Format::Xbgr8888],
+    );
     let xdg_shell_state = XdgShellState::new::<CompositorState<B>>(dh);
     // `wl_data_device_manager` carries the clipboard. It is not optional in
     // practice: foot (and other toolkits) treat a missing manager as fatal and
@@ -1494,6 +1517,12 @@ fn init_globals<B: Backend + 'static>(dh: &DisplayHandle, seat_name: String) -> 
     // this only gives clients a way to name the shape they want instead of each
     // one loading an XCursor theme and attaching its own surface.
     let cursor_shape_state = CursorShapeManagerState::new::<CompositorState<B>>(dh);
+    // wlr-screencopy. Not a smithay state object — the protocol is not
+    // implemented there, so this is a bare global whose `Dispatch` impls live in
+    // `crate::screencopy`. Version 3 for `buffer_done`; only shm buffers are
+    // offered, and a client that wants dmabuf will take the shm path it is also
+    // required to support.
+    dh.create_global::<CompositorState<B>, wayland_protocols_wlr::screencopy::v1::server::zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1, _>(3, ());
     let mut seat_state = SeatState::new();
     let mut seat = seat_state.new_wl_seat(dh, seat_name);
     let pointer = seat.add_pointer();

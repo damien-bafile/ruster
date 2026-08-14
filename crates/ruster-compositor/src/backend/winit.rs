@@ -119,6 +119,13 @@ impl Backend for RusterWinitData {
     fn output(&self) -> &Output {
         &self.output
     }
+
+    /// Ask the host for a frame. Without this a screencopy capture waits for one
+    /// that may never be invited, and reports a failure that is really the
+    /// compositor's for never asking.
+    fn request_redraw(&mut self) {
+        self.backend.window().request_redraw();
+    }
 }
 
 impl RusterWinitData {

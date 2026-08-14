@@ -39,3 +39,8 @@ anyhow = "1"
 ctrlc = { version = "3", features = ["termination"] }
 png = "0.18"
 smithay = { version = "0.7", default-features = false, features = ["renderer_gl", "wayland_frontend", "desktop"] }
+# wlr-screencopy, which smithay 0.7 does not implement — the protocol bindings
+# are generated here and the handlers are ours. Already in the tree as a
+# transitive dependency of smithay, so this costs a feature flag rather than a
+# crate.
+wayland-protocols-wlr = { version = "0.3", features = ["server"] }
