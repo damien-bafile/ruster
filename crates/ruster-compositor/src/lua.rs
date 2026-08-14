@@ -1111,10 +1111,17 @@ mod tests {
                 Action::from_name(action).is_some(),
                 "config binds {bind:?} to {action:?}, which is not an action"
             );
-            assert!(
-                parse_bind(bind).is_some(),
-                "config binding {bind:?} is not a parseable chord"
-            );
+            // Every chord, not the whole string. `Keymap` splits a binding on
+            // whitespace, but `parse_bind` reads one chord — so a two-chord
+            // binding like `M-g d` was handed to it whole, parsed as the key
+            // name "g d", and passed. A typo in the second half of a sequence
+            // was invisible to the guard meant to catch exactly that.
+            for chord in bind.split_whitespace() {
+                assert!(
+                    parse_bind(chord).is_some(),
+                    "config binding {bind:?} has a chord {chord:?} that does not parse"
+                );
+            }
         }
     }
 
