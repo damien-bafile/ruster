@@ -1558,6 +1558,117 @@ mod tests {
         }
     }
 
+    /// Read one widget's row back as a string, in its own column space.
+    fn bar_text(buf: &RBuffer, area: Rect) -> String {
+        (area.x..area.right())
+            .map(|x| buf.cell((x, area.y)).unwrap().symbol().to_string())
+            .collect()
+    }
+
+    /// The whole point of the shared layout: the text lands on exactly the
+    /// cells the hit-test will resolve to that section. If these two ever
+    /// disagree, a click reports a section other than the one under it.
+    #[test]
+    fn each_statusline_section_is_drawn_on_the_cells_its_span_claims() {
+        use super::Widget as _;
+        use ruster_render::{StatusSection, StatuslineView};
+
+        let view = StatuslineView {
+            left: vec![StatusSection::new("mode", "NORMAL")],
+            center: vec![StatusSection::new("file", "demo.rs")],
+            right: vec![
+                StatusSection::new("clock", "12:00"),
+                StatusSection::new("position", "50%  3,1"),
+            ],
+            active: true,
+            mode: ruster_render::UIMode::Normal,
+        };
+        let area = Rect::new(0, 0, 60, 1);
+        let mut buf = RBuffer::empty(area);
+        super::StatuslineWidget::new(view.clone())
+            .with_theme(&ruster_render::Theme::default())
+            .render(area, &mut buf);
+        let row = bar_text(&buf, area);
+
+        for span in view.spans(area.width) {
+            let want = match span.name.as_str() {
+                "mode" => "NORMAL",
+                "file" => "demo.rs",
+                "clock" => "12:00",
+                _ => "50%  3,1",
+            };
+            let got: String = row
+                .chars()
+                .skip(span.col as usize)
+                .take(span.width as usize)
+                .collect();
+            assert_eq!(got, want, "{:?} in {row:?}", span.name);
+        }
+    }
+
+    /// A window's own rect is not the origin once there is a split, and the bar
+    /// is drawn relative to it — an absolute-column widget would draw the right
+    /// group off the end of the screen.
+    #[test]
+    fn a_statusline_is_drawn_relative_to_its_own_area() {
+        use super::Widget as _;
+        use ruster_render::{StatusSection, StatuslineView};
+
+        let view = StatuslineView {
+            right: vec![StatusSection::new("position", "1,1")],
+            active: true,
+            ..Default::default()
+        };
+        let area = Rect::new(30, 4, 20, 1);
+        let mut buf = RBuffer::empty(Rect::new(0, 0, 60, 6));
+        super::StatuslineWidget::new(view)
+            .with_theme(&ruster_render::Theme::default())
+            .render(area, &mut buf);
+
+        assert!(
+            bar_text(&buf, area).contains("1,1"),
+            "got {:?}",
+            bar_text(&buf, area)
+        );
+    }
+
+    #[test]
+    fn the_bufferline_draws_its_tabs_where_it_says_they_are() {
+        use super::Widget as _;
+        use ruster_render::{BufferEntry, BufferlineView, Rect as RRect};
+
+        let entries = [("a.rs", false), ("b.rs", true)].map(|(name, modified)| BufferEntry {
+            name: name.into(),
+            modified,
+            active: name == "b.rs",
+        });
+        let area = Rect::new(0, 0, 30, 1);
+        let view = BufferlineView::laid_out(RRect::new(0, 0, 30, 1), &entries);
+        let mut buf = RBuffer::empty(area);
+        super::BufferlineWidget::new(view.clone())
+            .with_theme(&ruster_render::Theme::default())
+            .render(area, &mut buf);
+        let row = bar_text(&buf, area);
+
+        for tab in &view.tabs {
+            let got: String = row
+                .chars()
+                .skip(tab.col as usize)
+                .take(tab.width as usize)
+                .collect();
+            assert_eq!(got, tab.label, "tab {} in {row:?}", tab.idx);
+        }
+        assert!(row.contains("b.rs ●"), "the modified marker: {row:?}");
+
+        // The active tab is the one that stands out; that is what the strip is
+        // for.
+        let accent = super::ruster_render_color_to_tui(&ruster_render::Theme::default().accent);
+        let active = view.tabs.iter().find(|t| t.active).expect("an active tab");
+        assert_eq!(buf.cell((active.col, 0)).unwrap().bg, accent);
+        let inactive = view.tabs.iter().find(|t| !t.active).expect("another tab");
+        assert_ne!(buf.cell((inactive.col, 0)).unwrap().bg, accent);
+    }
+
     #[test]
     fn terminal_widget_draws_cells_colors_and_cursor() {
         let grid = TermGridView {

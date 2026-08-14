@@ -2080,7 +2080,7 @@ mod tests {
         let glyphs = [
             ('▸', "sidebar: collapsed directory"),
             ('▾', "sidebar: expanded directory"),
-            ('●', "debugger: breakpoint"),
+            ('●', "debugger: breakpoint, bufferline: modified buffer"),
             ('✓', "test runner: pass"),
             ('✗', "test runner: fail"),
             ('⚠', "notifications: warning"),
