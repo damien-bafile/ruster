@@ -9,7 +9,7 @@
 
 | Feature | Implementation / Tech |
 | :--- | :--- |
-| **Cross-platform Base** | `winit` + `tokio` (async runtime). Targets: Windows, macOS, Linux, FreeBSD, BeOS (via `rustix`). |
+| **Cross-platform Base** | `winit` + `tokio` (async runtime). Targets: Windows, macOS, Linux, FreeBSD. |
 | **GUI Backend** | `raylib` (primary) for immediate-mode GUI rendering. |
 | **TUI Backend** | `ratatui` + `crossterm` (fallback/SSH mode). Will be extended with third‑party widget libraries (see Phase 6). |
 | **Animation System** | `tachyonfx` – drives the 60fps refresh loop for animations, cursor blinking, and live updates. |

@@ -20,7 +20,7 @@ The only editor that lets you toggle between Neovim-style modal editing and Emac
 
 ## Operating Context
 
-Developer workstations running Windows, macOS, Linux, FreeBSD, or BeOS. Editor sessions involve editing source code, running shell commands in an embedded terminal, interacting with LSP/DAP servers for code intelligence and debugging, managing files via a built-in file explorer, and running project builds/tests — all within the editor.
+Developer workstations running Windows, macOS, Linux, or FreeBSD. Editor sessions involve editing source code, running shell commands in an embedded terminal, interacting with LSP/DAP servers for code intelligence and debugging, managing files via a built-in file explorer, and running project builds/tests — all within the editor.
 
 ## Capabilities and Constraints
 

@@ -30,7 +30,6 @@
 1. `ropey` is a rope, not a CRDT. Fine choice; the description was wrong. (CRDTs would matter for Phase 7 client-server collaboration — revisit then.)
 2. `tachyonfx` is a ratatui *effects* library, not a frame clock. Moved to Phase 6 polish. Each frontend runs its own 60fps tick feeding `Tick` events into the shared event channel.
 3. `winit` is dropped for the GUI backend — raylib manages its own window and input.
-4. BeOS is dropped as a target (`winit`/`raylib` do not support it). Slice targets: **macOS, Linux, Windows**.
 
 ---
 
