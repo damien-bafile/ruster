@@ -108,6 +108,25 @@ pub fn create_table(lua: &mlua::Lua, shared: &Rc<Shared>) -> mlua::Result<Table>
     })?;
     t.set("on", on_fn)?;
 
+    // ruster.context_menu.add(zone, { label = ..., action = ... }) — add a row
+    // to the right-click menu for a zone ("buffer", "gutter", "chrome", "tab").
+    // `action` is a cmdline command, the same string `:` would take.
+    let context_menu = lua.create_table()?;
+    let sh = shared.clone();
+    let add_fn = lua.create_function(move |_, (zone, item): (String, mlua::Table)| {
+        let label: String = item.get("label")?;
+        let action: String = item.get("action")?;
+        if label.is_empty() || action.is_empty() {
+            return Err(mlua::Error::RuntimeError(
+                "context_menu.add needs a non-empty label and action".to_string(),
+            ));
+        }
+        sh.context_menu.borrow_mut().push((zone, label, action));
+        Ok(())
+    })?;
+    context_menu.set("add", add_fn)?;
+    t.set("context_menu", context_menu)?;
+
     // ruster.statusline.section(pos, fn) — register a statusline component.
     // `pos` is "left" | "center" | "right"; `fn` returns a string each frame.
     let statusline = lua.create_table()?;

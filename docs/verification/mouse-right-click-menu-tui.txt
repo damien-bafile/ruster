@@ -1,0 +1,40 @@
+─ demo.rs ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  1 //! The fixture every capture opens.
+  2 //!
+  3 //! Small on purpose, but chosen so one file exercises most of what a frame is
+  4 //! supposed to show: keywords, strings, numbers and comments for the
+  5 //! highlighter; a TODO and a FIXME for the marker scanner and `:TodoList`; a
+  6 //! repeated identifier for multi-cursor; a two-character-prefix word for flash
+  7 //! jump; and enough lines that the gutter and the scroll offset are non-trivial.
+  8 //!
+  9 //! Capturing the same file every time is what makes two runs comparable.
+ 10
+ 11 use std::collections::HashMap;
+ 12 use std::fmt;
+ 13
+ 14 /// A point in the plane.
+ 15 #[derive(Debug, Clone, Copy, PartialEq)]
+ 16 pub struct Point {  ╭─ Buffer ─────────────────────────────────────────────────────────────╮
+ 17     pub x: i32,     │ >                                                                    │
+ 18     pub y: i32,     │ Format Buffer                                                        │
+ 19 }                   │ Save                                                                 │
+ 20                     │ Split Vertical                                                       │
+ 21 impl Point {        │ Split Horizontal                                                     │
+ 22     pub fn origin() │ Close Window                                                         │
+ 23         Point { x: 0╰──────────────────────────────────────────────────────────────────────╯
+ 24     }
+ 25
+ 26     // TODO: support translation by a vector rather than a scalar
+ 27     pub fn shifted(&self, by: i32) -> Self {
+ 28         Point { x: self.x + by, y: self.y + by }
+ 29     }
+ 30 }
+ 31
+ 32 impl fmt::Display for Point {
+ 33     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+ 34         write!(f, "({}, {})", self.x, self.y)
+ 35     }
+ 36 }
+ 37
+ 38 /// Count how many times each point appears.
+ -- NORMAL -- │demo.rs                                                                                          1%  1,1

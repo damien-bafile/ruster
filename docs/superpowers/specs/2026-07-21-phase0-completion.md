@@ -49,8 +49,7 @@ at that position.
 ### Purpose
 
 Native windowed GUI mode alongside the existing TUI. Raylib handles window
-creation, input, and rendering on all targets (Windows, macOS, Linux, FreeBSD,
-BeOS).
+creation, input, and rendering on all targets (Windows, macOS, Linux, FreeBSD).
 
 ### Architecture
 
@@ -78,7 +77,7 @@ BeOS).
 
 ### Platform Support
 
-Raylib targets: Windows, macOS, Linux, FreeBSD, BeOS — covers all Phase 0 targets.
+Raylib targets: Windows, macOS, Linux, FreeBSD — covers all Phase 0 targets.
 
 ### Drawing
 

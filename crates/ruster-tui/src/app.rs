@@ -9,8 +9,7 @@ use crate::settings::{SettingsState, SyntaxSeed};
 use crate::sidebar::{SidebarResponse, SidebarState};
 use crate::trouble::{Source as TroubleSource, TroubleItem, TroubleState};
 use crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEventKind, KeyModifiers, MouseButton,
-    MouseEvent, MouseEventKind,
+    DisableMouseCapture, EnableMouseCapture, KeyCode, KeyEventKind, KeyModifiers, MouseEvent,
 };
 use ruster_core::action::{Action, EditOp, Motion};
 use ruster_core::buffer::Buffer;
@@ -65,6 +64,10 @@ pub struct FlashState {
 pub struct WindowLayout {
     pub window: ruster_core::windows::WindowId,
     pub buffer: BufferId,
+    /// The whole window, chrome included. `text` covers only the buffer text,
+    /// so the header row, statusline and gutter are the difference between the
+    /// two — which is what the hit-test needs to name a zone.
+    pub rect: ruster_render::Rect,
     pub text: ruster_render::TextArea,
     /// First visible buffer line, so a screen row maps back to a buffer line.
     pub scroll_top: usize,
@@ -708,13 +711,13 @@ impl CursorAnim {
 /// The value part of a general `:set` command. `Toggle` flips the current value
 /// of a boolean option; `Exact` sets any option to a specific parsed value.
 #[derive(Debug, Clone, PartialEq)]
-enum SetNamedVal {
+pub(crate) enum SetNamedVal {
     Exact(SettingValue),
     Toggle,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum CmdAction {
+pub(crate) enum CmdAction {
     Save(bool),
     SaveAs(String),
     Quit,
@@ -1461,8 +1464,8 @@ pub struct App {
     /// a new process spawned every tick while the previous ones piled up.
     git_status_polled: Option<std::time::Instant>,
     git_status_in_flight: bool,
-    lua: LuaRuntime,
-    config: Config,
+    pub(crate) lua: LuaRuntime,
+    pub(crate) config: Config,
     timer: FrameTimer,
     pub has_smooth_cursor: bool,
     cursor_anim: CursorAnim,
@@ -1482,11 +1485,23 @@ pub struct App {
     /// Active flash jump mode state, if any.
     pub flash: Option<FlashState>,
     /// Window geometry from the last rendered frame, for mouse hit-testing.
-    last_layout: Vec<WindowLayout>,
+    pub(crate) last_layout: Vec<WindowLayout>,
+    /// Float geometry from the last rendered frame, topmost last, for mouse
+    /// hit-testing. Floats themselves are built fresh each frame and not kept;
+    /// only where they landed is worth remembering.
+    pub(crate) last_floats: Vec<ruster_render::Rect>,
+    /// The area the window tree was divided into on the last frame, for
+    /// resolving split-edge drags against the geometry actually drawn.
+    pub(crate) last_window_area: ruster_core::windows::Rect,
+    /// Click, drag and hover bookkeeping between mouse events.
+    pub mouse: crate::mouse::MouseState,
+    /// Whether the raylib backend is driving. A few mouse gestures (font zoom,
+    /// pointer shape) only mean something when there is a real pointer.
+    pub is_gui: bool,
     /// Noice notification manager.
     pub notify: NotificationManager,
     /// Active floating picker (buffer list, file finder, ...), if any.
-    picker: Option<PickerState>,
+    pub(crate) picker: Option<PickerState>,
     /// Streaming results for the active picker (`:Files` walk, `:Rg` output),
     /// drained into the picker each frame. Backend-agnostic (polled in render).
     pending_results: Option<std::sync::mpsc::Receiver<PickerItem>>,
@@ -1502,7 +1517,7 @@ pub struct App {
     /// Language servers, document sync, diagnostics and in-flight requests.
     lsp: crate::lsp_state::LspState<LspAction>,
     /// Hover popup contents (syntax-highlighted lines), shown until the next key.
-    hover: Option<Vec<StyledLine>>,
+    pub(crate) hover: Option<Vec<StyledLine>>,
     /// Loaded snippet definitions (built-in + `~/.config/ruster/snippets/`).
     snippets: ruster_core::snippets::SnippetSet,
     /// Remaining tabstop offsets to visit in the active snippet, via Tab.
@@ -1517,9 +1532,9 @@ pub struct App {
     /// Guard so a macro can't recursively replay itself.
     replaying: bool,
     /// Which editing paradigm is active (`:set editmode neovim|emacs`).
-    editmode: EditMode,
+    pub(crate) editmode: EditMode,
     /// Emacs-mode editing state (mark, kill-ring, prefix arg).
-    emacs: ruster_core::emacs::EmacsState,
+    pub(crate) emacs: ruster_core::emacs::EmacsState,
     /// True after `C-x`, awaiting the second key of the prefix.
     emacs_ctrl_x: bool,
     /// Active incremental search: (query, forward). Emacs `C-s`/`C-r`.
@@ -1986,6 +2001,10 @@ impl App {
             leader_since: None,
             flash: None,
             last_layout: Vec::new(),
+            last_floats: Vec::new(),
+            last_window_area: ruster_core::windows::Rect::new(0, 0, 0, 0),
+            mouse: crate::mouse::MouseState::default(),
+            is_gui: false,
             dired: DiredState::new(dired_show_hidden),
             file_prompt: None,
             lsp,
@@ -2915,16 +2934,35 @@ impl App {
     }
 
     fn handle_mouse_event(&mut self, me: MouseEvent) {
-        if me.kind != MouseEventKind::Down(MouseButton::Left)
-            || !me.modifiers.contains(KeyModifiers::ALT)
-        {
+        crate::mouse::handle_mouse_event(self, ruster_render::mouse::from_crossterm(me));
+    }
+
+    /// Step the GUI font size by `dir` notches and re-apply it.
+    ///
+    /// Clamped to a range that stays legible at one end and still fits a useful
+    /// number of columns at the other.
+    pub fn zoom_font(&mut self, dir: i32) {
+        let next = (self.config.font_size as i32 + dir).clamp(8, 72) as u32;
+        if next == self.config.font_size {
             return;
         }
-        if let Some((wid, offset)) = self.buffer_offset_at(me.column, me.row) {
-            if let Some(win) = self.ws.borrow_mut().windows.window_mut(wid) {
-                win.cursors.add_cursor(offset);
-            }
-        }
+        self.config.font_size = next;
+        // Line height tracks the font, or the text overlaps itself.
+        self.config.line_height = (next as f32 * 1.2).round() as u32;
+        let gui = self.gui_config();
+        let font = self.gui_font();
+        self.renderer.set_gui_config(&gui, font.as_deref());
+    }
+
+    /// Drop in-flight mouse state after the terminal is resized.
+    ///
+    /// Every coordinate the mouse remembers is a cell in the old geometry, so a
+    /// drag or click streak that straddles a resize would resolve against the
+    /// wrong text.
+    pub fn on_resize(&mut self) {
+        self.mouse.drag = crate::mouse::DragState::default();
+        self.mouse.click = crate::mouse::ClickTracker::default();
+        self.mouse.resize = None;
     }
 
     /// Resolve a screen cell to a buffer offset, using the geometry of the last
@@ -2933,7 +2971,7 @@ impl App {
     /// `None` when the cell is not over buffer text: window chrome, the sign or
     /// number gutter, the sidebar, or past the buffer's last line. That last case
     /// matters — indexing the rope beyond the final line panics.
-    fn buffer_offset_at(
+    pub(crate) fn buffer_offset_at(
         &self,
         col: u16,
         row: u16,
@@ -3049,7 +3087,11 @@ impl App {
         require_terminal()?;
         crossterm::terminal::enable_raw_mode()?;
         crossterm::execute!(std::io::stdout(), crossterm::terminal::EnterAlternateScreen)?;
-        crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
+        // Capturing the mouse takes it away from the terminal's own
+        // text selection, which some users would rather keep.
+        if self.config.mouse.enabled && self.config.mouse.tui_capture {
+            crossterm::execute!(std::io::stdout(), EnableMouseCapture)?;
+        }
         self.renderer = Box::new(TuiRenderer::new()?);
 
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -3097,6 +3139,7 @@ impl App {
                         Some(AppEvent::Input(ev)) => match ev {
                             crossterm::event::Event::Key(k) => self.handle_key(k),
                             crossterm::event::Event::Mouse(me) => self.handle_mouse_event(me),
+                            crossterm::event::Event::Resize(_, _) => self.on_resize(),
                             _ => {}
                         },
                         None => break,
@@ -3106,6 +3149,7 @@ impl App {
             }
 
             self.fire_watched_events();
+            crate::mouse::hover_tick(self);
             self.drain_lua_actions();
 
             let dt = self.timer.tick();
@@ -3328,12 +3372,17 @@ impl App {
     }
 
     pub fn run_gui(&mut self) {
+        self.is_gui = true;
         loop {
             let dt = self.timer.tick();
             while let Some(key) = self.renderer.poll_input() {
                 self.handle_key(key);
             }
+            while let Some(ev) = self.renderer.poll_mouse() {
+                crate::mouse::handle_mouse_event(self, ev);
+            }
             self.fire_watched_events();
+            crate::mouse::hover_tick(self);
             self.drain_lua_actions();
             let secs = dt.as_secs_f64();
             self.lua.set_frame_dt(secs);
@@ -4105,7 +4154,7 @@ impl App {
         w.execute(Action::Move(Motion::To(0)));
     }
 
-    fn render(&mut self) {
+    pub(crate) fn render(&mut self) {
         self.notify.tick();
         self.drain_git_hunks();
         self.drain_pending_results();
@@ -4166,6 +4215,10 @@ impl App {
         // mouse hit-test reads it back.
         self.last_layout.clear();
         let sidebar_rect = self.sidebar.carve(&mut buf_area);
+        // The area the window tree divides. A split ratio only means something
+        // against this, so a resize has to use the same rectangle the frame was
+        // laid out with.
+        self.last_window_area = buf_area;
         let flash_info = self.flash.as_ref().map(|f| (f.labels.clone(), f.pending));
         {
             let mut w = self.ws.borrow_mut();
@@ -4465,6 +4518,7 @@ impl App {
                     self.last_layout.push(WindowLayout {
                         window: wid,
                         buffer: buf_id,
+                        rect: rrect,
                         text: ruster_render::TextArea::of(rrect, signs.width, gutter.width),
                         scroll_top: scroll,
                     });
@@ -4667,6 +4721,10 @@ impl App {
         // notification. `CmdlinePopup` and `Popup` differ only in duration; a
         // `Confirm` raises the modal dialog instead of drawing a float.
         floats.extend(self.notification_floats(cols, rows));
+        // Remember where they landed so a click can be resolved against the
+        // frame the user is actually looking at, in draw order (topmost last).
+        self.last_floats.clear();
+        self.last_floats.extend(floats.iter().map(|f| f.rect));
         let state = FrameState {
             dialog: self.dialog.as_ref().map(|d| d.view()),
             floats,
@@ -4746,7 +4804,7 @@ impl App {
         (line as u16, col as u16)
     }
 
-    fn parse_cmdline(&self, cmdline: &str) -> Result<CmdAction, String> {
+    pub(crate) fn parse_cmdline(&self, cmdline: &str) -> Result<CmdAction, String> {
         let trimmed = cmdline.trim_start_matches(':').trim();
         if trimmed.is_empty() {
             return Err("Empty command".to_string());
@@ -11601,6 +11659,67 @@ mod tests {
             a.buffer_offset_at(text.x + 2, text.y + 1).map(|(_, o)| o),
             Some(8)
         );
+    }
+
+    /// Alt+Left-click drops an extra cursor where it lands. This guards the
+    /// dispatch path itself — the five tests around it only cover the
+    /// cell-to-offset arithmetic, so the extraction into `crate::mouse` could
+    /// have dropped the wiring without any of them noticing.
+    #[test]
+    fn alt_left_click_adds_a_cursor_at_the_clicked_offset() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+
+        let mut a = App::new("alpha\nbravo\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let text = rendered_text_area(&mut a);
+        assert_eq!(a.ws.borrow().windows.active_window().cursors.count(), 1);
+
+        let click = |kind, modifiers| MouseEvent {
+            kind,
+            column: text.x + 2,
+            row: text.y + 1,
+            modifiers,
+        };
+
+        // Without Alt the click is ignored, as before the extraction.
+        a.handle_mouse_event(click(
+            MouseEventKind::Down(MouseButton::Left),
+            KeyModifiers::empty(),
+        ));
+        assert_eq!(a.ws.borrow().windows.active_window().cursors.count(), 1);
+
+        a.handle_mouse_event(click(
+            MouseEventKind::Down(MouseButton::Left),
+            KeyModifiers::ALT,
+        ));
+        let ws = a.ws.borrow();
+        let cursors = &ws.windows.active_window().cursors;
+        assert_eq!(cursors.count(), 2);
+        // Third column of the second row: 'a' of "bravo", at offset 8.
+        assert!(cursors.iter_heads().any(|h| h == 8));
+    }
+
+    /// A resize invalidates every cell coordinate the mouse is holding on to.
+    #[test]
+    fn resize_drops_in_flight_mouse_state() {
+        let mut a = App::new("alpha\nbravo\n".into(), PathBuf::from("f.txt"));
+        a.mouse.drag.anchor = Some(3);
+        a.mouse.drag.kind = crate::mouse::DragKind::Line;
+        a.mouse.click.streak = 2;
+        a.mouse.click.last_down = Some((
+            std::time::Instant::now(),
+            4,
+            2,
+            ruster_render::mouse::MouseButton::Left,
+        ));
+
+        a.on_resize();
+
+        assert_eq!(a.mouse.drag.anchor, None);
+        assert_eq!(a.mouse.drag.kind, crate::mouse::DragKind::Char);
+        assert_eq!(a.mouse.click.streak, 0);
+        assert!(a.mouse.click.last_down.is_none());
+        assert!(a.mouse.resize.is_none());
     }
 
     /// The header row and the number gutter are not buffer text. Getting this

@@ -248,6 +248,7 @@ pub const GROUPS: &[(&str, &str)] = &[
     ("dired", "File explorer"),
     ("sidebar", "Sidebar panel"),
     ("noice", "Notifications and messages"),
+    ("mouse", "Mouse and pointer input"),
     ("git", "Git integration"),
     ("todo", "TODO comment markers"),
     ("build", "Build command"),
@@ -580,6 +581,56 @@ pub fn schema() -> Vec<SettingSpec> {
         Bool,
         b(true),
         "Write the session when the editor exits",
+    );
+
+    // --- mouse ---
+    add(
+        "mouse",
+        "enabled",
+        "Mouse enabled",
+        Bool,
+        b(true),
+        "Master switch for all mouse input",
+    );
+    add(
+        "mouse",
+        "hover_delay_ms",
+        "Hover delay (ms)",
+        Int { min: 0, max: 5000 },
+        i(300),
+        "Stillness before ruster.on('hover') fires (0 fires as soon as the pointer stops)",
+    );
+    add(
+        "mouse",
+        "double_click_ms",
+        "Double-click window (ms)",
+        Int { min: 50, max: 2000 },
+        i(400),
+        "Longest gap between clicks that still counts as a double or triple",
+    );
+    add(
+        "mouse",
+        "wheel_lines",
+        "Lines per wheel notch",
+        Int { min: 1, max: 20 },
+        i(3),
+        "How far one wheel notch scrolls",
+    );
+    add(
+        "mouse",
+        "tui_capture",
+        "TUI captures the mouse",
+        Bool,
+        b(true),
+        "Off lets the terminal's own text selection win instead",
+    );
+    add(
+        "mouse",
+        "right_click_menu",
+        "Right-click context menu",
+        Bool,
+        b(true),
+        "Off frees right-click for a Lua handler",
     );
 
     // --- noice ---

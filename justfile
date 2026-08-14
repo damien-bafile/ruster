@@ -15,11 +15,11 @@ build:
 
 # Run the editor in TUI mode.
 run file="main.rs":
-    cargo run -- --tui {{file}}
+    cargo run --bin ruster -- --tui {{file}}
 
 # Run the editor in GUI mode (raylib).
 gui file="main.rs":
-    cargo run -- {{file}}
+    cargo run --bin ruster -- {{file}}
 
 # Remove build artifacts.
 clean:

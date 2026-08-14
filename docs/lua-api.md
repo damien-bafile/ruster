@@ -65,6 +65,73 @@ ruster.on("ModeChanged", function(new_mode)
 end)
 ```
 
+### Mouse events
+
+`ruster.on` also takes the mouse events: `"mouse_down"`, `"mouse_up"`,
+`"mouse_drag"`, `"mouse_move"`, `"mouse_wheel"`, and `"hover"`.
+
+```lua
+ruster.on("mouse_down", function(ev)
+  ruster.print(("clicked %s at %d,%d"):format(ev.button, ev.col, ev.row))
+end)
+```
+
+**Returning `true` consumes the event**, cancelling ruster's own handling of it.
+Other handlers still run — subscribers are independent, and a plugin that
+registered second is not silenced by one that registered first. A handler that
+throws is skipped: it neither consumes the event nor stops the handlers after
+it, so a broken plugin cannot leave the mouse dead.
+
+```lua
+-- Middle-click pastes nothing; claim it for something else.
+ruster.on("mouse_down", function(ev)
+  if ev.button == "middle" then
+    ruster.cmd("Files")
+    return true
+  end
+end)
+```
+
+The payload is a table:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `kind` | string | `down`, `up`, `drag`, `move`, `wheel_up`, `wheel_down`, `wheel_left`, `wheel_right` |
+| `col`, `row` | integer | Cell coordinates, origin top-left |
+| `button` | string | `left`, `right`, `middle`, `none` |
+| `zone` | string | `buffer`, `gutter`, `chrome`, `float`, `outside` |
+| `alt`, `ctrl`, `shift` | boolean | Modifier keys held |
+| `offset` | integer? | Character offset into the buffer |
+| `window` | integer? | Window id |
+| `line` | integer? | 0-indexed buffer line |
+| `col_in_line` | integer? | 0-indexed column within that line |
+
+The last four are present only when the pointer is over buffer text
+(`zone == "buffer"`); elsewhere they are `nil` rather than a misleading zero.
+
+`"hover"` fires with the same payload once the pointer has been still over
+buffer text for `mouse.hover_delay_ms` (300 by default). It fires once per
+resting place, not once per frame, and re-arms when the pointer moves.
+
+```lua
+ruster.on("hover", function(ev)
+  ruster.print(("resting on line %d"):format(ev.line))
+end)
+```
+
+### `ruster.context_menu.add(zone, item)`
+
+Add a row to the right-click menu. `zone` is `"buffer"`, `"gutter"`, `"chrome"`
+or `"tab"`; `item.action` is a cmdline command — the same string `:` would take.
+
+```lua
+ruster.context_menu.add("buffer", { label = "Stage hunk", action = "GitStageHunk" })
+```
+
+Items append after the built-in ones for that zone. The menu is a picker, so it
+filters as you type. Set `mouse.right_click_menu = false` to suppress the
+built-in menu entirely and handle right-click yourself via `"mouse_down"`.
+
 ### `ruster.mode`
 
 Read-only string indicating the current editing mode (`"Normal"`, `"Insert"`,

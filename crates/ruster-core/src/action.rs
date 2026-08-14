@@ -51,4 +51,24 @@ pub enum Action {
     },
     IndentLine,
     DeindentLine,
+    /// Select the word a double-click landed on. Bounds are resolved by the
+    /// caller via [`CursorSet::select_word`](crate::cursor::CursorSet::select_word).
+    SelectWord {
+        anchor: usize,
+        head: usize,
+    },
+    /// Select the line a triple-click landed on.
+    SelectLine {
+        anchor: usize,
+        head: usize,
+    },
+    /// Set the Emacs mark, which a subsequent motion extends the region from.
+    SetMark(usize),
+    /// Grow or shrink a window by dragging the split edge it shares with its
+    /// neighbour. Deltas are in cells.
+    ResizeWindow {
+        wid: crate::windows::WindowId,
+        dy: i32,
+        dx: i32,
+    },
 }
