@@ -17,11 +17,17 @@ on:
   pull_request:
     branches: [ "main" ]
 
-# One run per ref: pushing three times in a minute should test the third commit,
-# not all three. Superseded runs are cancelled rather than left to finish.
+# One run per ref: pushing three times in a minute to a branch should test the
+# third commit, not all three.
+#
+# Except on `main`, where every commit is verified on its own. Cancelling there
+# means a commit can land with no run that ever finished against it, and the
+# first time you want that run is while bisecting — the one moment it cannot be
+# recreated. This rule was added cancelling everything, and immediately
+# cancelled main's run for the commit that added it.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   CARGO_TERM_COLOR: always
