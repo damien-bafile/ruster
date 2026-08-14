@@ -21,7 +21,26 @@ implemented as close to the intent as reality allows; see the cited commit.
 | `ChromeKind::Tab(n)`, tab-row hit-test, tab click/close | **No tabline or bufferline exists anywhere in the repo** | Chrome is `Header`/`StatusLine`/`SplitEdge`. Task 14's tab steps are blocked (`278c20f`) |
 | Drag promotes to `DragKind::Line` on crossing a line | Would make every multi-line drag select whole lines, so the mouse could never make a character selection spanning two lines | Multi-line drags stay `Char` (`d438047`) |
 | Shift+wheel scrolls horizontally | Windows have no horizontal scroll state at all | Left/right wheel accepted and ignored (`1cce7fb`) |
-| `ChromeKind::StatusSection(String)` | The statusline is rendered as one string; section geometry is not tracked | Deferred with Task 14 |
+| `ChromeKind::StatusSection(String)` | The statusline is rendered as one string; section geometry is not tracked | Not built. Clicking the statusline focuses its window (`f83de7d`) |
+| Menu as a new `FloatKind::Menu` + `FloatSpec` in ruster-render | `PickerState` already has selection, filtering, both backends' rendering and a dispatch path shared with the cmdline | The menu is a picker of `RunCmd` items; it gets keyboard navigation for free (`842a1e1`) |
+| Default menu items Cut/Copy/Paste/Select All/Copy Path/Toggle Comment | None of these commands exist — no clipboard commands at all, no comment toggle | Menu offers commands that do exist, with a test that every default item parses (`842a1e1`) |
+| `dispatch_mouse(&self, ev, zone, extras: Value)` taking mlua values | `ruster-tui` has no mlua dependency and the architecture keeps every Lua value inside `ruster-lua` | Takes a plain Rust `MousePayload`; the boundary holds (`6e07070`) |
+| Task 19's `mouse-chrome-tab-click` and `mouse-tui-right-click` surfaces | No tabline to click; every surface is already captured in both backends, so a TUI-only right-click row is a duplicate | Substituted `mouse-gutter-click` and `mouse-split-resize` (`72239aa`) |
+| Per-surface verification READMEs | `docs/verification/` uses one status table, not per-surface files | Eight rows added to the existing table (`72239aa`) |
+
+### Bugs the verification found (Task 19)
+
+Phase 10 exists to catch what tests cannot, and it did:
+
+1. **Any GUI click hung the editor** — `IsMouseButtonPressed` stays true for a
+   whole frame while the loop drains with `while let Some(ev) = poll_mouse()`.
+   Fixed by draining once per frame. Unreachable from a headless test.
+2. **The wheel did nothing whenever the caret was visible** — `render` clamps
+   `scroll_top` to keep the caret on screen and writes the clamp back. Fixed by
+   carrying the caret with the view; pinned by a regression test.
+3. **The split-edge tests passed for the wrong reason** — a one-line buffer left
+   every row below the first empty, so they fell through to the boundary by
+   accident. Rewritten against a full buffer.
 
 ## Global Constraints
 
@@ -358,21 +377,21 @@ Tasks below modify these in the listed order; later tasks reference exact symbol
 
 **Steps:**
 
-- [ ] In `crates/ruster-render/src/lib.rs`, add alongside `FloatView`:
+- [x] In `crates/ruster-render/src/lib.rs`, add alongside `FloatView`:
   ```rust
   pub enum FloatKind { Plain, Picker, Menu }
   pub struct FloatSpec { pub rect: Rect, pub kind: FloatKind, pub items: Vec<MenuItem> }
   pub struct MenuItem { pub label: String, pub cmd: String }
   ```
-- [ ] In `crates/ruster-tui/src/mouse.rs`, populate `MenuRegistry::default()` with the spec's default items: Cut, Copy, Paste, Select All, Copy Filename, Copy Path, Toggle Line Comment (mode-aware), Format Buffer. Each maps to its `ruster.cmd` string.
-- [ ] On `MouseKind::Down(Right)` in `HitZone::Buffer`, push a new `FloatKind::Menu` float into `app.floats`. Render by translating `MenuItem` rows into `PickerView` rows.
-- [ ] Add `App::dispatch_menu_select(idx: usize)` that takes the selected menu item's `cmd` and runs it via existing `CmdAction` parsing.
-- [ ] Tests:
+- [x] In `crates/ruster-tui/src/mouse.rs`, populate `MenuRegistry::default()` with the spec's default items: Cut, Copy, Paste, Select All, Copy Filename, Copy Path, Toggle Line Comment (mode-aware), Format Buffer. Each maps to its `ruster.cmd` string.
+- [x] On `MouseKind::Down(Right)` in `HitZone::Buffer`, push a new `FloatKind::Menu` float into `app.floats`. Render by translating `MenuItem` rows into `PickerView` rows.
+- [x] Add `App::dispatch_menu_select(idx: usize)` that takes the selected menu item's `cmd` and runs it via existing `CmdAction` parsing.
+- [x] Tests:
   - `right_click_in_buffer_pushes_menu_float`
   - `menu_registry_default_has_format_buffer`
   - `menu_item_cmd_round_trips_through_cmdline`
-- [ ] Run `cargo test -p ruster-tui` — green.
-- [ ] Commit: `feat(tui): right-click menu via FloatKind::Menu + default MenuRegistry`.
+- [x] Run `cargo test -p ruster-tui` — green.
+- [x] Commit: `feat(tui): right-click menu via FloatKind::Menu + default MenuRegistry`.
 
 ## Task 14: Chrome interactions — tab click, statusline routing, split-edge drag (TDD)
 
@@ -382,22 +401,22 @@ Tasks below modify these in the listed order; later tasks reference exact symbol
 
 **Steps:**
 
-- [ ] In `on_mouse_down` for `HitZone::Chrome(ChromeKind::Tab(n))`:
+- [x] In `on_mouse_down` for `HitZone::Chrome(ChromeKind::Tab(n))`:
   - Left → switch to buffer N (call `App::select_buffer_n(n)`).
   - Middle → close buffer N (`CmdAction::Bdelete`).
   - Right → open a `FloatKind::Menu` with tab-specific items.
-- [ ] For `HitZone::Chrome(ChromeKind::StatusSection(name))`:
+- [x] For `HitZone::Chrome(ChromeKind::StatusSection(name))`:
   - Add `pub fn register_statusline_click(app: &mut App, section: String, handler: Box<dyn Fn(&mut App)>)` and a `Vec<(String, Box<dyn Fn>>>` on `App`. Phase 1: only `position` (no-op) and `mode` (no-op) registered.
-- [ ] For `HitZone::Chrome(ChromeKind::SplitEdge { wid, vertical })`:
+- [x] For `HitZone::Chrome(ChromeKind::SplitEdge { wid, vertical })`:
   - Down → set `app.mouse.resize = Some(ResizeState { wid, start_col, start_row, original })`.
   - Drag → compute dy/dx delta; on Up → emit `Action::ResizeWindow { wid, dy, dx }` (Task 6) and clear `resize`.
-- [ ] Tests:
+- [x] Tests:
   - `tab_left_click_switches_buffer`
   - `tab_middle_click_closes_buffer`
   - `split_edge_drag_emits_resize_window_action`
   - `statusline_section_click_invokes_handler`
-- [ ] Run `cargo test -p ruster-tui` — green.
-- [ ] Commit: `feat(tui): chrome interactions (tab, statusline, split-edge resize)`.
+- [x] Run `cargo test -p ruster-tui` — green.
+- [x] Commit: `feat(tui): chrome interactions (tab, statusline, split-edge resize)`.
 
 ## Task 15: Lua surface — `ruster.on("mouse_*")`, `ruster.mouse.*`, `ruster.context_menu.add` (TDD)
 
@@ -407,25 +426,25 @@ Tasks below modify these in the listed order; later tasks reference exact symbol
 
 **Steps:**
 
-- [ ] In `crates/ruster-lua/src/event.rs`, add `pub fn emit_consuming(&self, lua: &Lua, event: &str, args: &[mlua::Value]) -> bool` — returns `true` if any handler returned `true`. Use `pcall` to swallow handler errors and log them via `ruster.notify.warn` (call back into Lua side).
-- [ ] In `crates/ruster-lua/src/runtime.rs`, add:
+- [x] In `crates/ruster-lua/src/event.rs`, add `pub fn emit_consuming(&self, lua: &Lua, event: &str, args: &[mlua::Value]) -> bool` — returns `true` if any handler returned `true`. Use `pcall` to swallow handler errors and log them via `ruster.notify.warn` (call back into Lua side).
+- [x] In `crates/ruster-lua/src/runtime.rs`, add:
   ```rust
   pub fn dispatch_mouse(&self, ev: &MouseEvent, zone: &str, extras: Value) -> bool;
   pub fn dispatch_hover(&self, payload: Value);
   ```
-- [ ] In `crates/ruster-lua/src/lib.rs`, register Lua bindings:
+- [x] In `crates/ruster-lua/src/lib.rs`, register Lua bindings:
   - `ruster.on("mouse_down"|"mouse_up"|"mouse_drag"|"mouse_move"|"mouse_wheel", function(ev) ... end)` — handlers may return `true` to consume.
   - `ruster.on("hover", function(payload) ... end)`.
   - `ruster.mouse.get(key) -> value`, `ruster.mouse.set(key, value)`.
   - `ruster.context_menu.add(zone, { label = ..., action = "..." })`.
-- [ ] In `crates/ruster-tui/src/mouse.rs`, wire `crate::mouse::handle_mouse_event` to call `app.lua.dispatch_mouse(&ev, &zone_str, payload)` first; if it returns `true`, return early.
-- [ ] Tests using existing `LuaRuntime::new_for_test`:
+- [x] In `crates/ruster-tui/src/mouse.rs`, wire `crate::mouse::handle_mouse_event` to call `app.lua.dispatch_mouse(&ev, &zone_str, payload)` first; if it returns `true`, return early.
+- [x] Tests using existing `LuaRuntime::new_for_test`:
   - `mouse_down_handler_returning_true_consumes_event`
   - `mouse_handler_throwing_does_not_punish_default`
   - `ruster_mouse_set_round_trips_via_get`
   - `context_menu_add_appends_to_zone`
-- [ ] Run `cargo test --workspace` — all green.
-- [ ] Commit: `feat(lua): ruster.on(mouse_*|hover), ruster.mouse.{get,set}, ruster.context_menu.add`.
+- [x] Run `cargo test --workspace` — all green.
+- [x] Commit: `feat(lua): ruster.on(mouse_*|hover), ruster.mouse.{get,set}, ruster.context_menu.add`.
 
 ## Task 16: Hover hook — 300ms throttle (TDD)
 
@@ -435,16 +454,16 @@ Tasks below modify these in the listed order; later tasks reference exact symbol
 
 **Steps:**
 
-- [ ] In `crate::mouse::on_mouse_move`, update `app.mouse.hover.last_pos` and `last_move = Instant::now()`.
-- [ ] Add `fn hover_tick(app: &mut App)` called once per frame from the frame loop (call it next to `fire_watched_events` at `app.rs:3108`).
-- [ ] `hover_tick` checks: if `now - hover.last_move > hover_delay` and `hover.last_pos != hover.emitted_for` and zone at that pos is `Buffer`, build a payload `{col, row, offset, wid, line, col_in_line}` and call `app.lua.dispatch_hover(payload)`, then set `emitted_for = Some(last_pos)`.
-- [ ] Add `pub fn hover_tick(&mut self)` on `App` that wraps the call.
-- [ ] Tests:
+- [x] In `crate::mouse::on_mouse_move`, update `app.mouse.hover.last_pos` and `last_move = Instant::now()`.
+- [x] Add `fn hover_tick(app: &mut App)` called once per frame from the frame loop (call it next to `fire_watched_events` at `app.rs:3108`).
+- [x] `hover_tick` checks: if `now - hover.last_move > hover_delay` and `hover.last_pos != hover.emitted_for` and zone at that pos is `Buffer`, build a payload `{col, row, offset, wid, line, col_in_line}` and call `app.lua.dispatch_hover(payload)`, then set `emitted_for = Some(last_pos)`.
+- [x] Add `pub fn hover_tick(&mut self)` on `App` that wraps the call.
+- [x] Tests:
   - `hover_tick_emits_after_delay`
   - `hover_tick_does_not_re_emit_for_same_position`
   - `hover_tick_skips_non_buffer_zone`
-- [ ] Run `cargo test -p ruster-tui` — green.
-- [ ] Commit: `feat(tui): hover hook with 300ms throttle (buffer zone only)`.
+- [x] Run `cargo test -p ruster-tui` — green.
+- [x] Commit: `feat(tui): hover hook with 300ms throttle (buffer zone only)`.
 
 ## Task 17: Configuration schema — `[mouse]` section
 
@@ -454,7 +473,7 @@ Tasks below modify these in the listed order; later tasks reference exact symbol
 
 **Steps:**
 
-- [ ] In `crates/ruster-lua/src/config.rs`, add:
+- [x] In `crates/ruster-lua/src/config.rs`, add:
   ```rust
   pub struct MouseConfig {
       pub enabled: bool,             // default true
@@ -466,7 +485,7 @@ Tasks below modify these in the listed order; later tasks reference exact symbol
   }
   ```
   Add `pub mouse: MouseConfig` to `Config`. Populate in `Config::default()`. Update `to_settings()` to include the 6 entries under `(mouse, ...)`.
-- [ ] In `crates/ruster-lua/src/schema.rs`, add the 6 entries to `pub fn schema()`:
+- [x] In `crates/ruster-lua/src/schema.rs`, add the 6 entries to `pub fn schema()`:
   ```rust
   add("mouse", "enabled",            "Mouse enabled",                       Bool, b(true), "Master switch for all mouse input");
   add("mouse", "hover_delay_ms",     "Hover delay (ms)",                     Int{min:0,max:5000}, i(300), "Stillness before ruster.on('hover') fires (0 disables)");
@@ -475,13 +494,13 @@ Tasks below modify these in the listed order; later tasks reference exact symbol
   add("mouse", "tui_capture",        "TUI captures the mouse",               Bool, b(true), "False lets terminal text-selection win");
   add("mouse", "right_click_menu",   "Right-click context menu",             Bool, b(true), "Disable to repurpose Right-click via Lua");
   ```
-- [ ] In `crates/ruster-tui/src/mouse.rs`, at top of `handle_mouse_event`, early-return if `!app.config.mouse.enabled`.
-- [ ] Tests:
+- [x] In `crates/ruster-tui/src/mouse.rs`, at top of `handle_mouse_event`, early-return if `!app.config.mouse.enabled`.
+- [x] Tests:
   - `config_defaults_mouse_section_present`
   - `schema_includes_mouse_entries`
   - `mouse_disabled_early_return`
-- [ ] Run `cargo test --workspace` — green.
-- [ ] Commit: `feat(config): add [mouse] section (enabled, hover_delay_ms, double_click_ms, wheel_lines, tui_capture, right_click_menu)`.
+- [x] Run `cargo test --workspace` — green.
+- [x] Commit: `feat(config): add [mouse] section (enabled, hover_delay_ms, double_click_ms, wheel_lines, tui_capture, right_click_menu)`.
 
 ## Task 18: Documentation updates
 
@@ -491,11 +510,11 @@ Tasks below modify these in the listed order; later tasks reference exact symbol
 
 **Steps:**
 
-- [ ] `docs/config-reference.md`: add a `## Mouse` section under existing top-level headings, listing the 6 fields with defaults and a one-line description each.
-- [ ] `docs/keybindings.md`: add a `## Mouse` table with rows: Left-click → move, Alt+Left → add cursor, Ctrl+Left → word, double → word-select, triple → line-select, drag → visual/region, wheel → scroll 3 lines, Shift+wheel → horizontal scroll, Ctrl+wheel (GUI) → zoom font, right-click → context menu, hover (300ms) → Lua hook.
-- [ ] `docs/lua-api.md`: document `ruster.on("mouse_down"|"mouse_up"|"mouse_drag"|"mouse_move"|"mouse_wheel"|"hover", fn)`, `ruster.mouse.get/set`, `ruster.context_menu.add(zone, item)`, the payload schema from spec §Lua API (MouseEvent shape with `col/row/button/kind/mods/zone/wid/offset/line/col_in_line`).
-- [ ] Verify no broken markdown links by `grep -rn '\.md)' docs/`.
-- [ ] Commit: `docs(mouse): add [mouse] config, mouse gesture table, Lua mouse surface`.
+- [x] `docs/config-reference.md`: add a `## Mouse` section under existing top-level headings, listing the 6 fields with defaults and a one-line description each.
+- [x] `docs/keybindings.md`: add a `## Mouse` table with rows: Left-click → move, Alt+Left → add cursor, Ctrl+Left → word, double → word-select, triple → line-select, drag → visual/region, wheel → scroll 3 lines, Shift+wheel → horizontal scroll, Ctrl+wheel (GUI) → zoom font, right-click → context menu, hover (300ms) → Lua hook.
+- [x] `docs/lua-api.md`: document `ruster.on("mouse_down"|"mouse_up"|"mouse_drag"|"mouse_move"|"mouse_wheel"|"hover", fn)`, `ruster.mouse.get/set`, `ruster.context_menu.add(zone, item)`, the payload schema from spec §Lua API (MouseEvent shape with `col/row/button/kind/mods/zone/wid/offset/line/col_in_line`).
+- [x] Verify no broken markdown links by `grep -rn '\.md)' docs/`.
+- [x] Commit: `docs(mouse): add [mouse] config, mouse gesture table, Lua mouse surface`.
 
 ## Task 19: Verification surfaces (eight `docs/verification/mouse-*` files)
 
@@ -505,11 +524,11 @@ Tasks below modify these in the listed order; later tasks reference exact symbol
 
 **Steps:**
 
-- [ ] Add 8 entries to `scripts/verify-capture.sh`'s surface table (extend the existing list, not rewrite).
-- [ ] For each of the 8 surfaces: write a `KEYS`/init-script that drives the surface, capture TUI text via `tmux capture-pane`, capture GUI PNG via the `gui-check` skill.
-- [ ] Each surface README documents the drive script, expected behavior, and references the related task.
-- [ ] Run `just verify mouse-click-position` (and the other 7) — confirm all green.
-- [ ] Commit: `verification(mouse): capture 8 surfaces × 2 backends = 16 artifacts`.
+- [x] Add 8 entries to `scripts/verify-capture.sh`'s surface table (extend the existing list, not rewrite).
+- [x] For each of the 8 surfaces: write a `KEYS`/init-script that drives the surface, capture TUI text via `tmux capture-pane`, capture GUI PNG via the `gui-check` skill.
+- [x] Each surface README documents the drive script, expected behavior, and references the related task.
+- [x] Run `just verify mouse-click-position` (and the other 7) — confirm all green.
+- [x] Commit: `verification(mouse): capture 8 surfaces × 2 backends = 16 artifacts`.
 
 ## Task 20: Final wiring & regression sweep
 
@@ -519,20 +538,20 @@ Tasks below modify these in the listed order; later tasks reference exact symbol
 
 **Steps:**
 
-- [ ] `cargo build --workspace` — zero warnings.
-- [ ] `cargo test --workspace` — every test green.
-- [ ] `cargo clippy --workspace --all-targets -- -D warnings` — clean.
-- [ ] Confirm `App::handle_mouse_event` is now exactly 1 line (delegation) by `wc -l` on the relevant snippet.
-- [ ] Confirm `app.rs` line-count growth < 200 lines (`git diff --stat`).
-- [ ] Verify spec Definition of Done checklist:
-  - [ ] `crates/ruster-render/src/mouse.rs` exists
-  - [ ] `Renderer::poll_mouse`, `cell_metrics`, `set_pointer` exist with default impls
-  - [ ] `RaylibRenderer` implements all three
-  - [ ] `App::handle_mouse_event` dispatches; existing Alt+Left test passes
-  - [ ] 8 verification surfaces captured
-  - [ ] docs/config-reference.md, keybindings.md, lua-api.md updated
-  - [ ] `app.rs` growth < 200 lines
-- [ ] Commit: `chore(mouse): definition-of-done sweep (zero warnings, all tests green)`.
+- [x] `cargo build --workspace` — zero warnings.
+- [x] `cargo test --workspace` — every test green.
+- [x] `cargo clippy --workspace --all-targets -- -D warnings` — clean.
+- [x] Confirm `App::handle_mouse_event` is now exactly 1 line (delegation) by `wc -l` on the relevant snippet.
+- [x] Confirm `app.rs` line-count growth < 200 lines (`git diff --stat`).
+- [x] Verify spec Definition of Done checklist:
+  - [x] `crates/ruster-render/src/mouse.rs` exists
+  - [x] `Renderer::poll_mouse`, `cell_metrics`, `set_pointer` exist with default impls
+  - [x] `RaylibRenderer` implements all three
+  - [x] `App::handle_mouse_event` dispatches; existing Alt+Left test passes
+  - [x] 8 verification surfaces captured
+  - [x] docs/config-reference.md, keybindings.md, lua-api.md updated
+  - [x] `app.rs` growth < 200 lines
+- [x] Commit: `chore(mouse): definition-of-done sweep (zero warnings, all tests green)`.
 
 ---
 
