@@ -494,8 +494,9 @@ pub enum SelectionKind {
     Block,
 }
 
-/// A visual-mode selection in buffer coordinates. `start`/`end` are
-/// `(line, col)` and both ends are **inclusive**.
+/// A visual-mode selection. `start`/`end` are `(line, col)` and both ends are
+/// **inclusive**; as everywhere in a [`WindowView`], the columns count from the
+/// first visible one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SelectionView {
     pub start: (u16, u16),
@@ -595,14 +596,21 @@ pub struct FlashLabelRender {
 /// `Default` exists so construction sites can fill in only what they care about
 /// with `..Default::default()`; adding a field here otherwise means editing every
 /// literal, which is how `flash_labels` came to be missing from some of them.
+///
+/// Rows are buffer lines; **columns are relative to the window's horizontal
+/// scroll**. `lines` already starts at the first visible column, and every
+/// column in here — cursors, selection, flash labels — counts from that same
+/// origin, so a backend can draw character `n` of a line at text column `n`
+/// without knowing the scroll exists. Anything left of the view has been
+/// dropped before it got here.
 #[derive(Default)]
 pub struct WindowView {
     pub rect: Rect,
     pub lines: Vec<StyledLine>,
-    /// Absolute cursor position in buffer coords: (line, col).
+    /// Cursor position: (buffer line, column within the visible text).
     pub cursor: (u16, u16),
-    /// Additional multi-cursor carets in buffer coords, drawn as blocks. Empty
-    /// in the common single-cursor case.
+    /// Additional multi-cursor carets, drawn as blocks. Empty in the common
+    /// single-cursor case.
     pub extra_cursors: Vec<(u16, u16)>,
     pub cursor_kind: CursorKind,
     pub cursor_visible: bool,
