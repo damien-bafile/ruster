@@ -242,6 +242,7 @@ pub const GROUPS: &[(&str, &str)] = &[
     ("general", "Editing, indentation, and paradigm"),
     ("gui", "GUI font, size, colors, and window"),
     ("gutter", "Line-number gutter"),
+    ("bufferline", "Open-buffer tab strip"),
     ("whichkey", "Which-key hint panel"),
     ("lsp", "Language server features"),
     ("terminal", "Embedded terminal"),
@@ -455,6 +456,16 @@ pub fn schema() -> Vec<SettingSpec> {
         Bool,
         b(false),
         "Show relative line numbers",
+    );
+
+    // --- bufferline ---
+    add(
+        "bufferline",
+        "enabled",
+        "Buffer tabs",
+        Bool,
+        b(true),
+        "Show a strip of the open buffers above the windows",
     );
 
     // --- whichkey ---

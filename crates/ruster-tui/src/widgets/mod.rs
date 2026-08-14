@@ -557,39 +557,110 @@ impl Widget for StatuslineWidget {
             }
         }
 
-        let left = &self.view.left;
-        let right = &self.view.right;
-        let center = &self.view.center;
+        let (left, center, right) = (
+            self.view.left_text(),
+            self.view.center_text(),
+            self.view.right_text(),
+        );
+        let len = |s: &str| s.chars().count() as u16;
+        // The same placement the GUI draws from and the mouse resolves against,
+        // rather than arithmetic of its own: three copies of this sum is how a
+        // click and the text under it come to disagree.
+        let layout =
+            ruster_render::statusline_layout(area.width, len(&left), len(&center), len(&right));
 
-        let mut x = area.x;
-        if !left.is_empty() {
-            put(buf, x, area.y, ' ', self.mode_fg, self.mode_bg);
-            x += 1;
-            for (i, ch) in left.chars().enumerate() {
-                put(buf, x + i as u16, area.y, ch, self.mode_fg, self.mode_bg);
+        let draw = |buf: &mut Buffer, at: u16, s: &str, cf: Color, cb: Color| {
+            for (i, ch) in s.chars().enumerate() {
+                put(buf, area.x + at + i as u16, area.y, ch, cf, cb);
             }
-            x += left.chars().count() as u16;
-            put(buf, x, area.y, ' ', self.mode_fg, self.mode_bg);
-            x += 1;
-            put(buf, x, area.y, '│', fg, bg);
-            x += 1;
-        }
+        };
 
-        let right_len = right.chars().count() as u16;
-        let right_start = area.right().saturating_sub(right_len + 2);
-        if right_start > x {
-            for (i, ch) in center.chars().enumerate() {
-                let cx = x + i as u16;
-                if cx >= right_start {
+        if !left.is_empty() {
+            // The mode block is a filled tab: its padding takes the mode colour
+            // too, so it reads as one shape rather than text on the bar.
+            draw(
+                buf,
+                layout.left.saturating_sub(1),
+                &format!(" {left} "),
+                self.mode_fg,
+                self.mode_bg,
+            );
+            draw(buf, layout.left + len(&left) + 1, "│", fg, bg);
+        }
+        if let Some(cx) = layout.center {
+            draw(buf, cx, &center, fg, bg);
+        }
+        if !right.is_empty() {
+            draw(
+                buf,
+                layout.right.saturating_sub(1),
+                &format!(" {right} "),
+                fg,
+                bg,
+            );
+        }
+    }
+}
+
+/// Renders the strip of open buffers above the window area.
+pub struct BufferlineWidget {
+    view: ruster_render::BufferlineView,
+    bar_bg: Color,
+    bar_fg: Color,
+    active_bg: Color,
+    active_fg: Color,
+}
+
+impl BufferlineWidget {
+    pub fn new(view: ruster_render::BufferlineView) -> Self {
+        let d = ruster_render::Theme::default();
+        BufferlineWidget {
+            view,
+            bar_bg: ruster_render_color_to_tui(&d.statusline_bg),
+            bar_fg: ruster_render_color_to_tui(&d.gutter),
+            active_bg: ruster_render_color_to_tui(&d.accent),
+            active_fg: ruster_render_color_to_tui(&d.accent_fg),
+        }
+    }
+
+    pub fn with_theme(mut self, theme: &ruster_render::Theme) -> Self {
+        self.bar_bg = ruster_render_color_to_tui(&theme.statusline_bg);
+        // The inactive tabs are dimmed rather than merely un-highlighted: the
+        // point of the strip is to answer "which buffer am I in", and two tabs
+        // in the same colour do not answer it.
+        self.bar_fg = ruster_render_color_to_tui(&theme.gutter);
+        self.active_bg = ruster_render_color_to_tui(&theme.accent);
+        self.active_fg = ruster_render_color_to_tui(&theme.accent_fg);
+        self
+    }
+}
+
+impl Widget for BufferlineWidget {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        for x in area.left()..area.right() {
+            if let Some(cell) = buf.cell_mut((x, area.y)) {
+                cell.set_char(' ');
+                cell.set_fg(self.bar_fg);
+                cell.set_bg(self.bar_bg);
+            }
+        }
+        for tab in &self.view.tabs {
+            let (fg, bg) = if tab.active {
+                (self.active_fg, self.active_bg)
+            } else {
+                (self.bar_fg, self.bar_bg)
+            };
+            for (i, ch) in tab.label.chars().enumerate() {
+                let x = area.x + tab.col + i as u16;
+                if x >= area.right() {
                     break;
                 }
-                put(buf, cx, area.y, ch, fg, bg);
+                if let Some(cell) = buf.cell_mut((x, area.y)) {
+                    cell.set_char(ch);
+                    cell.set_fg(fg);
+                    cell.set_bg(bg);
+                }
             }
-            put(buf, right_start, area.y, ' ', fg, bg);
-            for (i, ch) in right.chars().enumerate() {
-                put(buf, right_start + 1 + i as u16, area.y, ch, fg, bg);
-            }
-            put(buf, right_start + 1 + right_len, area.y, ' ', fg, bg);
         }
     }
 }

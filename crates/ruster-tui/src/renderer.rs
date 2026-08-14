@@ -72,6 +72,16 @@ impl Renderer for TuiRenderer {
             let divider_color = ruster_color_to_ratatui(&state.theme.divider);
             let accent = ruster_color_to_ratatui(&state.theme.accent);
 
+            // Above the windows, whose area the app already shortened by this
+            // row — so this paints its own strip rather than over anything.
+            if let Some(bl) = &state.bufferline {
+                let r = Rect::new(bl.rect.x, bl.rect.y, bl.rect.width, bl.rect.height);
+                frame.render_widget(
+                    crate::widgets::BufferlineWidget::new(bl.clone()).with_theme(&state.theme),
+                    r,
+                );
+            }
+
             for view in &state.windows {
                 let buf_h = view.rect.height.saturating_sub(2);
                 let hdr_area = Rect::new(view.rect.x, view.rect.y, view.rect.width, 1);
