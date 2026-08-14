@@ -55,6 +55,7 @@ Most motions accept a count prefix (e.g. `5j`, `3w`).
 | `C-r` | Redo |
 | `.` | Repeat last change |
 | `C-d` / `C-u` | Scroll a half page down / up (cursor keeps its screen row) |
+| `zl` / `zh` | Scroll the view right / left one column (`3zl` for three). Long lines do not wrap, so this is how text past the window edge is reached; the cursor comes along only if the scroll would push it off-screen |
 | `C-n` | Add a cursor at the next occurrence of the word under the cursor (multi-cursor) |
 | `q{reg}` … `q` | Record a macro into `{reg}` / stop recording |
 | `@{reg}` | Replay the macro in `{reg}` |
@@ -566,6 +567,7 @@ Works in both backends. The whole surface can be turned off with
 | Drag a split boundary | Resize the panes either side of it |
 | Right-click | Context menu for what is under the pointer |
 | Wheel | Scroll the window under the pointer, `mouse.wheel_lines` at a time |
+| Sideways wheel | Scroll that window left / right, `mouse.wheel_lines` columns at a time |
 | `Ctrl` + wheel | Zoom the font (GUI only; the TUI says so) |
 | Rest the pointer over text | Fires `ruster.on("hover")` after `mouse.hover_delay_ms` |
 
