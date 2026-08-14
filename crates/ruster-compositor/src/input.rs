@@ -23,7 +23,7 @@ use smithay::input::keyboard::xkb::keysym_get_name;
 use smithay::input::keyboard::xkb::keysyms as xkb_keysyms;
 use smithay::input::keyboard::{FilterResult, Keysym, ModifiersState};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent};
-use smithay::reexports::wayland_server::protocol::{wl_pointer, wl_surface::WlSurface};
+use smithay::reexports::wayland_server::protocol::wl_pointer;
 use smithay::utils::{Logical, Physical, Point, Size, SERIAL_COUNTER as SCOUNTER};
 use std::time::Instant;
 
@@ -145,6 +145,31 @@ pub fn tile_under(
         .map(|(id, r)| (*id, Point::from((r.x as f64, r.y as f64))))
 }
 
+/// Where a popup sits on the output, given the tile its parent occupies.
+///
+/// Returns the rectangle and its origin, because the two callers need one each
+/// and computing them separately is how a menu ends up drawn in one place and
+/// clicked in another. `geometry().loc` is subtracted because a popup's geometry
+/// is its *visible* bounds within its surface — a client with a drop shadow
+/// places the shadow outside them, and treating the surface corner as the menu
+/// corner would offset every hit-test by the shadow's width.
+pub fn popup_rect(
+    parent_origin: Point<f64, Logical>,
+    offset: Point<i32, Logical>,
+    geometry: smithay::utils::Rectangle<i32, Logical>,
+) -> (Rect, Point<f64, Logical>) {
+    let origin = parent_origin + (offset - geometry.loc).to_f64();
+    (
+        Rect::new(
+            origin.x.round() as i32,
+            origin.y.round() as i32,
+            geometry.size.w,
+            geometry.size.h,
+        ),
+        origin,
+    )
+}
+
 /// How many buffer lines one scroll event moves a pane, signed the way the
 /// wheel is: positive is towards the end of the buffer.
 ///
@@ -212,7 +237,7 @@ impl<B: Backend + 'static> CompositorState<B> {
     fn surface_under(
         &self,
         location: Point<f64, Logical>,
-    ) -> Option<(WlSurface, Point<f64, Logical>)> {
+    ) -> Option<(crate::focus::FocusTarget, Point<f64, Logical>)> {
         let (id, origin) = tile_under(&self.geometry(), location)?;
         if !self.mapped.contains(&id) {
             return None;
@@ -225,19 +250,12 @@ impl<B: Backend + 'static> CompositorState<B> {
         // through to the toplevel behind it, which is what a client reads as
         // "the user dismissed the menu and clicked over there".
         for (popup, offset) in PopupManager::popups_for_surface(&parent) {
-            let geo = popup.geometry();
-            let popup_origin = origin + (offset - geo.loc).to_f64();
-            let rect = Rect::new(
-                popup_origin.x.round() as i32,
-                popup_origin.y.round() as i32,
-                geo.size.w,
-                geo.size.h,
-            );
+            let (rect, popup_origin) = popup_rect(origin, offset, popup.geometry());
             if rect.contains(location.x.floor() as i32, location.y.floor() as i32) {
-                return Some((popup.wl_surface().clone(), popup_origin));
+                return Some((popup.wl_surface().clone().into(), popup_origin));
             }
         }
-        Some((parent, origin))
+        Some((parent.into(), origin))
     }
 
     /// Route one backend input event to its handler. Generic over the input
@@ -1338,6 +1356,48 @@ mod tests {
             said.contains("helper") || said.contains("i32"),
             "a hover on a call to `helper() -> i32` should mention one of them: {said:?}"
         );
+    }
+
+    #[test]
+    fn a_popup_sits_at_its_visible_bounds_not_its_surface_corner() {
+        use smithay::utils::Rectangle;
+        // A client with a drop shadow makes its surface bigger than its menu and
+        // says so through `geometry().loc`. Ignoring that offsets the menu by
+        // the shadow's width — drawn in one place, clicked in another, and both
+        // halves self-consistently wrong.
+        let parent_origin = Point::<f64, Logical>::from((500.0, 300.0));
+        let offset = Point::<i32, Logical>::from((40, 20));
+        let shadowed = Rectangle::new((12, 12).into(), (200, 150).into());
+        let (rect, origin) = popup_rect(parent_origin, offset, shadowed);
+        assert_eq!(
+            (rect.x, rect.y),
+            (528, 308),
+            "the shadow's 12px must come off both axes"
+        );
+        assert_eq!((rect.w, rect.h), (200, 150));
+        assert_eq!(origin, Point::from((528.0, 308.0)));
+
+        // And with no shadow the menu starts at the surface corner.
+        let plain = Rectangle::new((0, 0).into(), (200, 150).into());
+        let (rect, _) = popup_rect(parent_origin, offset, plain);
+        assert_eq!((rect.x, rect.y), (540, 320));
+    }
+
+    #[test]
+    fn a_click_on_a_popup_is_inside_it_and_a_click_beside_it_is_not() {
+        use smithay::utils::Rectangle;
+        // The decision `dismiss_grabbed_popups` turns on. Getting it inverted
+        // means a menu that closes when you click the entry you wanted.
+        let (rect, _) = popup_rect(
+            Point::from((100.0, 100.0)),
+            Point::from((10, 10)),
+            Rectangle::new((0, 0).into(), (80, 40).into()),
+        );
+        assert!(rect.contains(110, 110), "the popup's own corner");
+        assert!(rect.contains(149, 129), "just inside the far edge");
+        assert!(!rect.contains(190, 110), "beyond the right edge");
+        assert!(!rect.contains(110, 160), "below the bottom edge");
+        assert!(!rect.contains(109, 109), "up and left of the corner");
     }
 
     #[test]

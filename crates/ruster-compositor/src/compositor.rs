@@ -265,7 +265,7 @@ impl<B: Backend + 'static> CompositorState<B> {
         set_data_device_focus(&self.display_handle, &self.seat, client.clone());
         set_primary_focus(&self.display_handle, &self.seat, client);
         let keyboard = self.keyboard.clone();
-        keyboard.set_focus(self, focus, serial);
+        keyboard.set_focus(self, focus.map(crate::focus::FocusTarget::from), serial);
     }
 
     /// The window id owning `surface`, if any toplevel does.
@@ -1693,8 +1693,17 @@ impl<B: Backend + 'static> OutputHandler for CompositorState<B> {
 }
 
 impl<B: Backend + 'static> SeatHandler for CompositorState<B> {
-    type KeyboardFocus = wl_surface::WlSurface;
-    type PointerFocus = wl_surface::WlSurface;
+    // One type for all three, and a newtype over `WlSurface` rather than the
+    // surface itself: `PopupManager::grab_popup` needs
+    // `KeyboardFocus: From<PopupKind>`, and neither of those is local, so with a
+    // bare `WlSurface` the orphan rule made a real popup grab impossible to
+    // write. See [`crate::focus`].
+    type KeyboardFocus = crate::focus::FocusTarget;
+    type PointerFocus = crate::focus::FocusTarget;
+    // Touch stays a bare surface. `grab_popup` constrains only the keyboard and
+    // pointer focus, `process_input_event` drops touch events, and a
+    // `TouchTarget` impl here would be delegation nothing calls — which is the
+    // kind of code that is wrong for months without anyone finding out.
     type TouchFocus = wl_surface::WlSurface;
 
     fn seat_state(&mut self) -> &mut SeatState<CompositorState<B>> {

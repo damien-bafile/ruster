@@ -8,7 +8,10 @@
 
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
-use smithay::desktop::PopupKind;
+use smithay::desktop::{find_popup_root_surface, PopupKeyboardGrab, PopupKind, PopupPointerGrab,
+    PopupUngrabStrategy};
+use smithay::input::pointer::Focus;
+use smithay::input::Seat;
 use smithay::utils::{Logical, Rectangle, Serial, SERIAL_COUNTER as SCOUNTER};
 use smithay::wayland::compositor::{self, BufferAssignment};
 use smithay::wayland::shell::xdg::{
@@ -18,6 +21,7 @@ use smithay::wayland::shell::xdg::{
 
 use crate::backend::Backend;
 use crate::compositor::CompositorState;
+use crate::focus::FocusTarget;
 use ruster_shell::Layout;
 
 /// Where a popup should sit, kept inside the output.
@@ -119,7 +123,67 @@ impl<B: Backend + 'static> XdgShellHandler for CompositorState<B> {
         }
     }
 
-    fn grab(&mut self, _surface: PopupSurface, _seat: WlSeat, _serial: Serial) {}
+    /// A client asking for its popup to hold a grab — a menu, rather than a
+    /// tooltip.
+    ///
+    /// This was a no-op for as long as the seat's focus type was `WlSurface`:
+    /// `PopupManager::grab_popup` needs `KeyboardFocus: From<PopupKind>`, and
+    /// two foreign types cannot be joined by a local impl. [`FocusTarget`] is
+    /// the newtype that makes it expressible.
+    ///
+    /// Taking the grab is what makes a menu behave like one. smithay's
+    /// `PopupGrab` redirects the keyboard to the popup — so arrow keys and
+    /// Escape reach the menu instead of the window behind it — dismisses the
+    /// whole chain on a click outside, and keeps submenus nested under their
+    /// parent rather than replacing it.
+    ///
+    /// A refused grab is not an error worth failing on: the protocol allows the
+    /// compositor to decline, and a client whose menu does not grab still has a
+    /// menu. It is logged, because a menu that silently does not grab is the
+    /// bug this replaced.
+    fn grab(&mut self, surface: PopupSurface, seat: WlSeat, serial: Serial) {
+        let Some(seat) = Seat::<CompositorState<B>>::from_resource(&seat) else {
+            return;
+        };
+        let popup = PopupKind::Xdg(surface);
+        let Ok(root) = find_popup_root_surface(&popup) else {
+            tracing::warn!("a popup asked to grab with no root surface");
+            return;
+        };
+        let grab = self
+            .popups
+            .grab_popup(FocusTarget::from(root), popup, &seat, serial);
+        match grab {
+            Ok(mut grab) => {
+                // Both devices, and both are needed: the pointer grab is what
+                // makes a click outside dismiss the menu, and the keyboard grab
+                // is what lets the menu be driven without the mouse at all.
+                if let Some(keyboard) = seat.get_keyboard() {
+                    if keyboard.is_grabbed()
+                        && !(keyboard.has_grab(serial)
+                            || keyboard.has_grab(grab.previous_serial().unwrap_or(serial)))
+                    {
+                        grab.ungrab(PopupUngrabStrategy::All);
+                        return;
+                    }
+                    keyboard.set_focus(self, grab.current_grab(), serial);
+                    keyboard.set_grab(self, PopupKeyboardGrab::new(&grab), serial);
+                }
+                if let Some(pointer) = seat.get_pointer() {
+                    if pointer.is_grabbed()
+                        && !(pointer.has_grab(serial)
+                            || pointer.has_grab(grab.previous_serial().unwrap_or(grab.serial())))
+                    {
+                        grab.ungrab(PopupUngrabStrategy::All);
+                        return;
+                    }
+                    pointer.set_grab(self, PopupPointerGrab::new(&grab), serial, Focus::Keep);
+                }
+                tracing::debug!("popup took a grab");
+            }
+            Err(err) => tracing::debug!(%err, "popup grab refused"),
+        }
+    }
 
     /// A client asking to move a popup it has already mapped — a submenu
     /// following the cursor, say.
