@@ -1229,6 +1229,70 @@ mod tests {
     }
 
     #[test]
+    fn a_hover_panel_keeps_the_code_and_drops_the_fence() {
+        let (_loop, mut state) = test_state();
+        state.open_pane();
+        let id = state.shell.focus.expect("a pane was just focused");
+
+        state.show_hover(
+            id,
+            4,
+            2,
+            "```rust\nfn main()\n```\n\n---\nthe entry point\n",
+        );
+
+        let hover = state.hover.as_ref().expect("a panel should be showing");
+        assert_eq!(
+            hover.lines,
+            vec![
+                "fn main()".to_string(),
+                String::new(),
+                "the entry point".to_string()
+            ],
+            "fences and separators go, the code stays"
+        );
+        assert_eq!(
+            (hover.row, hover.col),
+            (4, 2),
+            "anchored where it was asked"
+        );
+    }
+
+    #[test]
+    fn a_hover_reply_of_pure_formatting_shows_no_panel() {
+        // rust-analyzer answers with an empty markup block often enough, and an
+        // empty box beside the caret reads as "this symbol is not documented"
+        // rather than "the server said nothing".
+        let (_loop, mut state) = test_state();
+        state.open_pane();
+        let id = state.shell.focus.expect("a pane was just focused");
+
+        state.show_hover(id, 0, 0, "```rust\n```\n---\n\n");
+
+        assert!(
+            state.hover.is_none(),
+            "a panel with nothing in it should not be shown at all"
+        );
+    }
+
+    #[test]
+    fn a_key_dismisses_the_hover_panel() {
+        // It describes one caret on one character. The moment either can have
+        // moved it is at best stale, and pointing at the wrong symbol confidently
+        // is worse than not answering.
+        let (_loop, mut state) = test_state();
+        state.open_pane();
+        let id = state.shell.focus.expect("a pane was just focused");
+        state.panes.get_mut(&id).unwrap().rows = 10;
+        state.show_hover(id, 0, 0, "fn main()");
+        assert!(state.hover.is_some(), "the panel is up before the key");
+
+        press(&mut state, KEY_A);
+
+        assert!(state.hover.is_none(), "any key should dismiss it");
+    }
+
+    #[test]
     fn a_pane_receives_the_keys_the_keymap_does_not_claim() {
         // The other half: everything the WM has no use for reaches the editor,
         // rather than being forwarded to a client that is not focused.

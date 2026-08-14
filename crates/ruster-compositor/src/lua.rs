@@ -72,6 +72,8 @@ pub enum Action {
     ShowBuffer(String),
     /// Jump the focused pane to the definition of the symbol under its cursor.
     Definition,
+    /// Show what the language server knows about the symbol under the cursor.
+    Hover,
     /// Pin the shortcut helper open, or unpin it.
     ToggleHelp,
     /// Open the `:` prompt (or `=` for Lua).
@@ -692,6 +694,7 @@ impl Action {
             ("definition" | "goto definition" | "go to definition" | "gd", _, _) => {
                 Some(Action::Definition)
             }
+            ("hover", _, _) => Some(Action::Hover),
             // `w` as well as `write`, because the prompt this reaches is a `:`
             // line and `:w` is the muscle memory it inherits.
             ("write" | "w", _, _) => Some(Action::Write),
@@ -1362,6 +1365,7 @@ mod tests {
         // `gd` is the whole word or nothing; a pane binding must not swallow a
         // command that merely starts with it.
         assert_eq!(Action::from_name("gdb"), None);
+        assert_eq!(Action::from_name("hover"), Some(Action::Hover));
     }
 
     #[test]

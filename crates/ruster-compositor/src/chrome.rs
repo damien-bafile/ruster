@@ -240,6 +240,34 @@ impl FrameBody {
         let row = ((y - self.y) / self.cell_h).floor().max(0.0) as usize;
         (row, col)
     }
+
+    /// The top-left pixel of a cell, in the frame's own coordinates.
+    ///
+    /// The inverse of [`cell_at`](Self::cell_at), and here rather than at the
+    /// caller for the same reason that one exists: anything anchored to a
+    /// character — a hover panel, a completion list — has to agree with what was
+    /// drawn, and two copies of `x + col * cell_w` are two chances to disagree
+    /// about the gutter.
+    pub fn cell_origin(&self, row: usize, col: usize) -> (f32, f32) {
+        (
+            self.x + col as f32 * self.cell_w,
+            self.y + row as f32 * self.cell_h,
+        )
+    }
+}
+
+/// Where a hover panel hangs: the caret's top-left pixel in *output*
+/// coordinates, and the height of the cell it sits on.
+///
+/// Output coordinates rather than frame-local ones because the panel is drawn
+/// after every pane, outside the `translate_since` that moves a frame into its
+/// tile — so the caller has already added the tile's origin, using the same
+/// [`FrameBody`] that drew the text.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HoverAnchor {
+    pub x: f32,
+    pub y: f32,
+    pub cell_h: f32,
 }
 
 /// One frame's worth of chrome geometry: solid quads and textured glyph quads,
@@ -685,6 +713,65 @@ impl Chrome {
     /// Takes the [`WhichKeyView`] the editor also renders, which is what lets
     /// the key and its description be drawn in different colours; they used to
     /// be one concatenated string and therefore one colour.
+    /// A hover panel, anchored under the caret it describes.
+    ///
+    /// See [`HoverAnchor`] for what the anchor is measured against.
+    ///
+    /// `(cell_x, cell_y)` is the caret's top-left pixel in output coordinates —
+    /// worked out by the caller from the same [`FrameBody`] that drew the text,
+    /// so the panel cannot point at a different character than the one asked
+    /// about. Returns the rectangle it drew, which is what the tests measure.
+    ///
+    /// The panel flips above the caret when there is no room below it, which is
+    /// most of the time on the last few lines of a pane; without that a hover on
+    /// the bottom line is drawn off the output and reads as nothing happening.
+    pub fn draw_hover(
+        &mut self,
+        output_w: i32,
+        output_h: i32,
+        anchor: HoverAnchor,
+        lines: &[String],
+        batch: &mut ChromeBatch,
+    ) -> (f32, f32, f32, f32) {
+        let HoverAnchor {
+            x: cell_x,
+            y: cell_y,
+            cell_h,
+        } = anchor;
+        const FONT: u32 = 14;
+        const ROW_H: f32 = 18.0;
+        const PAD: f32 = 8.0;
+
+        let bg: (f32, f32, f32, f32) = self.theme.whichkey_bg.into();
+        let fg: (f32, f32, f32, f32) = self.theme.whichkey_fg.into();
+
+        let text_w = lines
+            .iter()
+            .map(|l| layout_text(l, FONT, None).width_px)
+            .fold(0.0f32, f32::max);
+        let w = (text_w + PAD * 2.0).min(output_w as f32 - 8.0);
+        let h = PAD * 2.0 + lines.len() as f32 * ROW_H;
+
+        // Below the caret by default, above it when that would not fit.
+        let below = cell_y + cell_h;
+        let y = if below + h <= output_h as f32 {
+            below
+        } else {
+            (cell_y - h).max(4.0)
+        };
+        // And clamped horizontally, so a hover in the last column is not drawn
+        // half off the right edge.
+        let x = cell_x.min(output_w as f32 - w - 4.0).max(4.0);
+
+        batch.verts.extend(rounded_rect_verts(x, y, w, h, 6.0, bg));
+        let mut ty = y + PAD;
+        for line in lines {
+            self.text(line, FONT, x + PAD, ty, fg, batch);
+            ty += ROW_H;
+        }
+        (x, y, w, h)
+    }
+
     pub fn draw_whichkey(
         &mut self,
         output_w: i32,
@@ -1158,6 +1245,83 @@ mod tests {
         chrome.draw_editor_frame(400, 300, &styled(&buf), 0, &[], "welcome", &mut batch);
         assert!(batch.verts.len() >= 6 * 2); // frame + title bar
         assert!(!batch.glyphs.is_empty(), "title and rows draw glyphs");
+    }
+
+    #[test]
+    fn a_hover_panel_hangs_below_the_caret_when_there_is_room() {
+        let mut chrome = Chrome::new(theme());
+        let mut batch = ChromeBatch::default();
+        let lines = vec!["fn main()".to_string(), "the entry point".to_string()];
+        let anchor = HoverAnchor {
+            x: 100.0,
+            y: 100.0,
+            cell_h: 16.0,
+        };
+        let (x, y, _, h) = chrome.draw_hover(1920, 1080, anchor, &lines, &mut batch);
+        assert_eq!(x, 100.0, "aligned with the caret's column");
+        assert_eq!(y, 116.0, "directly under the caret's cell");
+        assert!(y + h <= 1080.0);
+        assert!(!batch.glyphs.is_empty(), "the panel draws its text");
+    }
+
+    #[test]
+    fn a_hover_panel_flips_above_a_caret_near_the_bottom() {
+        // The failure this prevents is silent: a hover on one of the last lines
+        // of a pane is drawn past the bottom of the output, and a panel nobody
+        // can see is indistinguishable from a server that said nothing.
+        let mut chrome = Chrome::new(theme());
+        let mut batch = ChromeBatch::default();
+        let lines = vec!["fn main()".to_string(), "the entry point".to_string()];
+        let anchor = HoverAnchor {
+            x: 100.0,
+            y: 1070.0,
+            cell_h: 16.0,
+        };
+        let (_, y, _, h) = chrome.draw_hover(1920, 1080, anchor, &lines, &mut batch);
+        assert!(
+            y + h <= 1070.0,
+            "the panel should sit above the caret, not run off the output: y={y} h={h}"
+        );
+        assert!(y >= 0.0, "and not above the top edge either");
+    }
+
+    #[test]
+    fn a_hover_panel_in_the_last_column_stays_on_screen() {
+        let mut chrome = Chrome::new(theme());
+        let mut batch = ChromeBatch::default();
+        let lines = vec!["a fairly long explanation of a symbol".to_string()];
+        let anchor = HoverAnchor {
+            x: 1900.0,
+            y: 100.0,
+            cell_h: 16.0,
+        };
+        let (x, _, w, _) = chrome.draw_hover(1920, 1080, anchor, &lines, &mut batch);
+        assert!(
+            x + w <= 1920.0,
+            "a hover in the last column must be pulled back on screen: x={x} w={w}"
+        );
+        assert!(x >= 0.0);
+    }
+
+    #[test]
+    fn a_cell_origin_is_where_a_click_on_that_cell_lands() {
+        // The two halves of one grid. `cell_at` decides which character a click
+        // means and `cell_origin` decides where a panel about that character
+        // hangs; if they disagree the hover points at its neighbour, and the
+        // gutter is where they would disagree, since it widens with the line
+        // numbers on screen.
+        for (first, shown) in [(0usize, 10usize), (95, 10), (995, 10)] {
+            let body = FrameBody::new(first, shown);
+            for (row, col) in [(0usize, 0usize), (3, 7), (9, 40)] {
+                let (x, y) = body.cell_origin(row, col);
+                assert_eq!(
+                    body.cell_at(x + body.cell_w / 2.0, y + body.cell_h / 2.0),
+                    (row, col),
+                    "cell ({row}, {col}) with the gutter for lines {first}..{}",
+                    first + shown
+                );
+            }
+        }
     }
 
     #[test]

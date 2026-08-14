@@ -63,6 +63,28 @@ use ruster_shell::{Rect, ShellState, WindowId, Workspaces};
 pub enum LspPending {
     /// Move the focused pane to wherever the symbol is defined.
     Definition,
+    /// Show what the server knows about the symbol, in a panel by the caret.
+    ///
+    /// Carries where to put it, because by the time the reply lands the caret
+    /// may have moved and a panel that followed it would point at a symbol the
+    /// text is no longer about.
+    Hover {
+        pane: WindowId,
+        row: usize,
+        col: usize,
+    },
+}
+
+/// A hover panel waiting to be drawn: what the server said, and where to say it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HoverPanel {
+    /// The pane whose caret this describes. The panel goes away with it: a
+    /// panel outliving its pane would be an explanation of nothing, floating
+    /// over whatever took the tile.
+    pub pane: WindowId,
+    pub row: usize,
+    pub col: usize,
+    pub lines: Vec<String>,
 }
 
 /// The compositor's composition root: everything the backend and the input
@@ -162,6 +184,9 @@ pub struct CompositorState<B: Backend + 'static> {
     /// by — which is why it moved out of `ruster-tui` rather than being rewritten
     /// here. The type parameter is what a reply should be *used for*.
     pub lsp: ruster_lsp::state::LspState<LspPending>,
+    /// The hover panel on screen, if a reply has arrived and nothing has
+    /// dismissed it yet.
+    pub hover: Option<HoverPanel>,
     /// Syntax parses, one per document, refreshed when a buffer changes.
     pub highlights: std::cell::RefCell<crate::highlight::Highlights>,
     /// The seat's selection text, shared between editor panes and clients.
@@ -465,6 +490,12 @@ impl<B: Backend + 'static> CompositorState<B> {
         let Some(id) = self.shell.focus else {
             return;
         };
+        // Any key dismisses a hover panel. It describes one caret on one
+        // character, so the moment either can have moved it is at best stale and
+        // at worst pointing at something it is not about — and a panel that has
+        // to be dismissed deliberately is one more thing to know about an
+        // explanation that was meant to be free.
+        self.hover = None;
         // The indent is the document's, not a constant here: it is buffer-local
         // in the editor, seeded from config and EditorConfig, and one file
         // indented two ways depending on which program had it open is exactly
@@ -581,35 +612,56 @@ impl<B: Backend + 'static> CompositorState<B> {
         }
     }
 
+    /// Where the focused pane's caret is, as the protocol counts it.
+    ///
+    /// Returns the pane, the caret as the protocol counts it, and the server and
+    /// URI to ask. The server comes from the document rather than being
+    /// re-derived from the path: a request routed to a second server for the
+    /// same file would be answered against a document that server has never been
+    /// told about.
+    ///
+    /// Hands back the position rather than finished params so that building them
+    /// stays at the call site, which is the only thing keeping `serde_json` out
+    /// of this crate's dependencies.
+    fn lsp_target(
+        &mut self,
+        verb: &str,
+    ) -> Option<(
+        WindowId,
+        ruster_lsp::LspPosition,
+        ruster_lsp::ServerKey,
+        String,
+    )> {
+        let Some(id) = self.focused_pane() else {
+            self.report(format!("{verb}: no editor pane has focus"));
+            return None;
+        };
+        let pane = self.panes.get(&id)?;
+        let (doc_id, offset) = (pane.doc, pane.cursors.primary().head);
+        let document = self.buffers.get(doc_id)?;
+        let text = document.buffer.to_string();
+        let Some(lsp_doc) = self.lsp.doc(doc_id) else {
+            self.report(format!("{verb}: no language server for this file"));
+            return None;
+        };
+        let uri = lsp_doc.uri.clone();
+        let key = lsp_doc.key.clone();
+        // Character offsets are not LSP positions: the protocol counts UTF-16
+        // code units, so anything past an astral character on the line would ask
+        // about the wrong column.
+        let pos = ruster_lsp::position::offset_to_position(&text, offset);
+        Some((id, pos, key, uri))
+    }
+
     /// Ask where the symbol under the cursor is defined.
     ///
     /// Best effort like everything else here: a file with no server, a cursor on
     /// nothing, or a server that answers with no location all leave the pane
     /// exactly as it was, and say why in the minibuffer rather than in silence.
     pub fn lsp_definition(&mut self) {
-        let Some(id) = self.focused_pane() else {
-            return self.report("definition: no editor pane has focus".to_string());
-        };
-        let Some(pane) = self.panes.get(&id) else {
+        let Some((_, pos, key, uri)) = self.lsp_target("definition") else {
             return;
         };
-        let (doc_id, offset) = (pane.doc, pane.cursors.primary().head);
-        let Some(document) = self.buffers.get(doc_id) else {
-            return;
-        };
-        let text = document.buffer.to_string();
-        // The server is the one the `didOpen` went to, taken from the document
-        // rather than re-derived from the path: a request routed to a second
-        // server for the same file would be answered against a document that
-        // server has never been told about.
-        let Some(lsp_doc) = self.lsp.doc(doc_id) else {
-            return self.report("definition: no language server for this file".to_string());
-        };
-        let (uri, key) = (lsp_doc.uri.clone(), lsp_doc.key.clone());
-        // Character offsets are not LSP positions: the protocol counts UTF-16
-        // code units, so anything past an astral character on the line would ask
-        // about the wrong column.
-        let pos = ruster_lsp::position::offset_to_position(&text, offset);
         let params = ruster_lsp::protocol::text_document_position(&uri, pos);
         if !self.lsp.request(
             &key,
@@ -619,6 +671,57 @@ impl<B: Backend + 'static> CompositorState<B> {
         ) {
             self.report("definition: the language server is not running".to_string());
         }
+    }
+
+    /// Ask what the symbol under the cursor is, and put the answer beside it.
+    pub fn lsp_hover(&mut self) {
+        let Some((pane, pos, key, uri)) = self.lsp_target("hover") else {
+            return;
+        };
+        let (row, col) = (pos.line as usize, pos.character as usize);
+        let params = ruster_lsp::protocol::text_document_position(&uri, pos);
+        // Any previous panel goes now rather than when the reply lands. Leaving
+        // it up would mean a stale explanation sitting beside a new caret for as
+        // long as the server takes to answer, which is exactly the window in
+        // which it is most likely to be believed.
+        self.hover = None;
+        if !self.lsp.request(
+            &key,
+            "textDocument/hover",
+            params,
+            LspPending::Hover { pane, row, col },
+        ) {
+            self.report("hover: the language server is not running".to_string());
+        }
+    }
+
+    /// Put the server's answer beside the caret it was asked about.
+    pub(crate) fn show_hover(&mut self, pane: WindowId, row: usize, col: usize, markup: &str) {
+        // Markdown, minus the parts that mean nothing without a renderer. The
+        // editor highlights fenced code; this keeps the code and drops the
+        // fence, which is the difference between a panel and a parser.
+        let mut lines: Vec<String> = markup
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("```") && l.trim() != "---")
+            .map(|l| l.trim_end().to_string())
+            .skip_while(|l| l.is_empty())
+            .collect();
+        while lines.last().is_some_and(|l| l.is_empty()) {
+            lines.pop();
+        }
+        // A server that answers with nothing but formatting has said nothing,
+        // and an empty panel beside the caret is worse than no panel: it reads
+        // as "this symbol is not documented" rather than "nobody was asked".
+        if lines.is_empty() {
+            self.hover = None;
+            return self.report("hover: nothing to show here".to_string());
+        }
+        self.hover = Some(HoverPanel {
+            pane,
+            row,
+            col,
+            lines,
+        });
     }
 
     /// Show whatever the server said `textDocument/definition` resolves to.
@@ -717,6 +820,13 @@ impl<B: Backend + 'static> CompositorState<B> {
                         let locations = ruster_lsp::parse_locations(result);
                         self.goto_definition(&locations);
                     }
+                    LspPending::Hover { pane, row, col } => match ruster_lsp::parse_hover(result) {
+                        Some(markup) => self.show_hover(pane, row, col, &markup),
+                        None => {
+                            self.hover = None;
+                            self.report("hover: nothing to show here".to_string());
+                        }
+                    },
                 }
                 continue;
             }
@@ -871,6 +981,7 @@ impl<B: Backend + 'static> CompositorState<B> {
             Action::NewPane => self.open_pane(),
             Action::Edit(path) => self.open_file(&path),
             Action::Definition => self.lsp_definition(),
+            Action::Hover => self.lsp_hover(),
             Action::Write => self.write_pane(),
             Action::ShowBuffer(name) => self.show_named_document(&name),
             Action::Bind(binding, action) => self.keymap.bind(&binding, &action),
@@ -1268,6 +1379,7 @@ pub fn create_state<B: Backend + 'static>(
         keyboard_config: globals.keyboard_config,
         terminal: None,
         lsp: ruster_lsp::state::LspState::new(),
+        hover: None,
         highlights: std::cell::RefCell::new(crate::highlight::Highlights::default()),
         clipboard: crate::clipboard::Clipboard::default(),
         panes: crate::pane::Panes::new(),

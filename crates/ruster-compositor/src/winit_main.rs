@@ -233,6 +233,7 @@ fn run_winit() -> anyhow::Result<()> {
                     lsp: &state.lsp,
                     keymap: &state.keymap,
                     minibuffer: state.minibuffer.as_ref(),
+                    hover: state.hover.as_ref(),
                     whichkey: ruster_compositor::keymap::whichkey_view(
                         &state.keymap,
                         &state.chord,

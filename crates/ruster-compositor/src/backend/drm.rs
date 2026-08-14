@@ -481,6 +481,7 @@ impl CompositorState<RusterUdevData> {
             lsp: &self.lsp,
             keymap: &self.keymap,
             minibuffer: self.minibuffer.as_ref(),
+            hover: self.hover.as_ref(),
             whichkey: crate::keymap::whichkey_view(
                 &self.keymap,
                 &self.chord,

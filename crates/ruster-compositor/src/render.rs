@@ -114,6 +114,9 @@ pub struct FrameInput<'a> {
     pub whichkey: Option<ruster_render::WhichKeyView>,
     /// The `:` line, when open or showing a result.
     pub minibuffer: Option<&'a crate::minibuffer::MiniBuffer>,
+    /// The hover panel, when a language server has answered and nothing has
+    /// dismissed it since.
+    pub hover: Option<&'a crate::compositor::HoverPanel>,
 }
 
 /// Composite the focused toplevel fullscreen onto the output, draw ruster's
@@ -223,6 +226,12 @@ where
         // Chrome is measured in physical pixels and the layout in logical ones,
         // the same conversion `draw_window_borders` does.
         let chrome_scale = scene.output.current_scale().fractional_scale() as f32;
+        // Where the hover panel's caret ended up, filled in by the pane that
+        // owns it. Resolved inside the loop because the gutter — and therefore
+        // the first text column — depends on which lines that pane is showing,
+        // and worked out again here it would be a second opinion about the same
+        // grid.
+        let mut hover_at: Option<(crate::chrome::HoverAnchor, &[String])> = None;
         for (id, rect) in scene.geometry {
             let Some(pane) = scene.panes.get(id) else {
                 continue;
@@ -250,6 +259,23 @@ where
             );
             let severities =
                 pane.line_severities(scene.lsp.diagnostics(pane.doc), first_line, lines.len());
+            // Only while the line it describes is actually on screen: a panel
+            // anchored to a caret that has been scrolled away would sit at the
+            // frame's edge pointing at whatever is there now.
+            if let Some(hover) = scene.hover.filter(|h| h.pane == *id) {
+                if (first_line..first_line + lines.len()).contains(&hover.row) {
+                    let body = crate::chrome::FrameBody::new(first_line, lines.len());
+                    let (bx, by) = body.cell_origin(hover.row - first_line, hover.col);
+                    hover_at = Some((
+                        crate::chrome::HoverAnchor {
+                            x: rect.x as f32 * chrome_scale + bx,
+                            y: rect.y as f32 * chrome_scale + by,
+                            cell_h: body.cell_h,
+                        },
+                        &hover.lines,
+                    ));
+                }
+            }
             chrome.draw_editor_frame(
                 (rect.w as f32 * chrome_scale) as i32,
                 (rect.h as f32 * chrome_scale) as i32,
@@ -264,6 +290,12 @@ where
                 rect.x as f32 * chrome_scale,
                 rect.y as f32 * chrome_scale,
             );
+        }
+
+        // After every pane, so it sits above the text it explains rather than
+        // under the next tile the loop draws.
+        if let Some((anchor, lines)) = hover_at {
+            chrome.draw_hover(size.w, size.h, anchor, lines, &mut batch);
         }
 
         // Synthetic load, when asked for. Real glyphs from the atlas rather than
