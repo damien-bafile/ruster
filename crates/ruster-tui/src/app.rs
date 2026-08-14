@@ -1464,7 +1464,7 @@ pub struct App {
     /// a new process spawned every tick while the previous ones piled up.
     git_status_polled: Option<std::time::Instant>,
     git_status_in_flight: bool,
-    lua: LuaRuntime,
+    pub(crate) lua: LuaRuntime,
     pub(crate) config: Config,
     timer: FrameTimer,
     pub has_smooth_cursor: bool,

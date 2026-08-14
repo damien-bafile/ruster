@@ -294,6 +294,17 @@ const DOUBLE_CLICK_SLACK_CELLS: u16 = 2;
 pub fn handle_mouse_event(app: &mut App, ev: MouseEvent) {
     let zone = hit_test(app, ev.col, ev.row);
     set_pointer_for_zone(app, zone);
+
+    // Plugins registered any items since the last event get folded in before a
+    // right-click could raise a menu that ought to contain them.
+    drain_lua_menu_items(app);
+
+    // Lua sees the event first and may consume it, which cancels the built-in
+    // behaviour but not the other handlers.
+    if dispatch_to_lua(app, &ev, zone) {
+        return;
+    }
+
     match ev.kind {
         MouseKind::Down => on_mouse_down(app, ev, zone),
         MouseKind::Drag => on_mouse_drag(app, ev),
@@ -505,6 +516,103 @@ fn on_mouse_down(app: &mut App, ev: MouseEvent, zone: HitZone) {
 
 fn to_core_rect(r: ruster_render::Rect) -> Rect {
     Rect::new(r.x, r.y, r.width, r.height)
+}
+
+/// The Lua `kind` string for a mouse event.
+fn kind_name(kind: MouseKind) -> &'static str {
+    match kind {
+        MouseKind::Down => "down",
+        MouseKind::Up => "up",
+        MouseKind::Drag => "drag",
+        MouseKind::Move => "move",
+        MouseKind::ScrollUp => "wheel_up",
+        MouseKind::ScrollDown => "wheel_down",
+        MouseKind::ScrollLeft => "wheel_left",
+        MouseKind::ScrollRight => "wheel_right",
+    }
+}
+
+fn zone_name(zone: HitZone) -> &'static str {
+    match zone {
+        HitZone::Buffer(..) => "buffer",
+        HitZone::Gutter(..) => "gutter",
+        HitZone::Chrome(_) => "chrome",
+        HitZone::Float(_) => "float",
+        HitZone::Outside => "outside",
+    }
+}
+
+fn button_name(button: MouseButton) -> &'static str {
+    match button {
+        MouseButton::Left => "left",
+        MouseButton::Right => "right",
+        MouseButton::Middle => "middle",
+        MouseButton::None => "none",
+    }
+}
+
+/// Build the payload a Lua mouse or hover handler receives.
+pub(crate) fn lua_payload(
+    app: &App,
+    ev: &MouseEvent,
+    zone: HitZone,
+) -> ruster_lua::runtime::MousePayload {
+    let mut payload = ruster_lua::runtime::MousePayload {
+        kind: kind_name(ev.kind).to_string(),
+        col: ev.col,
+        row: ev.row,
+        button: button_name(ev.button).to_string(),
+        zone: zone_name(zone).to_string(),
+        alt: ev.modifiers.contains(KeyModifiers::ALT),
+        ctrl: ev.modifiers.contains(KeyModifiers::CONTROL),
+        shift: ev.modifiers.contains(KeyModifiers::SHIFT),
+        ..Default::default()
+    };
+    // Buffer position, only where there is text under the pointer.
+    if let HitZone::Buffer(wid, offset) = zone {
+        payload.offset = Some(offset);
+        payload.window = Some(wid.0);
+        if let Some((line, col)) = line_col(app, wid, offset) {
+            payload.line = Some(line);
+            payload.col_in_line = Some(col);
+        }
+    }
+    payload
+}
+
+/// Offer the event to Lua. Returns whether a handler consumed it.
+fn dispatch_to_lua(app: &mut App, ev: &MouseEvent, zone: HitZone) -> bool {
+    app.lua.dispatch_mouse(&lua_payload(app, ev, zone))
+}
+
+/// The 0-indexed line and column within that line for a buffer offset.
+fn line_col(app: &App, wid: WindowId, offset: usize) -> Option<(usize, usize)> {
+    with_window_buffer(app, wid, |_, buffer| {
+        let line = buffer.char_to_line(offset.min(buffer.len_chars()));
+        (line, offset - buffer.line_start_char(line))
+    })
+}
+
+/// Move any items plugins registered into the menu registry.
+fn drain_lua_menu_items(app: &mut App) {
+    for (zone, label, cmd) in app.lua.take_context_menu_items() {
+        let zone = match zone.as_str() {
+            "buffer" => Zone::Buffer,
+            "gutter" => Zone::Gutter,
+            "chrome" => Zone::Chrome,
+            "tab" => Zone::Tab,
+            // An unknown zone name would otherwise vanish silently.
+            other => {
+                app.notify.push(ruster_notify::Notification::new(
+                    ruster_core::message::MessageLevel::Warning,
+                    ruster_core::message::MessageSource::Echo,
+                    format!("context_menu.add: unknown zone {other:?}"),
+                ));
+                continue;
+            }
+        };
+        app.mouse.menu.add(zone, MenuItem::new(label, cmd));
+    }
 }
 
 /// The menu zone a hit belongs to, or `None` where right-click means nothing.
@@ -1424,6 +1532,164 @@ mod tests {
             down(l.text.x - 1, l.text.y + 2, KeyModifiers::empty()),
         );
         assert_eq!(a.ws.borrow().windows.active_window().cursors.head(), 12);
+    }
+
+    #[test]
+    fn a_lua_handler_can_consume_a_click() {
+        let mut a = App::new("alpha bravo\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        a.lua
+            .lua
+            .load(r#"ruster.on("mouse_down", function(ev) return true end)"#)
+            .exec()
+            .expect("handler registered");
+
+        handle_mouse_event(&mut a, down(l.text.x + 4, l.text.y, KeyModifiers::empty()));
+        assert_eq!(
+            a.ws.borrow().windows.active_window().cursors.head(),
+            0,
+            "the caret did not move: the handler consumed the click"
+        );
+    }
+
+    #[test]
+    fn a_lua_handler_that_passes_leaves_the_default_behaviour() {
+        let mut a = App::new("alpha bravo\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        a.lua
+            .lua
+            .load(r#"ruster.on("mouse_down", function(ev) end)"#)
+            .exec()
+            .expect("handler registered");
+
+        handle_mouse_event(&mut a, down(l.text.x + 4, l.text.y, KeyModifiers::empty()));
+        assert_eq!(a.ws.borrow().windows.active_window().cursors.head(), 4);
+    }
+
+    /// A handler that throws must not take the mouse down with it.
+    #[test]
+    fn a_throwing_lua_handler_does_not_break_the_click() {
+        let mut a = App::new("alpha bravo\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        a.lua
+            .lua
+            .load(r#"ruster.on("mouse_down", function(ev) error("boom") end)"#)
+            .exec()
+            .expect("handler registered");
+
+        handle_mouse_event(&mut a, down(l.text.x + 4, l.text.y, KeyModifiers::empty()));
+        assert_eq!(a.ws.borrow().windows.active_window().cursors.head(), 4);
+    }
+
+    /// The payload carries enough to locate the click in the buffer.
+    #[test]
+    fn the_lua_payload_carries_position_and_zone() {
+        let mut a = App::new("alpha\nbravo\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        // Flattened into globals so the assertions stay in primitives — this
+        // crate deliberately has no mlua dependency.
+        a.lua
+            .lua
+            .load(
+                r#"
+                ruster.on("mouse_down", function(ev)
+                    kind = ev.kind
+                    zone = ev.zone
+                    button = ev.button
+                    alt = ev.alt
+                    ctrl = ev.ctrl
+                    offset = ev.offset
+                    line = ev.line
+                    col_in_line = ev.col_in_line
+                end)
+                "#,
+            )
+            .exec()
+            .expect("handler registered");
+
+        handle_mouse_event(&mut a, down(l.text.x + 2, l.text.y + 1, KeyModifiers::ALT));
+
+        let g = a.lua.lua.globals();
+        assert_eq!(g.get::<String>("kind").unwrap(), "down");
+        assert_eq!(g.get::<String>("zone").unwrap(), "buffer");
+        assert_eq!(g.get::<String>("button").unwrap(), "left");
+        assert!(g.get::<bool>("alt").unwrap());
+        assert!(!g.get::<bool>("ctrl").unwrap());
+        assert_eq!(g.get::<usize>("offset").unwrap(), 8);
+        assert_eq!(g.get::<usize>("line").unwrap(), 1);
+        assert_eq!(g.get::<usize>("col_in_line").unwrap(), 2);
+    }
+
+    /// Off in the void there is no buffer position, so those fields stay nil
+    /// rather than reporting a misleading zero.
+    #[test]
+    fn the_lua_payload_omits_position_outside_a_buffer() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        let l = laid_out(&mut a);
+        a.lua
+            .lua
+            .load(
+                r#"ruster.on("mouse_down", function(ev)
+                    zone = ev.zone
+                    has_offset = ev.offset ~= nil
+                end)"#,
+            )
+            .exec()
+            .expect("handler registered");
+
+        let blank = l.text.y + l.text.height - 1;
+        handle_mouse_event(&mut a, down(l.text.x, blank, KeyModifiers::empty()));
+
+        let g = a.lua.lua.globals();
+        assert_eq!(g.get::<String>("zone").unwrap(), "outside");
+        assert!(!g.get::<bool>("has_offset").unwrap());
+    }
+
+    #[test]
+    fn lua_can_add_a_context_menu_item() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        a.lua
+            .lua
+            .load(r#"ruster.context_menu.add("buffer", { label = "Greet", action = "echo hi" })"#)
+            .exec()
+            .expect("item registered");
+
+        handle_mouse_event(&mut a, right_down(l.text.x, l.text.y));
+        let labels = menu_labels(&mut a);
+        assert!(labels.iter().any(|s| s == "Greet"), "got {labels:?}");
+    }
+
+    /// A wheel event reaches Lua under one name whichever way it turned.
+    #[test]
+    fn wheel_events_dispatch_as_mouse_wheel() {
+        let mut a = App::new("l\n".repeat(50), PathBuf::from("f.txt"));
+        a.config.number = true;
+        let l = laid_out(&mut a);
+        a.lua
+            .lua
+            .load(
+                r#"seen = ""; ruster.on("mouse_wheel", function(ev) seen = seen .. ev.kind .. " " end)"#,
+            )
+            .exec()
+            .expect("handler registered");
+
+        for kind in [MouseKind::ScrollDown, MouseKind::ScrollUp] {
+            handle_mouse_event(
+                &mut a,
+                wheel(l.text.x, l.text.y, kind, KeyModifiers::empty()),
+            );
+        }
+
+        assert_eq!(
+            a.lua.lua.globals().get::<String>("seen").unwrap(),
+            "wheel_down wheel_up "
+        );
     }
 
     #[test]

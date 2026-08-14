@@ -99,6 +99,75 @@ pub(crate) struct Shared {
     pub(crate) dialog_cb: RefCell<Option<RegistryKey>>,
     /// `ruster.defer` / `ruster.timer` callbacks, drained on the frame tick.
     pub(crate) timers: RefCell<crate::timer::Timers>,
+    /// Context-menu items plugins added, as `(zone, label, command)`. Drained
+    /// by the app into its own registry — this crate knows nothing about zones
+    /// beyond their names.
+    pub(crate) context_menu: RefCell<Vec<(String, String, String)>>,
+}
+
+/// What a Lua mouse or hover handler receives.
+///
+/// A table, not positional arguments, so fields can be added later without
+/// breaking handlers — and a plain Rust struct here so callers never touch
+/// `mlua`.
+#[derive(Debug, Clone, Default)]
+pub struct MousePayload {
+    /// One of `down`, `up`, `drag`, `move`, `wheel`.
+    pub kind: String,
+    pub col: u16,
+    pub row: u16,
+    /// One of `left`, `right`, `middle`, `none`.
+    pub button: String,
+    /// One of `buffer`, `gutter`, `chrome`, `float`, `outside`.
+    pub zone: String,
+    pub alt: bool,
+    pub ctrl: bool,
+    pub shift: bool,
+    /// Set only over buffer text.
+    pub offset: Option<usize>,
+    pub window: Option<u32>,
+    /// 0-indexed line, and column within it.
+    pub line: Option<usize>,
+    pub col_in_line: Option<usize>,
+}
+
+impl MousePayload {
+    /// The `ruster.on` event name this payload is delivered under.
+    fn event_name(&self) -> &'static str {
+        match self.kind.as_str() {
+            "down" => "mouse_down",
+            "up" => "mouse_up",
+            "drag" => "mouse_drag",
+            "move" => "mouse_move",
+            _ => "mouse_wheel",
+        }
+    }
+
+    fn to_table(&self, lua: &Lua) -> Option<mlua::Table> {
+        let t = lua.create_table().ok()?;
+        t.set("kind", self.kind.clone()).ok()?;
+        t.set("col", self.col).ok()?;
+        t.set("row", self.row).ok()?;
+        t.set("button", self.button.clone()).ok()?;
+        t.set("zone", self.zone.clone()).ok()?;
+        t.set("alt", self.alt).ok()?;
+        t.set("ctrl", self.ctrl).ok()?;
+        t.set("shift", self.shift).ok()?;
+        // Absent fields stay nil rather than becoming a misleading zero.
+        if let Some(v) = self.offset {
+            t.set("offset", v).ok()?;
+        }
+        if let Some(v) = self.window {
+            t.set("window", v).ok()?;
+        }
+        if let Some(v) = self.line {
+            t.set("line", v).ok()?;
+        }
+        if let Some(v) = self.col_in_line {
+            t.set("col_in_line", v).ok()?;
+        }
+        Some(t)
+    }
 }
 
 pub struct LuaRuntime {
@@ -123,6 +192,7 @@ impl LuaRuntime {
             query_cb: RefCell::new(None),
             dialog_cb: RefCell::new(None),
             timers: RefCell::new(crate::timer::Timers::new()),
+            context_menu: RefCell::new(Vec::new()),
         });
 
         // The closures capture a clone of `shared`, so moving the runtime out of
@@ -206,6 +276,40 @@ impl LuaRuntime {
 
     pub fn fire_event(&self, name: &str, args: &[mlua::Value]) {
         self.shared.events.borrow().emit(&self.lua, name, args);
+    }
+
+    /// Fire an event whose handlers may consume it by returning `true`.
+    /// Returns whether any did, i.e. whether the built-in behaviour is
+    /// cancelled.
+    pub fn fire_event_consuming(&self, name: &str, args: &[mlua::Value]) -> bool {
+        self.shared
+            .events
+            .borrow()
+            .emit_consuming(&self.lua, name, args)
+    }
+
+    /// Hand a mouse event to Lua, returning whether a handler consumed it.
+    ///
+    /// Takes a plain Rust payload rather than Lua values so that callers never
+    /// need to depend on `mlua` — the whole editor talks to Lua through this
+    /// crate and nothing else.
+    pub fn dispatch_mouse(&self, payload: &MousePayload) -> bool {
+        let Some(table) = payload.to_table(&self.lua) else {
+            return false;
+        };
+        self.fire_event_consuming(payload.event_name(), &[mlua::Value::Table(table)])
+    }
+
+    /// Take the context-menu items registered since the last call.
+    pub fn take_context_menu_items(&self) -> Vec<(String, String, String)> {
+        std::mem::take(&mut *self.shared.context_menu.borrow_mut())
+    }
+
+    /// Announce that the pointer has come to rest over the buffer.
+    pub fn dispatch_hover(&self, payload: &MousePayload) {
+        if let Some(table) = payload.to_table(&self.lua) {
+            self.fire_event("hover", &[mlua::Value::Table(table)]);
+        }
     }
 
     pub fn set_frame_dt(&self, dt: f64) {
