@@ -1110,6 +1110,124 @@ mod tests {
         );
     }
 
+    /// A file whose lines are distinguishable by length, so an offset computed
+    /// from the wrong line is not accidentally the right number.
+    fn definition_fixture(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("ruster-goto-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        std::fs::write(&path, "fn a() {}\nfn bb() {}\nfn ccc() {}\n").unwrap();
+        path
+    }
+
+    #[test]
+    fn a_definition_moves_the_cursor_to_the_line_the_server_named() {
+        let (_loop, mut state) = test_state();
+        state.open_pane();
+        let id = state.shell.focus.expect("a pane was just focused");
+        state.panes.get_mut(&id).unwrap().rows = 10;
+        let path = definition_fixture("target.rs");
+
+        state.goto_definition(&[ruster_lsp::Location {
+            uri: path.to_string_lossy().into_owned(),
+            start: ruster_lsp::results::LspPositionEq {
+                line: 2,
+                character: 3,
+            },
+        }]);
+
+        // Line 2 starts after "fn a() {}\n" (10) + "fn bb() {}\n" (11) = 21,
+        // and character 3 is three further in. Spelled out rather than computed
+        // from the same conversion under test, which would pass either way.
+        let head = state.panes[&id].cursors.primary().head;
+        assert_eq!(head, 24, "cursor should be at line 2, character 3");
+        let doc = state.panes[&id].doc;
+        let opened = state.buffers.get(doc).unwrap().file_path.clone();
+        assert_eq!(
+            opened.as_deref(),
+            Some(path.as_path()),
+            "the jump should open the file the location named"
+        );
+    }
+
+    #[test]
+    fn a_definition_reply_with_no_locations_leaves_the_pane_alone() {
+        // rust-analyzer answers `null` for a cursor on whitespace, and the empty
+        // list has to be a no-op rather than a jump to the top of the file.
+        //
+        // The pane is moved somewhere first on purpose. Asserting against a
+        // fresh pane proves nothing: a cursor that got reset to 0 and a cursor
+        // that was never touched are the same reading, and the first version of
+        // this test passed against a mutation that jumped to the top of the file
+        // on every empty reply.
+        let (_loop, mut state) = test_state();
+        state.open_pane();
+        let id = state.shell.focus.expect("a pane was just focused");
+        state.panes.get_mut(&id).unwrap().rows = 10;
+        let path = definition_fixture("stay-put.rs");
+        state.goto_definition(&[ruster_lsp::Location {
+            uri: path.to_string_lossy().into_owned(),
+            start: ruster_lsp::results::LspPositionEq {
+                line: 2,
+                character: 3,
+            },
+        }]);
+        let (doc, head) = (
+            state.panes[&id].doc,
+            state.panes[&id].cursors.primary().head,
+        );
+        assert_eq!(
+            head, 24,
+            "the setup jump must have landed somewhere visible"
+        );
+
+        state.goto_definition(&[]);
+
+        assert_eq!(
+            state.panes[&id].doc, doc,
+            "an empty reply must not change the document"
+        );
+        assert_eq!(
+            state.panes[&id].cursors.primary().head,
+            head,
+            "an empty reply must leave the cursor where it was"
+        );
+    }
+
+    #[test]
+    fn a_definition_jump_scrolls_the_pane_to_what_it_jumped_to() {
+        // The failure this prevents is silent: the cursor moves correctly, the
+        // target is below the fold, and the pane looks like it did nothing.
+        let (_loop, mut state) = test_state();
+        state.open_pane();
+        let id = state.shell.focus.expect("a pane was just focused");
+        state.panes.get_mut(&id).unwrap().rows = 3;
+        let dir = std::env::temp_dir().join(format!("ruster-goto-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("long.rs");
+        std::fs::write(&path, "x\n".repeat(200)).unwrap();
+
+        state.goto_definition(&[ruster_lsp::Location {
+            uri: path.to_string_lossy().into_owned(),
+            start: ruster_lsp::results::LspPositionEq {
+                line: 150,
+                character: 0,
+            },
+        }]);
+
+        let pane = &state.panes[&id];
+        assert!(
+            pane.scroll_top > 0,
+            "a jump past the bottom of a 3-row pane must scroll: top={}",
+            pane.scroll_top
+        );
+        assert!(
+            pane.scroll_top <= 150,
+            "and must not scroll past the target: top={}",
+            pane.scroll_top
+        );
+    }
+
     #[test]
     fn a_pane_receives_the_keys_the_keymap_does_not_claim() {
         // The other half: everything the WM has no use for reaches the editor,

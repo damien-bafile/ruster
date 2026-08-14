@@ -107,7 +107,7 @@ pub struct FrameInput<'a> {
     /// would make every other caller pay for it.
     pub highlights: &'a std::cell::RefCell<crate::highlight::Highlights>,
     /// Diagnostics per document, for the signs a pane draws in its gutter.
-    pub lsp: &'a ruster_lsp::state::LspState<()>,
+    pub lsp: &'a ruster_lsp::state::LspState<crate::compositor::LspPending>,
     /// The bindings in force, so the welcome frame can say how to quit.
     pub keymap: &'a crate::keymap::Keymap,
     /// The which-key overlay, drawn only while a chord is half-typed.

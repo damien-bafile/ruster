@@ -51,6 +51,20 @@ use crate::shell::CommitBuffer;
 use ruster_render::Theme;
 use ruster_shell::{Rect, ShellState, WindowId, Workspaces};
 
+/// What a reply from a language server is for.
+///
+/// A response carries only the id of the request it answers, so the intent has
+/// to be recorded when the question is asked; this is the type parameter
+/// `LspState` is generic over. It was `()` for as long as the compositor only
+/// consumed diagnostics — which arrive unbidden and answer nothing — and that
+/// `()` was the shape of the gap: there was no way to say what a reply meant,
+/// because no request had ever been sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LspPending {
+    /// Move the focused pane to wherever the symbol is defined.
+    Definition,
+}
+
 /// The compositor's composition root: everything the backend and the input
 /// handlers need to reach. Mirrors anvil's `AnvilState` but trimmed to Phase 0.
 pub struct CompositorState<B: Backend + 'static> {
@@ -146,9 +160,8 @@ pub struct CompositorState<B: Backend + 'static> {
     ///
     /// `LspState` is keyed by `BufferId` — the same id a pane names its document
     /// by — which is why it moved out of `ruster-tui` rather than being rewritten
-    /// here. The type parameter is what a reply should be *used for*; the
-    /// compositor only consumes diagnostics so far, which arrive unbidden.
-    pub lsp: ruster_lsp::state::LspState<()>,
+    /// here. The type parameter is what a reply should be *used for*.
+    pub lsp: ruster_lsp::state::LspState<LspPending>,
     /// Syntax parses, one per document, refreshed when a buffer changes.
     pub highlights: std::cell::RefCell<crate::highlight::Highlights>,
     /// The seat's selection text, shared between editor panes and clients.
@@ -568,6 +581,87 @@ impl<B: Backend + 'static> CompositorState<B> {
         }
     }
 
+    /// Ask where the symbol under the cursor is defined.
+    ///
+    /// Best effort like everything else here: a file with no server, a cursor on
+    /// nothing, or a server that answers with no location all leave the pane
+    /// exactly as it was, and say why in the minibuffer rather than in silence.
+    pub fn lsp_definition(&mut self) {
+        let Some(id) = self.focused_pane() else {
+            return self.report("definition: no editor pane has focus".to_string());
+        };
+        let Some(pane) = self.panes.get(&id) else {
+            return;
+        };
+        let (doc_id, offset) = (pane.doc, pane.cursors.primary().head);
+        let Some(document) = self.buffers.get(doc_id) else {
+            return;
+        };
+        let text = document.buffer.to_string();
+        // The server is the one the `didOpen` went to, taken from the document
+        // rather than re-derived from the path: a request routed to a second
+        // server for the same file would be answered against a document that
+        // server has never been told about.
+        let Some(lsp_doc) = self.lsp.doc(doc_id) else {
+            return self.report("definition: no language server for this file".to_string());
+        };
+        let (uri, key) = (lsp_doc.uri.clone(), lsp_doc.key.clone());
+        // Character offsets are not LSP positions: the protocol counts UTF-16
+        // code units, so anything past an astral character on the line would ask
+        // about the wrong column.
+        let pos = ruster_lsp::position::offset_to_position(&text, offset);
+        let params = ruster_lsp::protocol::text_document_position(&uri, pos);
+        if !self.lsp.request(
+            &key,
+            "textDocument/definition",
+            params,
+            LspPending::Definition,
+        ) {
+            self.report("definition: the language server is not running".to_string());
+        }
+    }
+
+    /// Show whatever the server said `textDocument/definition` resolves to.
+    ///
+    /// Takes the locations already parsed rather than the raw reply, which keeps
+    /// `serde_json` out of this crate's dependencies for the sake of one type in
+    /// one signature.
+    pub(crate) fn goto_definition(&mut self, locations: &[ruster_lsp::Location]) {
+        let Some(location) = locations.first() else {
+            return self.report("definition: no definition found".to_string());
+        };
+        // `parse_locations` has already turned a `file://` URI into a path, and
+        // handles both `Location` and `LocationLink`, which are different shapes
+        // for the same answer that different servers choose between.
+        self.open_file(&location.uri);
+        let Some(id) = self.focused_pane() else {
+            return;
+        };
+        // `panes` and `buffers` are distinct fields, so the mutable and
+        // immutable borrows below are disjoint.
+        let Some(pane) = self.panes.get_mut(&id) else {
+            return;
+        };
+        let Some(document) = self.buffers.get(pane.doc) else {
+            return;
+        };
+        // Back through the same conversion, the other way: the server answers in
+        // UTF-16 columns and the buffer is indexed by character.
+        let text = document.buffer.to_string();
+        let offset = ruster_lsp::position_to_offset(
+            &text,
+            ruster_lsp::LspPosition {
+                line: location.start.line,
+                character: location.start.character,
+            },
+        );
+        pane.cursors = ruster_core::cursor::CursorSet::single(offset);
+        // Without this the jump lands off screen whenever the definition is
+        // further down the file than the pane is tall, which is most of the time
+        // and looks exactly like nothing happening.
+        pane.follow_cursor(&document.buffer);
+    }
+
     /// Tell a language server about a document a pane has opened.
     ///
     /// Best effort by design: a language with no server configured, or a server
@@ -584,7 +678,7 @@ impl<B: Backend + 'static> CompositorState<B> {
         let Some(lang) = language_of(&path) else {
             return;
         };
-        let root = ruster_lsp::state::LspState::<()>::root_for(&path);
+        let root = ruster_lsp::state::LspState::<LspPending>::root_for(&path);
         let text = document.buffer.to_string();
         let sync = self.lsp.sync(doc, &path, lang, &text, &root);
         // Said out loud because everything about a language server is invisible
@@ -602,6 +696,30 @@ impl<B: Backend + 'static> CompositorState<B> {
     /// answering.
     pub fn poll_lsp(&mut self) {
         for routed in self.lsp.poll() {
+            // Replies to our own requests. Everything that is not a
+            // notification used to be dropped here with a trace line, which is
+            // why no request had ever been worth sending: `hover` and
+            // `definition` are questions, and nothing was listening for answers.
+            if let ruster_lsp::ServerMessage::Response { id, result, error } = &routed.message {
+                let Some(pending) = self.lsp.take_pending(&routed.key, *id) else {
+                    // A reply to a request this compositor did not send, or one
+                    // whose answer has already been taken.
+                    tracing::debug!(id, "lsp reply with nothing waiting on it");
+                    continue;
+                };
+                if let Some(error) = error {
+                    tracing::warn!(?pending, %error, "lsp request failed");
+                    self.report(format!("{pending:?}: the language server refused"));
+                    continue;
+                }
+                match pending {
+                    LspPending::Definition => {
+                        let locations = ruster_lsp::parse_locations(result);
+                        self.goto_definition(&locations);
+                    }
+                }
+                continue;
+            }
             let ruster_lsp::ServerMessage::Notification { method, params } = &routed.message else {
                 tracing::trace!("lsp non-notification");
                 continue;
@@ -752,6 +870,7 @@ impl<B: Backend + 'static> CompositorState<B> {
             Action::ToggleHelp => self.help_pinned = !self.help_pinned,
             Action::NewPane => self.open_pane(),
             Action::Edit(path) => self.open_file(&path),
+            Action::Definition => self.lsp_definition(),
             Action::Write => self.write_pane(),
             Action::ShowBuffer(name) => self.show_named_document(&name),
             Action::Bind(binding, action) => self.keymap.bind(&binding, &action),

@@ -70,6 +70,8 @@ pub enum Action {
     /// Show an already-open document, named by its display name or path, in the
     /// focused pane.
     ShowBuffer(String),
+    /// Jump the focused pane to the definition of the symbol under its cursor.
+    Definition,
     /// Pin the shortcut helper open, or unpin it.
     ToggleHelp,
     /// Open the `:` prompt (or `=` for Lua).
@@ -685,6 +687,11 @@ impl Action {
             ("screenshot", _, _) => Some(Action::Screenshot),
             ("toggle help" | "help" | "toggle whichkey", _, _) => Some(Action::ToggleHelp),
             ("new pane" | "pane", _, _) => Some(Action::NewPane),
+            // `gd` as well, because the pane runs the vim keymap and that is
+            // what the same jump is called there.
+            ("definition" | "goto definition" | "go to definition" | "gd", _, _) => {
+                Some(Action::Definition)
+            }
             // `w` as well as `write`, because the prompt this reaches is a `:`
             // line and `:w` is the muscle memory it inherits.
             ("write" | "w", _, _) => Some(Action::Write),
@@ -1331,6 +1338,30 @@ mod tests {
         assert_eq!(Action::from_name("edit"), None);
         // And a word merely starting with the verb is not the verb.
         assert_eq!(Action::from_name("editor"), None);
+    }
+
+    #[test]
+    fn a_definition_jump_answers_to_every_name_it_is_bound_by() {
+        // This vocabulary is shared: `Action::from_name` is what a keybind, the
+        // `:` prompt and `ruster.wm.action` all resolve through, so a name
+        // missing here is missing from all three at once.
+        for name in [
+            "definition",
+            "goto definition",
+            "goto-definition",
+            "go to definition",
+            "gd",
+            "  Definition  ",
+        ] {
+            assert_eq!(
+                Action::from_name(name),
+                Some(Action::Definition),
+                "{name:?} should resolve to a definition jump"
+            );
+        }
+        // `gd` is the whole word or nothing; a pane binding must not swallow a
+        // command that merely starts with it.
+        assert_eq!(Action::from_name("gdb"), None);
     }
 
     #[test]
