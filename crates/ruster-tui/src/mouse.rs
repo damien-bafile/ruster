@@ -205,6 +205,11 @@ pub enum ChromeKind {
     Header(WindowId),
     /// The window's statusline row.
     StatusLine(WindowId),
+    /// A named section of a window's statusline, by index into the last
+    /// frame's recorded spans. The index rather than the name because this
+    /// type is `Copy` and travels through every match in this module; the name
+    /// is one lookup away and only the handlers need it.
+    StatusSection { wid: WindowId, section: usize },
     /// A boundary shared with an adjacent window, draggable to resize.
     /// `vertical` means the edge itself runs vertically — a left/right split.
     SplitEdge { wid: WindowId, vertical: bool },
@@ -271,6 +276,12 @@ pub fn hit_test(app: &App, col: u16, row: u16) -> HitZone {
             return HitZone::Chrome(ChromeKind::Header(wid));
         }
         if row == last_row {
+            // A named section wins over the bar it sits on, but not over the
+            // resize edge above: dragging a split apart matters more than a
+            // click on a label, and the edge cases are checked first.
+            if let Some(section) = section_at(app, wid, col, row) {
+                return HitZone::Chrome(ChromeKind::StatusSection { wid, section });
+            }
             return HitZone::Chrome(ChromeKind::StatusLine(wid));
         }
         // Inside the window, on a text row, left of the text: the gutter.
@@ -282,6 +293,18 @@ pub fn hit_test(app: &App, col: u16, row: u16) -> HitZone {
     }
 
     HitZone::Outside
+}
+
+/// The statusline section of `wid` drawn over this cell, if any.
+///
+/// Zero-width sections — an inactive window's blank mode label, a plugin
+/// section that returned an empty string — contain no cell, so they cannot be
+/// hit. That is what keeps an invisible section from swallowing the clicks
+/// meant for its neighbour.
+fn section_at(app: &App, wid: WindowId, col: u16, row: u16) -> Option<usize> {
+    app.last_status_sections
+        .iter()
+        .position(|s| s.window == wid && s.row == row && col >= s.col && col < s.col + s.width)
 }
 
 fn contains(r: ruster_render::Rect, col: u16, row: u16) -> bool {
@@ -426,6 +449,7 @@ fn on_mouse_scroll(app: &mut App, ev: MouseEvent, zone: HitZone) {
         HitZone::Buffer(wid, _) | HitZone::Gutter(wid, _) => wid,
         HitZone::Chrome(ChromeKind::Header(wid))
         | HitZone::Chrome(ChromeKind::StatusLine(wid))
+        | HitZone::Chrome(ChromeKind::StatusSection { wid, .. })
         | HitZone::Chrome(ChromeKind::SplitEdge { wid, .. }) => wid,
         // A tab strip has no scroll state of its own: it follows the active
         // buffer, so there is nothing here for the wheel to move.
@@ -602,6 +626,26 @@ fn on_mouse_down(app: &mut App, ev: MouseEvent, zone: HitZone) {
         HitZone::Chrome(ChromeKind::Header(wid)) | HitZone::Chrome(ChromeKind::StatusLine(wid)) => {
             app.ws.borrow_mut().windows.focus_id(wid);
         }
+        // A section gets first refusal on the click; one with no handler is
+        // still part of the bar, so it falls back to focusing the window —
+        // otherwise registering a section would make a strip of the statusline
+        // stop doing what the rest of it does.
+        HitZone::Chrome(ChromeKind::StatusSection { wid, section }) => {
+            let name = app
+                .last_status_sections
+                .get(section)
+                .map(|s| s.name.clone());
+            let handled = match name {
+                Some(name) => {
+                    let payload = lua_payload(app, &ev, zone);
+                    app.lua.dispatch_status_click(&name, &payload)
+                }
+                None => false,
+            };
+            if !handled {
+                app.ws.borrow_mut().windows.focus_id(wid);
+            }
+        }
         HitZone::Gutter(wid, line) => {
             // Put the caret at the start of the line whose gutter was clicked.
             let offset = with_window_buffer(app, wid, |_, buffer| {
@@ -675,6 +719,14 @@ pub(crate) fn lua_payload(
         shift: ev.modifiers.contains(KeyModifiers::SHIFT),
         ..Default::default()
     };
+    // The section under the pointer, so a plain `mouse_down` handler can tell
+    // which part of the bar was pressed without registering a section at all.
+    if let HitZone::Chrome(ChromeKind::StatusSection { section, .. }) = zone {
+        payload.section = app
+            .last_status_sections
+            .get(section)
+            .map(|s| s.name.clone());
+    }
     // Buffer position, only where there is text under the pointer.
     if let HitZone::Buffer(wid, offset) = zone {
         payload.offset = Some(offset);
@@ -2196,6 +2248,211 @@ mod tests {
         handle_mouse_event(&mut a, right_down(t.col, t.row));
         let labels = menu_labels(&mut a);
         assert!(labels.iter().any(|s| s == "Buffer List"), "got {labels:?}");
+    }
+
+    /// The recorded span of the named section of the first window.
+    fn section_span(a: &App, name: &str) -> crate::app::StatusSpan {
+        a.last_status_sections
+            .iter()
+            .find(|s| s.name == name)
+            .unwrap_or_else(|| {
+                panic!(
+                    "no {name:?} section in {:?}",
+                    a.last_status_sections
+                        .iter()
+                        .map(|s| &s.name)
+                        .collect::<Vec<_>>()
+                )
+            })
+            .clone()
+    }
+
+    #[test]
+    fn hit_test_names_the_statusline_section_under_the_cell() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        let l = laid_out(&mut a);
+        let mode = section_span(&a, "mode");
+        assert_eq!(mode.window, l.window);
+
+        let hit = hit_test(&a, mode.col, mode.row);
+        let HitZone::Chrome(ChromeKind::StatusSection { wid, section }) = hit else {
+            panic!("expected a section, got {hit:?}");
+        };
+        assert_eq!(wid, l.window);
+        assert_eq!(a.last_status_sections[section].name, "mode");
+    }
+
+    /// The gaps between sections are still the bar itself, so a click there
+    /// does what a click on the bar has always done.
+    #[test]
+    fn a_cell_between_two_sections_is_the_bar_not_a_section() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        let l = laid_out(&mut a);
+        let mode = section_span(&a, "mode");
+        let gap = mode.col + mode.width;
+        assert_eq!(
+            hit_test(&a, gap, mode.row),
+            HitZone::Chrome(ChromeKind::StatusLine(l.window)),
+            "the padding cell after the mode label"
+        );
+    }
+
+    /// An inactive window's mode label is empty, and an empty section must not
+    /// claim the cells its neighbours or the bare bar occupy.
+    #[test]
+    fn an_empty_section_is_never_hit() {
+        use ruster_core::windows::SplitDir;
+
+        // Side by side, so neither statusline row is a shared boundary — a
+        // resize edge would answer before any section did and the check would
+        // pass without testing anything.
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        a.ws.borrow_mut().windows.split(SplitDir::Vertical);
+        a.render();
+        let inactive = a
+            .last_status_sections
+            .iter()
+            .find(|s| s.name == "mode" && s.width == 0)
+            .cloned()
+            .expect("the unfocused window's mode label is empty");
+
+        // Every cell of that row resolves to the bar or another section, never
+        // to the empty one.
+        for col in inactive.col..inactive.col + 4 {
+            if let HitZone::Chrome(ChromeKind::StatusSection { section, .. }) =
+                hit_test(&a, col, inactive.row)
+            {
+                assert_ne!(
+                    a.last_status_sections[section].width, 0,
+                    "a zero-width section was hit at column {col}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn clicking_a_section_with_no_handler_still_focuses_the_window() {
+        use ruster_core::windows::SplitDir;
+
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        a.ws.borrow_mut().windows.split(SplitDir::Vertical);
+        a.render();
+        let active = a.ws.borrow().windows.active();
+        let other = a
+            .last_status_sections
+            .iter()
+            .find(|s| s.window != active && s.width > 0)
+            .cloned()
+            .expect("the other window drew a section");
+
+        handle_mouse_event(&mut a, down(other.col, other.row, KeyModifiers::empty()));
+        assert_eq!(a.ws.borrow().windows.active(), other.window);
+    }
+
+    /// Register a Lua section with a click handler, render, and hand back its
+    /// recorded span.
+    fn lua_section(a: &mut App, code: &str) -> crate::app::StatusSpan {
+        a.lua.lua.load(code).exec().expect("section registered");
+        a.render();
+        section_span(a, "clock")
+    }
+
+    #[test]
+    fn clicking_a_lua_section_reaches_its_handler() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        let span = lua_section(
+            &mut a,
+            r#"clicked = ""
+               ruster.statusline.section("right", function() return "12:00" end, {
+                   name = "clock",
+                   on_click = function(ev) clicked = ev.section .. ":" .. ev.button end,
+               })"#,
+        );
+        assert!(span.width > 0, "the section was drawn");
+
+        handle_mouse_event(&mut a, down(span.col, span.row, KeyModifiers::empty()));
+        assert_eq!(
+            a.lua.lua.globals().get::<String>("clicked").unwrap(),
+            "clock:left"
+        );
+    }
+
+    /// A section that handles its own click must not also move the focus —
+    /// that is the difference between a handler and a decoration.
+    #[test]
+    fn a_handled_section_click_does_not_fall_through_to_focus() {
+        use ruster_core::windows::SplitDir;
+
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        a.ws.borrow_mut().windows.split(SplitDir::Horizontal);
+        let span = lua_section(
+            &mut a,
+            r#"ruster.statusline.section("right", function() return "12:00" end, {
+                   name = "clock",
+                   on_click = function(ev) end,
+               })"#,
+        );
+        let focused = a.ws.borrow().windows.active();
+        assert_eq!(
+            span.window, focused,
+            "Lua sections are drawn on the active window"
+        );
+
+        handle_mouse_event(&mut a, down(span.col, span.row, KeyModifiers::empty()));
+        assert_eq!(a.ws.borrow().windows.active(), focused);
+    }
+
+    /// The section name reaches an ordinary `mouse_down` handler too, so a
+    /// plugin can watch the bar without registering a section of its own.
+    #[test]
+    fn the_lua_payload_carries_the_section_name() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        let l = laid_out(&mut a);
+        a.lua
+            .lua
+            .load(r#"ruster.on("mouse_down", function(ev) seen = ev.section end)"#)
+            .exec()
+            .expect("handler registered");
+        let mode = section_span(&a, "mode");
+
+        handle_mouse_event(&mut a, down(mode.col, mode.row, KeyModifiers::empty()));
+        assert_eq!(a.lua.lua.globals().get::<String>("seen").unwrap(), "mode");
+
+        // ...and stays nil where there is no section, rather than going stale.
+        handle_mouse_event(&mut a, down(l.text.x, l.rect.y, KeyModifiers::empty()));
+        assert!(a
+            .lua
+            .lua
+            .globals()
+            .get::<Option<String>>("seen")
+            .unwrap()
+            .is_none());
+    }
+
+    /// The statusline row of a window with a neighbour below is a resize
+    /// handle, and it has to stay one — a section on it must not eat the drag.
+    #[test]
+    fn a_section_does_not_steal_the_split_edge() {
+        use ruster_core::windows::SplitDir;
+
+        let mut a = App::new("l\n".repeat(200), PathBuf::from("f.txt"));
+        a.ws.borrow_mut().windows.split(SplitDir::Horizontal);
+        a.render();
+        let top = a
+            .last_layout
+            .iter()
+            .min_by_key(|l| l.rect.y)
+            .copied()
+            .expect("a topmost window");
+        let edge_row = top.rect.y + top.rect.height - 1;
+
+        assert_eq!(
+            hit_test(&a, top.rect.x + 1, edge_row),
+            HitZone::Chrome(ChromeKind::SplitEdge {
+                wid: top.window,
+                vertical: false,
+            })
+        );
     }
 
     #[test]
