@@ -1,10 +1,25 @@
 # Phase 3 — Editor-in-desktop
 
-**Status:** not started. `ruster-compositor` declares `ruster-core` in its
-`Cargo.toml` and imports nothing from it — `grep -rn ruster_core
-crates/ruster-compositor/src` returns nothing at all. `Chrome::draw_editor_frame`
-(`chrome.rs:293`) exists, is called from three tests and nowhere else, and lost
-its last real caller when the hardcoded welcome buffer was deleted.
+**Status:** all eight stages written, 2026-08-14. Stages 0–6 are verified with
+rows in `docs/compositor.md`; **Stage 7's code is done and its round-trip is
+not**, which is the one thing left in this plan and is marked ⛔ there rather
+than quietly counted as finished.
+
+The paragraph that used to be here said "not started", and described a
+`ruster-compositor` that imported nothing from `ruster-core`. It stayed that way
+through six stages of it doing precisely the opposite, which is the failure mode
+a status header has: nobody reads the top of a plan they are in the middle of.
+
+| Stage | State |
+| :--- | :--- |
+| 0 prerequisites | ✅ frame callbacks to every visible window, monospace panes, the render-element measurement that decided Stage 2 |
+| 1 a pane that exists and takes focus | ✅ an ordinary `WindowId` in the same tree; no `Node::Leaf` variant was needed |
+| 2 a real buffer, read-only | ✅ on the cell grid, from `cell_metrics` |
+| 3 editing | ✅ through the editor's own `VimState` and `EditSession` |
+| 4 multi-buffer and persistence | ✅ shared `BufferStore`; a restored pane comes back with its file |
+| 5 syntax | ✅ reuses `SyntaxEngine`; runs are the spans *and* the text between them |
+| 6 the terminal leaf | ✅ satisfied honestly by spawning a client — no VT parser in the display server |
+| 7 LSP inside a tile | ⛔ diagnostics, go-to-definition and hover are written and unit-tested; **nothing has yet spoken to a running `rust-analyzer`** |
 
 **Goal (from the spec):** multi-buffer editing, terminal leaf, LSP inside a
 tile, xdg-desktop-portal integration. Or, in the spec's own words for the

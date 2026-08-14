@@ -1,10 +1,27 @@
 name: Rust
 
 on:
+  # Every branch, not just main. Long-lived branches are the norm here — the
+  # compositor lived on one for 97 commits — and with `main` alone a branch is
+  # checked only while a pull request happens to be open against it. Four
+  # commits reached `compositor` after its last PR run and were merged carrying
+  # a `cargo fmt --check` failure, which is CI's *first* step: nothing after it
+  # had been run on that code either.
+  #
+  # A branch with an open PR therefore builds twice, once per trigger. That is
+  # the price of a branch without one being built at all, and the concurrency
+  # group below at least keeps a fast series of pushes from queueing up runs
+  # nobody will read.
   push:
-    branches: [ "main" ]
+    branches: [ "**" ]
   pull_request:
     branches: [ "main" ]
+
+# One run per ref: pushing three times in a minute should test the third commit,
+# not all three. Superseded runs are cancelled rather than left to finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
