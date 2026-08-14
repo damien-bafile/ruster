@@ -868,6 +868,8 @@ pub struct Config {
     pub line_ending: String,
     pub number: bool,
     pub relativenumber: bool,
+    /// Show the strip of open buffers above the window area.
+    pub bufferline: bool,
     pub theme: String,
     /// Font for the GUI: an absolute path, or a filename looked up in the user
     /// font dir. `None` tries a list of common Nerd/mono fonts. A Nerd Font is
@@ -970,6 +972,7 @@ impl Config {
             ),
             (("gutter", "number"), Bool(self.number)),
             (("gutter", "relativenumber"), Bool(self.relativenumber)),
+            (("bufferline", "enabled"), Bool(self.bufferline)),
             (("whichkey", "enabled"), Bool(self.whichkey_enabled)),
             (("whichkey", "timeoutlen"), Int(self.timeoutlen as i64)),
             (
@@ -1170,6 +1173,7 @@ impl Config {
             line_ending: st("general", "line_ending").unwrap_or(d.line_ending),
             number: bl("gutter", "number", d.number),
             relativenumber: bl("gutter", "relativenumber", d.relativenumber),
+            bufferline: bl("bufferline", "enabled", d.bufferline),
             theme: st("general", "theme").unwrap_or(d.theme),
             gui_font: ostr("gui", "font"),
             font_size: u("gui", "font_size", d.font_size),
@@ -1303,6 +1307,7 @@ impl Default for Config {
             line_ending: "lf".into(),
             number: false,
             relativenumber: false,
+            bufferline: true,
             theme: "catppuccin-mocha".into(),
             gui_font: None,
             font_size: 20,

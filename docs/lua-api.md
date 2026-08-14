@@ -99,15 +99,21 @@ The payload is a table:
 | `kind` | string | `down`, `up`, `drag`, `move`, `wheel_up`, `wheel_down`, `wheel_left`, `wheel_right` |
 | `col`, `row` | integer | Cell coordinates, origin top-left |
 | `button` | string | `left`, `right`, `middle`, `none` |
-| `zone` | string | `buffer`, `gutter`, `chrome`, `float`, `outside` |
+| `zone` | string | `buffer`, `gutter`, `tab`, `chrome`, `float`, `outside` |
 | `alt`, `ctrl`, `shift` | boolean | Modifier keys held |
 | `offset` | integer? | Character offset into the buffer |
 | `window` | integer? | Window id |
 | `line` | integer? | 0-indexed buffer line |
 | `col_in_line` | integer? | 0-indexed column within that line |
+| `section` | string? | Name of the statusline section under the pointer |
 
-The last four are present only when the pointer is over buffer text
-(`zone == "buffer"`); elsewhere they are `nil` rather than a misleading zero.
+`offset`, `window`, `line` and `col_in_line` are present only when the pointer
+is over buffer text (`zone == "buffer"`), and `section` only over a named
+statusline section; elsewhere they are `nil` rather than a misleading zero.
+
+`zone == "tab"` is the bufferline strip: left-click switches to that buffer,
+middle-click closes it, right-click raises the tab menu. Turn the strip off with
+`bufferline.enabled = false`.
 
 `"hover"` fires with the same payload once the pointer has been still over
 buffer text for `mouse.hover_delay_ms` (300 by default). It fires once per
@@ -188,7 +194,7 @@ Buffer and window ids are stable integers. `nvim_open_win` splits the active
 window; `nvim_win_close` closes the active window (id-targeted close is a
 follow-up).
 
-### `ruster.statusline.section(pos, fn)`
+### `ruster.statusline.section(pos, fn [, opts])`
 
 Register a statusline component. `pos` is `"left"`, `"center"`, or `"right"`.
 `fn` is called each frame and must return a string; empty strings are skipped.
@@ -197,11 +203,27 @@ components (mode, file name, percentage, and `line,col`). The statusline uses
 the active theme's `statusline_fg` color and `divider` background; the first
 segment (mode) is highlighted on the `accent` background for the active window.
 
+`opts` is optional:
+
+| Field | Meaning |
+| --- | --- |
+| `name` | How the section is identified. Defaults to the position plus an ordinal (`"right1"`) |
+| `on_click` | Called with a [mouse event](#mouse-events) when the section is clicked |
+
+A click on a section with no `on_click` focuses the window, which is what a
+click anywhere else on the statusline does. The section's `name` also appears as
+`ev.section` on ordinary `mouse_down` events, so a plugin can watch the bar
+without registering a section of its own.
+
 ```lua
--- Show the current git branch on the right side of the statusline.
+-- Show the current git branch on the right side of the statusline,
+-- and open the status view when it is clicked.
 ruster.statusline.section("right", function()
   return "⎇ main"
-end)
+end, {
+  name = "branch",
+  on_click = function(ev) ruster.cmd("Git") end,
+})
 ```
 
 ### `ruster.lsp`

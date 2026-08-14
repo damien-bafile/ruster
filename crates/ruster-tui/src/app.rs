@@ -76,6 +76,33 @@ pub struct WindowLayout {
     pub scroll_left: usize,
 }
 
+/// Where one bufferline tab was drawn, and which buffer it stands for.
+///
+/// The strip scrolls and truncates to fit, so which buffer sits under a column
+/// is only knowable from the frame that was drawn — recomputing the layout in
+/// the hit-test would be a second answer to a question that already has one.
+#[derive(Debug, Clone, Copy)]
+pub struct TabSpan {
+    pub buffer: BufferId,
+    pub row: u16,
+    pub col: u16,
+    pub width: u16,
+}
+
+/// Where one named statusline section was drawn.
+///
+/// Named rather than indexed because the name is what a plugin registered and
+/// what its click handler is looked up by; the window is what a click falls
+/// back to focusing when no handler claims it.
+#[derive(Debug, Clone)]
+pub struct StatusSpan {
+    pub window: ruster_core::windows::WindowId,
+    pub name: String,
+    pub row: u16,
+    pub col: u16,
+    pub width: u16,
+}
+
 /// Infinite iterator over adaptive labels: a-z, aa-az, ba-bz, …
 fn label_pool_iter() -> impl Iterator<Item = String> {
     let single = ('a'..='z').map(|c| c.to_string());
@@ -1584,6 +1611,11 @@ pub struct App {
     /// hit-testing. Floats themselves are built fresh each frame and not kept;
     /// only where they landed is worth remembering.
     pub(crate) last_floats: Vec<ruster_render::Rect>,
+    /// Bufferline tab geometry from the last rendered frame, left to right.
+    pub(crate) last_tabs: Vec<TabSpan>,
+    /// Statusline section geometry from the last rendered frame, one entry per
+    /// section of every window that was drawn.
+    pub(crate) last_status_sections: Vec<StatusSpan>,
     /// The area the window tree was divided into on the last frame, for
     /// resolving split-edge drags against the geometry actually drawn.
     pub(crate) last_window_area: ruster_core::windows::Rect,
@@ -2096,6 +2128,8 @@ impl App {
             flash: None,
             last_layout: Vec::new(),
             last_floats: Vec::new(),
+            last_tabs: Vec::new(),
+            last_status_sections: Vec::new(),
             last_window_area: ruster_core::windows::Rect::new(0, 0, 0, 0),
             mouse: crate::mouse::MouseState::default(),
             is_gui: false,
@@ -4567,6 +4601,55 @@ impl App {
         self.clear_selection();
     }
 
+    /// Take the bufferline's row off the top of the window area and build the
+    /// strip that goes in it, recording where each tab landed.
+    ///
+    /// Returns `None` when the strip is off or there is no room for it. A
+    /// window needs three rows before it shows any text at all — header,
+    /// a text row, statusline — so on four rows or fewer the strip would be
+    /// spending the only line of buffer there is.
+    fn carve_bufferline(
+        &mut self,
+        area: &mut ruster_core::windows::Rect,
+    ) -> Option<ruster_render::BufferlineView> {
+        self.last_tabs.clear();
+        if !self.config.bufferline || area.height <= 3 {
+            return None;
+        }
+        let ws = self.ws.borrow();
+        let active = ws.active_buffer();
+        let ids: Vec<BufferId> = ws.buffers.ids().to_vec();
+        let entries: Vec<ruster_render::BufferEntry> = ids
+            .iter()
+            .filter_map(|&id| {
+                ws.buffers.get(id).map(|doc| ruster_render::BufferEntry {
+                    name: doc.name.clone(),
+                    modified: doc.modified,
+                    active: id == active,
+                })
+            })
+            .collect();
+        drop(ws);
+
+        let rect = RRect::new(area.x, area.y, area.width, 1);
+        let view = ruster_render::BufferlineView::laid_out(rect, &entries);
+        self.last_tabs = view
+            .tabs
+            .iter()
+            .filter_map(|t| {
+                Some(TabSpan {
+                    buffer: *ids.get(t.idx)?,
+                    row: rect.y,
+                    col: rect.x + t.col,
+                    width: t.width,
+                })
+            })
+            .collect();
+        area.y += 1;
+        area.height -= 1;
+        Some(view)
+    }
+
     pub(crate) fn render(&mut self) {
         self.notify.tick();
         self.drain_git_hunks();
@@ -4611,10 +4694,11 @@ impl App {
         let smooth = self.has_smooth_cursor;
         let (anim_x, anim_y) = (self.cursor_anim.cell_x, self.cursor_anim.cell_y);
 
-        // Lua-registered statusline sections (global; shown on the active window).
-        let lua_left = self.lua.statusline_sections("left").join("  ");
-        let lua_center = self.lua.statusline_sections("center").join("  ");
-        let lua_right = self.lua.statusline_sections("right").join("  ");
+        // Lua-registered statusline sections (global; shown on the active
+        // window), each still carrying the name a click is reported under.
+        let lua_left = self.lua.statusline_sections("left");
+        let lua_center = self.lua.statusline_sections("center");
+        let lua_right = self.lua.statusline_sections("right");
 
         // The Emacs region (mark..point) is highlighted like a char selection.
         let emacs_mark = if self.editmode == EditMode::Emacs {
@@ -4627,7 +4711,11 @@ impl App {
         // Rebuilt below from the geometry actually used to draw this frame; the
         // mouse hit-test reads it back.
         self.last_layout.clear();
+        self.last_status_sections.clear();
         let sidebar_rect = self.sidebar.carve(&mut buf_area);
+        // After the sidebar, so the strip spans the windows rather than the
+        // whole screen: the sidebar is a column beside them, not under them.
+        let bufferline = self.carve_bufferline(&mut buf_area);
         // The area the window tree divides. A split ratio only means something
         // against this, so a resize has to use the same rectangle the frame was
         // laid out with.
@@ -4770,7 +4858,7 @@ impl App {
                 // Normal the underlying vim mode (NORMAL/VISUAL) shows through.
                 let focused_terminal =
                     is_active && self.terminal_focused && self.terminals.contains_key(&buf_id);
-                let mut left = if focused_terminal {
+                let left = if focused_terminal {
                     "-- TERMINAL --".to_string()
                 } else if is_active {
                     let mut lbl = mode_lbl.clone();
@@ -4784,31 +4872,34 @@ impl App {
                     String::new()
                 };
                 let runner_msg = self.runner_status_text();
-                let mut center = if let Some(msg) = runner_msg {
+                let center = if let Some(msg) = runner_msg {
                     format!(" {} {} ", msg, name)
                 } else {
                     name.clone()
                 };
-                let mut right = format!("{}%  {},{}", pct, cline + 1, ccol + 1);
-                if is_active {
-                    if !lua_left.is_empty() {
-                        left = if left.is_empty() {
-                            lua_left.clone()
-                        } else {
-                            format!("{}  {}", left, lua_left)
-                        };
+                let right = format!("{}%  {},{}", pct, cline + 1, ccol + 1);
+                // The built-ins are named like any plugin section: a click has
+                // to be able to say which one it landed on, and "the mode
+                // label" is as much an answer as "the clock" is. Lua sections
+                // are appended to their group (prepended on the right, where
+                // the position readout stays outermost) — the order the bar
+                // has always had, now with the pieces still separable.
+                let sections = |builtin: (&str, String), lua: &[(String, String)], last| {
+                    let mine =
+                        std::iter::once(ruster_render::StatusSection::new(builtin.0, builtin.1));
+                    let theirs = if is_active { lua } else { &[][..] }
+                        .iter()
+                        .map(|(n, t)| ruster_render::StatusSection::new(n.clone(), t.clone()));
+                    if last {
+                        theirs.chain(mine).collect::<Vec<_>>()
+                    } else {
+                        mine.chain(theirs).collect()
                     }
-                    if !lua_center.is_empty() {
-                        center = format!("{}  {}", center, lua_center);
-                    }
-                    if !lua_right.is_empty() {
-                        right = format!("{}  {}", lua_right, right);
-                    }
-                }
+                };
                 let statusline = StatuslineView {
-                    left,
-                    center,
-                    right,
+                    left: sections(("mode", left), &lua_left, false),
+                    center: sections(("file", center), &lua_center, false),
+                    right: sections(("position", right), &lua_right, true),
                     active: is_active,
                     mode: vim_mode_to_ui_mode(mode),
                 };
@@ -4947,6 +5038,21 @@ impl App {
                     // no other way to learn how wide the view came out.
                     win.width = text_w;
                 }
+                // Where each statusline section landed, in screen cells, from
+                // the same layout both backends draw it with.
+                self.last_status_sections
+                    .extend(
+                        statusline
+                            .spans(rrect.width)
+                            .into_iter()
+                            .map(|s| StatusSpan {
+                                window: wid,
+                                name: s.name,
+                                row: rrect.y + rrect.height.saturating_sub(1),
+                                col: rrect.x + s.col,
+                                width: s.width,
+                            }),
+                    );
                 // A terminal window draws its own grid, so there is no buffer
                 // text to click into.
                 if terminal.is_none() {
@@ -5169,6 +5275,7 @@ impl App {
             dialog: self.dialog.as_ref().map(|d| d.view()),
             floats,
             windows: views,
+            bufferline,
             cmdline: cmdline.as_deref(),
             noice_mini,
             noice_notify,
@@ -7054,25 +7161,49 @@ impl App {
     }
 
     fn delete_active_buffer(&mut self) {
+        let cur = self.ws.borrow().active_buffer();
+        self.close_buffer(cur);
+    }
+
+    /// Show `id` in the active window. Ignores ids that are no longer open, so
+    /// a click on a tab from a stale frame does nothing rather than something
+    /// wrong.
+    pub(crate) fn show_buffer(&mut self, id: BufferId) {
         let mut w = self.ws.borrow_mut();
-        let cur = w.active_buffer();
-        let other = w.buffers.ids().iter().copied().find(|&id| id != cur);
-        match other {
-            Some(o) => {
-                if w.buffers.get(cur).map(|d| d.modified).unwrap_or(false) {
-                    drop(w);
-                    self.echo_warn("E89: buffer modified (add ! to override)".to_string());
-                    return;
-                }
-                w.set_active_buffer(o);
-                w.buffers.close(cur);
-                drop(w);
-                self.forget_buffer(cur);
-            }
-            None => {
-                drop(w);
-                self.echo_warn("E514: cannot close last buffer".to_string());
-            }
+        if w.buffers.get(id).is_some() {
+            w.set_active_buffer(id);
+        }
+    }
+
+    /// Close `id`, refusing what `:bd` refuses: the last buffer, and one with
+    /// unsaved changes.
+    ///
+    /// Every window showing it is pointed at another buffer first. Only the
+    /// *active* window used to be, which meant `:bd` on a file open in two
+    /// splits left the second one viewing a closed document — and the next
+    /// frame panicked resolving it.
+    pub(crate) fn close_buffer(&mut self, id: BufferId) {
+        let mut w = self.ws.borrow_mut();
+        if w.buffers.get(id).is_none() {
+            return;
+        }
+        let Some(other) = w.buffers.ids().iter().copied().find(|&x| x != id) else {
+            drop(w);
+            self.echo_warn("E514: cannot close last buffer".to_string());
+            return;
+        };
+        if w.buffers.get(id).is_some_and(|d| d.modified) {
+            drop(w);
+            self.echo_warn("E89: buffer modified (add ! to override)".to_string());
+            return;
+        }
+        // Repoint only once the close has actually happened: `close` refuses
+        // pinned documents, and moving windows off a buffer that then stays
+        // open would be a switch the user never asked for.
+        if w.buffers.close(id) {
+            w.replace_buffer(id, other);
+            drop(w);
+            self.forget_buffer(id);
         }
     }
 
@@ -14208,6 +14339,30 @@ index 1..2 100644
         }
     }
 
+    /// Regression: `:bd` pointed only the *active* window at the surviving
+    /// buffer, so the same file open in two splits left the second window
+    /// viewing a closed document — and the next frame panicked resolving it
+    /// ("buffer exists"). Closing has to leave nothing referring to it.
+    #[test]
+    fn deleting_a_buffer_open_in_two_windows_leaves_neither_dangling() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        a.ws.borrow_mut()
+            .windows
+            .split(ruster_core::windows::SplitDir::Vertical);
+        let _survivor = a.ws.borrow_mut().buffers.create_scratch("other");
+        let doomed = a.ws.borrow().active_buffer();
+
+        a.apply_cmd(CmdAction::BufferDelete);
+
+        assert!(a.ws.borrow().buffers.get(doomed).is_none(), "it closed");
+        // The render is what used to panic.
+        a.render();
+        assert_eq!(a.last_layout.len(), 2, "both windows are still laid out");
+        for l in &a.last_layout {
+            assert_ne!(l.buffer, doomed, "no window is left on the closed buffer");
+        }
+    }
+
     #[test]
     fn comment_toggle_leaves_an_unknown_filetype_alone() {
         let mut a = App::new("plain text\n".into(), PathBuf::from("notes.txt"));
@@ -14283,5 +14438,34 @@ index 1..2 100644
         let mut a = App::new(String::new(), PathBuf::from("main.rs"));
         run(&mut a, ":comment");
         assert_eq!(a.ws.borrow().buffer().to_string(), "");
+    }
+
+    #[test]
+    fn a_modified_buffer_is_not_closed_out_from_under_the_windows() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        let _other = a.ws.borrow_mut().buffers.create_scratch("other");
+        let id = a.ws.borrow().active_buffer();
+        a.ws.borrow_mut().active_doc_mut().modified = true;
+
+        a.close_buffer(id);
+        assert!(a.ws.borrow().buffers.get(id).is_some(), "refused");
+        assert_eq!(
+            a.ws.borrow().active_buffer(),
+            id,
+            "and left the view where it was"
+        );
+    }
+
+    /// A tab from a frame drawn before the buffer was closed must not act on a
+    /// stale id.
+    #[test]
+    fn showing_a_closed_buffer_does_nothing() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        let gone = a.ws.borrow_mut().buffers.create_scratch("other");
+        let before = a.ws.borrow().active_buffer();
+        a.close_buffer(gone);
+
+        a.show_buffer(gone);
+        assert_eq!(a.ws.borrow().active_buffer(), before);
     }
 }

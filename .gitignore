@@ -9,3 +9,6 @@
 
 # isolated worktrees
 /.worktrees/
+
+# Agent scratch worktrees — never part of a commit.
+.claude/worktrees/

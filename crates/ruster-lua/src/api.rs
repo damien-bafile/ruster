@@ -127,17 +127,46 @@ pub fn create_table(lua: &mlua::Lua, shared: &Rc<Shared>) -> mlua::Result<Table>
     context_menu.set("add", add_fn)?;
     t.set("context_menu", context_menu)?;
 
-    // ruster.statusline.section(pos, fn) — register a statusline component.
-    // `pos` is "left" | "center" | "right"; `fn` returns a string each frame.
+    // ruster.statusline.section(pos, fn [, { name = ..., on_click = ... }]) —
+    // register a statusline component. `pos` is "left" | "center" | "right";
+    // `fn` returns a string each frame.
+    //
+    // The options table is optional so the two-argument form every existing
+    // plugin uses keeps working. Without a `name` the section still gets one —
+    // clicks are routed by name, and an unnamed section would be unreachable.
     let statusline = lua.create_table()?;
     let sh = shared.clone();
-    let section_fn = lua.create_function(move |lua, (pos, func): (String, Function)| {
-        {
-            let key = lua.create_registry_value(func)?;
-            sh.statusline.borrow_mut().push((pos, key));
-        }
-        Ok(())
-    })?;
+    let section_fn = lua.create_function(
+        move |lua, (pos, func, opts): (String, Function, Option<mlua::Table>)| {
+            let render = lua.create_registry_value(func)?;
+            let (name, on_click) = match opts {
+                Some(o) => (
+                    o.get::<Option<String>>("name")?,
+                    match o.get::<Option<Function>>("on_click")? {
+                        Some(f) => Some(lua.create_registry_value(f)?),
+                        None => None,
+                    },
+                ),
+                None => (None, None),
+            };
+            let mut sections = sh.statusline.borrow_mut();
+            // Position plus ordinal, so the generated names are stable across
+            // frames and distinct between groups.
+            let name = name.unwrap_or_else(|| {
+                format!(
+                    "{pos}{}",
+                    sections.iter().filter(|s| s.pos == pos).count() + 1
+                )
+            });
+            sections.push(crate::runtime::StatusSectionReg {
+                pos,
+                name,
+                render,
+                on_click,
+            });
+            Ok(())
+        },
+    )?;
     statusline.set("section", section_fn)?;
     t.set("statusline", statusline)?;
 
@@ -705,9 +734,67 @@ mod tests {
         section.call::<()>(("right", f)).unwrap();
         assert_eq!(
             rt.statusline_sections("right"),
-            vec!["git:main".to_string()]
+            vec![("right1".to_string(), "git:main".to_string())],
+            "an unnamed section still gets a name, or a click could not reach it"
         );
         assert!(rt.statusline_sections("left").is_empty());
+    }
+
+    #[test]
+    fn a_named_section_keeps_its_name() {
+        let rt = make_runtime();
+        rt.lua
+            .load(
+                r#"ruster.statusline.section("left", function() return "clock" end,
+                     { name = "clock" })"#,
+            )
+            .exec()
+            .expect("section registered");
+        assert_eq!(
+            rt.statusline_sections("left"),
+            vec![("clock".to_string(), "clock".to_string())]
+        );
+    }
+
+    /// The whole point of naming them: a click has somewhere to go.
+    #[test]
+    fn a_click_reaches_the_sections_own_handler() {
+        let rt = make_runtime();
+        rt.lua
+            .load(
+                r#"clicked = nil
+                   ruster.statusline.section("right", function() return "git" end, {
+                       name = "git",
+                       on_click = function(ev) clicked = ev.button end,
+                   })"#,
+            )
+            .exec()
+            .expect("section registered");
+
+        let payload = crate::runtime::MousePayload {
+            button: "left".to_string(),
+            section: Some("git".to_string()),
+            ..Default::default()
+        };
+        assert!(rt.dispatch_status_click("git", &payload));
+        assert_eq!(
+            rt.lua.globals().get::<String>("clicked").unwrap(),
+            "left",
+            "the handler saw the event"
+        );
+    }
+
+    /// A section with no handler reports that nothing ran, so the caller can
+    /// fall back to what a click on the bar normally does.
+    #[test]
+    fn a_section_without_a_handler_does_not_claim_the_click() {
+        let rt = make_runtime();
+        rt.lua
+            .load(r#"ruster.statusline.section("left", function() return "x" end, { name = "x" })"#)
+            .exec()
+            .expect("section registered");
+        assert!(!rt.dispatch_status_click("x", &crate::runtime::MousePayload::default()));
+        assert!(!rt.dispatch_status_click("nosuch", &crate::runtime::MousePayload::default()));
     }
 
     #[test]

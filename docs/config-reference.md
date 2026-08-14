@@ -158,6 +158,7 @@ Keys are addressed as `group.key`.
 | `gui.cursor_anim_speed` | float | 12.0 | Smooth-cursor easing speed |
 | `gutter.number` | boolean | false | Show absolute line numbers. Toggle live with `:set number` / `:set nonumber` / `:set number!` (abbrev. `nu`) |
 | `gutter.relativenumber` | boolean | false | Show relative line numbers (hybrid with `number`). Toggle live with `:set relativenumber` / `:set norelativenumber` / `:set relativenumber!` (abbrev. `rnu`) |
+| `bufferline.enabled` | boolean | true | Show a strip of the open buffers above the windows. Left-click a tab to switch to it, middle-click to close it |
 | `whichkey.enabled` | boolean | true | Show the which-key hint panel |
 | `whichkey.timeoutlen` | integer | 300 | Milliseconds before the panel appears |
 | `whichkey.command_palette` | enum | "center" | Where the `:`-Tab command palette appears: `center` (floating box) or `bottom` (docked in the which-key area) |

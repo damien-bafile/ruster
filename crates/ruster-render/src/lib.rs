@@ -472,15 +472,256 @@ pub fn gutter_view(
     GutterView { width, rows }
 }
 
-/// One window's statusline, split into left/center/right groups. `active`
-/// selects the highlighted vs dimmed style.
+/// One named piece of a statusline.
+///
+/// Named rather than a bare string because a click has to be able to say *what*
+/// was pressed: a plugin registers "clock" and is told the clock was clicked,
+/// not that column 63 of some bar was.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StatusSection {
+    pub name: String,
+    pub text: String,
+}
+
+impl StatusSection {
+    pub fn new(name: impl Into<String>, text: impl Into<String>) -> Self {
+        StatusSection {
+            name: name.into(),
+            text: text.into(),
+        }
+    }
+
+    fn width(&self) -> u16 {
+        self.text.chars().count() as u16
+    }
+}
+
+/// Blank columns between two sections of the same group.
+const SECTION_GAP: u16 = 2;
+
+/// Where a section landed: columns `[col, col + width)`, measured from the
+/// **left edge of the bar**, not of the screen. The window's own `rect.x` is
+/// added by whoever owns the window — the layout has no idea where the bar is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SectionSpan {
+    pub name: String,
+    pub col: u16,
+    pub width: u16,
+}
+
+/// Where the three groups start on a bar of a given width. `center` is `None`
+/// when it cannot be drawn without running into a neighbour (see
+/// [`statusline_center_x`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatuslineLayout {
+    pub left: u16,
+    pub center: Option<u16>,
+    pub right: u16,
+}
+
+/// Place the three statusline groups across a bar `width` cells wide.
+///
+/// The single source of geometry for the bar: both backends draw from it and
+/// the mouse hit-test resolves against it, so a click cannot land on a section
+/// other than the one under the pointer. Each group reserves a padding cell on
+/// its outer side, and the left group one more for the divider glyph the TUI
+/// draws after it — reserved in both backends so the two agree on where the
+/// centre may sit even though only one of them puts something there.
+pub fn statusline_layout(
+    width: u16,
+    left_len: u16,
+    center_len: u16,
+    right_len: u16,
+) -> StatuslineLayout {
+    let left_w = if left_len == 0 { 0 } else { left_len + 3 };
+    let right_w = if right_len == 0 { 0 } else { right_len + 2 };
+    let center = statusline_center_x(
+        width as f32,
+        left_w as f32,
+        center_len as f32,
+        right_w as f32,
+    )
+    .map(|x| x as u16);
+    StatuslineLayout {
+        left: 1,
+        center,
+        right: width.saturating_sub(right_len + 1),
+    }
+}
+
+/// One window's statusline, split into left/center/right groups of named
+/// sections. `active` selects the highlighted vs dimmed style.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StatuslineView {
-    pub left: String,
-    pub center: String,
-    pub right: String,
+    pub left: Vec<StatusSection>,
+    pub center: Vec<StatusSection>,
+    pub right: Vec<StatusSection>,
     pub active: bool,
     pub mode: UIMode,
+}
+
+/// Join a group into the string a backend draws, dropping empty sections so an
+/// inactive window's blank mode label does not leave a gap where a separator
+/// would be.
+fn group_text(sections: &[StatusSection]) -> String {
+    sections
+        .iter()
+        .filter(|s| !s.text.is_empty())
+        .map(|s| s.text.as_str())
+        .collect::<Vec<_>>()
+        .join(&" ".repeat(SECTION_GAP as usize))
+}
+
+impl StatuslineView {
+    pub fn left_text(&self) -> String {
+        group_text(&self.left)
+    }
+
+    pub fn center_text(&self) -> String {
+        group_text(&self.center)
+    }
+
+    pub fn right_text(&self) -> String {
+        group_text(&self.right)
+    }
+
+    /// Where every section landed on a bar `width` cells wide, in bar-relative
+    /// columns.
+    ///
+    /// Empty sections get a zero width rather than being dropped: a caller that
+    /// walks the spans still sees them, and a zero-width span contains no cell,
+    /// so it can never win a hit-test. A centre group that had to be suppressed
+    /// contributes no spans at all — it is not on screen, so it is not clickable.
+    pub fn spans(&self, width: u16) -> Vec<SectionSpan> {
+        let layout = statusline_layout(
+            width,
+            self.left_text().chars().count() as u16,
+            self.center_text().chars().count() as u16,
+            self.right_text().chars().count() as u16,
+        );
+        let mut out = Vec::new();
+        let mut push_group = |sections: &[StatusSection], start: u16| {
+            let mut col = start;
+            for s in sections {
+                let w = s.width();
+                out.push(SectionSpan {
+                    name: s.name.clone(),
+                    col,
+                    width: w,
+                });
+                if w > 0 {
+                    col += w + SECTION_GAP;
+                }
+            }
+        };
+        push_group(&self.left, layout.left);
+        if let Some(cx) = layout.center {
+            push_group(&self.center, cx);
+        }
+        push_group(&self.right, layout.right);
+        out
+    }
+}
+
+/// One open buffer, as the bufferline needs to know it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BufferEntry {
+    pub name: String,
+    pub modified: bool,
+    pub active: bool,
+}
+
+/// One tab of the bufferline: an open buffer as a click target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BufferTab {
+    /// Index into the entry list the strip was built from, so a click maps back
+    /// to a buffer without this crate having to know what a buffer id is.
+    pub idx: usize,
+    /// The text drawn, padding and modified marker included.
+    pub label: String,
+    pub active: bool,
+    pub modified: bool,
+    /// Columns `[col, col + width)` from the strip's left edge.
+    pub col: u16,
+    pub width: u16,
+}
+
+/// The one-row strip of open buffers drawn above the window area.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BufferlineView {
+    /// The row it occupies, in screen cells.
+    pub rect: Rect,
+    pub tabs: Vec<BufferTab>,
+}
+
+/// The marker a modified buffer carries in its tab.
+const MODIFIED_MARK: &str = " ●";
+
+/// A tab's text, padded on both sides so adjacent tabs do not read as one word.
+fn tab_label(entry: &BufferEntry) -> String {
+    // An unnamed buffer still needs something to click on, and vim's own label
+    // for it is the one a user coming from there already knows.
+    let name = if entry.name.is_empty() {
+        "[No Name]"
+    } else {
+        &entry.name
+    };
+    let mark = if entry.modified { MODIFIED_MARK } else { "" };
+    format!(" {name}{mark} ")
+}
+
+impl BufferlineView {
+    /// Lay the open buffers out left to right across `rect`.
+    ///
+    /// Scrolls the strip so the active tab is whole: with more buffers than fit,
+    /// the one being edited is the one that must stay legible, and a bufferline
+    /// that silently drops it is worse than none. A tab that only partly fits at
+    /// the right edge is cut rather than dropped, so the strip shows that there
+    /// is more beyond it.
+    pub fn laid_out(rect: Rect, entries: &[BufferEntry]) -> Self {
+        let active = entries.iter().position(|e| e.active).unwrap_or(0);
+        // Scroll one tab at a time, taking the leftmost start that shows the
+        // active tab in full. Falling back to `active` covers a bar too narrow
+        // to hold it whole, where no start does better than putting it first.
+        let mut first = active;
+        for start in 0..=active.min(entries.len().saturating_sub(1)) {
+            let packed = pack_tabs(entries, start, rect.width);
+            if packed.iter().any(|t| {
+                t.idx == active && t.width == tab_label(&entries[active]).chars().count() as u16
+            }) {
+                first = start;
+                break;
+            }
+        }
+        BufferlineView {
+            rect,
+            tabs: pack_tabs(entries, first, rect.width),
+        }
+    }
+}
+
+/// Lay tabs out from `first` until the strip runs out of columns.
+fn pack_tabs(entries: &[BufferEntry], first: usize, width: u16) -> Vec<BufferTab> {
+    let mut tabs = Vec::new();
+    let mut col = 0u16;
+    for (idx, entry) in entries.iter().enumerate().skip(first) {
+        if col >= width {
+            break;
+        }
+        let label = tab_label(entry);
+        let full = label.chars().count() as u16;
+        let w = full.min(width - col);
+        tabs.push(BufferTab {
+            idx,
+            label: label.chars().take(w as usize).collect(),
+            active: entry.active,
+            modified: entry.modified,
+            col,
+            width: w,
+        });
+        col += w;
+    }
+    tabs
 }
 
 /// How a visual selection covers the lines it spans.
@@ -796,6 +1037,8 @@ impl Default for WelcomeView {
 #[derive(Default)]
 pub struct FrameState<'a> {
     pub windows: Vec<WindowView>,
+    /// The strip of open buffers above the window area, when it is enabled.
+    pub bufferline: Option<BufferlineView>,
     pub cmdline: Option<&'a str>,
     /// Mini toast overlay lines (one per visible notification).
     pub noice_mini: Vec<String>,
@@ -1098,9 +1341,9 @@ pub trait Renderer {
 #[cfg(test)]
 mod tests {
     use crate::{
-        floats_in_draw_order, statusline_center_x, Color, FloatAnchor, FloatEdge, FloatView,
-        FrameState, Rect, Renderer, SelectionKind, SelectionView, StatuslineView, StyledLine,
-        TermCellView, TermGridView, UIMode, WindowView,
+        floats_in_draw_order, statusline_center_x, BufferEntry, BufferlineView, Color, FloatAnchor,
+        FloatEdge, FloatView, FrameState, Rect, Renderer, SelectionKind, SelectionView,
+        StatusSection, StatuslineView, StyledLine, TermCellView, TermGridView, UIMode, WindowView,
     };
 
     struct TestRenderer;
@@ -1249,9 +1492,9 @@ mod tests {
             }],
             cursor_visible: true,
             statusline: StatuslineView {
-                left: "NORMAL".into(),
-                center: "test.txt".into(),
-                right: "1,1".into(),
+                left: vec![StatusSection::new("mode", "NORMAL")],
+                center: vec![StatusSection::new("file", "test.txt")],
+                right: vec![StatusSection::new("position", "1,1")],
                 active: true,
                 mode: UIMode::Normal,
             },
@@ -1704,6 +1947,203 @@ mod tests {
         // Second line starts at char 5, so the remainder rebases to offset 0.
         assert_eq!(out[1].highlights[0].0, 0);
         assert_eq!(out[1].highlights[0].1, 2);
+    }
+
+    fn statusline(left: &[&str], center: &[&str], right: &[&str]) -> StatuslineView {
+        let group = |names: &[&str]| -> Vec<StatusSection> {
+            names
+                .iter()
+                .map(|t| StatusSection::new(*t, t.to_uppercase()))
+                .collect()
+        };
+        StatuslineView {
+            left: group(left),
+            center: group(center),
+            right: group(right),
+            active: true,
+            mode: UIMode::Normal,
+        }
+    }
+
+    fn span_of<'a>(spans: &'a [crate::SectionSpan], name: &str) -> &'a crate::SectionSpan {
+        spans
+            .iter()
+            .find(|s| s.name == name)
+            .unwrap_or_else(|| panic!("{name} was laid out: {spans:?}"))
+    }
+
+    #[test]
+    fn sections_in_a_group_are_laid_out_left_to_right_with_a_gap() {
+        let sl = statusline(&["mode", "git"], &[], &[]);
+        let spans = sl.spans(80);
+        let mode = span_of(&spans, "mode");
+        let git = span_of(&spans, "git");
+        assert_eq!((mode.col, mode.width), (1, 4), "one cell of left padding");
+        // "MODE" then two blank cells, so "GIT" starts at 1 + 4 + 2.
+        assert_eq!((git.col, git.width), (7, 3));
+    }
+
+    /// The span has to describe the cells the text really occupies, or a click
+    /// on the last character of a section resolves to the one after it.
+    #[test]
+    fn a_sections_span_covers_exactly_its_own_text() {
+        let sl = statusline(&["mode", "git"], &[], &[]);
+        let spans = sl.spans(80);
+        let text = sl.left_text();
+        let mode = span_of(&spans, "mode");
+        let git = span_of(&spans, "git");
+        assert_eq!(&text[..], "MODE  GIT");
+        assert_eq!(
+            &text[(git.col - mode.col) as usize..],
+            "GIT",
+            "the gap belongs to neither section"
+        );
+    }
+
+    #[test]
+    fn the_right_group_is_flush_with_the_right_edge() {
+        let sl = statusline(&[], &[], &["pos"]);
+        let spans = sl.spans(20);
+        let pos = span_of(&spans, "pos");
+        // "POS" is 3 wide, one cell of padding after it: 20 - 3 - 1.
+        assert_eq!((pos.col, pos.width), (16, 3));
+    }
+
+    /// An empty section is still reported, but occupies nothing — an inactive
+    /// window's blank mode label must not swallow clicks meant for its
+    /// neighbour.
+    #[test]
+    fn an_empty_section_takes_no_columns_and_shifts_nothing() {
+        let sl = StatuslineView {
+            left: vec![
+                StatusSection::new("mode", ""),
+                StatusSection::new("git", "main"),
+            ],
+            ..Default::default()
+        };
+        let spans = sl.spans(80);
+        let mode = span_of(&spans, "mode");
+        let git = span_of(&spans, "git");
+        assert_eq!(mode.width, 0);
+        assert_eq!(mode.col, git.col, "it consumed no columns");
+        assert_eq!(sl.left_text(), "main", "and left no separator behind");
+    }
+
+    /// The centre is dropped when it would collide (see `statusline_center_x`),
+    /// and a section that is not on screen must not be clickable.
+    #[test]
+    fn a_suppressed_centre_contributes_no_spans() {
+        let sl = statusline(&["mode-label-long-enough-to-crowd-it"], &["file"], &["pos"]);
+        let spans = sl.spans(40);
+        assert!(!spans.iter().any(|s| s.name == "file"), "got {spans:?}");
+        // The groups that are drawn are still there.
+        assert!(spans.iter().any(|s| s.name.starts_with("mode")));
+    }
+
+    #[test]
+    fn a_centre_that_fits_is_centred_between_its_neighbours() {
+        let sl = statusline(&["m"], &["file"], &["p"]);
+        let spans = sl.spans(40);
+        let file = span_of(&spans, "file");
+        assert_eq!(file.col, (40 - 4) / 2);
+    }
+
+    fn entries(names: &[&str], active: usize) -> Vec<BufferEntry> {
+        names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| BufferEntry {
+                name: n.to_string(),
+                modified: false,
+                active: i == active,
+            })
+            .collect()
+    }
+
+    const STRIP: Rect = Rect {
+        x: 0,
+        y: 0,
+        width: 40,
+        height: 1,
+    };
+
+    #[test]
+    fn tabs_are_laid_out_left_to_right_and_padded() {
+        let v = BufferlineView::laid_out(STRIP, &entries(&["a.rs", "b.rs"], 0));
+        assert_eq!(v.tabs.len(), 2);
+        assert_eq!(v.tabs[0].label, " a.rs ");
+        assert_eq!((v.tabs[0].col, v.tabs[0].width), (0, 6));
+        assert_eq!((v.tabs[1].col, v.tabs[1].width), (6, 6));
+        assert!(v.tabs[0].active && !v.tabs[1].active);
+    }
+
+    #[test]
+    fn a_modified_buffer_is_marked() {
+        let mut e = entries(&["a.rs"], 0);
+        e[0].modified = true;
+        let v = BufferlineView::laid_out(STRIP, &e);
+        assert_eq!(v.tabs[0].label, " a.rs ● ");
+        assert!(v.tabs[0].modified);
+    }
+
+    /// Nothing open is not a crash and not a phantom tab.
+    #[test]
+    fn no_buffers_means_no_tabs() {
+        let v = BufferlineView::laid_out(STRIP, &[]);
+        assert!(v.tabs.is_empty());
+    }
+
+    #[test]
+    fn one_buffer_fills_only_its_own_columns() {
+        let v = BufferlineView::laid_out(STRIP, &entries(&["only.rs"], 0));
+        assert_eq!(v.tabs.len(), 1);
+        assert_eq!(v.tabs[0].col, 0);
+        assert!(v.tabs[0].width < STRIP.width, "it does not stretch");
+    }
+
+    /// More tabs than columns: the ones past the edge are dropped and the last
+    /// one that starts inside is cut, rather than overflowing into the row.
+    #[test]
+    fn tabs_past_the_right_edge_are_cut_not_overflowed() {
+        let strip = Rect::new(0, 0, 15, 1);
+        let v = BufferlineView::laid_out(strip, &entries(&["aaa", "bbb", "ccc", "ddd"], 0));
+        let end = v.tabs.last().expect("at least one tab");
+        assert!(
+            end.col + end.width <= strip.width,
+            "ran past the edge: {:?}",
+            v.tabs
+        );
+        assert!(v.tabs.len() < 4, "the ones with no room are absent");
+    }
+
+    /// The tab being edited is the one that has to stay legible, so the strip
+    /// scrolls to it rather than leaving it off the right edge.
+    #[test]
+    fn the_strip_scrolls_so_the_active_tab_is_whole() {
+        let strip = Rect::new(0, 0, 16, 1);
+        let v = BufferlineView::laid_out(strip, &entries(&["aaa", "bbb", "ccc", "ddd"], 3));
+        let active = v
+            .tabs
+            .iter()
+            .find(|t| t.active)
+            .expect("the active tab is on screen");
+        assert_eq!(active.width, " ddd ".chars().count() as u16, "and whole");
+        assert!(
+            active.col + active.width <= strip.width,
+            "inside the strip: {:?}",
+            v.tabs
+        );
+    }
+
+    /// A bar too narrow for even one tab still shows the active one, cut.
+    #[test]
+    fn a_strip_narrower_than_one_tab_still_shows_the_active_one() {
+        let strip = Rect::new(0, 0, 4, 1);
+        let v = BufferlineView::laid_out(strip, &entries(&["alpha", "bravo"], 1));
+        assert_eq!(v.tabs.len(), 1);
+        assert!(v.tabs[0].active);
+        assert_eq!(v.tabs[0].width, 4);
+        assert_eq!(v.tabs[0].label, " bra");
     }
 
     /// A span entirely past the break must not survive onto the wrong line.
