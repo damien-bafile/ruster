@@ -225,6 +225,12 @@ fn run_winit() -> anyhow::Result<()> {
                     .unwrap_or_default();
                 let cursor_status = state.cursor_status.clone();
                 let cursor_location = state.pointer.current_location();
+                let output_size = state
+                    .backend_data
+                    .output
+                    .current_mode()
+                    .map(|m| m.size)
+                    .unwrap_or_default();
                 let scene = FrameInput {
                     focus: state.shell.focus,
                     toplevels: &state.toplevels,
@@ -242,6 +248,17 @@ fn run_winit() -> anyhow::Result<()> {
                     keymap: &state.keymap,
                     minibuffer: state.minibuffer.as_ref(),
                     hover: state.hover.as_ref(),
+                    launcher: state.launcher.as_mut().map(|l| {
+                        // One source for the viewport, so the scroll window and
+                        // the drawing cannot disagree about how much fits.
+                        let rows = ruster_compositor::chrome::launcher_layout(
+                            output_size.w,
+                            output_size.h,
+                            l.row_count(),
+                        )
+                        .visible_rows;
+                        l.view(rows)
+                    }),
                     whichkey: ruster_compositor::keymap::whichkey_view(
                         &state.keymap,
                         &state.chord,

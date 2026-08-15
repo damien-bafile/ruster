@@ -256,6 +256,67 @@ impl FrameBody {
     }
 }
 
+/// Where the launcher panel goes, and how much of the list fits in it.
+///
+/// A free function, for the same reason `gutter_cols` is one: this is where the
+/// bug will be, and it has to be assertable without a GL context.
+///
+/// The bottom band is reserved and that is not cosmetic. `collect_render_elements`
+/// hoists every glyph in front of every panel, sound only while chrome panels do
+/// not cover text — and the statusline and the mini-buffer are full-width bars at
+/// the bottom of the output. A panel reaching into either would have *their*
+/// glyphs drawn over its background. The launcher is kept clear of both by
+/// construction rather than by discipline.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LauncherLayout {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    /// How many rows of the list fit. Always at least one, so a panel that can
+    /// only show a single result still shows it.
+    pub visible_rows: usize,
+    pub row_h: f32,
+    /// Height of the query line at the top.
+    pub query_h: f32,
+    /// Height of a group heading.
+    pub group_h: f32,
+}
+
+pub fn launcher_layout(output_w: i32, output_h: i32, rows: usize) -> LauncherLayout {
+    const ROW_H: f32 = 24.0;
+    const QUERY_H: f32 = 38.0;
+    const GROUP_H: f32 = 18.0;
+    const GAP: f32 = 12.0;
+
+    let (ow, oh) = (output_w.max(1) as f32, output_h.max(1) as f32);
+    // Two bars' worth: the statusline, and the mini-buffer above it.
+    let reserved = 2.0 * crate::render::chrome_height(output_h) as f32 + GAP;
+
+    let w = (ow * 0.55).clamp(360.0, 820.0).min(ow - 8.0).max(64.0);
+    let x = ((ow - w) / 2.0).max(4.0);
+    let y = (oh * 0.14).min((oh - reserved - QUERY_H).max(4.0));
+    let room = (oh - reserved - y).max(QUERY_H);
+
+    // Enough for the rows asked for, never more than the room allows. Group
+    // headings are budgeted for generously — one per row — so a list that is all
+    // headings still fits rather than overflowing the panel it was measured for.
+    let wanted = QUERY_H + rows as f32 * (ROW_H + GROUP_H);
+    let h = wanted.min(room).max(QUERY_H);
+    let visible_rows = (((h - QUERY_H) / (ROW_H + GROUP_H)).floor() as usize).max(1);
+
+    LauncherLayout {
+        x,
+        y,
+        w,
+        h,
+        visible_rows,
+        row_h: ROW_H,
+        query_h: QUERY_H,
+        group_h: GROUP_H,
+    }
+}
+
 /// The layer drawn in front of everything in the base [`ChromeBatch`], glyphs
 /// included.
 ///
@@ -730,6 +791,81 @@ impl Chrome {
     /// Takes the [`WhichKeyView`] the editor also renders, which is what lets
     /// the key and its description be drawn in different colours; they used to
     /// be one concatenated string and therefore one colour.
+    /// A launcher panel, and the rows that fit in it.
+    ///
+    /// See [`launcher_layout`] for where it goes and why.
+    pub fn draw_launcher(
+        &mut self,
+        output_w: i32,
+        output_h: i32,
+        view: &ruster_render::LauncherView,
+        batch: &mut OverlayBatch,
+    ) -> LauncherLayout {
+        const FONT: u32 = 15;
+        const GROUP_FONT: u32 = 12;
+        const PAD: f32 = 12.0;
+
+        let layout = launcher_layout(output_w, output_h, view.rows.len());
+        let bg: (f32, f32, f32, f32) = self.theme.whichkey_bg.into();
+        let fg: (f32, f32, f32, f32) = self.theme.whichkey_fg.into();
+        let accent: (f32, f32, f32, f32) = self.theme.whichkey_key.into();
+        let dim: (f32, f32, f32, f32) = self.theme.gutter.into();
+        let sel: (f32, f32, f32, f32) = self.theme.selection_bg.into();
+        let batch = &mut batch.0;
+
+        batch.verts.extend(rounded_rect_verts(
+            layout.x, layout.y, layout.w, layout.h, 8.0, bg,
+        ));
+
+        // The query line, with its sigil accented the way the `:` prompt's is —
+        // the same cue for the same thing, an editor waiting for input.
+        let advance = self.text(">", FONT, layout.x + PAD, layout.y + PAD, accent, batch);
+        self.text(
+            &view.query,
+            FONT,
+            layout.x + PAD + advance + 6.0,
+            layout.y + PAD,
+            fg,
+            batch,
+        );
+
+        let mut y = layout.y + layout.query_h;
+        if view.rows.is_empty() {
+            if !view.message.is_empty() {
+                self.text(&view.message, FONT, layout.x + PAD, y, dim, batch);
+            }
+            return layout;
+        }
+
+        for row in view.rows.iter().take(layout.visible_rows) {
+            if !row.group.is_empty() {
+                self.text(&row.group, GROUP_FONT, layout.x + PAD, y, dim, batch);
+                y += layout.group_h;
+            }
+            if row.selected {
+                batch.verts.extend(rect_verts(
+                    layout.x + 4.0,
+                    y - 2.0,
+                    layout.w - 8.0,
+                    layout.row_h,
+                    sel,
+                ));
+            }
+            let label_w = self.text(&row.label, FONT, layout.x + PAD * 2.0, y, fg, batch);
+            if !row.detail.is_empty() {
+                // Right of the label rather than right-aligned to the panel: a
+                // long detail then truncates against the panel edge instead of
+                // colliding with the label from the other side.
+                let at = layout.x + PAD * 2.0 + label_w + 12.0;
+                if at < layout.x + layout.w - PAD {
+                    self.text(&row.detail, GROUP_FONT, at, y + 2.0, dim, batch);
+                }
+            }
+            y += layout.row_h;
+        }
+        layout
+    }
+
     /// A hover panel, anchored under the caret it describes.
     ///
     /// See [`HoverAnchor`] for what the anchor is measured against.
@@ -1282,6 +1418,105 @@ mod tests {
         assert_eq!(y, 116.0, "directly under the caret's cell");
         assert!(y + h <= 1080.0);
         assert!(!batch.0.glyphs.is_empty(), "the panel draws its text");
+    }
+
+    #[test]
+    fn the_launcher_never_reaches_the_bars_at_the_bottom() {
+        // The constraint the layout exists for. Chrome glyphs are hoisted in
+        // front of chrome panels, so a launcher overlapping the statusline or
+        // the mini-buffer would have their text drawn through it — and it would
+        // read as a font or theme bug rather than an ordering one.
+        //
+        // Checked across the shapes that break geometry: a laptop panel, a 4K
+        // display, and one small enough that the reserved band is most of it.
+        for (w, h) in [(1920, 1080), (1366, 768), (3840, 2160), (640, 400)] {
+            for rows in [0usize, 8, 200] {
+                let l = launcher_layout(w, h, rows);
+                let floor = h as f32 - 2.0 * crate::render::chrome_height(h) as f32;
+                assert!(l.y >= 0.0, "{w}x{h}/{rows}: y={} is off the top", l.y);
+                assert!(
+                    l.y + l.h <= floor,
+                    "{w}x{h}/{rows}: panel reaches {} but the bars start at {floor}",
+                    l.y + l.h
+                );
+                assert!(
+                    l.x >= 0.0 && l.x + l.w <= w as f32,
+                    "{w}x{h}/{rows}: {}..{} escapes the output",
+                    l.x,
+                    l.x + l.w
+                );
+                assert!(
+                    l.visible_rows >= 1,
+                    "{w}x{h}/{rows}: a panel that can show nothing is not a panel"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_longer_list_asks_for_a_taller_panel_until_it_cannot() {
+        let short = launcher_layout(1920, 1080, 2);
+        let long = launcher_layout(1920, 1080, 40);
+        assert!(long.h > short.h, "more rows, taller panel");
+        assert!(
+            long.visible_rows > short.visible_rows,
+            "and more of them visible"
+        );
+        // But never past the reserved band, however many are offered.
+        let absurd = launcher_layout(1920, 1080, 100_000);
+        assert!(absurd.y + absurd.h <= 1080.0 - 2.0 * crate::render::chrome_height(1080) as f32);
+    }
+
+    #[test]
+    fn the_launcher_draws_its_query_and_its_rows() {
+        let mut chrome = Chrome::new(theme());
+        let mut overlay = OverlayBatch::default();
+        let view = ruster_render::LauncherView {
+            query: "fire".into(),
+            rows: vec![
+                ruster_render::LauncherRow {
+                    label: "Firefox".into(),
+                    detail: "Web Browser".into(),
+                    group: "apps".into(),
+                    selected: true,
+                },
+                ruster_render::LauncherRow {
+                    label: "Files".into(),
+                    detail: String::new(),
+                    group: String::new(),
+                    selected: false,
+                },
+            ],
+            message: String::new(),
+            scrolled: 0,
+            total: 2,
+        };
+        let drawn = chrome.draw_launcher(1920, 1080, &view, &mut overlay);
+        assert_eq!(
+            drawn,
+            launcher_layout(1920, 1080, 2),
+            "what was drawn is what the layout said"
+        );
+        assert!(!overlay.0.glyphs.is_empty(), "the rows are drawn");
+        assert!(
+            overlay.0.verts.len() >= 12,
+            "the panel and the selection highlight are both filled"
+        );
+    }
+
+    #[test]
+    fn an_empty_launcher_still_draws_its_prompt() {
+        // Opening it must show something immediately, before a provider has
+        // said anything — an overlay that appears blank reads as a crash.
+        let mut chrome = Chrome::new(theme());
+        let mut overlay = OverlayBatch::default();
+        let view = ruster_render::LauncherView {
+            message: "no matches".into(),
+            ..Default::default()
+        };
+        chrome.draw_launcher(1920, 1080, &view, &mut overlay);
+        assert!(!overlay.0.verts.is_empty(), "the panel is there");
+        assert!(!overlay.0.glyphs.is_empty(), "and it says so");
     }
 
     #[test]

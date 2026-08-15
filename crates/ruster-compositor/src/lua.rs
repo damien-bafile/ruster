@@ -1128,6 +1128,88 @@ mod tests {
         }
     }
 
+    /// Every action named in the config's "Actions:" comment block.
+    ///
+    /// The block is the only documentation of the vocabulary a user has, and it
+    /// is a comment, so nothing has ever checked it against the code.
+    ///
+    /// Entries begin at a fixed column; a line indented past it is the previous
+    /// entry's description wrapping, not a new name.
+    fn documented_actions(source: &str) -> Vec<String> {
+        source
+            .lines()
+            .skip_while(|l| !l.contains("Actions:"))
+            .take_while(|l| l.starts_with("--"))
+            .filter(|l| l.starts_with("--   ") && !l.starts_with("--    "))
+            .filter_map(|l| {
+                // The name is separated from its description by a run of
+                // spaces. Taking the first *word* would turn "cycle workspace"
+                // into "cycle", which is not an action.
+                let name = l.trim_start_matches('-').trim().split("  ").next()?.trim();
+                (!name.is_empty()).then(|| name.to_string())
+            })
+            .collect()
+    }
+
+    /// A documented name with its placeholders removed: `focus <direction>`
+    /// becomes `focus`, which is what a bound action starts with.
+    fn documented_verb(name: &str) -> String {
+        name.split_whitespace()
+            .take_while(|w| !w.starts_with('<') && !w.contains('|'))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// A documented name with its placeholders filled in, so it can be parsed.
+    fn concrete(name: &str) -> String {
+        name.replace("<direction>", "left")
+            .replace("<1-9>", "1")
+            .replace("<command>", "foot")
+            .replace("<path>", "x")
+            .replace("<url>", "x")
+            .replace("horizontal|vertical", "horizontal")
+    }
+
+    #[test]
+    fn every_documented_action_is_a_real_one() {
+        let source = include_str!("../assets/compositor.lua");
+        let documented = documented_actions(source);
+        assert!(
+            documented.len() > 10,
+            "the doc block was not found: {documented:?}"
+        );
+        for name in documented {
+            let filled = concrete(&name);
+            assert!(
+                Action::from_name(&filled).is_some(),
+                "the config documents {name:?}, which does not resolve ({filled:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn every_bound_action_is_documented() {
+        // The half that was failing when it was written. `definition` and
+        // `hover` were bound and absent from the list, so a user reading the
+        // config could not learn they existed — the same defect as a dead
+        // binding, one level up.
+        let source = include_str!("../assets/compositor.lua");
+        let verbs: Vec<String> = documented_actions(source)
+            .iter()
+            .map(|n| documented_verb(n))
+            .filter(|v| !v.is_empty())
+            .collect();
+        let shell = parse_config(source).expect("the shipped config must parse");
+        for (bind, action) in &shell.keybinds {
+            assert!(
+                verbs
+                    .iter()
+                    .any(|v| action == v || action.starts_with(&format!("{v} "))),
+                "{bind:?} runs {action:?}, which the config never documents"
+            );
+        }
+    }
+
     #[test]
     fn no_two_shipped_bindings_claim_the_same_chord() {
         // First match wins in `resolve_wm_action`, so a duplicate chord makes

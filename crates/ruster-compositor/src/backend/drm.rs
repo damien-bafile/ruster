@@ -465,6 +465,7 @@ impl CompositorState<RusterUdevData> {
         };
         let cursor_status = self.cursor_status.clone();
         let cursor_location = self.pointer.current_location();
+        let output_size = output.current_mode().map(|m| m.size).unwrap_or_default();
         let scene = FrameInput {
             focus: self.shell.focus,
             toplevels: &self.toplevels,
@@ -482,6 +483,14 @@ impl CompositorState<RusterUdevData> {
             keymap: &self.keymap,
             minibuffer: self.minibuffer.as_ref(),
             hover: self.hover.as_ref(),
+            launcher: self.launcher.as_mut().map(|l| {
+                // One source for the viewport, so the scroll window and
+                // the drawing cannot disagree about how much fits.
+                let rows =
+                    crate::chrome::launcher_layout(output_size.w, output_size.h, l.row_count())
+                        .visible_rows;
+                l.view(rows)
+            }),
             whichkey: crate::keymap::whichkey_view(
                 &self.keymap,
                 &self.chord,

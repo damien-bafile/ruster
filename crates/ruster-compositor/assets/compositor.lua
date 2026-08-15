@@ -82,6 +82,10 @@
 --   terminal                 launch this machine's terminal (see below)
 --   new pane                 open an empty editor pane as a tile
 --   edit <path>              open a file in an editor pane (read-only so far)
+--   launcher                 open the launcher: apps, sums, and whatever a
+--                            provider adds
+--   definition               jump to where the symbol under the caret is defined
+--   hover                    show what the language server knows about it
 --   toggle help              pin the shortcut helper open, or unpin it
 --   command                  open the ":" prompt (an action name)
 --   lua                      open the "=" prompt (Lua, in the config's VM)
@@ -146,6 +150,7 @@ return {
     { "M-b",   "split horizontal" },
     { "M-v",   "split vertical" },
     { "M-S-space", "toggle floating" },
+    { "M-space",   "launcher" },
 
     -- Without this there is no way to open a window from inside the session: on
     -- DRM the only windows that exist are the startup clients. `terminal` rather

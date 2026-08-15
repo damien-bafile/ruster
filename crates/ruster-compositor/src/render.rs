@@ -117,6 +117,8 @@ pub struct FrameInput<'a> {
     /// The hover panel, when a language server has answered and nothing has
     /// dismissed it since.
     pub hover: Option<&'a crate::compositor::HoverPanel>,
+    /// The launcher overlay, when open.
+    pub launcher: Option<ruster_render::LauncherView>,
 }
 
 /// Composite the focused toplevel fullscreen onto the output, draw ruster's
@@ -293,6 +295,13 @@ where
                 rect.x as f32 * chrome_scale,
                 rect.y as f32 * chrome_scale,
             );
+        }
+
+        // The launcher owns the screen while it is open, so it is drawn last
+        // and into the overlay layer — over the panes, and clear of the bars at
+        // the bottom by construction. See `launcher_layout`.
+        if let Some(view) = &scene.launcher {
+            chrome.draw_launcher(size.w, size.h, view, &mut overlay);
         }
 
         // After every pane, so it sits above the text it explains rather than
