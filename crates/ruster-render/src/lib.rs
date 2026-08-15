@@ -660,6 +660,38 @@ pub struct WhichKeyView {
     pub anim: f32,
 }
 
+/// One row of the launcher overlay.
+///
+/// Separate from [`PickerRow`] rather than an extension of it: a picker row is a
+/// label and a selection flag, and `PickerView` is built at three call sites
+/// across two backends, so a new field there is a change to all of them. A
+/// launcher row also has to say *which provider* produced it, because results
+/// from different providers are grouped under headings.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LauncherRow {
+    pub label: String,
+    /// Right-aligned detail: the command a row runs, an equation's value.
+    pub detail: String,
+    /// The provider that produced it. Consecutive rows sharing a group are drawn
+    /// under one header, so this is carried per row rather than as a tree —
+    /// which keeps the selection a flat index and the scroll arithmetic honest.
+    pub group: String,
+    pub selected: bool,
+}
+
+/// The launcher overlay: what has been typed, and what answered.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct LauncherView {
+    pub query: String,
+    pub rows: Vec<LauncherRow>,
+    /// Shown when `rows` is empty — "no matches", or why a provider failed.
+    pub message: String,
+    /// Rows scrolled off the top, for the indicator and so the backend can draw
+    /// a window of the list without recomputing which window that is.
+    pub scrolled: usize,
+    pub total: usize,
+}
+
 /// The kind of control a settings row renders as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlKind {

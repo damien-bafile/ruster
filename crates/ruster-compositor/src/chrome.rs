@@ -256,6 +256,23 @@ impl FrameBody {
     }
 }
 
+/// The layer drawn in front of everything in the base [`ChromeBatch`], glyphs
+/// included.
+///
+/// `collect_render_elements` hoists every glyph in front of every panel, which
+/// is only sound while chrome panels do not overlap each other — the comment
+/// there says so. A panel that covers *text* breaks it: the text is a glyph, the
+/// panel is a background, and the glyph wins. That is not hypothetical, and it
+/// is not only about the launcher — the hover panel covers the pane text it
+/// describes and has been drawing behind it.
+///
+/// A newtype rather than a second `ChromeBatch` so the distinction is the
+/// compiler's to keep: a `draw_*` that must go in front takes this type, and
+/// passing the base batch does not compile. An invariant a test has to remember
+/// is an invariant that rots.
+#[derive(Debug, Default)]
+pub struct OverlayBatch(pub ChromeBatch);
+
 /// Where a hover panel hangs: the caret's top-left pixel in *output*
 /// coordinates, and the height of the cell it sits on.
 ///
@@ -731,8 +748,11 @@ impl Chrome {
         output_h: i32,
         anchor: HoverAnchor,
         lines: &[String],
-        batch: &mut ChromeBatch,
+        batch: &mut OverlayBatch,
     ) -> (f32, f32, f32, f32) {
+        // Unwrapped once here rather than threading the newtype through the
+        // drawing below: the type has already done its job at the boundary.
+        let batch = &mut batch.0;
         let HoverAnchor {
             x: cell_x,
             y: cell_y,
@@ -1250,7 +1270,7 @@ mod tests {
     #[test]
     fn a_hover_panel_hangs_below_the_caret_when_there_is_room() {
         let mut chrome = Chrome::new(theme());
-        let mut batch = ChromeBatch::default();
+        let mut batch = OverlayBatch::default();
         let lines = vec!["fn main()".to_string(), "the entry point".to_string()];
         let anchor = HoverAnchor {
             x: 100.0,
@@ -1261,7 +1281,47 @@ mod tests {
         assert_eq!(x, 100.0, "aligned with the caret's column");
         assert_eq!(y, 116.0, "directly under the caret's cell");
         assert!(y + h <= 1080.0);
-        assert!(!batch.glyphs.is_empty(), "the panel draws its text");
+        assert!(!batch.0.glyphs.is_empty(), "the panel draws its text");
+    }
+
+    #[test]
+    fn a_panel_that_covers_text_draws_into_the_overlay_layer() {
+        // `collect_render_elements` hoists every glyph in front of every panel,
+        // sound only while chrome panels do not cover text. The hover panel
+        // covers the pane text it describes, so before the overlay layer the
+        // pane's glyphs were drawn in front of the hover's background — correct
+        // by every test, and wrong on screen. Hover was proven headlessly and
+        // never captured, which is how it went unnoticed.
+        //
+        // The type already prevents the mistake; this asserts the split is real
+        // rather than a wrapper both halves end up in.
+        let mut chrome = Chrome::new(theme());
+        let mut base = ChromeBatch::default();
+        let mut overlay = OverlayBatch::default();
+        chrome.draw_statusline(1920, 1080, 1, "x", status(), &mut base);
+        let base_panels = base.verts.len();
+
+        chrome.draw_hover(
+            1920,
+            1080,
+            HoverAnchor {
+                x: 100.0,
+                y: 100.0,
+                cell_h: 16.0,
+            },
+            &["fn main()".to_string()],
+            &mut overlay,
+        );
+
+        assert!(
+            !overlay.0.verts.is_empty() && !overlay.0.glyphs.is_empty(),
+            "the hover panel belongs to the overlay layer"
+        );
+        assert_eq!(
+            base.verts.len(),
+            base_panels,
+            "and must not have added anything to the base layer"
+        );
     }
 
     #[test]
@@ -1270,7 +1330,7 @@ mod tests {
         // of a pane is drawn past the bottom of the output, and a panel nobody
         // can see is indistinguishable from a server that said nothing.
         let mut chrome = Chrome::new(theme());
-        let mut batch = ChromeBatch::default();
+        let mut batch = OverlayBatch::default();
         let lines = vec!["fn main()".to_string(), "the entry point".to_string()];
         let anchor = HoverAnchor {
             x: 100.0,
@@ -1288,7 +1348,7 @@ mod tests {
     #[test]
     fn a_hover_panel_in_the_last_column_stays_on_screen() {
         let mut chrome = Chrome::new(theme());
-        let mut batch = ChromeBatch::default();
+        let mut batch = OverlayBatch::default();
         let lines = vec!["a fairly long explanation of a symbol".to_string()];
         let anchor = HoverAnchor {
             x: 1900.0,

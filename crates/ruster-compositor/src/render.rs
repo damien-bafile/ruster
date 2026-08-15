@@ -183,6 +183,9 @@ where
             .map(|mode| mode.size)
             .unwrap_or_default();
         let mut batch = ChromeBatch::default();
+        // Anything that covers text goes here instead, and is emitted in front
+        // of this batch's glyphs as well as its panels. See `OverlayBatch`.
+        let mut overlay = crate::chrome::OverlayBatch::default();
         // First in the batch, so everything else lands in front of it: the
         // tiling area covers the whole output, statusline included, so a
         // full-height window's border would otherwise sit on top of the bar.
@@ -295,7 +298,7 @@ where
         // After every pane, so it sits above the text it explains rather than
         // under the next tile the loop draws.
         if let Some((anchor, lines)) = hover_at {
-            chrome.draw_hover(size.w, size.h, anchor, lines, &mut batch);
+            chrome.draw_hover(size.w, size.h, anchor, lines, &mut overlay);
         }
 
         // Synthetic load, when asked for. Real glyphs from the atlas rather than
@@ -311,6 +314,21 @@ where
         // hoisting every glyph in front of every panel is equivalent to a strict
         // reverse of painter's order and saves interleaving the two lists.
         let render_scale = scene.output.current_scale().fractional_scale();
+        // The overlay layer first. A smithay element list is front-to-back, so
+        // emitting it ahead of the base layer puts it in front of the base
+        // layer's *glyphs* too — which is the whole reason it exists, since a
+        // panel that covers text loses to that text under the hoist below.
+        elements.extend(
+            glyph_elements(chrome, renderer, &overlay.0.glyphs, render_scale)
+                .into_iter()
+                .map(ChromeRenderElements::Texture),
+        );
+        elements.extend(
+            solid_elements_from_verts(&overlay.0.verts)
+                .into_iter()
+                .rev()
+                .map(ChromeRenderElements::Solid),
+        );
         elements.extend(
             glyph_elements(chrome, renderer, &batch.glyphs, render_scale)
                 .into_iter()
