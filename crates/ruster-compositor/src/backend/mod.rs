@@ -25,6 +25,19 @@ pub trait Backend {
     /// machine or a power button. Nested backends have no session and ignore
     /// this.
     fn change_vt(&mut self, _vt: i32) {}
+
+    /// Ask for a frame to be drawn.
+    ///
+    /// Rendering is gated on the host inviting a frame, which is what stopped
+    /// the compositor spinning when nothing was on screen. That gate has one
+    /// consequence nobody asked for: a screencopy client requesting the screen
+    /// gets whatever frame happens along, and on a window the host is not
+    /// presenting, none ever does — the request times out having asked politely
+    /// for something only the compositor could have arranged.
+    ///
+    /// So a capture asks. Nested, this is winit's `request_redraw`; on DRM the
+    /// loop schedules its own frames and the default no-op is correct.
+    fn request_redraw(&mut self) {}
 }
 
 /// The logical size of an output: its current physical mode size divided by

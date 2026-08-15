@@ -177,6 +177,10 @@ fn run_winit() -> anyhow::Result<()> {
         // the loop still runs, rather than inside the rendering it is waiting
         // for.
         state.screenshot_overdue(std::time::Instant::now());
+        // Same reason, same place: a screencopy client is waiting on a frame
+        // that a non-presenting host will never invite, and `grim` blocks on
+        // that promise forever rather than giving up.
+        state.screencopy.expire(std::time::Instant::now());
 
         // Only when the host has asked for a frame. Rendering unconditionally is
         // what stalled the compositor: the swap at the end of it blocks until
@@ -259,6 +263,10 @@ fn run_winit() -> anyhow::Result<()> {
                     _ => unreachable!(),
                 })
                 .inspect(|_| {
+                    let waiting = std::mem::take(&mut state.screencopy.pending);
+                    if let Some(size) = state.backend_data.output.current_mode().map(|m| m.size) {
+                        ruster_compositor::screencopy::serve(waiting, renderer, &fb, size);
+                    }
                     // After the frame is drawn and before it is submitted: the
                     // contents are complete, and the copy is non-destructive so
                     // what reaches the screen is unchanged.
