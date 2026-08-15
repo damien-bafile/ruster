@@ -2553,6 +2553,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ruster-render-elements"
+version = "0.1.0"
+dependencies = [
+ "ruster-render",
+ "taffy",
+]
+
+[[package]]
 name = "ruster-render-gles"
 version = "0.1.0"
 dependencies = [
@@ -3118,6 +3126,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8eab9a99a024a169fe8a903cf9d4a3b3601109bcc13bd9e3c6fff259138626c4"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "taffy"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c034e05f6ee85a12daa63863c2245797715075c70649947aa0da54f3f2ab1d0f"
+dependencies = [
+ "arrayvec",
+ "serde",
+ "slotmap",
+ "smallvec",
 ]
 
 [[package]]
