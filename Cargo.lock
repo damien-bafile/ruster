@@ -2467,6 +2467,7 @@ dependencies = [
  "ruster-lua",
  "ruster-picker",
  "ruster-render",
+ "ruster-render-elements",
  "ruster-render-gles",
  "ruster-shell",
  "ruster-syntax",

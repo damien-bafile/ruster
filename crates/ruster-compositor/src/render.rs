@@ -543,6 +543,289 @@ pub fn send_frame_callbacks(
 mod tests {
     use super::*;
 
+    use crate::chrome::{HoverAnchor, OverlayBatch};
+    use crate::compositor::HoverPanel;
+    use crate::highlight::Highlights;
+    use crate::keymap::Keymap;
+    use crate::minibuffer::{MiniBuffer, Prompt};
+    use crate::pane::{EditorPane, Panes};
+    use crate::scene;
+    use ruster_core::buffer::Buffer;
+    use ruster_core::workspace::BufferStore;
+    use ruster_lsp::state::LspState;
+    use ruster_render::{Color, StyledLine, SyntaxStyle, Theme, WhichKeyEntry, WhichKeyView};
+    use ruster_render_elements::{div, layout, Elem, PxRect, Styled};
+    use ruster_render_gles::atlas::Atlas;
+    use ruster_render_gles::geometry::ChromeBatch;
+    use ruster_render_gles::tessellate::{scene_to_chrome_batch, GlesTextMeasurer};
+    use ruster_shell::{Layout, Rect};
+    use smithay::output::{Mode, PhysicalProperties, Scale, Subpixel};
+
+    fn theme() -> Theme {
+        Theme::default()
+    }
+
+    fn status() -> TreeStatus {
+        TreeStatus {
+            layout: Some(Layout::Horizontal),
+            windows: 2,
+            floating: false,
+        }
+    }
+
+    fn synth(id: &str, x: f32, y: f32) -> Elem {
+        let mut e = div();
+        e.id(id).absolute().position(x, y).size(40.0, 40.0).bg(Color::Rgb(1, 2, 3));
+        e
+    }
+
+    /// Lay `elem` over `(w, h)` and tessellate it through `atlas` — the same
+    /// atlas a `Chrome` instance draws into, so both paths measure, rasterize
+    /// and pick UVs identically. The widget sits inside a viewport root, exactly
+    /// as `chrome_scene`'s compose puts it: `layout` treats the root of the tree
+    /// as the screen and replaces its geometry, so a widget that carries its own
+    /// absolute position must never be the root itself.
+    fn new_batch(elem: Elem, w: f32, h: f32, atlas: &mut Atlas) -> ChromeBatch {
+        let mut root = div();
+        root.size(w, h).children(vec![elem]);
+        let mut measurer = GlesTextMeasurer;
+        let scene = layout(PxRect { x: 0.0, y: 0.0, w, h }, &root, &mut measurer);
+        scene_to_chrome_batch(&scene, atlas)
+    }
+
+    fn assert_same(label: &str, old: &ChromeBatch, new: &ChromeBatch) {
+        assert_eq!(old.verts, new.verts, "{label}: panel geometry");
+        assert_eq!(old.glyphs, new.glyphs, "{label}: glyph geometry");
+    }
+
+    /// The migration gate: every widget the scene builds must produce the exact
+    /// vertex and glyph batches the old `Chrome::draw_*` path did. Both sides
+    /// share one `Chrome` (one atlas), so the only possible difference is
+    /// layout — and `f32` equality is deliberate: a scene that renders
+    /// differently is a scene that is not ready to replace the draw methods.
+    /// This test is deleted at the flip (Task 6).
+    #[test]
+    fn scene_batches_match_the_old_draw_geometry() {
+        let mut chrome = Chrome::new(theme());
+
+        // statusline: workspace 1, a long focused title, a horizontal split.
+        {
+            let title = "a long focused title that overflows the bar";
+            let mut old = ChromeBatch::default();
+            chrome.draw_statusline(800, 600, 1, title, status(), &mut old);
+            let elem = scene::statusline_elem(800, 600, 1, title, status(), &theme());
+            assert_same("statusline", &old, &new_batch(elem, 800.0, 600.0, &mut chrome.atlas));
+        }
+
+        // which-key: two columns (41 rows per column at 1080p), a title, and a
+        // narrow output so the panel width clamp is exercised too.
+        {
+            let rows: Vec<WhichKeyEntry> = (0..60)
+                .map(|n| WhichKeyEntry {
+                    key: format!("M-{n}"),
+                    desc: format!("action {n}"),
+                })
+                .collect();
+            let view = WhichKeyView {
+                title: "M-w".into(),
+                rows,
+                anim: 1.0,
+            };
+            let mut old = ChromeBatch::default();
+            chrome.draw_whichkey(200, 1080, &view, &mut old);
+            let elem = scene::whichkey_elem(200, 1080, &view, &theme(), &mut GlesTextMeasurer);
+            assert_same("which-key", &old, &new_batch(elem, 200.0, 1080.0, &mut chrome.atlas));
+        }
+
+        // hover: three lines, below the caret, near the top-left corner.
+        {
+            let anchor = HoverAnchor {
+                x: 100.0,
+                y: 100.0,
+                cell_h: 16.0,
+            };
+            let lines = vec![
+                "fn main()".to_string(),
+                "the entry point".to_string(),
+                "third line".to_string(),
+            ];
+            let mut old = OverlayBatch::default();
+            chrome.draw_hover(1920, 1080, anchor, &lines, &mut old);
+            let elem = scene::hover_elem(1920, 1080, anchor, &lines, &theme(), &mut GlesTextMeasurer);
+            assert_same("hover", &old.0, &new_batch(elem, 1920.0, 1080.0, &mut chrome.atlas));
+        }
+
+        // one pane: diagnostics, a multi-span highlighted line, a wide title.
+        {
+            let hl = |fg: (u8, u8, u8)| SyntaxStyle {
+                fg: Color::Rgb(fg.0, fg.1, fg.2),
+                ..SyntaxStyle::default()
+            };
+            let lines = vec![
+                StyledLine {
+                    text: "fn main() {".to_string(),
+                    highlights: vec![(0, 2, hl((1, 0, 0))), (3, 7, hl((0, 1, 0)))],
+                },
+                StyledLine {
+                    text: "    let x = 1;".to_string(),
+                    highlights: vec![(4, 3, hl((3, 2, 1)))],
+                },
+                StyledLine {
+                    text: "    println!(\"hi\");".to_string(),
+                    highlights: vec![],
+                },
+                StyledLine {
+                    text: "}".to_string(),
+                    highlights: vec![],
+                },
+            ];
+            let severities = vec![Some(1), None, Some(3), None];
+            let mut old = ChromeBatch::default();
+            chrome.draw_editor_frame(600, 400, &lines, 0, &severities, "a wide pane title", &mut old);
+            let elem = scene::pane_elem(600, 400, &lines, 0, &severities, "a wide pane title", &theme());
+            assert_same("pane", &old, &new_batch(elem, 600.0, 400.0, &mut chrome.atlas));
+        }
+
+        // mini-buffer (the sixth surface `chrome_scene` composes).
+        {
+            let mut old = ChromeBatch::default();
+            chrome.draw_minibuffer(800, 600, ":echo hi", 1, &mut old);
+            let elem = scene::minibuffer_elem(800, 600, ":echo hi", 1, &theme());
+            assert_same("mini-buffer", &old, &new_batch(elem, 800.0, 600.0, &mut chrome.atlas));
+        }
+
+        // window borders: focused + unfocused at a fractional scale.
+        {
+            let windows = vec![
+                (WindowId(0), Rect::new(0, 0, 100, 100)),
+                (WindowId(1), Rect::new(100, 0, 200, 200)),
+            ];
+            let mut old = ChromeBatch::default();
+            chrome.draw_window_borders(&windows, Some(WindowId(0)), 1.5, &mut old);
+            let elem = scene::window_borders_elem(&windows, Some(WindowId(0)), 1.5, &theme());
+            assert_same("window borders", &old, &new_batch(elem, 800.0, 600.0, &mut chrome.atlas));
+        }
+    }
+
+    /// The declarative scene must keep the old painter's order — borders,
+    /// statusline, mini-buffer, which-key, then panes — because a smithay
+    /// element list is front-to-back and the panel batch is reversed to match.
+    #[test]
+    fn compose_keeps_the_painter_s_order() {
+        let base = scene::compose(
+            vec![
+                synth("borders", 0.0, 0.0),
+                synth("statusline", 0.0, 60.0),
+                synth("minibuffer", 0.0, 120.0),
+                synth("whichkey", 0.0, 180.0),
+                synth("pane", 0.0, 240.0),
+            ],
+            &theme(),
+            800.0,
+            600.0,
+        );
+        let mut measurer = GlesTextMeasurer;
+        let laid = layout(PxRect { x: 0.0, y: 0.0, w: 800.0, h: 600.0 }, &base, &mut measurer);
+        let order: Vec<&str> = laid.boxes.iter().map(|b| b.key.last().unwrap()).collect();
+        assert_eq!(order, ["borders", "statusline", "minibuffer", "whichkey", "pane"]);
+    }
+
+    /// `chrome_scene` assembles the real widgets from a `FrameInput` and hands
+    /// the hover panel back as the overlay element — the only chrome drawn over
+    /// the base batch.
+    #[test]
+    fn chrome_scene_builds_the_base_and_keeps_hover_as_the_overlay() {
+        let output = Output::new(
+            "test".into(),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: "ruster".into(),
+                model: "test".into(),
+            },
+        );
+        let mode = Mode {
+            size: (800, 600).into(),
+            refresh: 60_000,
+        };
+        output.add_mode(mode);
+        output.change_current_state(
+            Some(mode),
+            Some(Transform::Normal),
+            Some(Scale::Fractional(1.0)),
+            Some((0, 0).into()),
+        );
+
+        let mut buffers = BufferStore::new();
+        let doc = buffers.create_scratch("doc");
+        buffers.get_mut(doc).unwrap().buffer =
+            Buffer::from_str("fn main() {\n    println!(\"hi\");\n}\n");
+
+        let mut panes = Panes::new();
+        let mut pane = EditorPane::new(doc);
+        pane.rows = 3;
+        panes.insert(WindowId(0), pane);
+
+        let toplevels = HashMap::new();
+        let geometry = vec![(WindowId(0), Rect::new(0, 0, 100, 60))];
+        let highlights = std::cell::RefCell::new(Highlights::default());
+        let lsp = LspState::default();
+        let keymap = Keymap::new(&[]);
+        let mut mb = MiniBuffer::new(Prompt::Command);
+        mb.input = ":echo hi".into();
+        let hover = HoverPanel {
+            pane: WindowId(0),
+            row: 0,
+            col: 0,
+            lines: vec!["hover line".to_string()],
+        };
+
+        let frame = FrameInput {
+            focus: Some(WindowId(0)),
+            toplevels: &toplevels,
+            output: &output,
+            workspace: 1,
+            focused_title: "doc",
+            cursor_status: &CursorImageStatus::Hidden,
+            cursor_location: Point::from((0.0, 0.0)),
+            geometry: &geometry,
+            tree_status: status(),
+            panes: &panes,
+            buffers: &buffers,
+            highlights: &highlights,
+            lsp: &lsp,
+            keymap: &keymap,
+            whichkey: None,
+            minibuffer: Some(&mb),
+            hover: Some(&hover),
+            launcher: None,
+        };
+
+        let mut measurer = GlesTextMeasurer;
+        let (base, overlay) = scene::chrome_scene(&frame, &theme(), &mut measurer);
+
+        // The overlay is exactly the hover panel: one rounded panel, one line.
+        let overlay_laid = layout(
+            PxRect { x: 0.0, y: 0.0, w: 800.0, h: 600.0 },
+            overlay.as_ref().unwrap(),
+            &mut measurer,
+        );
+        assert_eq!(overlay_laid.boxes.len(), 1);
+        assert_eq!(overlay_laid.texts.len(), 1);
+
+        // The base is the frame in painter's order: window borders, statusline,
+        // mini-buffer, then the pane. (No which-key in this frame.)
+        let base_laid = layout(PxRect { x: 0.0, y: 0.0, w: 800.0, h: 600.0 }, &base, &mut measurer);
+        let mut surfaces: Vec<&str> = Vec::new();
+        for b in &base_laid.boxes {
+            let top = b.key.0.first().map(String::as_str).unwrap_or("");
+            if surfaces.last().copied() != Some(top) {
+                surfaces.push(top);
+            }
+        }
+        assert_eq!(surfaces, ["window-borders", "statusline", "minibuffer", "pane"]);
+    }
+
     #[test]
     fn chrome_height_never_exceeds_output() {
         // ~2.5% of the output height, min 24px, max 64px.

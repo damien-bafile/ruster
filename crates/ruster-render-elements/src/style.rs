@@ -107,6 +107,16 @@ pub trait Styled {
         self
     }
 
+    /// Clamp this element's width to `width`, keeping the height free.
+    ///
+    /// The sibling of [`min_w_0`](Self::min_w_0): an absolute panel that would
+    /// otherwise size to its content gets capped, matching the `min()`
+    /// clamping the chrome's hand-built draw methods applied to their panels.
+    fn max_w(&mut self, width: f32) -> &mut Self {
+        self.style().taffy.max_size.width = length(width);
+        self
+    }
+
     fn gap(&mut self, gap: f32) -> &mut Self {
         self.style().taffy.gap = Size {
             width: length(gap),

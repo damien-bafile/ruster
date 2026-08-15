@@ -61,15 +61,15 @@ impl TreeStatus {
 ///
 /// Thin enough that covering that many pixels of the client costs nothing
 /// legible, thick enough to read at a glance on a 1440p display.
-const BORDER_WIDTH: f32 = 2.0;
+pub(crate) const BORDER_WIDTH: f32 = 2.0;
 
 /// One stretch of a line drawn in a single colour.
-struct Run {
+pub(crate) struct Run {
     /// Column the run starts at, in cells from the body's left edge.
-    column: usize,
-    text: String,
+    pub(crate) column: usize,
+    pub(crate) text: String,
     /// `None` where the highlighter had no opinion, which is most of a line.
-    color: Option<Color>,
+    pub(crate) color: Option<Color>,
 }
 
 /// A line split into runs: each highlighted span, and the plain text between.
@@ -77,7 +77,7 @@ struct Run {
 /// The gaps matter as much as the spans. A highlighter colours keywords and
 /// leaves the spaces and identifiers between them alone, so drawing only the
 /// spans would draw only a fraction of the line.
-fn runs(line: &StyledLine) -> Vec<Run> {
+pub(crate) fn runs(line: &StyledLine) -> Vec<Run> {
     let chars: Vec<char> = line.text.chars().collect();
     let mut out = Vec::new();
     let mut at = 0usize;
@@ -140,7 +140,7 @@ fn syntax_color(style: &SyntaxStyle) -> Option<Color> {
 /// The palette has no `diagnostic_*` roles of its own, which is what this
 /// should use; adding them means the Lua override plumbing and the theme parity
 /// test, and belongs with the rest of the Phase 2 theming work.
-fn severity_sign(severity: u8, theme: &Theme) -> (&'static str, (f32, f32, f32, f32)) {
+pub(crate) fn severity_sign(severity: u8, theme: &Theme) -> (&'static str, (f32, f32, f32, f32)) {
     match severity {
         1 => ("E", theme.accent.into()),
         2 => ("W", theme.fg.into()),
@@ -154,20 +154,19 @@ fn severity_sign(severity: u8, theme: &Theme) -> (&'static str, (f32, f32, f32, 
 /// Sized to the largest number that will be shown rather than to the buffer, so
 /// a 10,000-line file does not reserve five columns while showing lines 1-40 —
 /// and zero when there is nothing to number, so an empty pane has no gutter.
-fn gutter_width(first_line: usize, shown: usize) -> usize {
+pub(crate) fn gutter_width(first_line: usize, shown: usize) -> usize {
     if shown == 0 {
         return 0;
     }
     let last = first_line + shown;
     last.to_string().len() + 1
 }
-
 /// The diagnostic sign's own column, left of the line numbers.
 ///
 /// It has to be its own column. Drawing the sign at the gutter's origin and
 /// then the right-aligned number at the same origin painted one over the other:
 /// the numbers won, and three real diagnostics rendered as an unchanged frame.
-const SIGN_COLS: usize = 1;
+pub(crate) const SIGN_COLS: usize = 1;
 
 /// Total gutter width: the sign column plus the numbers.
 ///
@@ -183,10 +182,10 @@ fn gutter_cols(first_line: usize, shown: usize) -> usize {
 }
 
 /// Height of an editor frame's title bar, in physical pixels.
-const FRAME_BAR_H: f32 = 28.0;
+pub(crate) const FRAME_BAR_H: f32 = 28.0;
 
 /// Gap between an editor frame's edge and its contents, in physical pixels.
-const FRAME_PAD: f32 = 6.0;
+pub(crate) const FRAME_PAD: f32 = 6.0;
 
 /// Where an editor frame's text starts and how big one cell is, in physical
 /// pixels measured from the frame's own top-left.

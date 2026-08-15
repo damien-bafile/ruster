@@ -20,6 +20,7 @@ pub mod minibuffer;
 pub mod pane;
 pub mod persist;
 pub mod render;
+pub mod scene;
 pub mod repeat;
 pub mod screencopy;
 pub mod screenshot;
