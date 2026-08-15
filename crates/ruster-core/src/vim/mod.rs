@@ -439,12 +439,25 @@ impl VimState {
         if self.pending_g {
             self.pending_g = false;
             match key {
-                KeyEvent::Char('g') => out.push(Action::Move(Motion::To(0))),
+                // `Ngg` goes to line N, `gg` to the first line. Taking the
+                // count here rather than discarding it is the whole reason a
+                // count may precede `g`.
+                KeyEvent::Char('g') => {
+                    let last = editor.buffer().line_count().saturating_sub(1);
+                    let line = n.saturating_sub(1).min(last as u32) as usize;
+                    out.push(Action::Move(Motion::To(
+                        editor.buffer().line_start_char(line),
+                    )));
+                }
                 // Walk the undo tree by time rather than along the branch.
                 KeyEvent::Char('-') => out.push(Action::UndoTime(false)),
                 KeyEvent::Char('+') => out.push(Action::UndoTime(true)),
                 _ => {}
             }
+            // Every other prefix clears the count on the way out; this one did
+            // not, so a count typed before `g` survived into the *next*
+            // command — after `2gg`, a plain `j` moved two lines.
+            self.count = None;
             return;
         }
 
@@ -1218,6 +1231,61 @@ mod tests {
     use super::*;
     use crate::editor::Editor;
     use crate::key::KeyEvent;
+
+    /// Regression: a count typed before `g` survived into the next command,
+    /// because the `pending_g` arm returned without clearing it — after `2gg`
+    /// a plain `j` moved two lines. Every other prefix clears it on the way
+    /// out. The count is also now honoured rather than dropped: `Ngg` is
+    /// vim's "go to line N", which is what a count before `g` is for.
+    #[test]
+    fn a_count_before_gg_targets_a_line_and_does_not_leak() {
+        let mut e = Editor::from_str("a\nb\nc\nd\ne\nf\n");
+        let mut v = VimState::new();
+
+        // `3gg` lands on line 3 (offset 4: "a\nb\nc" -> c starts at 4).
+        for k in ['3', 'g', 'g'] {
+            for a in v.handle(KeyEvent::Char(k), &e) {
+                e.execute(a);
+            }
+        }
+        assert_eq!(e.cursors().head(), 4, "3gg went to the third line");
+
+        // The next motion must be a *single* step, not three.
+        assert_eq!(
+            v.handle(KeyEvent::Char('j'), &e),
+            vec![Action::Move(Motion::Line(1))],
+            "the count did not survive into the next command"
+        );
+    }
+
+    /// A bare `gg` still goes to the top.
+    #[test]
+    fn a_bare_gg_goes_to_the_first_line() {
+        let mut e = Editor::from_str("a\nb\nc\n");
+        let mut v = VimState::new();
+        for a in v.handle(KeyEvent::Char('G'), &e) {
+            e.execute(a);
+        }
+        for k in ['g', 'g'] {
+            for a in v.handle(KeyEvent::Char(k), &e) {
+                e.execute(a);
+            }
+        }
+        assert_eq!(e.cursors().head(), 0);
+    }
+
+    /// A count past the end clamps rather than indexing off the rope.
+    #[test]
+    fn a_count_past_the_last_line_clamps() {
+        let mut e = Editor::from_str("a\nb\n");
+        let mut v = VimState::new();
+        for k in ['9', '9', 'g', 'g'] {
+            for a in v.handle(KeyEvent::Char(k), &e) {
+                e.execute(a);
+            }
+        }
+        assert!(e.cursors().head() <= e.buffer().len_chars());
+    }
 
     fn to_start(e: &mut Editor, v: &mut VimState) {
         for a in v.handle(KeyEvent::Char('g'), e) {
