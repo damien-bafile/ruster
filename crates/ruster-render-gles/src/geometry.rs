@@ -1,3 +1,5 @@
+use ruster_render_elements::ElementKey;
+
 /// One vertex: x, y, (reserved), r, g, b, a.
 ///
 /// Sized for a `gl::VertexAttribPointer` of two attributes: a 2f32 position
@@ -32,6 +34,9 @@ pub struct GlyphQuad {
 pub struct ChromeBatch {
     pub verts: Vec<Vertex>,
     pub glyphs: Vec<GlyphQuad>,
+    /// Which [`ElementKey`] each glyph in [`ChromeBatch::glyphs`] belongs to, one
+    /// per emitted glyph and in the same order.
+    pub glyph_keys: Vec<ElementKey>,
 }
 
 /// How much of a [`ChromeBatch`] had been drawn at some point, so a later
@@ -53,6 +58,7 @@ impl ChromeBatch {
 
     /// Shift everything appended since `mark` by `(dx, dy)`. `render_frame` uses
     /// this to centre the welcome editor frame after laying it out at the origin.
+    /// `glyph_keys` is left alone: a key is per-glyph identity, not a position.
     pub fn translate_since(&mut self, mark: BatchMark, dx: f32, dy: f32) {
         for v in &mut self.verts[mark.verts..] {
             v[0] += dx;

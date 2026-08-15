@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 ruster-render = { path = "../ruster-render" }
+ruster-render-elements = { path = "../ruster-render-elements" }
 tracing = "0.1"
 
 # Smithay, and the only consumer of cosmic-text, are Linux-only. Off Linux this

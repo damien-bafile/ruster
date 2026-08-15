@@ -2566,6 +2566,7 @@ version = "0.1.0"
 dependencies = [
  "cosmic-text",
  "ruster-render",
+ "ruster-render-elements",
  "smithay",
  "tracing",
 ]
