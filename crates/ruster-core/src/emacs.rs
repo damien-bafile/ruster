@@ -75,6 +75,23 @@ impl EmacsState {
         self.kill_ring.push(text);
     }
 
+    /// The text a paste should insert: the top of the kill ring, falling back
+    /// to the system clipboard.
+    ///
+    /// Ring first so that `:paste` and `C-y` always agree. They would diverge
+    /// otherwise: every kill mirrors itself onto the system clipboard, but
+    /// `arboard` may be absent (a headless session, a Wayland compositor with
+    /// no data device), and then the ring is the only record that a kill
+    /// happened at all.
+    pub fn paste_text(&self) -> Option<String> {
+        self.kill_ring.last().cloned().or_else(|| {
+            self.clipboard
+                .borrow_mut()
+                .as_mut()
+                .and_then(|c| c.get_text().ok())
+        })
+    }
+
     fn set_clipboard(&self, text: &str) {
         if let Some(cb) = self.clipboard.borrow_mut().as_mut() {
             let _ = cb.set_text(text.to_string());
@@ -344,7 +361,7 @@ impl EmacsState {
     }
 
     /// The active region as an ordered `(lo, hi)`, or `None` with no mark.
-    fn region(&self, point: usize) -> Option<(usize, usize)> {
+    pub fn region(&self, point: usize) -> Option<(usize, usize)> {
         self.mark.map(|m| (m.min(point), m.max(point)))
     }
 
@@ -477,5 +494,32 @@ mod tests {
         let (e, _) = run("foo bar baz", 0, &[KeyEvent::Alt('f'), KeyEvent::Char('|')]);
         // M-f lands at the start of "bar" (offset 4).
         assert_eq!(e.buffer().to_string(), "foo |bar baz");
+    }
+
+    #[test]
+    fn paste_text_reads_the_top_of_the_kill_ring() {
+        let mut em = EmacsState::new();
+        em.push_kill("older".to_string());
+        em.push_kill("newer".to_string());
+        assert_eq!(em.paste_text().as_deref(), Some("newer"));
+    }
+
+    #[test]
+    fn paste_text_is_none_with_no_kills_and_no_clipboard() {
+        let em = EmacsState::new();
+        // Detached rather than merely empty: an attached clipboard would answer
+        // with whatever the host machine happens to be holding.
+        *em.clipboard.borrow_mut() = None;
+        assert_eq!(em.paste_text(), None);
+    }
+
+    #[test]
+    fn region_is_ordered_and_absent_without_a_mark() {
+        let mut em = EmacsState::new();
+        assert_eq!(em.region(3), None);
+        em.set_mark(7);
+        // Point before mark: still reported low-to-high.
+        assert_eq!(em.region(3), Some((3, 7)));
+        assert_eq!(em.region(9), Some((7, 9)));
     }
 }

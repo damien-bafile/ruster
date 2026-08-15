@@ -1,5 +1,5 @@
+ demo.rs  Dashboard  *messages*
 ─ demo.rs ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
- 17     pub x: i32,
  18     pub y: i32,
  19 }
  20
@@ -37,4 +37,4 @@
  52     let total = 3;
  53     let total_shifted = total + 1;
  54     let points = vec![Point::origin(), Point::origin().shifted(total_shifted)];
- -- NORMAL -- │demo.rs                                                                                        85%  54,5
+ -- NORMAL -- │                                         demo.rs                                               85%  54,5

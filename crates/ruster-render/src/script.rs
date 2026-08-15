@@ -21,8 +21,9 @@ use std::rc::Rc;
 use crossterm::event::KeyEvent;
 
 use crate::{
-    DebugOverlayView, DialogView, FloatView, FrameState, PickerView, Rect, Renderer, SelectionView,
-    SettingsView, StatuslineView, StyledLine, TermGridView, WelcomeView, WhichKeyView,
+    BufferlineView, DebugOverlayView, DialogView, FloatView, FrameState, PickerView, Rect,
+    Renderer, SelectionView, SettingsView, StatuslineView, StyledLine, TermGridView, WelcomeView,
+    WhichKeyView,
 };
 
 /// One window as it was handed to the renderer.
@@ -55,6 +56,7 @@ pub struct WindowDigest {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct FrameDigest {
     pub windows: Vec<WindowDigest>,
+    pub bufferline: Option<BufferlineView>,
     pub cmdline: Option<String>,
     pub noice_mini: Vec<String>,
     pub noice_notify: Option<Vec<String>>,
@@ -93,6 +95,7 @@ impl FrameDigest {
                     terminal: w.terminal.clone(),
                 })
                 .collect(),
+            bufferline: state.bufferline.clone(),
             cmdline: state.cmdline.map(str::to_string),
             noice_mini: state.noice_mini.clone(),
             noice_notify: state
@@ -116,6 +119,17 @@ impl FrameDigest {
     /// must not rewrite the whole file. Geometry belongs in the PNG.
     pub fn to_text(&self) -> String {
         let mut out = String::new();
+        if let Some(b) = &self.bufferline {
+            // Marked rather than laid out in columns: the strip scrolls with the
+            // active tab, so its column offsets shift for reasons a text diff
+            // should not have to care about.
+            let tabs: Vec<String> = b
+                .tabs
+                .iter()
+                .map(|t| format!("{}{}", if t.active { ">" } else { " " }, t.label.trim_end()))
+                .collect();
+            out.push_str(&format!("bufferline{}\n", tabs.join("")));
+        }
         for (i, w) in self.windows.iter().enumerate() {
             out.push_str(&format!(
                 "window {i}{}{}\n",
@@ -134,11 +148,9 @@ impl FrameDigest {
                 out.push_str(&format!("  signs {:?}\n", w.signs));
             }
             let s = &w.statusline;
-            if !(s.left.is_empty() && s.center.is_empty() && s.right.is_empty()) {
-                out.push_str(&format!(
-                    "  status [{}] [{}] [{}]\n",
-                    s.left, s.center, s.right
-                ));
+            let (left, center, right) = (s.left_text(), s.center_text(), s.right_text());
+            if !(left.is_empty() && center.is_empty() && right.is_empty()) {
+                out.push_str(&format!("  status [{left}] [{center}] [{right}]\n"));
             }
             for (row, col, text) in &w.flash_labels {
                 out.push_str(&format!("  flash {row},{col} {text}\n"));
@@ -655,8 +667,8 @@ mod tests {
                     signs: vec![(0, 'E', crate::Color::Default)],
                 },
                 statusline: StatuslineView {
-                    left: "NORMAL".into(),
-                    right: "1:1".into(),
+                    left: vec![crate::StatusSection::new("mode", "NORMAL")],
+                    right: vec![crate::StatusSection::new("position", "1:1")],
                     ..Default::default()
                 },
                 active: true,

@@ -1,3 +1,4 @@
+ demo.rs  Dashboard  *messages*  *help*
 ─ *help* ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
 # ruster help
 #
@@ -36,5 +37,4 @@ Most motions accept a count prefix (e.g. `5j`, `3w`).
 | `w` `b` `e` | Next word start / previous word start / word end |
 | `f{char}` / `F{char}` | Jump to next / previous occurrence of `{char}` on the line |
 | `t{char}` / `T{char}` | Jump just before / after `{char}` on the line |
-| `;` / `,` | Repeat the last find forwards / backwards |
- -- NORMAL -- │*help*                                                                                           0%  1,1
+ -- NORMAL -- │                                          *help*                                                 0%  1,1

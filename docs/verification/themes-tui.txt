@@ -1,3 +1,4 @@
+ demo.rs  Dashboard  *messages*
 ─ demo.rs ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
 //! The fixture every capture opens.
 //!
@@ -11,19 +12,19 @@
 
 use std::collections::HashMap;
 use std::fmt;
+                        ╭─ Themes ─────────────────────────────────────────────────────────────╮
+/// A point in the plane│ >                                                                    │
+#[derive(Debug, Clone, C│ starship                                                             │
+pub struct Point {      │ default                                                              │
+    pub x: i32,         │ gruvbox                                                              │
+    pub y: i32,         │ tokyonight                                                           │
+}                       │ nord                                                                 │
+                        │ catppuccin-mocha                                                     │
+impl Point {            │ catppuccin-latte                                                     │
+    pub fn origin() -> S│ catppuccin-frappe                                                    │
+        Point { x: 0, y:│ catppuccin-macchiato                                                 │
+    }                   ╰──────────────────────────────────────────────────────────────────────╯
 
-/// A point in the plane╭─ Themes ─────────────────────────────────────────────────────────────╮
-#[derive(Debug, Clone, C│ >                                                                    │
-pub struct Point {      │ starship                                                             │
-    pub x: i32,         │ default                                                              │
-    pub y: i32,         │ gruvbox                                                              │
-}                       │ tokyonight                                                           │
-                        │ nord                                                                 │
-impl Point {            │ catppuccin-mocha                                                     │
-    pub fn origin() -> S│ catppuccin-latte                                                     │
-        Point { x: 0, y:│ catppuccin-frappe                                                    │
-    }                   │ catppuccin-macchiato                                                 │
-                        ╰──────────────────────────────────────────────────────────────────────╯
     // TODO: support translation by a vector rather than a scalar
     pub fn shifted(&self, by: i32) -> Self {
         Point { x: self.x + by, y: self.y + by }
@@ -36,5 +37,4 @@ impl fmt::Display for Point {
     }
 }
 
-/// Count how many times each point appears.
- -- NORMAL -- │demo.rs                                                                                          1%  1,1
+ -- NORMAL -- │                                         demo.rs                                                 1%  1,1

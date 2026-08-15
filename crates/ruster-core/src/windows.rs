@@ -39,9 +39,16 @@ pub struct Window {
     pub buffer: BufferId,
     pub cursors: CursorSet,
     pub scroll_top: usize,
+    /// First visible column. Nothing wraps, so without this everything past the
+    /// window's width would be unreachable rather than merely off-screen.
+    pub scroll_left: usize,
     /// Text rows this window last rendered with. Only the renderer knows the
     /// real geometry, so it records it here for half-page scrolling to use.
     pub height: usize,
+    /// Text columns this window last rendered with, recorded for the same
+    /// reason as `height`: horizontal scrolling has to know how wide the view is
+    /// to tell whether the cursor still fits inside it.
+    pub width: usize,
 }
 
 impl Window {
@@ -50,7 +57,9 @@ impl Window {
             buffer,
             cursors: CursorSet::single(0),
             scroll_top: 0,
+            scroll_left: 0,
             height: 0,
+            width: 0,
         }
     }
 }
@@ -117,7 +126,12 @@ fn build(
                     buffer: buf,
                     cursors: CursorSet::single(*cursor),
                     scroll_top: *scroll,
+                    // Not saved: the first render clamps it to whatever keeps
+                    // the restored cursor visible, which is the only value that
+                    // would have been correct anyway.
+                    scroll_left: 0,
                     height: 0,
+                    width: 0,
                 },
             );
             if *is_active {
@@ -335,12 +349,13 @@ impl WindowTree {
     /// window becomes active. Returns its id.
     pub fn split(&mut self, dir: SplitDir) -> WindowId {
         let new_id = self.alloc_id();
-        let (buffer, scroll, cursors) = {
+        let (buffer, scroll, scroll_left, cursors) = {
             let a = self.active_window();
-            (a.buffer, a.scroll_top, a.cursors.clone())
+            (a.buffer, a.scroll_top, a.scroll_left, a.cursors.clone())
         };
         let mut win = Window::new(buffer);
         win.scroll_top = scroll;
+        win.scroll_left = scroll_left;
         win.cursors = cursors;
         self.windows.insert(new_id, win);
 
@@ -385,6 +400,25 @@ impl WindowTree {
             Some(_) => None,
             None => Some(self.active),
         };
+    }
+
+    /// Point every window showing `from` at `to`, clamping their cursors to a
+    /// buffer of `to_len` characters. Returns how many windows moved.
+    ///
+    /// Closing a document has to leave *no* window referring to it. The
+    /// renderer resolves each window's buffer every frame, so a window left
+    /// pointing at a closed one is not a blank pane — it is a panic on the next
+    /// frame.
+    pub fn replace_buffer(&mut self, from: BufferId, to: BufferId, to_len: usize) -> usize {
+        let mut moved = 0;
+        for win in self.windows.values_mut() {
+            if win.buffer == from {
+                win.buffer = to;
+                win.cursors.clamp_to(to_len);
+                moved += 1;
+            }
+        }
+        moved
     }
 
     /// Move focus to the nearest window in `dir` (no-op if none exists).
@@ -749,6 +783,7 @@ mod tests {
     fn split_copies_cursor_and_buffer() {
         let mut t = tree();
         t.active_window_mut().scroll_top = 7;
+        t.active_window_mut().scroll_left = 12;
         t.active_window_mut()
             .cursors
             .set_head(0, &crate::buffer::Buffer::from_str(""));
@@ -756,6 +791,11 @@ mod tests {
         let new = t.split(SplitDir::Horizontal);
         assert_eq!(t.window(new).unwrap().buffer, buf);
         assert_eq!(t.window(new).unwrap().scroll_top, 7);
+        assert_eq!(
+            t.window(new).unwrap().scroll_left,
+            12,
+            "a split of a sideways-scrolled window looks at the same columns"
+        );
     }
 
     /// The shape, the focus, and every cursor must survive a save/restore.

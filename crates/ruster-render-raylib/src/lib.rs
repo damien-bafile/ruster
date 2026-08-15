@@ -678,6 +678,40 @@ impl Renderer for RaylibRenderer {
         let mut d = self.rl.begin_drawing(&self.thread);
         d.clear_background(bg);
 
+        // The strip of open buffers, on the row the app already took out of the
+        // window area — drawn before the windows only because nothing overlaps
+        // it, so the order is free.
+        if let Some(bl) = &state.bufferline {
+            let bar_y = pad_y + bl.rect.y as i32 * line_h;
+            let bar_x = pad_x + (bl.rect.x as f32 * char_w) as i32;
+            let bar_w = (bl.rect.width as f32 * char_w) as i32;
+            d.draw_rectangle(bar_x, bar_y, bar_w, line_h, statusline_bg);
+            for tab in &bl.tabs {
+                let (fg, bg_tab) = if tab.active {
+                    (accent_fg, accent)
+                } else {
+                    (gutter_color, statusline_bg)
+                };
+                let tab_x = bar_x + (tab.col as f32 * char_w) as i32;
+                d.draw_rectangle(
+                    tab_x,
+                    bar_y,
+                    (tab.width as f32 * char_w) as i32,
+                    line_h,
+                    bg_tab,
+                );
+                let chars: Vec<char> = tab.label.chars().collect();
+                let colors = vec![fg; chars.len()];
+                draw_text_cells(
+                    &mut d,
+                    metrics,
+                    (tab_x as f32, bar_y as f32),
+                    &chars,
+                    &colors,
+                );
+            }
+        }
+
         // Collect and sort by x to find adjacent windows for vertical seams.
         let mut window_list: Vec<&ruster_render::WindowView> = state
             .windows
@@ -1137,9 +1171,25 @@ impl Renderer for RaylibRenderer {
                 let mode_fg = to_raylib(theme.mode_fg(view.statusline.mode), statusline_fg);
                 // Fill entire statusline with neutral bg.
                 s.draw_rectangle(px, sl_y, pw, line_h, statusline_bg);
-                // Mode label (left section) — per-mode bg + fg.
-                let left = format!(" {} ", view.statusline.left);
-                let left_w = measure(&left);
+
+                let (left, center, right) = (
+                    view.statusline.left_text(),
+                    view.statusline.center_text(),
+                    view.statusline.right_text(),
+                );
+                let cells = |t: &str| t.chars().count() as u16;
+                // Placed in cells from the shared layout rather than by measuring
+                // the strings here. Two backends measuring for themselves is two
+                // answers, and the mouse can only resolve a click against one of
+                // them — so this is the one, and it is the one the TUI draws too.
+                let layout = ruster_render::statusline_layout(
+                    view.rect.width,
+                    cells(&left),
+                    cells(&center),
+                    cells(&right),
+                );
+                let col_x = |col: u16| px as f32 + col as f32 * char_w;
+
                 let (sl_bg, sl_fg) = if view.active {
                     (mode_bg, mode_fg)
                 } else {
@@ -1154,47 +1204,50 @@ impl Renderer for RaylibRenderer {
                         gutter_color,
                     )
                 };
-                s.draw_rectangle(px, sl_y, left_w as i32, line_h, sl_bg);
-                s.draw_text_ex(
-                    font,
-                    &left,
-                    Vector2::new(px as f32, sl_y as f32),
-                    font_size as f32,
-                    1.0,
-                    sl_fg,
-                );
-                // Right section — neutral bg + statusline_fg (or gutter for inactive).
-                let right = format!(" {} ", view.statusline.right);
-                let right_x = (px + pw) as f32 - measure(&right);
-                let right_fg = if view.active {
+                let neutral_fg = if view.active {
                     statusline_fg
                 } else {
                     gutter_color
                 };
-                s.draw_text_ex(
-                    font,
-                    &right,
-                    Vector2::new(right_x, sl_y as f32),
-                    font_size as f32,
-                    1.0,
-                    right_fg,
-                );
-                // Center section — neutral bg + statusline_fg (or gutter for inactive).
-                if !view.statusline.center.is_empty() {
-                    let center_w = measure(&view.statusline.center);
-                    let right_w = measure(&right);
-                    if let Some(off) =
-                        ruster_render::statusline_center_x(pw as f32, left_w, center_w, right_w)
-                    {
-                        s.draw_text_ex(
-                            font,
-                            &view.statusline.center,
-                            Vector2::new(px as f32 + off, sl_y as f32),
-                            font_size as f32,
-                            1.0,
-                            right_fg,
-                        );
-                    }
+                // Mode block (left group) — per-mode bg + fg, its padding filled
+                // so it reads as one shape.
+                if !left.is_empty() {
+                    let block_x = col_x(layout.left.saturating_sub(1));
+                    s.draw_rectangle(
+                        block_x as i32,
+                        sl_y,
+                        ((cells(&left) + 2) as f32 * char_w) as i32,
+                        line_h,
+                        sl_bg,
+                    );
+                    s.draw_text_ex(
+                        font,
+                        &left,
+                        Vector2::new(col_x(layout.left), sl_y as f32),
+                        font_size as f32,
+                        1.0,
+                        sl_fg,
+                    );
+                }
+                if let Some(cx) = layout.center {
+                    s.draw_text_ex(
+                        font,
+                        &center,
+                        Vector2::new(col_x(cx), sl_y as f32),
+                        font_size as f32,
+                        1.0,
+                        neutral_fg,
+                    );
+                }
+                if !right.is_empty() {
+                    s.draw_text_ex(
+                        font,
+                        &right,
+                        Vector2::new(col_x(layout.right), sl_y as f32),
+                        font_size as f32,
+                        1.0,
+                        neutral_fg,
+                    );
                 }
             }
 
@@ -2027,7 +2080,7 @@ mod tests {
         let glyphs = [
             ('▸', "sidebar: collapsed directory"),
             ('▾', "sidebar: expanded directory"),
-            ('●', "debugger: breakpoint"),
+            ('●', "debugger: breakpoint, bufferline: modified buffer"),
             ('✓', "test runner: pass"),
             ('✗', "test runner: fail"),
             ('⚠', "notifications: warning"),

@@ -374,6 +374,55 @@ fn visual_line_mode_puts_a_selection_on_the_frame() {
     assert_eq!(sel.end.0, 1, "j should extend the selection by one line");
 }
 
+/// A line wider than any window, of characters distinctive enough that a
+/// suffix of it can be told from the whole.
+fn wide_line() -> String {
+    "0123456789".repeat(40)
+}
+
+/// The first line of the last frame, as drawn.
+fn first_line(log: &FrameLog) -> String {
+    log.last().windows[0].lines[0].text.clone()
+}
+
+/// Nothing wraps, so the only way text past the window edge reaches the screen
+/// is for the view to move sideways. `$` puts the cursor at the end of a line
+/// far wider than the window; the frame has to have followed it there.
+#[test]
+fn a_long_line_scrolls_sideways_to_follow_the_cursor() {
+    let line = wide_line();
+    let log = Drive::new().content(&format!("{line}\n")).keys("$").run();
+    let drawn = first_line(&log);
+
+    assert!(!drawn.is_empty(), "{}", log.transcript());
+    assert!(
+        line.ends_with(&drawn),
+        "the frame must show the tail of the line, got {drawn:?}"
+    );
+    assert!(
+        drawn.len() < line.len(),
+        "and not the whole of it — the view never moved"
+    );
+}
+
+/// `zh` walks the view back a column. Two runs rather than two frames of one:
+/// the assertion is about the difference between the views, and a frame index
+/// would be a guess about how the loop paces itself.
+#[test]
+fn zh_scrolls_the_view_back_one_column() {
+    let line = wide_line();
+    let content = format!("{line}\n");
+    let at_end = first_line(&Drive::new().content(&content).keys("$").run());
+    let scrolled = first_line(&Drive::new().content(&content).keys("$zh").run());
+
+    assert_eq!(
+        scrolled.len(),
+        at_end.len() + 1,
+        "one more column of the line is visible"
+    );
+    assert!(line.ends_with(&scrolled));
+}
+
 // ---------------------------------------------------------------------------
 // Command-driven surfaces, checked through the same loop
 // ---------------------------------------------------------------------------
@@ -391,6 +440,68 @@ fn the_sidebar_opens_as_a_second_window() {
         frame.windows.len(),
         log.transcript()
     );
+}
+
+/// The bufferline is on by default, so an ordinary session has one, it lists
+/// what is open, and it marks the buffer being edited.
+#[test]
+fn the_bufferline_shows_the_open_buffers_with_the_active_one_marked() {
+    let log = Drive::new()
+        .file("demo.rs", DEMO)
+        .setup("ruster.cmd(':e second.rs')")
+        .run();
+    let frame = log.last();
+    let bl = frame
+        .bufferline
+        .as_ref()
+        .unwrap_or_else(|| panic!("no bufferline on the frame:\n{}", log.transcript()));
+
+    let labels: Vec<&str> = bl.tabs.iter().map(|t| t.label.trim()).collect();
+    assert!(
+        labels.iter().any(|l| l.contains("demo.rs")),
+        "got {labels:?}"
+    );
+    assert_eq!(
+        bl.tabs.iter().filter(|t| t.active).count(),
+        1,
+        "exactly one tab is the active one: {labels:?}"
+    );
+}
+
+/// It takes its row from the window area rather than drawing over it — a strip
+/// that overlaps the first window's header would be invisible in one backend
+/// and corrupt in the other.
+#[test]
+fn the_bufferline_row_is_above_every_window() {
+    let log = Drive::new().file("demo.rs", DEMO).run();
+    let frame = log.last();
+    let bl = frame.bufferline.as_ref().expect("a bufferline");
+    for w in &frame.windows {
+        assert!(
+            w.rect.y >= bl.rect.y + bl.rect.height,
+            "window at y={} overlaps the strip at y={}",
+            w.rect.y,
+            bl.rect.y
+        );
+    }
+}
+
+#[test]
+fn turning_the_bufferline_off_gives_the_row_back() {
+    let with = Drive::new().file("demo.rs", DEMO).run();
+    let without = Drive::new()
+        .file("demo.rs", DEMO)
+        .setup("ruster.config.bufferline = { enabled = false }")
+        .run();
+
+    let tall = without.last().windows[0].rect.height;
+    let short = with.last().windows[0].rect.height;
+    assert!(
+        without.last().bufferline.is_none(),
+        "no strip when it is off:\n{}",
+        without.transcript()
+    );
+    assert_eq!(tall, short + 1, "the window got the row back");
 }
 
 #[test]

@@ -1,6 +1,7 @@
-─ ruster-render ─────────────── script.rs ──────────────────────────────────────────────────────────────────────────────
-▸ src                         //! A headless renderer that plays a scripted key sequence into the real frame
-  Cargo.toml                  //! loop and records what each frame contained.
+─ ruster-render ────────────── script.rs  Dashboard  *messages*
+▸ src                         ─ script.rs ──────────────────────────────────────────────────────────────────────────────
+  Cargo.toml                  //! A headless renderer that plays a scripted key sequence into the real frame
+                              //! loop and records what each frame contained.
                               //!
                               //! [`Renderer`] already has the two seams this needs: `poll_input` is where the
                               //! frame loop asks for a key, and `should_close` is how it is told to stop. A
@@ -22,8 +23,8 @@
                               use crossterm::event::KeyEvent;
 
                               use crate::{
-                                  DebugOverlayView, DialogView, FloatView, FrameState, PickerView, Rect, Renderer,
-                                  SelectionView, SettingsView, StatuslineView, StyledLine, TermGridView, WelcomeView,
+                                  BufferlineView, DebugOverlayView, DialogView, FloatView, FrameState, PickerView, Rect,
+                                  Renderer, SelectionView, SettingsView, StatuslineView, StyledLine, TermGridView, Welco
                                   WhichKeyView,
                               };
 
@@ -36,5 +37,4 @@
                               pub struct WindowDigest {
                                   pub rect: Rect,
                                   pub header: String,
-                                  /// Buffer text with its highlight spans intact, so a check can assert that
- Sidebar │            2 items  -- NORMAL --  [ruster-render] │script.rs                                         0%  1,1
+ Sidebar │            2 items  -- NORMAL --  [ruster-render] │        script.rs                                 0%  1,1

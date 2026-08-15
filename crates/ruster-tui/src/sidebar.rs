@@ -14,7 +14,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ruster_core::sidebar::{SidebarRow, SidebarTree};
 use ruster_core::windows::Rect as CoreRect;
 use ruster_render::{
-    Rect as RRect, StatuslineView, StyledLine, SyntaxStyle, Theme, UIMode, WindowView,
+    Rect as RRect, StatusSection, StatuslineView, StyledLine, SyntaxStyle, Theme, UIMode,
+    WindowView,
 };
 
 use crate::file_prompt::{FilePrompt, PromptOrigin};
@@ -389,9 +390,12 @@ impl SidebarState {
                 .unwrap_or_else(|| "Explorer".to_string()),
             lines,
             statusline: StatuslineView {
-                left: "Sidebar".into(),
-                center: String::new(),
-                right: format!("{} items", rows.len()),
+                left: vec![StatusSection::new("mode", "Sidebar")],
+                center: Vec::new(),
+                right: vec![StatusSection::new(
+                    "position",
+                    format!("{} items", rows.len()),
+                )],
                 active: self.focused,
                 mode,
             },
@@ -649,7 +653,7 @@ mod tests {
         s.handle_key(key('j'));
         let theme = Theme::default();
         let v = s.view(CoreRect::new(0, 0, 30, 10), UIMode::default(), &theme);
-        assert_eq!(v.statusline.right, "2 items");
+        assert_eq!(v.statusline.right_text(), "2 items");
         assert!(v.lines[0].highlights.is_empty(), "unselected row is plain");
         assert!(
             !v.lines[1].highlights.is_empty(),

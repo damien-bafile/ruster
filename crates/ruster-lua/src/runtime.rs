@@ -88,8 +88,8 @@ pub(crate) struct Shared {
     pub(crate) set_lines: RefCell<Option<SetLinesFn>>,
     pub(crate) get_cursor: RefCell<Option<GetCursorFn>>,
     pub(crate) set_cursor: RefCell<Option<SetCursorFn>>,
-    /// Lua-registered statusline sections: (position, callback registry key).
-    pub(crate) statusline: RefCell<Vec<(String, RegistryKey)>>,
+    /// Lua-registered statusline sections, in registration order.
+    pub(crate) statusline: RefCell<Vec<StatusSectionReg>>,
     /// Window/buffer manipulation callbacks installed by the app.
     pub(crate) window_cb: RefCell<Option<WindowCallbacks>>,
     /// Read-only queries; see [`QueryCallbacks`].
@@ -103,6 +103,21 @@ pub(crate) struct Shared {
     /// by the app into its own registry — this crate knows nothing about zones
     /// beyond their names.
     pub(crate) context_menu: RefCell<Vec<(String, String, String)>>,
+}
+
+/// One statusline section a plugin registered.
+///
+/// The name is what a click is reported under, so it has to survive from
+/// registration to dispatch; the app never sees the registry keys, only the
+/// name and the text.
+pub(crate) struct StatusSectionReg {
+    /// "left" | "center" | "right".
+    pub(crate) pos: String,
+    pub(crate) name: String,
+    /// Called each frame for the section's text.
+    pub(crate) render: RegistryKey,
+    /// Called when the section is clicked, if the plugin asked for clicks.
+    pub(crate) on_click: Option<RegistryKey>,
 }
 
 /// What a Lua mouse or hover handler receives.
@@ -129,6 +144,8 @@ pub struct MousePayload {
     /// 0-indexed line, and column within it.
     pub line: Option<usize>,
     pub col_in_line: Option<usize>,
+    /// Name of the statusline section under the pointer, when there is one.
+    pub section: Option<String>,
 }
 
 impl MousePayload {
@@ -165,6 +182,9 @@ impl MousePayload {
         }
         if let Some(v) = self.col_in_line {
             t.set("col_in_line", v).ok()?;
+        }
+        if let Some(v) = &self.section {
+            t.set("section", v.as_str()).ok()?;
         }
         Some(t)
     }
@@ -225,23 +245,68 @@ impl LuaRuntime {
     }
 
     /// Evaluate all Lua statusline sections registered for `pos`
-    /// ("left" | "center" | "right"), returning each one's string result.
-    pub fn statusline_sections(&self, pos: &str) -> Vec<String> {
+    /// ("left" | "center" | "right"), returning each one's `(name, text)`.
+    ///
+    /// The name travels with the text because the bar is clickable: what lands
+    /// on screen has to stay attributable to the section that produced it, or a
+    /// click has nothing to route to.
+    pub fn statusline_sections(&self, pos: &str) -> Vec<(String, String)> {
         let sections = self.shared.statusline.borrow();
         let mut out = Vec::new();
-        for (p, key) in sections.iter() {
-            if p != pos {
+        for sec in sections.iter() {
+            if sec.pos != pos {
                 continue;
             }
-            if let Ok(func) = self.lua.registry_value::<Function>(key) {
+            if let Ok(func) = self.lua.registry_value::<Function>(&sec.render) {
                 if let Ok(s) = func.call::<String>(()) {
                     if !s.is_empty() {
-                        out.push(s);
+                        out.push((sec.name.clone(), s));
                     }
                 }
             }
         }
         out
+    }
+
+    /// Deliver a click on the statusline section called `name`.
+    ///
+    /// Returns whether a handler ran, so the caller can fall back to the
+    /// built-in behaviour for a section that has none — an inert section must
+    /// still let the click do what a click on the bar has always done.
+    pub fn dispatch_status_click(&self, name: &str, payload: &MousePayload) -> bool {
+        let key = {
+            let sections = self.shared.statusline.borrow();
+            match sections
+                .iter()
+                .find(|s| s.name == name && s.on_click.is_some())
+            {
+                // Cloned out of the borrow: the handler may register another
+                // section, and holding the borrow across the call would panic.
+                Some(sec) => match self
+                    .lua
+                    .registry_value::<Function>(sec.on_click.as_ref().expect("filtered on Some"))
+                {
+                    Ok(f) => f,
+                    Err(_) => return false,
+                },
+                None => return false,
+            }
+        };
+        let Some(table) = payload.to_table(&self.lua) else {
+            return false;
+        };
+        match key.call::<()>(mlua::Value::Table(table)) {
+            Ok(()) => true,
+            Err(e) => {
+                // A broken handler must not swallow the click silently — the
+                // plugin author gets an error and the editor keeps working.
+                self.shared.pending.borrow_mut().push(LuaAction::Notify(
+                    3,
+                    format!("statusline section {name:?} on_click failed: {e}"),
+                ));
+                true
+            }
+        }
     }
 
     /// Hand a submitted dialog's values to its `on_submit`, if it had one.

@@ -6,7 +6,7 @@ use crate::buffer::Buffer;
 use crate::cursor::CursorSet;
 use crate::document::{BufferId, DocKind, Document, SpecialKind};
 use crate::editor::{EditSession, EditorView};
-use crate::windows::{SplitDir, Window, WindowTree};
+use crate::windows::{SplitDir, Window, WindowId, WindowTree};
 
 /// Whether an action changes buffer text (and so is refused on a read-only
 /// document). Navigation, scrolling, cursor, and batch markers are not mutating.
@@ -206,6 +206,10 @@ impl Workspace {
             win.scroll_top = win.scroll_top.min(last);
             return;
         }
+        if let Action::ScrollHorizontal(delta) = action {
+            self.scroll_columns(self.windows.active(), delta);
+            return;
+        }
         // Read-only (ruster-managed) buffers ignore mutating actions, so global
         // keys can fall through to them safely — search and motion still work.
         let read_only = self
@@ -242,6 +246,58 @@ impl Workspace {
         }
     }
 
+    /// Scroll `wid` sideways by `delta` columns, dragging its cursor only as far
+    /// as it must go to stay in view.
+    ///
+    /// Moving the cursor at all looks heavy-handed for a scroll command, but a
+    /// scroll that strands the cursor off-screen does not survive: the renderer
+    /// clamps `scroll_left` to keep the cursor visible and writes the clamp
+    /// back, so `zl` would be undone before it ever reached the screen. Vim
+    /// drags the cursor for the same reason, and the sideways mouse wheel needs
+    /// the identical treatment — hence a window id rather than the active one.
+    ///
+    /// Scrolling stops once the cursor's line ends at the right edge of the
+    /// view: past that there is only blank space, and a line that already fits
+    /// entirely on screen does not scroll at all. That limit is measured against
+    /// the cursor's own line rather than the buffer's longest, because finding
+    /// the longest means walking the whole rope on every keystroke — and it is
+    /// exactly the limit the renderer's clamp arrives at from the other
+    /// direction, which is what keeps the two from fighting.
+    pub fn scroll_columns(&mut self, wid: WindowId, delta: i32) {
+        let Some((buffer, left, head, width)) = self
+            .windows
+            .window(wid)
+            .map(|w| (w.buffer, w.scroll_left, w.cursors.head(), w.width))
+        else {
+            return;
+        };
+        let Some(doc) = self.buffers.get(buffer) else {
+            return;
+        };
+        let buf = &doc.buffer;
+        let head = head.min(buf.len_chars());
+        let line = buf.char_to_line(head);
+        let line_start = buf.line_start_char(line);
+        let last_col = buf.line_content_len(line).saturating_sub(1);
+        // Unrendered windows get a conventional width, the way
+        // `viewport_height` invents rows — clamping against a width of zero
+        // would drag the cursor to the left edge of a view nobody has drawn.
+        let width = match width {
+            0 => 80,
+            w => w,
+        };
+        let max_left = (last_col + 1).saturating_sub(width);
+        let left = left.saturating_add_signed(delta as isize).min(max_left);
+        // `left + width - 1` is on the line by construction: `left` is capped so
+        // that the line's last column falls no further right than the edge.
+        let col = (head - line_start).clamp(left, left + width - 1);
+        let Some(win) = self.windows.window_mut(wid) else {
+            return;
+        };
+        win.scroll_left = left;
+        win.cursors.set_head(line_start + col, buf);
+    }
+
     /// Set the active document's indent to `n` spaces.
     pub fn set_active_indent_width(&mut self, n: u32) {
         self.active_doc_mut().set_indent_width(n);
@@ -255,6 +311,15 @@ impl Workspace {
     /// Point the active window at `id`, clamping its cursor(s) to the new
     /// buffer's bounds so a stale position from a longer buffer can't index out
     /// of range (which would panic in `char_to_line` during render).
+    /// Point every window showing `from` at `to`, so nothing is left viewing a
+    /// buffer that is about to be closed. No-op when `to` is not a live buffer.
+    pub fn replace_buffer(&mut self, from: BufferId, to: BufferId) -> usize {
+        let Some(max) = self.buffers.get(to).map(|d| d.buffer.len_chars()) else {
+            return 0;
+        };
+        self.windows.replace_buffer(from, to, max)
+    }
+
     pub fn set_active_buffer(&mut self, id: BufferId) {
         let max = match self.buffers.get(id) {
             Some(doc) => doc.buffer.len_chars(),
@@ -393,6 +458,128 @@ mod workspace_tests {
         );
         // Would panic before the fix.
         let _ = w.buffer().char_to_line(head);
+    }
+
+    /// A workspace on one long line, in a window `width` columns wide with the
+    /// cursor parked at `col`.
+    ///
+    /// `scroll_left` starts where a frame would have left it — the renderer
+    /// clamps it to keep the cursor visible — so these tests begin from a state
+    /// the editor can actually be in.
+    fn ws_wide(text: &str, width: usize, col: usize) -> Workspace {
+        let mut w = Workspace::from_file(PathBuf::from("wide.txt"), text.into());
+        w.execute(Action::Move(crate::action::Motion::To(col)));
+        let win = w.windows.active_window_mut();
+        win.width = width;
+        win.scroll_left = (col + 1).saturating_sub(width.max(1));
+        w
+    }
+
+    /// The active window's first visible column and cursor column.
+    fn view(w: &Workspace) -> (usize, usize) {
+        let win = w.active_window();
+        let head = win.cursors.head();
+        let line = w.buffer().char_to_line(head);
+        (win.scroll_left, head - w.buffer().line_start_char(line))
+    }
+
+    #[test]
+    fn scrolling_right_moves_the_view_and_pulls_the_cursor_to_the_left_edge() {
+        let mut w = ws_wide(&"x".repeat(200), 10, 0);
+        w.execute(Action::ScrollHorizontal(4));
+        assert_eq!(view(&w), (4, 4), "the cursor came along to stay on screen");
+    }
+
+    /// The cursor is only dragged as far as it has to be: one still inside the
+    /// scrolled view stays exactly where it was.
+    #[test]
+    fn scrolling_right_leaves_a_cursor_that_is_still_visible_alone() {
+        let mut w = ws_wide(&"x".repeat(200), 10, 8);
+        w.execute(Action::ScrollHorizontal(4));
+        assert_eq!(view(&w), (4, 8), "columns 4..13 are shown; 8 is inside");
+    }
+
+    /// Scrolling back left pulls the cursor in off the right edge, the mirror of
+    /// scrolling right pulling it off the left.
+    #[test]
+    fn scrolling_left_pulls_a_cursor_that_falls_off_the_right_edge() {
+        let mut w = ws_wide(&"x".repeat(200), 10, 30);
+        assert_eq!(view(&w), (21, 30), "the cursor starts on the right edge");
+        w.execute(Action::ScrollHorizontal(-1));
+        assert_eq!(view(&w), (20, 29), "it had to come back a column");
+    }
+
+    #[test]
+    fn scrolling_left_at_the_first_column_stays_there() {
+        let mut w = ws_wide(&"x".repeat(200), 10, 3);
+        w.execute(Action::ScrollHorizontal(-5));
+        assert_eq!(view(&w), (0, 3));
+    }
+
+    /// Scrolling stops with the end of the line at the right edge; going
+    /// further would only pull blank space into view.
+    #[test]
+    fn scrolling_right_stops_with_the_end_of_the_line_at_the_edge() {
+        let mut w = ws_wide("abcdefghij", 4, 0);
+        w.execute(Action::ScrollHorizontal(100));
+        assert_eq!(view(&w), (6, 6), "columns 6..9 — 'ghij' fills the view");
+    }
+
+    /// A line that already fits does not scroll at all: there is nothing to its
+    /// right to bring into view, and hiding its start would be pure loss.
+    #[test]
+    fn a_line_that_fits_in_the_window_does_not_scroll() {
+        let mut w = ws_wide("short", 40, 0);
+        w.execute(Action::ScrollHorizontal(3));
+        assert_eq!(view(&w), (0, 0));
+    }
+
+    /// An empty line has no column to scroll to; without the clamp the cursor
+    /// would be pushed past the newline into the next line.
+    #[test]
+    fn scrolling_right_on_an_empty_line_does_nothing() {
+        let mut w = Workspace::from_file(PathBuf::from("empty.txt"), "\nsecond\n".into());
+        w.execute(Action::Move(crate::action::Motion::To(0)));
+        w.windows.active_window_mut().width = 10;
+        w.execute(Action::ScrollHorizontal(5));
+        assert_eq!(view(&w), (0, 0));
+        assert_eq!(w.active_window().cursors.head(), 0, "still on line one");
+    }
+
+    /// Columns are characters. Scrolling two columns into a line of three-byte
+    /// characters must land on the third character, not two bytes in.
+    #[test]
+    fn columns_are_characters_not_bytes() {
+        let mut w = ws_wide("日本語ですね", 3, 0);
+        w.execute(Action::ScrollHorizontal(2));
+        assert_eq!(view(&w), (2, 2));
+        let head = w.active_window().cursors.head();
+        assert_eq!(w.buffer().char_at(head), '語');
+    }
+
+    /// A window nobody has rendered has no width recorded. Clamping the cursor
+    /// against a width of zero would drag it to the left edge of a view that
+    /// does not exist; the conventional fallback keeps it where it is.
+    #[test]
+    fn scrolling_an_unrendered_window_does_not_yank_the_cursor_back() {
+        let mut w = Workspace::from_file(PathBuf::from("wide.txt"), "x".repeat(200));
+        w.execute(Action::Move(crate::action::Motion::To(40)));
+        assert_eq!(w.active_window().width, 0, "never rendered");
+        w.execute(Action::ScrollHorizontal(1));
+        assert_eq!(view(&w), (1, 40));
+    }
+
+    /// Every window scrolls on its own, which is what the window id is for —
+    /// the sideways wheel scrolls whatever is under the pointer.
+    #[test]
+    fn scroll_columns_moves_the_named_window_not_the_active_one() {
+        let mut w = ws_wide(&"x".repeat(200), 10, 0);
+        let first = w.windows.active();
+        let second = w.windows.split(SplitDir::Vertical);
+        w.scroll_columns(first, 6);
+        assert_eq!(w.windows.window(first).unwrap().scroll_left, 6);
+        assert_eq!(w.windows.window(second).unwrap().scroll_left, 0);
+        assert_eq!(w.windows.active(), second, "focus did not move either");
     }
 }
 

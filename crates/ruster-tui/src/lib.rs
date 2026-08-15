@@ -28,7 +28,8 @@ pub mod widgets;
 #[cfg(test)]
 mod tests {
     use ruster_render::{
-        CursorKind, FrameState, Rect, Renderer, StatuslineView, StyledLine, UIMode, WindowView,
+        CursorKind, FrameState, Rect, Renderer, StatusSection, StatuslineView, StyledLine, UIMode,
+        WindowView,
     };
 
     #[test]
@@ -45,9 +46,9 @@ mod tests {
             cursor_kind: CursorKind::Bar,
             cursor_visible: true,
             statusline: StatuslineView {
-                left: "INSERT".into(),
-                center: "f".into(),
-                right: "1,2".into(),
+                left: vec![StatusSection::new("mode", "INSERT")],
+                center: vec![StatusSection::new("file", "f")],
+                right: vec![StatusSection::new("position", "1,2")],
                 active: true,
                 mode: UIMode::default(),
             },

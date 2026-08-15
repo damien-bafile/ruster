@@ -1,3 +1,4 @@
+ script.rs  Dashboard  *messages*  /Users/daimyo/Dev/ruster
 ─ /Users/daimyo/Dev/ruster ─────────────────────────────────────────────────────────────────────────────────────────────
 ../
 assets/
@@ -36,5 +37,4 @@ todo.md
 
 
 
-
- -- NORMAL --  [ruster-render] │/Users/daimyo/Dev/ruster                                                        7%  1,1
+ -- NORMAL --  [ruster-render] │                /Users/daimyo/Dev/ruster                                        7%  1,1

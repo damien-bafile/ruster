@@ -55,6 +55,7 @@ Most motions accept a count prefix (e.g. `5j`, `3w`).
 | `C-r` | Redo |
 | `.` | Repeat last change |
 | `C-d` / `C-u` | Scroll a half page down / up (cursor keeps its screen row) |
+| `zl` / `zh` | Scroll the view right / left one column (`3zl` for three). Long lines do not wrap, so this is how text past the window edge is reached; the cursor comes along only if the scroll would push it off-screen |
 | `C-n` | Add a cursor at the next occurrence of the word under the cursor (multi-cursor) |
 | `q{reg}` … `q` | Record a macro into `{reg}` / stop recording |
 | `@{reg}` | Replay the macro in `{reg}` |
@@ -154,6 +155,7 @@ Press `SPC` in Normal mode; the which-key panel lists continuations.
 | `SPC c r` | Find references |
 | `SPC c n` | Rename (see `:rename`) |
 | `SPC c f` | Format (`:fmt`) |
+| `SPC c c` | Toggle line comments (`:comment`) |
 | `SPC c o` | Document symbols (outline) |
 | `SPC c d` | Diagnostics list |
 | `SPC c i` | Incoming calls (`:callers`) |
@@ -363,6 +365,23 @@ The `:db_*` names always work and are never shadowed.
 | `F9` | Run a task (`:task`) |
 | `F10` / `F11` / `F12` | Step over / into / out |
 
+### Clipboard & comments
+These are the same operations the keys already perform, given names so that the
+right-click menu, the command palette and Lua can reach them. They act on the
+selection — Visual in Neovim mode, the region in Emacs mode — and fall back to
+the cursor's line, newline included, when nothing is selected.
+
+| Command | Action |
+|---------|--------|
+| `:copy` / `:y` / `:yank` | Copy the selection (or the line) to the system clipboard, and to the unnamed register / kill ring |
+| `:cut` / `:kill-region` | Copy it, then delete it — one undo step |
+| `:paste` / `:put` | Insert the clipboard at the cursor, replacing the selection if there is one |
+| `:selectall` / `:select-all` | Select the whole buffer |
+| `:comment` / `:togglecomment` (or `SPC c c`) | Comment or uncomment the selected lines. The prefix comes from the file type (`//`, `#`, `--`, `;`); a file type with no line comment is left alone |
+
+There is deliberately no `:d` alias for `:cut` — in vim that is the ex
+delete-lines command, and answering it with a different edit would be silent.
+
 ### Editing
 | Command | Action |
 |---------|--------|
@@ -566,6 +585,7 @@ Works in both backends. The whole surface can be turned off with
 | Drag a split boundary | Resize the panes either side of it |
 | Right-click | Context menu for what is under the pointer |
 | Wheel | Scroll the window under the pointer, `mouse.wheel_lines` at a time |
+| Sideways wheel | Scroll that window left / right, `mouse.wheel_lines` columns at a time |
 | `Ctrl` + wheel | Zoom the font (GUI only; the TUI says so) |
 | Rest the pointer over text | Fires `ruster.on("hover")` after `mouse.hover_delay_ms` |
 
@@ -576,7 +596,8 @@ A double-click selects a whitespace-delimited word, so `foo.bar::baz` comes as
 one piece — which is usually what you want from a path or a qualified name.
 
 **Right-click menu.** The items depend on the zone: buffer, gutter, or window
-chrome. Plugins add their own with `ruster.context_menu.add`; see
+chrome. Over the buffer it opens with Cut / Copy / Paste / Select All and Toggle
+Comment, which act on the selection the right-click did not disturb. Plugins add their own with `ruster.context_menu.add`; see
 [lua-api.md](lua-api.md). The menu is an ordinary picker, so it filters as you
 type and takes the same keys. Setting `mouse.right_click_menu = false` frees
 right-click for a Lua handler.

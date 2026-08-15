@@ -71,6 +71,36 @@ pub struct WindowLayout {
     pub text: ruster_render::TextArea,
     /// First visible buffer line, so a screen row maps back to a buffer line.
     pub scroll_top: usize,
+    /// First visible column, so a screen column maps back to a column in the
+    /// line. Zero unless a long line has dragged the window sideways.
+    pub scroll_left: usize,
+}
+
+/// Where one bufferline tab was drawn, and which buffer it stands for.
+///
+/// The strip scrolls and truncates to fit, so which buffer sits under a column
+/// is only knowable from the frame that was drawn — recomputing the layout in
+/// the hit-test would be a second answer to a question that already has one.
+#[derive(Debug, Clone, Copy)]
+pub struct TabSpan {
+    pub buffer: BufferId,
+    pub row: u16,
+    pub col: u16,
+    pub width: u16,
+}
+
+/// Where one named statusline section was drawn.
+///
+/// Named rather than indexed because the name is what a plugin registered and
+/// what its click handler is looked up by; the window is what a click falls
+/// back to focusing when no handler claims it.
+#[derive(Debug, Clone)]
+pub struct StatusSpan {
+    pub window: ruster_core::windows::WindowId,
+    pub name: String,
+    pub row: u16,
+    pub col: u16,
+    pub width: u16,
 }
 
 /// Infinite iterator over adaptive labels: a-z, aa-az, ba-bz, …
@@ -528,6 +558,48 @@ fn find_in_path(name: &str) -> Option<String> {
     None
 }
 
+/// Rebase a window's view onto its first visible column.
+///
+/// Both backends draw a line's character `n` at text column `n` and compare the
+/// cursor column against the same index, so the only way to show a horizontally
+/// scrolled window is to hand them a view whose columns already start at
+/// `cols`. Everything positioned by column therefore has to move together —
+/// text, highlights, carets, selection and flash labels — or the overlays end
+/// up pointing at characters that are no longer under them.
+///
+/// The line text goes through [`StyledLine::slice_from`] rather than a plain
+/// truncation because the highlight spans are character offsets into the line
+/// and have to be clipped and rebased with it.
+fn scroll_view_sideways(view: &mut WindowView, cols: usize) {
+    for line in &mut view.lines {
+        *line = line.slice_from(cols);
+    }
+    // The clamp in `render` guarantees the primary cursor is at or right of
+    // `cols`; extra carets have no such promise, and one left of the view must
+    // disappear rather than pile up on column zero.
+    view.cursor.1 = view.cursor.1.saturating_sub(cols as u16);
+    view.extra_cursors.retain(|&(_, col)| col as usize >= cols);
+    for (_, col) in &mut view.extra_cursors {
+        *col -= cols as u16;
+    }
+    view.flash_labels.retain(|l| l.col as usize >= cols);
+    for label in &mut view.flash_labels {
+        label.col -= cols as u16;
+    }
+    if let Some(sel) = &mut view.selection {
+        // A selection that ends left of the view on its last line covers
+        // nothing there. Saturating that column to zero would paint one stray
+        // cell, so retire the line instead and let the selection end on the one
+        // before it, which it does cover to the end.
+        if sel.end.0 > sel.start.0 && (sel.end.1 as usize) < cols {
+            sel.end = (sel.end.0 - 1, u16::MAX);
+        } else {
+            sel.end.1 = sel.end.1.saturating_sub(cols as u16);
+        }
+        sel.start.1 = sel.start.1.saturating_sub(cols as u16);
+    }
+}
+
 fn plain_lines(content: &str) -> Vec<StyledLine> {
     content
         .split('\n')
@@ -825,6 +897,17 @@ pub(crate) enum CmdAction {
     NoicePopup,
     /// Open a file by path (`:e path` / `:edit path`).
     OpenFile(String),
+    /// Copy the selection — or the cursor's line — to the system clipboard
+    /// (`:copy`). `cut` copies and then deletes it.
+    Copy,
+    Cut,
+    /// Insert the system clipboard at the cursor, replacing the selection if
+    /// there is one (`:paste`).
+    Paste,
+    /// Select the whole buffer (`:selectall`).
+    SelectAll,
+    /// Comment or uncomment the selected lines (`:comment`).
+    ToggleComment,
     /// Debug actions.
     DebugStart,
     DebugContinue,
@@ -932,6 +1015,34 @@ fn parse_substitute(trimmed: &str) -> Option<CmdAction> {
     })
 }
 
+/// Open the undo batch the clipboard and comment commands edit inside, with a
+/// single caret.
+///
+/// The caret count changes what an edit *means*: an `EditOp` is applied at
+/// every cursor, and a `DeleteRange` with several of them is reinterpreted as
+/// "delete this many characters at each caret". A cut in a multi-cursor buffer
+/// would therefore take text nobody selected, at positions nothing in the
+/// command mentions. These commands act on one selection, so they say so.
+fn begin_single_caret_batch(w: &mut Workspace) {
+    w.execute(Action::ClearExtraCursors);
+    w.execute(Action::BeginBatch);
+}
+
+/// Delete `ranges` from `w`, last range first.
+///
+/// Order is the whole point: every deletion shifts the offsets after it, and
+/// the ranges were measured against the buffer as it stood before any of them
+/// ran. Working backwards leaves the caret on the first range — where the text
+/// that was cut used to begin, and where a replacement belongs.
+///
+/// The caller owns the undo batch, so a cut is one unit and a paste-over-
+/// selection is one unit together with the insert that follows it.
+fn delete_ranges(w: &mut Workspace, ranges: &[(usize, usize)]) {
+    for &(start, end) in ranges.iter().rev() {
+        w.execute(Action::Edit(EditOp::DeleteRange(start, end)));
+    }
+}
+
 /// The commands offered by the `:`-Tab command palette: (name, description).
 const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("w", "write file"),
@@ -950,6 +1061,11 @@ const PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("Dired", "file explorer"),
     ("Files", "find files"),
     ("fmt", "format buffer"),
+    ("copy", "copy the selection (or line) to the clipboard"),
+    ("cut", "cut the selection (or line) to the clipboard"),
+    ("paste", "insert the clipboard at the cursor"),
+    ("selectall", "select the whole buffer"),
+    ("comment", "toggle line comments"),
     ("callers", "incoming calls (call hierarchy)"),
     ("callees", "outgoing calls (call hierarchy)"),
     ("set editmode emacs", "switch to Emacs (modeless) editing"),
@@ -1004,6 +1120,7 @@ enum LeaderAction {
     Definition,
     References,
     Format,
+    ToggleComment,
     Rename,
     DocumentSymbol,
     Diagnostics,
@@ -1102,6 +1219,10 @@ static CODE_GROUP: &[(char, LeaderNode)] = &[
         LeaderNode::Action("references", LeaderAction::References),
     ),
     ('f', LeaderNode::Action("format", LeaderAction::Format)),
+    (
+        'c',
+        LeaderNode::Action("toggle comment", LeaderAction::ToggleComment),
+    ),
     ('n', LeaderNode::Action("rename", LeaderAction::Rename)),
     (
         'o',
@@ -1490,6 +1611,11 @@ pub struct App {
     /// hit-testing. Floats themselves are built fresh each frame and not kept;
     /// only where they landed is worth remembering.
     pub(crate) last_floats: Vec<ruster_render::Rect>,
+    /// Bufferline tab geometry from the last rendered frame, left to right.
+    pub(crate) last_tabs: Vec<TabSpan>,
+    /// Statusline section geometry from the last rendered frame, one entry per
+    /// section of every window that was drawn.
+    pub(crate) last_status_sections: Vec<StatusSpan>,
     /// The area the window tree was divided into on the last frame, for
     /// resolving split-edge drags against the geometry actually drawn.
     pub(crate) last_window_area: ruster_core::windows::Rect,
@@ -2002,6 +2128,8 @@ impl App {
             flash: None,
             last_layout: Vec::new(),
             last_floats: Vec::new(),
+            last_tabs: Vec::new(),
+            last_status_sections: Vec::new(),
             last_window_area: ruster_core::windows::Rect::new(0, 0, 0, 0),
             mouse: crate::mouse::MouseState::default(),
             is_gui: false,
@@ -2990,7 +3118,7 @@ impl App {
             // the end of a line lands on its last character.
             let content_len = doc.buffer.line_content_len(buf_line);
             let offset = doc.buffer.line_start_char(buf_line)
-                + (text_col as usize).min(content_len.saturating_sub(1));
+                + (l.scroll_left + text_col as usize).min(content_len.saturating_sub(1));
             return Some((l.window, offset));
         }
         None
@@ -4154,6 +4282,374 @@ impl App {
         w.execute(Action::Move(Motion::To(0)));
     }
 
+    // --- Clipboard, selection and comments ----------------------------------
+    //
+    // Copying and pasting existed only as keys — `"+y`, the kill ring — and a
+    // key is not something a context menu, the command palette or a Lua plugin
+    // can ask for. Everything below is the same operation with a name.
+
+    /// The char ranges the current selection covers, ascending; empty when
+    /// nothing is selected.
+    ///
+    /// Each paradigm keeps its selection somewhere else, and the two disagree
+    /// about where it ends: a vim visual selection includes the character under
+    /// the cursor, an emacs region stops before the point. Reading the window's
+    /// cursor range directly would therefore be off by one character at one end
+    /// or the other — and a stale anchor left over from a previous selection
+    /// would read as a selection that is no longer on screen.
+    fn selection_ranges(&self) -> Vec<(usize, usize)> {
+        match self.editmode {
+            EditMode::Neovim => self.vim.visual_ranges(&*self.ws.borrow()),
+            EditMode::Emacs => {
+                let w = self.ws.borrow();
+                let len = w.buffer().len_chars();
+                self.emacs
+                    .region(w.primary_head())
+                    .map(|(lo, hi)| (lo.min(len), hi.min(len)))
+                    .filter(|(lo, hi)| hi > lo)
+                    .into_iter()
+                    .collect()
+            }
+        }
+    }
+
+    /// What copy and cut act on when nothing is selected: the cursor's line,
+    /// newline included, so what lands on the clipboard is a line and not a
+    /// fragment that glues itself onto whatever it is pasted beside.
+    fn selection_or_cursor_line(&self) -> Vec<(usize, usize)> {
+        let ranges = self.selection_ranges();
+        if !ranges.is_empty() {
+            return ranges;
+        }
+        let w = self.ws.borrow();
+        let buf = w.buffer();
+        let line = buf.char_to_line(w.primary_head().min(buf.len_chars()));
+        vec![(buf.line_start_char(line), buf.line_end_char(line))]
+    }
+
+    /// The text `ranges` cover, joined with newlines — which only matters for a
+    /// block selection, where each range is one row of the rectangle.
+    fn text_in_ranges(&self, ranges: &[(usize, usize)]) -> String {
+        let w = self.ws.borrow();
+        let buf = w.buffer();
+        let len = buf.len_chars();
+        ranges
+            .iter()
+            .map(|&(start, end)| buf.slice_string(start.min(len), end.min(len)))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Put `text` where every later paste — by command or by key — will find it.
+    fn put_on_clipboard(&mut self, text: &str) {
+        match self.editmode {
+            EditMode::Neovim => {
+                // The unnamed register too, so `p` pastes what the menu copied.
+                self.vim.set_register(text.to_string());
+                self.vim.clipboard_set(text);
+            }
+            // `push_kill` mirrors onto the system clipboard itself, and leaves
+            // the text where `C-y` looks for it.
+            EditMode::Emacs => self.emacs.push_kill(text.to_string()),
+        }
+    }
+
+    /// Drop the selection after acting on it, as `y` and `M-w` both do.
+    ///
+    /// Not cosmetic once the buffer has moved under it: a selection is a pair
+    /// of offsets into text a cut or a comment toggle has just shifted, so
+    /// leaving it up would highlight a span nobody chose.
+    fn clear_selection(&mut self) {
+        match self.editmode {
+            EditMode::Neovim => self.vim.leave_visual(),
+            EditMode::Emacs => self.emacs.cancel(),
+        }
+    }
+
+    fn clipboard_copy(&mut self) {
+        let ranges = self.selection_or_cursor_line();
+        let text = self.text_in_ranges(&ranges);
+        // An empty buffer has nothing to offer, and writing "" would throw away
+        // whatever the clipboard was holding in exchange for nothing.
+        if text.is_empty() {
+            return;
+        }
+        self.put_on_clipboard(&text);
+        self.clear_selection();
+        self.echo(format!("Copied {} chars", text.chars().count()));
+    }
+
+    fn clipboard_cut(&mut self) {
+        let ranges = self.selection_or_cursor_line();
+        let text = self.text_in_ranges(&ranges);
+        if text.is_empty() {
+            return;
+        }
+        self.put_on_clipboard(&text);
+        {
+            let mut w = self.ws.borrow_mut();
+            begin_single_caret_batch(&mut w);
+            delete_ranges(&mut w, &ranges);
+            w.execute(Action::EndBatch);
+        }
+        self.clear_selection();
+        self.echo(format!("Cut {} chars", text.chars().count()));
+    }
+
+    fn clipboard_paste(&mut self) {
+        let text = match self.editmode {
+            EditMode::Neovim => self.vim.clipboard_get(),
+            EditMode::Emacs => self.emacs.paste_text(),
+        };
+        // Say so rather than doing nothing: with no window system there may be
+        // no clipboard at all, and a paste that silently does nothing is
+        // indistinguishable from a broken command.
+        let Some(text) = text.filter(|t| !t.is_empty()) else {
+            self.echo_warn("Clipboard is empty");
+            return;
+        };
+        // A paste over a selection replaces it — that is what paste means in
+        // every other editor, and inserting beside text the user has just
+        // marked for replacement is not a plausible reading of the request.
+        let ranges = self.selection_ranges();
+        {
+            let mut w = self.ws.borrow_mut();
+            begin_single_caret_batch(&mut w);
+            delete_ranges(&mut w, &ranges);
+            // Deleting leaves the caret where the text was, which is where the
+            // replacement belongs; `InsertString` has no position of its own.
+            w.execute(Action::Edit(EditOp::InsertString(text)));
+            w.execute(Action::EndBatch);
+        }
+        self.clear_selection();
+    }
+
+    fn select_all(&mut self) {
+        let len = self.ws.borrow().buffer().len_chars();
+        // Nothing to select, and a zero-width selection is worse than none: the
+        // copy path would believe there was one and copy nothing instead of
+        // falling back to the line.
+        if len == 0 {
+            return;
+        }
+        match self.editmode {
+            EditMode::Neovim => {
+                // Visual mode covers the character under the head, so the head
+                // goes *on* the last character rather than past it — the same
+                // span `ggVG` gives, not one more.
+                {
+                    let mut w = self.ws.borrow_mut();
+                    w.execute(Action::Move(Motion::To(len - 1)));
+                    w.execute(Action::BeginVisual(0));
+                }
+                self.vim.set_visual(VimMode::VisualChar, 0);
+            }
+            EditMode::Emacs => {
+                // The region stops before the point, so the point goes past the
+                // last character.
+                self.emacs.set_mark(0);
+                self.ws.borrow_mut().execute(Action::Move(Motion::To(len)));
+            }
+        }
+    }
+
+    /// The comment token for the active buffer, from its path.
+    ///
+    /// A buffer with no path — a scratch, a terminal, a git view — has no
+    /// filetype to derive one from, and `//` is a coin flip, not a default.
+    fn line_comment_prefix(&self) -> Option<&'static str> {
+        let w = self.ws.borrow();
+        let doc = w.buffers.get(w.active_buffer())?;
+        ruster_syntax::line_comment_for_path(doc.file_path.as_ref()?)
+    }
+
+    /// The inclusive first and last line the current selection touches.
+    fn selected_line_span(&self) -> (usize, usize) {
+        let ranges = self.selection_or_cursor_line();
+        let start = ranges.first().map(|r| r.0).unwrap_or(0);
+        let end = ranges.last().map(|r| r.1).unwrap_or(0);
+        let w = self.ws.borrow();
+        let buf = w.buffer();
+        let len = buf.len_chars();
+        let first = buf.char_to_line(start.min(len));
+        // The end offset is exclusive. A line-wise selection ends at the start
+        // of the line *after* the last one it covers, and commenting that one
+        // as well would silently reach outside what the user highlighted.
+        let last = buf.char_to_line(end.saturating_sub(1).max(start).min(len));
+        (first, last.max(first))
+    }
+
+    /// Comment or uncomment every line the selection touches.
+    ///
+    /// The whole span goes one way: it uncomments only when every non-blank
+    /// line is already commented, and comments otherwise. Deciding line by line
+    /// would turn a partly-commented block into its own negative, which is
+    /// never what anyone reaches for a toggle to get.
+    fn toggle_comment(&mut self) {
+        let Some(prefix) = self.line_comment_prefix() else {
+            // Nothing happens to the buffer: an unknown filetype has no comment
+            // syntax to be wrong about, and a wrong guess corrupts the file.
+            self.echo_warn("No line comment syntax for this filetype");
+            return;
+        };
+        let (first, last) = self.selected_line_span();
+
+        // Blank lines are skipped, not commented: a marker alone on an empty
+        // line is noise, and it would then have to be recognised again on the
+        // way back for the toggle to reverse itself.
+        let lines: Vec<(usize, usize, bool)> = {
+            let w = self.ws.borrow();
+            let buf = w.buffer();
+            (first..=last.min(buf.line_count().saturating_sub(1)))
+                .filter_map(|line| {
+                    let text = buf.line_to_string(line);
+                    let body = text.trim_start();
+                    if body.trim().is_empty() {
+                        return None;
+                    }
+                    let indent = text.chars().count() - body.chars().count();
+                    Some((line, indent, body.starts_with(prefix)))
+                })
+                .collect()
+        };
+        if lines.is_empty() {
+            return;
+        }
+        let uncomment = lines.iter().all(|&(_, _, commented)| commented);
+        // Comment at the shallowest indent in the span so the block keeps its
+        // shape; per-line indents would step the markers in and out.
+        let column = lines
+            .iter()
+            .map(|&(_, indent, _)| indent)
+            .min()
+            .unwrap_or(0);
+
+        // (line, column within it, chars removed, text inserted), measured
+        // against the buffer as it stands.
+        let edits: Vec<(usize, usize, usize, String)> = {
+            let w = self.ws.borrow();
+            let buf = w.buffer();
+            lines
+                .iter()
+                .map(|&(line, indent, _)| {
+                    if uncomment {
+                        let at = buf.line_start_char(line) + indent;
+                        let n = prefix.chars().count();
+                        // Take the space the comment added back with it, so
+                        // that commenting and uncommenting is the identity.
+                        let space =
+                            usize::from(at + n < buf.len_chars() && buf.char_at(at + n) == ' ');
+                        (line, indent, n + space, String::new())
+                    } else {
+                        (line, column, 0, format!("{prefix} "))
+                    }
+                })
+                .collect()
+        };
+
+        let (cursor_line, cursor_col) = {
+            let w = self.ws.borrow();
+            let buf = w.buffer();
+            let head = w.primary_head().min(buf.len_chars());
+            let line = buf.char_to_line(head);
+            (line, head - buf.line_start_char(line))
+        };
+
+        {
+            let mut w = self.ws.borrow_mut();
+            begin_single_caret_batch(&mut w);
+            // Bottom-up: each edit shifts every offset below it, and these were
+            // all measured before any of them ran.
+            for (line, col, remove, insert) in edits.iter().rev() {
+                let at = w.buffer().line_start_char(*line) + col;
+                if *remove > 0 {
+                    w.execute(Action::Edit(EditOp::DeleteRange(at, at + remove)));
+                }
+                if !insert.is_empty() {
+                    w.execute(Action::Move(Motion::To(at)));
+                    w.execute(Action::Edit(EditOp::InsertString(insert.clone())));
+                }
+            }
+            w.execute(Action::EndBatch);
+        }
+
+        // Put the caret back on its own line and roughly its own character: it
+        // is left wherever the last edit landed otherwise, which for a
+        // multi-line toggle is the top of the selection.
+        let head = {
+            let w = self.ws.borrow();
+            let buf = w.buffer();
+            let mut col = cursor_col;
+            if let Some((_, at, remove, insert)) = edits.iter().find(|e| e.0 == cursor_line) {
+                if *remove > 0 {
+                    // Text before the caret went away; a caret inside the
+                    // removed run collapses to where it started.
+                    col = if cursor_col >= at + remove {
+                        cursor_col - remove
+                    } else {
+                        cursor_col.min(*at)
+                    };
+                } else if cursor_col >= *at {
+                    col = cursor_col + insert.chars().count();
+                }
+            }
+            let line = cursor_line.min(buf.line_count().saturating_sub(1));
+            buf.line_start_char(line) + col.min(buf.line_content_len(line))
+        };
+        self.ws.borrow_mut().execute(Action::Move(Motion::To(head)));
+        // The offsets the selection is made of no longer describe this text.
+        self.clear_selection();
+    }
+
+    /// Take the bufferline's row off the top of the window area and build the
+    /// strip that goes in it, recording where each tab landed.
+    ///
+    /// Returns `None` when the strip is off or there is no room for it. A
+    /// window needs three rows before it shows any text at all — header,
+    /// a text row, statusline — so on four rows or fewer the strip would be
+    /// spending the only line of buffer there is.
+    fn carve_bufferline(
+        &mut self,
+        area: &mut ruster_core::windows::Rect,
+    ) -> Option<ruster_render::BufferlineView> {
+        self.last_tabs.clear();
+        if !self.config.bufferline || area.height <= 3 {
+            return None;
+        }
+        let ws = self.ws.borrow();
+        let active = ws.active_buffer();
+        let ids: Vec<BufferId> = ws.buffers.ids().to_vec();
+        let entries: Vec<ruster_render::BufferEntry> = ids
+            .iter()
+            .filter_map(|&id| {
+                ws.buffers.get(id).map(|doc| ruster_render::BufferEntry {
+                    name: doc.name.clone(),
+                    modified: doc.modified,
+                    active: id == active,
+                })
+            })
+            .collect();
+        drop(ws);
+
+        let rect = RRect::new(area.x, area.y, area.width, 1);
+        let view = ruster_render::BufferlineView::laid_out(rect, &entries);
+        self.last_tabs = view
+            .tabs
+            .iter()
+            .filter_map(|t| {
+                Some(TabSpan {
+                    buffer: *ids.get(t.idx)?,
+                    row: rect.y,
+                    col: rect.x + t.col,
+                    width: t.width,
+                })
+            })
+            .collect();
+        area.y += 1;
+        area.height -= 1;
+        Some(view)
+    }
+
     pub(crate) fn render(&mut self) {
         self.notify.tick();
         self.drain_git_hunks();
@@ -4198,10 +4694,11 @@ impl App {
         let smooth = self.has_smooth_cursor;
         let (anim_x, anim_y) = (self.cursor_anim.cell_x, self.cursor_anim.cell_y);
 
-        // Lua-registered statusline sections (global; shown on the active window).
-        let lua_left = self.lua.statusline_sections("left").join("  ");
-        let lua_center = self.lua.statusline_sections("center").join("  ");
-        let lua_right = self.lua.statusline_sections("right").join("  ");
+        // Lua-registered statusline sections (global; shown on the active
+        // window), each still carrying the name a click is reported under.
+        let lua_left = self.lua.statusline_sections("left");
+        let lua_center = self.lua.statusline_sections("center");
+        let lua_right = self.lua.statusline_sections("right");
 
         // The Emacs region (mark..point) is highlighted like a char selection.
         let emacs_mark = if self.editmode == EditMode::Emacs {
@@ -4214,7 +4711,11 @@ impl App {
         // Rebuilt below from the geometry actually used to draw this frame; the
         // mouse hit-test reads it back.
         self.last_layout.clear();
+        self.last_status_sections.clear();
         let sidebar_rect = self.sidebar.carve(&mut buf_area);
+        // After the sidebar, so the strip spans the windows rather than the
+        // whole screen: the sidebar is a column beside them, not under them.
+        let bufferline = self.carve_bufferline(&mut buf_area);
         // The area the window tree divides. A split ratio only means something
         // against this, so a resize has to use the same rectangle the frame was
         // laid out with.
@@ -4226,7 +4727,7 @@ impl App {
             let rects = w.windows.compute_rects(buf_area);
             for (wid, rect) in rects {
                 let is_active = wid == active_id;
-                let (buf_id, head, anchor, mut scroll, extra_heads) = {
+                let (buf_id, head, anchor, mut scroll, mut hscroll, extra_heads) = {
                     let win = w.windows.window(wid).expect("window exists");
                     let primary = win.cursors.primary();
                     // Heads of every cursor except the primary, for multi-cursor
@@ -4242,6 +4743,7 @@ impl App {
                         primary.head,
                         primary.anchor,
                         win.scroll_top,
+                        win.scroll_left,
                         extra_heads,
                     )
                 };
@@ -4356,7 +4858,7 @@ impl App {
                 // Normal the underlying vim mode (NORMAL/VISUAL) shows through.
                 let focused_terminal =
                     is_active && self.terminal_focused && self.terminals.contains_key(&buf_id);
-                let mut left = if focused_terminal {
+                let left = if focused_terminal {
                     "-- TERMINAL --".to_string()
                 } else if is_active {
                     let mut lbl = mode_lbl.clone();
@@ -4370,31 +4872,34 @@ impl App {
                     String::new()
                 };
                 let runner_msg = self.runner_status_text();
-                let mut center = if let Some(msg) = runner_msg {
+                let center = if let Some(msg) = runner_msg {
                     format!(" {} {} ", msg, name)
                 } else {
                     name.clone()
                 };
-                let mut right = format!("{}%  {},{}", pct, cline + 1, ccol + 1);
-                if is_active {
-                    if !lua_left.is_empty() {
-                        left = if left.is_empty() {
-                            lua_left.clone()
-                        } else {
-                            format!("{}  {}", left, lua_left)
-                        };
+                let right = format!("{}%  {},{}", pct, cline + 1, ccol + 1);
+                // The built-ins are named like any plugin section: a click has
+                // to be able to say which one it landed on, and "the mode
+                // label" is as much an answer as "the clock" is. Lua sections
+                // are appended to their group (prepended on the right, where
+                // the position readout stays outermost) — the order the bar
+                // has always had, now with the pieces still separable.
+                let sections = |builtin: (&str, String), lua: &[(String, String)], last| {
+                    let mine =
+                        std::iter::once(ruster_render::StatusSection::new(builtin.0, builtin.1));
+                    let theirs = if is_active { lua } else { &[][..] }
+                        .iter()
+                        .map(|(n, t)| ruster_render::StatusSection::new(n.clone(), t.clone()));
+                    if last {
+                        theirs.chain(mine).collect::<Vec<_>>()
+                    } else {
+                        mine.chain(theirs).collect()
                     }
-                    if !lua_center.is_empty() {
-                        center = format!("{}  {}", center, lua_center);
-                    }
-                    if !lua_right.is_empty() {
-                        right = format!("{}  {}", lua_right, right);
-                    }
-                }
+                };
                 let statusline = StatuslineView {
-                    left,
-                    center,
-                    right,
+                    left: sections(("mode", left), &lua_left, false),
+                    center: sections(("file", center), &lua_center, false),
+                    right: sections(("position", right), &lua_right, true),
                     active: is_active,
                     mode: vim_mode_to_ui_mode(mode),
                 };
@@ -4512,6 +5017,42 @@ impl App {
                     vec![]
                 };
                 let rrect = RRect::new(rect.x, rect.y, rect.width, rect.height);
+                // Only now is the text area settled — the sign column and the
+                // gutter eat into it, and both are decided above.
+                let text_area = ruster_render::TextArea::of(rrect, signs.width, gutter.width);
+                // Keep the cursor visible horizontally, the mirror of the
+                // vertical clamp further up. Nothing wraps, so a cursor past the
+                // right edge would otherwise be invisible and untrackable rather
+                // than merely off to one side.
+                let text_w = text_area.width as usize;
+                if text_w > 0 {
+                    if ccol < hscroll {
+                        hscroll = ccol;
+                    } else if ccol >= hscroll + text_w {
+                        hscroll = ccol - text_w + 1;
+                    }
+                }
+                if let Some(win) = w.windows.window_mut(wid) {
+                    win.scroll_left = hscroll;
+                    // Recorded for the same reason as `height`: `zl`/`zh` have
+                    // no other way to learn how wide the view came out.
+                    win.width = text_w;
+                }
+                // Where each statusline section landed, in screen cells, from
+                // the same layout both backends draw it with.
+                self.last_status_sections
+                    .extend(
+                        statusline
+                            .spans(rrect.width)
+                            .into_iter()
+                            .map(|s| StatusSpan {
+                                window: wid,
+                                name: s.name,
+                                row: rrect.y + rrect.height.saturating_sub(1),
+                                col: rrect.x + s.col,
+                                width: s.width,
+                            }),
+                    );
                 // A terminal window draws its own grid, so there is no buffer
                 // text to click into.
                 if terminal.is_none() {
@@ -4519,11 +5060,12 @@ impl App {
                         window: wid,
                         buffer: buf_id,
                         rect: rrect,
-                        text: ruster_render::TextArea::of(rrect, signs.width, gutter.width),
+                        text: text_area,
                         scroll_top: scroll,
+                        scroll_left: hscroll,
                     });
                 }
-                views.push(WindowView {
+                let mut view = WindowView {
                     rect: rrect,
                     header: name.clone(),
                     lines,
@@ -4540,7 +5082,11 @@ impl App {
                     selection,
                     terminal,
                     flash_labels,
-                });
+                };
+                if hscroll > 0 {
+                    scroll_view_sideways(&mut view, hscroll);
+                }
+                views.push(view);
             }
         }
         if let Some(srect) = sidebar_rect {
@@ -4729,6 +5275,7 @@ impl App {
             dialog: self.dialog.as_ref().map(|d| d.view()),
             floats,
             windows: views,
+            bufferline,
             cmdline: cmdline.as_deref(),
             noice_mini,
             noice_notify,
@@ -4836,6 +5383,16 @@ impl App {
             "fmt" | "format" => Ok(CmdAction::Format),
             "callers" | "incomingcalls" => Ok(CmdAction::CallHierarchy(true)),
             "callees" | "outgoingcalls" => Ok(CmdAction::CallHierarchy(false)),
+            "copy" | "y" | "yank" => Ok(CmdAction::Copy),
+            // No `:d` alias. Vim's `:d` is the ex delete-lines command, and a
+            // vim user who types it here means that, not "cut to clipboard" —
+            // silently doing something adjacent to what was asked is worse than
+            // not answering. `kill-region` is the Emacs name for this exact
+            // operation and is free.
+            "cut" | "kill-region" => Ok(CmdAction::Cut),
+            "paste" | "put" => Ok(CmdAction::Paste),
+            "selectall" | "select-all" => Ok(CmdAction::SelectAll),
+            "comment" | "togglecomment" => Ok(CmdAction::ToggleComment),
             _ if trimmed.starts_with("w ") || trimmed.starts_with("write ") => {
                 let path = trimmed
                     .split_once(' ')
@@ -5141,6 +5698,11 @@ impl App {
             CmdAction::Format => {
                 self.lsp_format();
             }
+            CmdAction::Copy => self.clipboard_copy(),
+            CmdAction::Cut => self.clipboard_cut(),
+            CmdAction::Paste => self.clipboard_paste(),
+            CmdAction::SelectAll => self.select_all(),
+            CmdAction::ToggleComment => self.toggle_comment(),
             CmdAction::WorkspaceSymbol(q) => self.lsp_workspace_symbols(&q),
             CmdAction::CallHierarchy(incoming) => self.lsp_call_hierarchy(incoming),
             CmdAction::SetEditMode(mode) => self.set_editmode(mode),
@@ -6599,25 +7161,49 @@ impl App {
     }
 
     fn delete_active_buffer(&mut self) {
+        let cur = self.ws.borrow().active_buffer();
+        self.close_buffer(cur);
+    }
+
+    /// Show `id` in the active window. Ignores ids that are no longer open, so
+    /// a click on a tab from a stale frame does nothing rather than something
+    /// wrong.
+    pub(crate) fn show_buffer(&mut self, id: BufferId) {
         let mut w = self.ws.borrow_mut();
-        let cur = w.active_buffer();
-        let other = w.buffers.ids().iter().copied().find(|&id| id != cur);
-        match other {
-            Some(o) => {
-                if w.buffers.get(cur).map(|d| d.modified).unwrap_or(false) {
-                    drop(w);
-                    self.echo_warn("E89: buffer modified (add ! to override)".to_string());
-                    return;
-                }
-                w.set_active_buffer(o);
-                w.buffers.close(cur);
-                drop(w);
-                self.forget_buffer(cur);
-            }
-            None => {
-                drop(w);
-                self.echo_warn("E514: cannot close last buffer".to_string());
-            }
+        if w.buffers.get(id).is_some() {
+            w.set_active_buffer(id);
+        }
+    }
+
+    /// Close `id`, refusing what `:bd` refuses: the last buffer, and one with
+    /// unsaved changes.
+    ///
+    /// Every window showing it is pointed at another buffer first. Only the
+    /// *active* window used to be, which meant `:bd` on a file open in two
+    /// splits left the second one viewing a closed document — and the next
+    /// frame panicked resolving it.
+    pub(crate) fn close_buffer(&mut self, id: BufferId) {
+        let mut w = self.ws.borrow_mut();
+        if w.buffers.get(id).is_none() {
+            return;
+        }
+        let Some(other) = w.buffers.ids().iter().copied().find(|&x| x != id) else {
+            drop(w);
+            self.echo_warn("E514: cannot close last buffer".to_string());
+            return;
+        };
+        if w.buffers.get(id).is_some_and(|d| d.modified) {
+            drop(w);
+            self.echo_warn("E89: buffer modified (add ! to override)".to_string());
+            return;
+        }
+        // Repoint only once the close has actually happened: `close` refuses
+        // pinned documents, and moving windows off a buffer that then stays
+        // open would be a switch the user never asked for.
+        if w.buffers.close(id) {
+            w.replace_buffer(id, other);
+            drop(w);
+            self.forget_buffer(id);
         }
     }
 
@@ -6940,6 +7526,7 @@ impl App {
             LeaderAction::Format => {
                 self.lsp_format();
             }
+            LeaderAction::ToggleComment => self.toggle_comment(),
             LeaderAction::Rename => {
                 // Seed the cmdline with :rename for the new name.
                 self.echo("Use :rename <new-name>".to_string());
@@ -9311,6 +9898,295 @@ mod tests {
         a.handle_key(CtKey::new(KeyCode::Esc, none));
         a.handle_key(CtKey::new(KeyCode::Char('V'), none));
         assert_eq!(a.vim.mode, VimMode::VisualLine);
+    }
+
+    /// A renderer that keeps the active window's view from the last frame.
+    ///
+    /// Horizontal scrolling is applied on the way *into* the frame — the
+    /// backends receive a view whose columns already start at the first visible
+    /// one — so asserting on editor state alone would miss the half of the work
+    /// that matters.
+    struct FrameSpy {
+        lines: Rc<RefCell<Vec<StyledLine>>>,
+        cursor: Rc<RefCell<(u16, u16)>>,
+        viewport: (u16, u16),
+    }
+
+    impl Renderer for FrameSpy {
+        fn render_frame(&mut self, state: &FrameState) {
+            if let Some(w) = state.windows.iter().find(|w| w.active) {
+                *self.lines.borrow_mut() = w.lines.clone();
+                *self.cursor.borrow_mut() = w.cursor;
+            }
+        }
+        fn viewport_cells(&self) -> (u16, u16) {
+            self.viewport
+        }
+    }
+
+    /// Swap in a spy renderer and hand back what it records.
+    #[allow(clippy::type_complexity)]
+    fn spy_on_frames(a: &mut App) -> (Rc<RefCell<Vec<StyledLine>>>, Rc<RefCell<(u16, u16)>>) {
+        let lines = Rc::new(RefCell::new(Vec::new()));
+        let cursor = Rc::new(RefCell::new((0, 0)));
+        a.renderer = Box::new(FrameSpy {
+            lines: lines.clone(),
+            cursor: cursor.clone(),
+            viewport: a.renderer.viewport_cells(),
+        });
+        (lines, cursor)
+    }
+
+    /// A line with no highlights on it.
+    fn plain(text: &str) -> StyledLine {
+        StyledLine {
+            text: text.into(),
+            highlights: Vec::new(),
+        }
+    }
+
+    fn hscroll_of(a: &App) -> usize {
+        a.ws.borrow().windows.active_window().scroll_left
+    }
+
+    /// The width of the active window's text area in the last frame.
+    fn text_width(a: &App) -> usize {
+        a.last_layout
+            .first()
+            .expect("one window was laid out")
+            .text
+            .width as usize
+    }
+
+    /// The horizontal twin of `scroll_top`: a cursor walking off the right edge
+    /// drags the view after it, and walking back brings the view back.
+    #[test]
+    fn the_view_follows_the_cursor_off_the_right_edge_and_back() {
+        let mut a = App::new("x".repeat(500), PathBuf::from("f.txt"));
+        a.render();
+        let width = text_width(&a);
+        assert!(width > 4, "the window has room for text");
+
+        // Three columns past the right edge.
+        a.ws.borrow_mut()
+            .execute(Action::Move(Motion::To(width + 2)));
+        a.render();
+        assert_eq!(hscroll_of(&a), 3, "the view followed it");
+
+        a.ws.borrow_mut().execute(Action::Move(Motion::To(0)));
+        a.render();
+        assert_eq!(hscroll_of(&a), 0, "and came back");
+    }
+
+    /// The frame carries text starting at the first visible column, with the
+    /// cursor addressed in the same columns — anything else and the backends,
+    /// which draw character `n` at column `n`, would disagree with the state.
+    #[test]
+    fn a_scrolled_frame_carries_text_from_the_first_visible_column() {
+        let line: String = "abcdefghij".repeat(60);
+        let mut a = App::new(line.clone(), PathBuf::from("f.txt"));
+        a.render();
+        let width = text_width(&a);
+        let (lines, cursor) = spy_on_frames(&mut a);
+
+        a.ws.borrow_mut()
+            .execute(Action::Move(Motion::To(width + 4)));
+        a.render();
+        let cols = hscroll_of(&a);
+        assert_eq!(cols, 5);
+
+        let drawn = lines.borrow()[0].text.clone();
+        assert_eq!(
+            drawn,
+            line[cols..],
+            "the frame starts at the first visible column"
+        );
+        assert_eq!(
+            *cursor.borrow(),
+            (0, (width - 1) as u16),
+            "the cursor sits on the right edge, in view columns"
+        );
+    }
+
+    /// Slicing the text without rebasing the highlight spans would leave every
+    /// syntax colour sitting where its characters used to be. The spans are
+    /// character offsets, so this is checked by comparing the text each span
+    /// covers, before and after the scroll.
+    #[test]
+    fn syntax_highlights_still_cover_their_own_characters_after_scrolling() {
+        let src = "let a = 1; ".repeat(40);
+        let mut a = App::new(src, PathBuf::from("f.rs"));
+        a.render();
+        let width = text_width(&a);
+        let (lines, _) = spy_on_frames(&mut a);
+
+        a.render();
+        let full = lines.borrow()[0].clone();
+        assert!(
+            !full.highlights.is_empty(),
+            "the fixture is only meaningful if it is highlighted at all"
+        );
+        // What each span covers, as text, keyed by where it starts.
+        let covered = |line: &StyledLine| -> Vec<(usize, String)> {
+            let chars: Vec<char> = line.text.chars().collect();
+            line.highlights
+                .iter()
+                .map(|&(o, l, _)| (o, chars[o..o + l].iter().collect()))
+                .collect()
+        };
+        let before = covered(&full);
+
+        a.ws.borrow_mut()
+            .execute(Action::Move(Motion::To(width + 4)));
+        a.render();
+        let cols = hscroll_of(&a);
+        assert!(cols > 0);
+        let after = covered(&lines.borrow()[0]);
+
+        for (offset, text) in before {
+            if offset < cols {
+                continue; // scrolled off the left edge, or clipped by it
+            }
+            assert!(
+                after.contains(&(offset - cols, text.clone())),
+                "span over {text:?} at column {offset} lost its characters; got {after:?}"
+            );
+        }
+    }
+
+    /// Short lines beside a long one have scrolled out of view entirely rather
+    /// than being cut at an offset they never reached.
+    #[test]
+    fn lines_shorter_than_the_scroll_render_empty() {
+        let mut a = App::new(
+            format!("{}\nshort\n", "x".repeat(500)),
+            PathBuf::from("f.txt"),
+        );
+        a.render();
+        let width = text_width(&a);
+        let (lines, _) = spy_on_frames(&mut a);
+
+        a.ws.borrow_mut()
+            .execute(Action::Move(Motion::To(width + 20)));
+        a.render();
+        assert!(hscroll_of(&a) > 5);
+        assert_eq!(lines.borrow()[1].text, "", "\"short\" is off to the left");
+    }
+
+    /// A view with columns to spare is handed over untouched — the common case,
+    /// and the one where slicing every line would be wasted work.
+    #[test]
+    fn an_unscrolled_frame_is_not_sliced() {
+        let mut a = App::new("alpha\nbravo\n".into(), PathBuf::from("f.txt"));
+        let (lines, _) = spy_on_frames(&mut a);
+        a.render();
+        assert_eq!(hscroll_of(&a), 0);
+        assert_eq!(lines.borrow()[0].text, "alpha");
+    }
+
+    /// A window with a wide gutter has fewer text columns than window columns.
+    /// Clamping against the window width would scroll a cursor that was already
+    /// visible, or leave one off the edge.
+    #[test]
+    fn the_clamp_measures_the_text_area_not_the_whole_window() {
+        let mut a = App::new("x".repeat(500), PathBuf::from("f.txt"));
+        a.config.number = true;
+        a.render();
+        let l = *a.last_layout.first().expect("laid out");
+        assert!(
+            l.text.width < l.rect.width,
+            "the number gutter took columns"
+        );
+        // The last column the text area can show, with no scrolling needed.
+        a.ws.borrow_mut()
+            .execute(Action::Move(Motion::To(l.text.width as usize - 1)));
+        a.render();
+        assert_eq!(hscroll_of(&a), 0, "still the last visible column");
+
+        a.ws.borrow_mut()
+            .execute(Action::Move(Motion::To(l.text.width as usize)));
+        a.render();
+        assert_eq!(hscroll_of(&a), 1, "one past it scrolls by one");
+    }
+
+    /// Extra carets left of the view are dropped rather than piling up on
+    /// column zero, where they would be drawn over characters they are nowhere
+    /// near.
+    #[test]
+    fn scrolling_a_view_sideways_drops_carets_and_labels_left_of_it() {
+        let mut view = WindowView {
+            lines: vec![StyledLine {
+                text: "abcdefghij".into(),
+                highlights: Vec::new(),
+            }],
+            cursor: (0, 7),
+            extra_cursors: vec![(0, 2), (0, 8)],
+            flash_labels: vec![
+                FlashLabelRender {
+                    row: 0,
+                    col: 1,
+                    text: "a".into(),
+                    color: ruster_render::Color::Default,
+                },
+                FlashLabelRender {
+                    row: 0,
+                    col: 9,
+                    text: "b".into(),
+                    color: ruster_render::Color::Default,
+                },
+            ],
+            ..Default::default()
+        };
+        scroll_view_sideways(&mut view, 4);
+
+        assert_eq!(view.lines[0].text, "efghij");
+        assert_eq!(view.cursor, (0, 3));
+        assert_eq!(view.extra_cursors, vec![(0, 4)], "the one at 2 is gone");
+        assert_eq!(view.flash_labels.len(), 1);
+        assert_eq!(view.flash_labels[0].col, 5);
+    }
+
+    /// A selection whose last line ends left of the view covers nothing there.
+    /// Saturating that column to zero would paint one stray cell on a line the
+    /// selection does not reach.
+    #[test]
+    fn a_selection_ending_left_of_the_view_gives_up_its_last_line() {
+        let mut view = WindowView {
+            lines: vec![plain(""); 3],
+            selection: Some(SelectionView {
+                start: (0, 20),
+                end: (2, 3),
+                kind: ruster_render::SelectionKind::Char,
+            }),
+            ..Default::default()
+        };
+        scroll_view_sideways(&mut view, 10);
+        let sel = view.selection.expect("still a selection");
+        assert_eq!(sel.start, (0, 10), "the start moved with the text");
+        assert_eq!(
+            sel.end.0, 1,
+            "the last line it covers is the one before the empty one"
+        );
+        assert!(sel.end.1 > 0, "and it covers that line to the end");
+    }
+
+    /// A selection that starts left of the view still covers the view from its
+    /// left edge, so its start clamps to column zero rather than vanishing.
+    #[test]
+    fn a_selection_starting_left_of_the_view_clamps_to_the_first_column() {
+        let mut view = WindowView {
+            lines: vec![plain(""); 2],
+            selection: Some(SelectionView {
+                start: (0, 2),
+                end: (1, 40),
+                kind: ruster_render::SelectionKind::Char,
+            }),
+            ..Default::default()
+        };
+        scroll_view_sideways(&mut view, 10);
+        let sel = view.selection.expect("still a selection");
+        assert_eq!(sel.start, (0, 0));
+        assert_eq!(sel.end, (1, 30));
     }
 
     #[test]
@@ -13176,5 +14052,420 @@ index 1..2 100644
             0,
             "no level-based toast"
         );
+    }
+
+    // --- Clipboard, selection and comment commands --------------------------
+
+    /// Run a cmdline string the way the user (or a menu item) would.
+    fn run(a: &mut App, cmd: &str) {
+        let action = a.parse_cmdline(cmd).expect("command parses");
+        a.apply_cmd(action);
+    }
+
+    /// What a paste would insert, without pasting it.
+    fn clipboard(a: &App) -> Option<String> {
+        match a.editmode {
+            EditMode::Neovim => a.vim.clipboard_get(),
+            EditMode::Emacs => a.emacs.paste_text(),
+        }
+    }
+
+    /// Enter visual mode and extend `n` characters to the right.
+    fn visual_select(a: &mut App, n: usize) {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        a.handle_key(CtKey::new(KeyCode::Char('v'), KeyModifiers::NONE));
+        for _ in 0..n {
+            a.handle_key(CtKey::new(KeyCode::Char('l'), KeyModifiers::NONE));
+        }
+    }
+
+    #[test]
+    fn clipboard_commands_and_their_aliases_parse() {
+        let a = App::new("x".into(), PathBuf::from("f.txt"));
+        for name in ["copy", "y", "yank"] {
+            assert_eq!(a.parse_cmdline(&format!(":{name}")), Ok(CmdAction::Copy));
+        }
+        for name in ["cut", "kill-region"] {
+            assert_eq!(a.parse_cmdline(&format!(":{name}")), Ok(CmdAction::Cut));
+        }
+        for name in ["paste", "put"] {
+            assert_eq!(a.parse_cmdline(&format!(":{name}")), Ok(CmdAction::Paste));
+        }
+        for name in ["selectall", "select-all"] {
+            assert_eq!(
+                a.parse_cmdline(&format!(":{name}")),
+                Ok(CmdAction::SelectAll)
+            );
+        }
+        for name in ["comment", "togglecomment"] {
+            assert_eq!(
+                a.parse_cmdline(&format!(":{name}")),
+                Ok(CmdAction::ToggleComment)
+            );
+        }
+    }
+
+    /// `:d` stays free. In vim it is the ex delete-lines command, so answering
+    /// it with "cut to clipboard" would be a different edit than the one asked
+    /// for — silently, and on text the user cannot see selected.
+    #[test]
+    fn cut_does_not_steal_the_vim_delete_command() {
+        let a = App::new("x".into(), PathBuf::from("f.txt"));
+        assert!(a.parse_cmdline(":d").is_err());
+    }
+
+    #[test]
+    fn every_palette_command_parses() {
+        let a = App::new("x".into(), PathBuf::from("f.txt"));
+        for (name, desc) in PALETTE_COMMANDS {
+            assert!(
+                a.parse_cmdline(&format!(":{name}")).is_ok(),
+                "palette entry {name:?} ({desc}) is not a command"
+            );
+        }
+    }
+
+    #[test]
+    fn copy_with_no_selection_takes_the_whole_line() {
+        let mut a = App::new("alpha\nbeta\n".into(), PathBuf::from("f.txt"));
+        run(&mut a, ":copy");
+        // The newline comes too, so pasting it elsewhere yields a line rather
+        // than a fragment welded onto its new neighbour.
+        assert_eq!(clipboard(&a).as_deref(), Some("alpha\n"));
+        assert_eq!(a.ws.borrow().buffer().to_string(), "alpha\nbeta\n");
+    }
+
+    #[test]
+    fn copy_takes_exactly_the_visual_selection_and_leaves_visual_mode() {
+        let mut a = App::new("alpha\nbeta\n".into(), PathBuf::from("f.txt"));
+        visual_select(&mut a, 2);
+        run(&mut a, ":copy");
+        assert_eq!(clipboard(&a).as_deref(), Some("alp"));
+        assert_eq!(a.vim.mode, VimMode::Normal, "copy ends the selection");
+        // And the register, so `p` pastes what the menu copied.
+        assert!(a.vim.visual_ranges(&*a.ws.borrow()).is_empty());
+    }
+
+    #[test]
+    fn copy_of_an_empty_buffer_leaves_the_clipboard_alone() {
+        let mut a = App::new(String::new(), PathBuf::from("f.txt"));
+        a.vim.clipboard_set("previous");
+        run(&mut a, ":copy");
+        assert_eq!(clipboard(&a).as_deref(), Some("previous"));
+    }
+
+    #[test]
+    fn cut_removes_the_selection_and_keeps_it_for_pasting() {
+        let mut a = App::new("alpha\nbeta\n".into(), PathBuf::from("f.txt"));
+        visual_select(&mut a, 2);
+        run(&mut a, ":cut");
+        assert_eq!(a.ws.borrow().buffer().to_string(), "ha\nbeta\n");
+        assert_eq!(clipboard(&a).as_deref(), Some("alp"));
+        assert_eq!(a.vim.mode, VimMode::Normal);
+    }
+
+    #[test]
+    fn cut_with_no_selection_removes_the_cursor_line() {
+        let mut a = App::new("alpha\nbeta\n".into(), PathBuf::from("f.txt"));
+        run(&mut a, ":cut");
+        assert_eq!(a.ws.borrow().buffer().to_string(), "beta\n");
+        assert_eq!(clipboard(&a).as_deref(), Some("alpha\n"));
+    }
+
+    #[test]
+    fn cut_is_a_single_undo_step() {
+        let mut a = App::new("alpha\nbeta\n".into(), PathBuf::from("f.txt"));
+        run(&mut a, ":cut");
+        a.ws.borrow_mut().execute(Action::Undo);
+        assert_eq!(a.ws.borrow().buffer().to_string(), "alpha\nbeta\n");
+    }
+
+    /// An extra caret must not turn one cut into several: `DeleteRange` is
+    /// applied at every cursor, so the edit would land where nothing was asked
+    /// for.
+    #[test]
+    fn cut_with_extra_cursors_removes_one_line_only() {
+        let mut a = App::new("alpha\nbeta\ngamma\n".into(), PathBuf::from("f.txt"));
+        a.ws.borrow_mut().execute(Action::AddCursor(6));
+        run(&mut a, ":cut");
+        assert_eq!(a.ws.borrow().buffer().to_string(), "alpha\ngamma\n");
+        assert_eq!(a.ws.borrow().windows.active_window().cursors.count(), 1);
+    }
+
+    #[test]
+    fn cut_of_an_empty_buffer_does_nothing() {
+        let mut a = App::new(String::new(), PathBuf::from("f.txt"));
+        run(&mut a, ":cut");
+        assert_eq!(a.ws.borrow().buffer().to_string(), "");
+    }
+
+    #[test]
+    fn paste_inserts_the_clipboard_at_the_cursor() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        a.vim.clipboard_set("XY");
+        run(&mut a, ":paste");
+        assert_eq!(a.ws.borrow().buffer().to_string(), "XYalpha\n");
+    }
+
+    #[test]
+    fn paste_replaces_the_selection() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        a.vim.clipboard_set("XY");
+        visual_select(&mut a, 2);
+        run(&mut a, ":paste");
+        assert_eq!(a.ws.borrow().buffer().to_string(), "XYha\n");
+        assert_eq!(a.vim.mode, VimMode::Normal);
+    }
+
+    #[test]
+    fn copy_then_paste_round_trips_a_line() {
+        let mut a = App::new("alpha\nbeta\n".into(), PathBuf::from("f.txt"));
+        run(&mut a, ":copy");
+        run(&mut a, ":paste");
+        assert_eq!(a.ws.borrow().buffer().to_string(), "alpha\nalpha\nbeta\n");
+    }
+
+    #[test]
+    fn select_all_covers_the_whole_buffer() {
+        let mut a = App::new("alpha\nbeta\n".into(), PathBuf::from("f.txt"));
+        run(&mut a, ":selectall");
+        assert_eq!(a.vim.mode, VimMode::VisualChar);
+        run(&mut a, ":copy");
+        assert_eq!(clipboard(&a).as_deref(), Some("alpha\nbeta\n"));
+    }
+
+    /// The selection `:selectall` makes has to behave like one the keyboard
+    /// made — including surviving the first motion key, which re-anchors on the
+    /// cursor when the anchor was never set.
+    #[test]
+    fn select_all_survives_being_adjusted() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let mut a = App::new("alpha\nbeta\n".into(), PathBuf::from("f.txt"));
+        run(&mut a, ":selectall");
+        a.handle_key(CtKey::new(KeyCode::Char('h'), KeyModifiers::NONE));
+        run(&mut a, ":copy");
+        assert_eq!(clipboard(&a).as_deref(), Some("alpha\nbeta"));
+    }
+
+    #[test]
+    fn select_all_on_an_empty_buffer_does_nothing() {
+        let mut a = App::new(String::new(), PathBuf::from("f.txt"));
+        run(&mut a, ":selectall");
+        assert_eq!(a.vim.mode, VimMode::Normal, "no selection to enter");
+    }
+
+    #[test]
+    fn emacs_mode_copies_the_region_and_cuts_it_to_the_kill_ring() {
+        let mut a = App::new("alpha\nbeta\n".into(), PathBuf::from("f.txt"));
+        a.set_editmode(EditMode::Emacs);
+        a.emacs.set_mark(0);
+        a.ws.borrow_mut().execute(Action::Move(Motion::To(5)));
+        run(&mut a, ":copy");
+        // The region stops before the point: "alpha", not "alpha\n".
+        assert_eq!(clipboard(&a).as_deref(), Some("alpha"));
+        assert_eq!(a.emacs.mark(), None, "copy deactivates the mark");
+
+        a.emacs.set_mark(0);
+        a.ws.borrow_mut().execute(Action::Move(Motion::To(5)));
+        run(&mut a, ":cut");
+        assert_eq!(a.ws.borrow().buffer().to_string(), "\nbeta\n");
+        // `C-y` and `:paste` must agree about what was cut.
+        assert_eq!(a.emacs.paste_text().as_deref(), Some("alpha"));
+    }
+
+    #[test]
+    fn emacs_mode_select_all_then_cut_empties_the_buffer() {
+        let mut a = App::new("alpha\nbeta\n".into(), PathBuf::from("f.txt"));
+        a.set_editmode(EditMode::Emacs);
+        run(&mut a, ":selectall");
+        run(&mut a, ":cut");
+        assert_eq!(a.ws.borrow().buffer().to_string(), "");
+        assert_eq!(clipboard(&a).as_deref(), Some("alpha\nbeta\n"));
+    }
+
+    #[test]
+    fn emacs_paste_inserts_the_kill_ring_top() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        a.set_editmode(EditMode::Emacs);
+        a.emacs.push_kill("XY".to_string());
+        run(&mut a, ":paste");
+        assert_eq!(a.ws.borrow().buffer().to_string(), "XYalpha\n");
+    }
+
+    /// The one command here with no key of its own in either paradigm, so the
+    /// leader route is the only way to reach it without typing.
+    #[test]
+    fn leader_c_c_toggles_the_comment() {
+        use crossterm::event::{KeyCode, KeyEvent as CtKey, KeyModifiers};
+        let none = KeyModifiers::NONE;
+        let mut a = App::new("fn main() {}\n".into(), PathBuf::from("main.rs"));
+        for c in [' ', 'c', 'c'] {
+            a.handle_key(CtKey::new(KeyCode::Char(c), none));
+        }
+        assert_eq!(a.ws.borrow().buffer().to_string(), "// fn main() {}\n");
+    }
+
+    #[test]
+    fn comment_toggle_round_trips_a_line() {
+        let mut a = App::new("fn main() {}\n".into(), PathBuf::from("main.rs"));
+        run(&mut a, ":comment");
+        assert_eq!(a.ws.borrow().buffer().to_string(), "// fn main() {}\n");
+        run(&mut a, ":comment");
+        assert_eq!(a.ws.borrow().buffer().to_string(), "fn main() {}\n");
+    }
+
+    #[test]
+    fn comment_toggle_round_trips_an_indented_line() {
+        let mut a = App::new("    let x = 1;\n".into(), PathBuf::from("main.rs"));
+        run(&mut a, ":comment");
+        assert_eq!(a.ws.borrow().buffer().to_string(), "    // let x = 1;\n");
+        run(&mut a, ":comment");
+        assert_eq!(a.ws.borrow().buffer().to_string(), "    let x = 1;\n");
+    }
+
+    #[test]
+    fn comment_toggle_uses_the_prefix_for_the_filetype() {
+        for (file, commented) in [
+            ("a.py", "# x = 1\n"),
+            ("a.lua", "-- x = 1\n"),
+            ("a.sh", "# x = 1\n"),
+            ("a.sql", "-- x = 1\n"),
+        ] {
+            let mut a = App::new("x = 1\n".into(), PathBuf::from(file));
+            run(&mut a, ":comment");
+            assert_eq!(a.ws.borrow().buffer().to_string(), commented, "{file}");
+            run(&mut a, ":comment");
+            assert_eq!(a.ws.borrow().buffer().to_string(), "x = 1\n", "{file}");
+        }
+    }
+
+    /// Regression: `:bd` pointed only the *active* window at the surviving
+    /// buffer, so the same file open in two splits left the second window
+    /// viewing a closed document — and the next frame panicked resolving it
+    /// ("buffer exists"). Closing has to leave nothing referring to it.
+    #[test]
+    fn deleting_a_buffer_open_in_two_windows_leaves_neither_dangling() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        a.ws.borrow_mut()
+            .windows
+            .split(ruster_core::windows::SplitDir::Vertical);
+        let _survivor = a.ws.borrow_mut().buffers.create_scratch("other");
+        let doomed = a.ws.borrow().active_buffer();
+
+        a.apply_cmd(CmdAction::BufferDelete);
+
+        assert!(a.ws.borrow().buffers.get(doomed).is_none(), "it closed");
+        // The render is what used to panic.
+        a.render();
+        assert_eq!(a.last_layout.len(), 2, "both windows are still laid out");
+        for l in &a.last_layout {
+            assert_ne!(l.buffer, doomed, "no window is left on the closed buffer");
+        }
+    }
+
+    #[test]
+    fn comment_toggle_leaves_an_unknown_filetype_alone() {
+        let mut a = App::new("plain text\n".into(), PathBuf::from("notes.txt"));
+        run(&mut a, ":comment");
+        assert_eq!(a.ws.borrow().buffer().to_string(), "plain text\n");
+        assert!(
+            a.notify
+                .history()
+                .iter()
+                .any(|n| n.text.contains("No line comment syntax")),
+            "says why nothing happened"
+        );
+    }
+
+    #[test]
+    fn comment_toggle_of_a_selection_skips_blank_lines() {
+        let mut a = App::new("a();\n\nb();\n".into(), PathBuf::from("main.rs"));
+        run(&mut a, ":selectall");
+        run(&mut a, ":comment");
+        assert_eq!(a.ws.borrow().buffer().to_string(), "// a();\n\n// b();\n");
+        run(&mut a, ":selectall");
+        run(&mut a, ":comment");
+        assert_eq!(a.ws.borrow().buffer().to_string(), "a();\n\nb();\n");
+    }
+
+    /// A block where only some lines are commented becomes wholly commented,
+    /// not inverted line by line.
+    #[test]
+    fn comment_toggle_of_a_mixed_block_comments_everything() {
+        let mut a = App::new("// a();\nb();\n".into(), PathBuf::from("main.rs"));
+        run(&mut a, ":selectall");
+        run(&mut a, ":comment");
+        assert_eq!(a.ws.borrow().buffer().to_string(), "// // a();\n// b();\n");
+    }
+
+    /// The markers line up at the shallowest indent in the span, so the block
+    /// keeps its shape and each line still uncomments to what it was.
+    #[test]
+    fn comment_toggle_aligns_markers_and_still_reverses() {
+        let mut a = App::new("  a();\n      b();\n".into(), PathBuf::from("main.rs"));
+        run(&mut a, ":selectall");
+        run(&mut a, ":comment");
+        assert_eq!(
+            a.ws.borrow().buffer().to_string(),
+            "  // a();\n  //     b();\n"
+        );
+        run(&mut a, ":selectall");
+        run(&mut a, ":comment");
+        assert_eq!(a.ws.borrow().buffer().to_string(), "  a();\n      b();\n");
+    }
+
+    #[test]
+    fn comment_toggle_keeps_the_cursor_on_its_own_character() {
+        let mut a = App::new("alpha();\nbeta();\n".into(), PathBuf::from("main.rs"));
+        // On the 'b' of the second line.
+        a.ws.borrow_mut().execute(Action::Move(Motion::To(9)));
+        run(&mut a, ":comment");
+        assert_eq!(a.ws.borrow().buffer().to_string(), "alpha();\n// beta();\n");
+        let head = a.ws.borrow().primary_head();
+        let text = a.ws.borrow().buffer().to_string();
+        assert_eq!(&text[head..head + 1], "b", "caret still on the 'b'");
+    }
+
+    #[test]
+    fn comment_toggle_of_a_blank_line_does_nothing() {
+        let mut a = App::new("\n\n".into(), PathBuf::from("main.rs"));
+        run(&mut a, ":comment");
+        assert_eq!(a.ws.borrow().buffer().to_string(), "\n\n");
+    }
+
+    #[test]
+    fn comment_toggle_of_an_empty_buffer_does_nothing() {
+        let mut a = App::new(String::new(), PathBuf::from("main.rs"));
+        run(&mut a, ":comment");
+        assert_eq!(a.ws.borrow().buffer().to_string(), "");
+    }
+
+    #[test]
+    fn a_modified_buffer_is_not_closed_out_from_under_the_windows() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        let _other = a.ws.borrow_mut().buffers.create_scratch("other");
+        let id = a.ws.borrow().active_buffer();
+        a.ws.borrow_mut().active_doc_mut().modified = true;
+
+        a.close_buffer(id);
+        assert!(a.ws.borrow().buffers.get(id).is_some(), "refused");
+        assert_eq!(
+            a.ws.borrow().active_buffer(),
+            id,
+            "and left the view where it was"
+        );
+    }
+
+    /// A tab from a frame drawn before the buffer was closed must not act on a
+    /// stale id.
+    #[test]
+    fn showing_a_closed_buffer_does_nothing() {
+        let mut a = App::new("alpha\n".into(), PathBuf::from("f.txt"));
+        let gone = a.ws.borrow_mut().buffers.create_scratch("other");
+        let before = a.ws.borrow().active_buffer();
+        a.close_buffer(gone);
+
+        a.show_buffer(gone);
+        assert_eq!(a.ws.borrow().active_buffer(), before);
     }
 }

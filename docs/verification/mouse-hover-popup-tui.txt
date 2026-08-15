@@ -1,5 +1,6 @@
-─ demo.rs ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  1 //! The fixture every capture opens.                                                         hover: line 10 col 12
+ demo.rs  Dashboard  *messages*
+─ demo.rs ──────────────────────────────────────────────────────────────────────────────────────── hover: line 9 col 0──
+  1 //! The fixture every capture opens.
   2 //!
   3 //! Small on purpose, but chosen so one file exercises most of what a frame is
   4 //! supposed to show: keywords, strings, numbers and comments for the
@@ -36,5 +37,4 @@
  35     }
  36 }
  37
- 38 /// Count how many times each point appears.
- -- NORMAL -- │demo.rs                                                                                          1%  1,1
+ -- NORMAL -- │                                         demo.rs                                                 1%  1,1

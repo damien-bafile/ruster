@@ -557,39 +557,110 @@ impl Widget for StatuslineWidget {
             }
         }
 
-        let left = &self.view.left;
-        let right = &self.view.right;
-        let center = &self.view.center;
+        let (left, center, right) = (
+            self.view.left_text(),
+            self.view.center_text(),
+            self.view.right_text(),
+        );
+        let len = |s: &str| s.chars().count() as u16;
+        // The same placement the GUI draws from and the mouse resolves against,
+        // rather than arithmetic of its own: three copies of this sum is how a
+        // click and the text under it come to disagree.
+        let layout =
+            ruster_render::statusline_layout(area.width, len(&left), len(&center), len(&right));
 
-        let mut x = area.x;
-        if !left.is_empty() {
-            put(buf, x, area.y, ' ', self.mode_fg, self.mode_bg);
-            x += 1;
-            for (i, ch) in left.chars().enumerate() {
-                put(buf, x + i as u16, area.y, ch, self.mode_fg, self.mode_bg);
+        let draw = |buf: &mut Buffer, at: u16, s: &str, cf: Color, cb: Color| {
+            for (i, ch) in s.chars().enumerate() {
+                put(buf, area.x + at + i as u16, area.y, ch, cf, cb);
             }
-            x += left.chars().count() as u16;
-            put(buf, x, area.y, ' ', self.mode_fg, self.mode_bg);
-            x += 1;
-            put(buf, x, area.y, '│', fg, bg);
-            x += 1;
-        }
+        };
 
-        let right_len = right.chars().count() as u16;
-        let right_start = area.right().saturating_sub(right_len + 2);
-        if right_start > x {
-            for (i, ch) in center.chars().enumerate() {
-                let cx = x + i as u16;
-                if cx >= right_start {
+        if !left.is_empty() {
+            // The mode block is a filled tab: its padding takes the mode colour
+            // too, so it reads as one shape rather than text on the bar.
+            draw(
+                buf,
+                layout.left.saturating_sub(1),
+                &format!(" {left} "),
+                self.mode_fg,
+                self.mode_bg,
+            );
+            draw(buf, layout.left + len(&left) + 1, "│", fg, bg);
+        }
+        if let Some(cx) = layout.center {
+            draw(buf, cx, &center, fg, bg);
+        }
+        if !right.is_empty() {
+            draw(
+                buf,
+                layout.right.saturating_sub(1),
+                &format!(" {right} "),
+                fg,
+                bg,
+            );
+        }
+    }
+}
+
+/// Renders the strip of open buffers above the window area.
+pub struct BufferlineWidget {
+    view: ruster_render::BufferlineView,
+    bar_bg: Color,
+    bar_fg: Color,
+    active_bg: Color,
+    active_fg: Color,
+}
+
+impl BufferlineWidget {
+    pub fn new(view: ruster_render::BufferlineView) -> Self {
+        let d = ruster_render::Theme::default();
+        BufferlineWidget {
+            view,
+            bar_bg: ruster_render_color_to_tui(&d.statusline_bg),
+            bar_fg: ruster_render_color_to_tui(&d.gutter),
+            active_bg: ruster_render_color_to_tui(&d.accent),
+            active_fg: ruster_render_color_to_tui(&d.accent_fg),
+        }
+    }
+
+    pub fn with_theme(mut self, theme: &ruster_render::Theme) -> Self {
+        self.bar_bg = ruster_render_color_to_tui(&theme.statusline_bg);
+        // The inactive tabs are dimmed rather than merely un-highlighted: the
+        // point of the strip is to answer "which buffer am I in", and two tabs
+        // in the same colour do not answer it.
+        self.bar_fg = ruster_render_color_to_tui(&theme.gutter);
+        self.active_bg = ruster_render_color_to_tui(&theme.accent);
+        self.active_fg = ruster_render_color_to_tui(&theme.accent_fg);
+        self
+    }
+}
+
+impl Widget for BufferlineWidget {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        for x in area.left()..area.right() {
+            if let Some(cell) = buf.cell_mut((x, area.y)) {
+                cell.set_char(' ');
+                cell.set_fg(self.bar_fg);
+                cell.set_bg(self.bar_bg);
+            }
+        }
+        for tab in &self.view.tabs {
+            let (fg, bg) = if tab.active {
+                (self.active_fg, self.active_bg)
+            } else {
+                (self.bar_fg, self.bar_bg)
+            };
+            for (i, ch) in tab.label.chars().enumerate() {
+                let x = area.x + tab.col + i as u16;
+                if x >= area.right() {
                     break;
                 }
-                put(buf, cx, area.y, ch, fg, bg);
+                if let Some(cell) = buf.cell_mut((x, area.y)) {
+                    cell.set_char(ch);
+                    cell.set_fg(fg);
+                    cell.set_bg(bg);
+                }
             }
-            put(buf, right_start, area.y, ' ', fg, bg);
-            for (i, ch) in right.chars().enumerate() {
-                put(buf, right_start + 1 + i as u16, area.y, ch, fg, bg);
-            }
-            put(buf, right_start + 1 + right_len, area.y, ' ', fg, bg);
         }
     }
 }
@@ -1485,6 +1556,117 @@ mod tests {
                 "message character {ch:?} at {i} should match the rest"
             );
         }
+    }
+
+    /// Read one widget's row back as a string, in its own column space.
+    fn bar_text(buf: &RBuffer, area: Rect) -> String {
+        (area.x..area.right())
+            .map(|x| buf.cell((x, area.y)).unwrap().symbol().to_string())
+            .collect()
+    }
+
+    /// The whole point of the shared layout: the text lands on exactly the
+    /// cells the hit-test will resolve to that section. If these two ever
+    /// disagree, a click reports a section other than the one under it.
+    #[test]
+    fn each_statusline_section_is_drawn_on_the_cells_its_span_claims() {
+        use super::Widget as _;
+        use ruster_render::{StatusSection, StatuslineView};
+
+        let view = StatuslineView {
+            left: vec![StatusSection::new("mode", "NORMAL")],
+            center: vec![StatusSection::new("file", "demo.rs")],
+            right: vec![
+                StatusSection::new("clock", "12:00"),
+                StatusSection::new("position", "50%  3,1"),
+            ],
+            active: true,
+            mode: ruster_render::UIMode::Normal,
+        };
+        let area = Rect::new(0, 0, 60, 1);
+        let mut buf = RBuffer::empty(area);
+        super::StatuslineWidget::new(view.clone())
+            .with_theme(&ruster_render::Theme::default())
+            .render(area, &mut buf);
+        let row = bar_text(&buf, area);
+
+        for span in view.spans(area.width) {
+            let want = match span.name.as_str() {
+                "mode" => "NORMAL",
+                "file" => "demo.rs",
+                "clock" => "12:00",
+                _ => "50%  3,1",
+            };
+            let got: String = row
+                .chars()
+                .skip(span.col as usize)
+                .take(span.width as usize)
+                .collect();
+            assert_eq!(got, want, "{:?} in {row:?}", span.name);
+        }
+    }
+
+    /// A window's own rect is not the origin once there is a split, and the bar
+    /// is drawn relative to it — an absolute-column widget would draw the right
+    /// group off the end of the screen.
+    #[test]
+    fn a_statusline_is_drawn_relative_to_its_own_area() {
+        use super::Widget as _;
+        use ruster_render::{StatusSection, StatuslineView};
+
+        let view = StatuslineView {
+            right: vec![StatusSection::new("position", "1,1")],
+            active: true,
+            ..Default::default()
+        };
+        let area = Rect::new(30, 4, 20, 1);
+        let mut buf = RBuffer::empty(Rect::new(0, 0, 60, 6));
+        super::StatuslineWidget::new(view)
+            .with_theme(&ruster_render::Theme::default())
+            .render(area, &mut buf);
+
+        assert!(
+            bar_text(&buf, area).contains("1,1"),
+            "got {:?}",
+            bar_text(&buf, area)
+        );
+    }
+
+    #[test]
+    fn the_bufferline_draws_its_tabs_where_it_says_they_are() {
+        use super::Widget as _;
+        use ruster_render::{BufferEntry, BufferlineView, Rect as RRect};
+
+        let entries = [("a.rs", false), ("b.rs", true)].map(|(name, modified)| BufferEntry {
+            name: name.into(),
+            modified,
+            active: name == "b.rs",
+        });
+        let area = Rect::new(0, 0, 30, 1);
+        let view = BufferlineView::laid_out(RRect::new(0, 0, 30, 1), &entries);
+        let mut buf = RBuffer::empty(area);
+        super::BufferlineWidget::new(view.clone())
+            .with_theme(&ruster_render::Theme::default())
+            .render(area, &mut buf);
+        let row = bar_text(&buf, area);
+
+        for tab in &view.tabs {
+            let got: String = row
+                .chars()
+                .skip(tab.col as usize)
+                .take(tab.width as usize)
+                .collect();
+            assert_eq!(got, tab.label, "tab {} in {row:?}", tab.idx);
+        }
+        assert!(row.contains("b.rs ●"), "the modified marker: {row:?}");
+
+        // The active tab is the one that stands out; that is what the strip is
+        // for.
+        let accent = super::ruster_render_color_to_tui(&ruster_render::Theme::default().accent);
+        let active = view.tabs.iter().find(|t| t.active).expect("an active tab");
+        assert_eq!(buf.cell((active.col, 0)).unwrap().bg, accent);
+        let inactive = view.tabs.iter().find(|t| !t.active).expect("another tab");
+        assert_ne!(buf.cell((inactive.col, 0)).unwrap().bg, accent);
     }
 
     #[test]

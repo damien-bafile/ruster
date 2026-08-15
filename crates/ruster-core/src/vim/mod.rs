@@ -106,6 +106,8 @@ pub struct VimState {
     pub mode: VimMode,
     count: Option<u32>,
     pending_g: bool,
+    /// True after `z`, waiting for the scroll command that completes it.
+    pending_z: bool,
     pending: OpState,
     pending_textobj: Option<char>,
     register: Option<String>,
@@ -148,6 +150,7 @@ impl VimState {
         self.mode == VimMode::Normal
             && self.count.is_none()
             && !self.pending_g
+            && !self.pending_z
             && matches!(self.pending, OpState::Idle)
             && self.pending_textobj.is_none()
             && !self.pending_replace
@@ -160,6 +163,7 @@ impl VimState {
             mode: VimMode::Normal,
             count: None,
             pending_g: false,
+            pending_z: false,
             pending: OpState::Idle,
             pending_textobj: None,
             register: None,
@@ -182,6 +186,55 @@ impl VimState {
 
     pub fn set_register(&mut self, text: String) {
         self.register = Some(text);
+    }
+
+    /// Enter a visual mode with `anchor` as the fixed end.
+    ///
+    /// For selections made outside the key path — a mouse drag, `:selectall`.
+    /// Assigning `mode` alone is not enough: the anchor would stay unset, and
+    /// the first motion key would re-anchor on the cursor's current position,
+    /// collapsing the selection the moment the user tried to adjust it.
+    pub fn set_visual(&mut self, mode: VimMode, anchor: usize) {
+        self.mode = mode;
+        self.anchor = Some(anchor);
+    }
+
+    /// Leave visual mode exactly as `Esc` does.
+    ///
+    /// Clearing the anchor is the point: a stale anchor survives into the next
+    /// `v`, which would then select from wherever the last selection began.
+    pub fn leave_visual(&mut self) {
+        self.mode = VimMode::Normal;
+        self.anchor = None;
+        self.count = None;
+    }
+
+    /// The char ranges the current visual selection covers, ascending, or empty
+    /// outside a visual mode.
+    ///
+    /// Several ranges rather than one span because a block-wise selection is
+    /// one clipped range per line — a single `(start, end)` pair would claim
+    /// the untouched text to the left and right of the block as well. Callers
+    /// that copy join the ranges with newlines; callers that delete must work
+    /// backwards through them so earlier offsets stay valid.
+    pub fn visual_ranges(&self, editor: &dyn EditorView) -> Vec<(usize, usize)> {
+        match self.mode {
+            VimMode::VisualBlock => {
+                let mut ranges = self.block_ranges(editor);
+                ranges.reverse(); // block_ranges is bottom-up
+                ranges
+            }
+            VimMode::VisualChar | VimMode::VisualLine => {
+                let (start, end) = self.visual_range(editor);
+                let end = end.min(editor.buffer().len_chars());
+                if end > start {
+                    vec![(start, end)]
+                } else {
+                    Vec::new()
+                }
+            }
+            _ => Vec::new(),
+        }
     }
 
     pub fn clipboard_get(&self) -> Option<String> {
@@ -386,12 +439,39 @@ impl VimState {
         if self.pending_g {
             self.pending_g = false;
             match key {
-                KeyEvent::Char('g') => out.push(Action::Move(Motion::To(0))),
+                // `Ngg` goes to line N, `gg` to the first line. Taking the
+                // count here rather than discarding it is the whole reason a
+                // count may precede `g`.
+                KeyEvent::Char('g') => {
+                    let last = editor.buffer().line_count().saturating_sub(1);
+                    let line = n.saturating_sub(1).min(last as u32) as usize;
+                    out.push(Action::Move(Motion::To(
+                        editor.buffer().line_start_char(line),
+                    )));
+                }
                 // Walk the undo tree by time rather than along the branch.
                 KeyEvent::Char('-') => out.push(Action::UndoTime(false)),
                 KeyEvent::Char('+') => out.push(Action::UndoTime(true)),
                 _ => {}
             }
+            // Every other prefix clears the count on the way out; this one did
+            // not, so a count typed before `g` survived into the *next*
+            // command — after `2gg`, a plain `j` moved two lines.
+            self.count = None;
+            return;
+        }
+
+        // The `z` scroll commands. Only the sideways pair is bound: `zz`/`zt`
+        // and friends recentre vertically, which is a different clamp and not
+        // what this prefix was added for.
+        if self.pending_z {
+            self.pending_z = false;
+            match key {
+                KeyEvent::Char('l') => out.push(Action::ScrollHorizontal(n as i32)),
+                KeyEvent::Char('h') => out.push(Action::ScrollHorizontal(-(n as i32))),
+                _ => {}
+            }
+            self.count = None;
             return;
         }
 
@@ -444,6 +524,10 @@ impl VimState {
             }
             KeyEvent::Char('g') => {
                 self.pending_g = true;
+            }
+            // The count survives into the next key: `3zl` is three columns.
+            KeyEvent::Char('z') => {
+                self.pending_z = true;
             }
             KeyEvent::Char('w') => {
                 self.do_word_motion(editor, n, next_word_start, out);
@@ -1148,6 +1232,61 @@ mod tests {
     use crate::editor::Editor;
     use crate::key::KeyEvent;
 
+    /// Regression: a count typed before `g` survived into the next command,
+    /// because the `pending_g` arm returned without clearing it — after `2gg`
+    /// a plain `j` moved two lines. Every other prefix clears it on the way
+    /// out. The count is also now honoured rather than dropped: `Ngg` is
+    /// vim's "go to line N", which is what a count before `g` is for.
+    #[test]
+    fn a_count_before_gg_targets_a_line_and_does_not_leak() {
+        let mut e = Editor::from_str("a\nb\nc\nd\ne\nf\n");
+        let mut v = VimState::new();
+
+        // `3gg` lands on line 3 (offset 4: "a\nb\nc" -> c starts at 4).
+        for k in ['3', 'g', 'g'] {
+            for a in v.handle(KeyEvent::Char(k), &e) {
+                e.execute(a);
+            }
+        }
+        assert_eq!(e.cursors().head(), 4, "3gg went to the third line");
+
+        // The next motion must be a *single* step, not three.
+        assert_eq!(
+            v.handle(KeyEvent::Char('j'), &e),
+            vec![Action::Move(Motion::Line(1))],
+            "the count did not survive into the next command"
+        );
+    }
+
+    /// A bare `gg` still goes to the top.
+    #[test]
+    fn a_bare_gg_goes_to_the_first_line() {
+        let mut e = Editor::from_str("a\nb\nc\n");
+        let mut v = VimState::new();
+        for a in v.handle(KeyEvent::Char('G'), &e) {
+            e.execute(a);
+        }
+        for k in ['g', 'g'] {
+            for a in v.handle(KeyEvent::Char(k), &e) {
+                e.execute(a);
+            }
+        }
+        assert_eq!(e.cursors().head(), 0);
+    }
+
+    /// A count past the end clamps rather than indexing off the rope.
+    #[test]
+    fn a_count_past_the_last_line_clamps() {
+        let mut e = Editor::from_str("a\nb\n");
+        let mut v = VimState::new();
+        for k in ['9', '9', 'g', 'g'] {
+            for a in v.handle(KeyEvent::Char(k), &e) {
+                e.execute(a);
+            }
+        }
+        assert!(e.cursors().head() <= e.buffer().len_chars());
+    }
+
     fn to_start(e: &mut Editor, v: &mut VimState) {
         for a in v.handle(KeyEvent::Char('g'), e) {
             e.execute(a);
@@ -1468,6 +1607,80 @@ mod tests {
     }
 
     #[test]
+    fn zl_and_zh_scroll_sideways() {
+        let e = Editor::from_str("a long line");
+        let mut v = VimState::new();
+        assert!(v.handle(KeyEvent::Char('z'), &e).is_empty(), "z waits");
+        assert_eq!(
+            v.handle(KeyEvent::Char('l'), &e),
+            vec![Action::ScrollHorizontal(1)]
+        );
+        v.handle(KeyEvent::Char('z'), &e);
+        assert_eq!(
+            v.handle(KeyEvent::Char('h'), &e),
+            vec![Action::ScrollHorizontal(-1)]
+        );
+    }
+
+    /// The count belongs to the whole `3zl` sequence, so `z` must not eat it.
+    #[test]
+    fn a_count_before_z_reaches_the_scroll() {
+        let e = Editor::from_str("a long line");
+        let mut v = VimState::new();
+        v.handle(KeyEvent::Char('3'), &e);
+        v.handle(KeyEvent::Char('z'), &e);
+        assert_eq!(
+            v.handle(KeyEvent::Char('l'), &e),
+            vec![Action::ScrollHorizontal(3)]
+        );
+    }
+
+    /// An unbound key after `z` cancels the prefix rather than leaving it armed
+    /// to swallow the next `l` the user types as a motion.
+    #[test]
+    fn an_unknown_key_after_z_cancels_the_prefix() {
+        let e = Editor::from_str("a long line");
+        let mut v = VimState::new();
+        v.handle(KeyEvent::Char('z'), &e);
+        assert!(v.handle(KeyEvent::Char('q'), &e).is_empty());
+        assert!(v.is_normal_idle(), "nothing left pending");
+        assert_eq!(
+            v.handle(KeyEvent::Char('l'), &e),
+            vec![Action::Move(Motion::Grapheme(1))],
+            "the next l is a motion again"
+        );
+    }
+
+    /// A half-typed `z` is not idle: the app intercepts bare keys in idle
+    /// Normal mode, and would steal the `l` that completes the sequence.
+    #[test]
+    fn a_pending_z_is_not_normal_idle() {
+        let e = Editor::from_str("a long line");
+        let mut v = VimState::new();
+        v.handle(KeyEvent::Char('z'), &e);
+        assert!(!v.is_normal_idle());
+    }
+
+    /// End to end: `zl` moves the view of a real window, not just the action
+    /// list — `ScrollHorizontal` is window state that `EditSession` cannot
+    /// reach, so it has to be intercepted by `Workspace`.
+    #[test]
+    fn zl_scrolls_the_active_window() {
+        let mut w = crate::workspace::Workspace::from_file(
+            std::path::PathBuf::from("/tmp/ruster_zl.txt"),
+            "x".repeat(200),
+        );
+        w.windows.active_window_mut().width = 20;
+        let mut v = VimState::new();
+        for key in [KeyEvent::Char('z'), KeyEvent::Char('l')] {
+            for a in v.handle(key, &w) {
+                w.execute(a);
+            }
+        }
+        assert_eq!(w.windows.active_window().scroll_left, 1);
+    }
+
+    #[test]
     fn half_page_uses_the_windows_real_height() {
         // A 40-row window scrolls 20 lines, not the headless default of 12.
         let mut w = crate::workspace::Workspace::from_file(
@@ -1494,5 +1707,104 @@ mod tests {
         assert!(actions
             .iter()
             .any(|a| matches!(a, Action::ClearExtraCursors)));
+    }
+
+    #[test]
+    fn visual_ranges_is_empty_outside_visual_mode() {
+        let e = Editor::from_str("hello");
+        let v = VimState::new();
+        assert!(v.visual_ranges(&e).is_empty());
+    }
+
+    #[test]
+    fn visual_ranges_covers_the_cursor_character() {
+        let mut e = Editor::from_str("hello");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('v'), &e) {
+            e.execute(a);
+        }
+        // `v` alone selects the character under the cursor, so the range is not
+        // empty even though anchor and head are the same offset.
+        assert_eq!(v.visual_ranges(&e), vec![(0, 1)]);
+        for a in v.handle(KeyEvent::Char('l'), &e) {
+            e.execute(a);
+        }
+        assert_eq!(v.visual_ranges(&e), vec![(0, 2)]);
+        assert_eq!(e.buffer().slice_string(0, 2), "he");
+    }
+
+    #[test]
+    fn visual_ranges_of_a_block_are_one_span_per_line() {
+        let mut e = Editor::from_str("abcd\nefgh\nijkl");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for key in [
+            KeyEvent::Ctrl('v'),
+            KeyEvent::Char('j'),
+            KeyEvent::Char('l'),
+        ] {
+            for a in v.handle(key, &e) {
+                e.execute(a);
+            }
+        }
+        // Columns 0..2 of the first two lines — never the newline between them.
+        assert_eq!(v.visual_ranges(&e), vec![(0, 2), (5, 7)]);
+    }
+
+    #[test]
+    fn visual_ranges_of_a_line_selection_includes_the_newline() {
+        let mut e = Editor::from_str("ab\ncd\n");
+        let mut v = VimState::new();
+        to_start(&mut e, &mut v);
+        for a in v.handle(KeyEvent::Char('V'), &e) {
+            e.execute(a);
+        }
+        assert_eq!(v.visual_ranges(&e), vec![(0, 3)]);
+    }
+
+    #[test]
+    fn visual_ranges_clamps_to_the_buffer_end() {
+        // The last character of the buffer: the inclusive head would otherwise
+        // put the range end one past the rope.
+        let mut e = Editor::from_str("ab");
+        let mut v = VimState::new();
+        for a in v.handle(KeyEvent::Char('v'), &e) {
+            e.execute(a);
+        }
+        let ranges = v.visual_ranges(&e);
+        assert!(ranges.iter().all(|&(_, end)| end <= e.buffer().len_chars()));
+    }
+
+    #[test]
+    fn set_visual_survives_a_motion_key() {
+        let mut e = Editor::from_str("hello");
+        let mut v = VimState::new();
+        e.execute(Action::Move(Motion::To(0)));
+        v.set_visual(VimMode::VisualChar, 0);
+        e.execute(Action::Move(Motion::To(3)));
+        // Extending after an externally-made selection keeps the anchor at 0
+        // instead of re-anchoring on the cursor.
+        for a in v.handle(KeyEvent::Char('l'), &e) {
+            e.execute(a);
+        }
+        assert_eq!(v.visual_ranges(&e), vec![(0, 5)]);
+    }
+
+    #[test]
+    fn leave_visual_forgets_the_anchor() {
+        let mut e = Editor::from_str("hello");
+        let mut v = VimState::new();
+        e.execute(Action::Move(Motion::To(0)));
+        v.set_visual(VimMode::VisualChar, 0);
+        v.leave_visual();
+        assert_eq!(v.mode, VimMode::Normal);
+        assert!(v.visual_ranges(&e).is_empty());
+        // A fresh `v` at another offset must select from there, not from 0.
+        e.execute(Action::Move(Motion::To(3)));
+        for a in v.handle(KeyEvent::Char('v'), &e) {
+            e.execute(a);
+        }
+        assert_eq!(v.visual_ranges(&e), vec![(3, 4)]);
     }
 }

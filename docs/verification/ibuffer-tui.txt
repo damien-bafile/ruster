@@ -1,3 +1,4 @@
+ demo.rs  Dashboard  *messages*  demo.rs
 ─ demo.rs ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
 //! The fixture every capture opens.
 //!
@@ -12,17 +13,17 @@
 use std::collections::HashMap;
 use std::fmt;
 
-/// A point in the plane.
-#[deri╭─ Buffers ────────────────────────────────────────────────────────────────────────────────────────────────╮
-pub st│ >                                        │ //! The fixture every capture opens.                          │
-    pu│   1     demo.rs                          │ //!                                                           │
+/// A ╭─ Buffers ────────────────────────────────────────────────────────────────────────────────────────────────╮
+#[deri│ >                                        │ //! The fixture every capture opens.                          │
+pub st│   1     demo.rs                          │ //!                                                           │
     pu│   2     Dashboard                        │ //! Small on purpose, but chosen so one file exercises most of│
-}     │   3     *messages*                       │ //! supposed to show: keywords, strings, numbers and comments │
-      │   4     demo.rs                          │ //! highlighter; a TODO and a FIXME for the marker scanner and│
-impl P│                                          │ //! repeated identifier for multi-cursor; a two-character-pref│
-    pu│                                          │ //! jump; and enough lines that the gutter and the scroll offs│
-      │                                          │ //!                                                           │
-    } ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+    pu│   3     *messages*                       │ //! supposed to show: keywords, strings, numbers and comments │
+}     │   4     demo.rs                          │ //! highlighter; a TODO and a FIXME for the marker scanner and│
+      │                                          │ //! repeated identifier for multi-cursor; a two-character-pref│
+impl P│                                          │ //! jump; and enough lines that the gutter and the scroll offs│
+    pu│                                          │ //!                                                           │
+      ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+    }
 
     // TODO: support translation by a vector rather than a scalar
     pub fn shifted(&self, by: i32) -> Self {
@@ -36,5 +37,4 @@ impl fmt::Display for Point {
     }
 }
 
-/// Count how many times each point appears.
- -- NORMAL --  [ruster] │demo.rs                                                                                1%  1,1
+ -- NORMAL --  [ruster] │                               demo.rs                                                 1%  1,1
