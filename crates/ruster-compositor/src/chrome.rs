@@ -770,7 +770,7 @@ mod tests {
     use super::*;
     use crate::scene;
     use ruster_render::Theme;
-    use ruster_render_elements::{div, layout, Elem, LayoutScene, PxRect, Styled};
+    use ruster_render_elements::{div, layout, Elem, LayoutScene, PxRect, Styled, TextMeasurer};
     use ruster_render_gles::tessellate::{scene_to_chrome_batch, GlesTextMeasurer};
     use ruster_shell::{Rect, WindowId};
 
@@ -901,7 +901,7 @@ mod tests {
         let mut chrome = Chrome::new(theme());
         let buf: Vec<String> = (0..20).map(|i| format!("line {i}")).collect();
         let batch = new_batch(
-            scene::pane_elem(400, 300, &styled(&buf), 0, &[], "welcome", &theme()),
+            scene::pane_elem(WindowId(0), 400, 300, &styled(&buf), 0, &[], "welcome", &theme()),
             400.0,
             300.0,
             &mut chrome.atlas,
@@ -1019,6 +1019,119 @@ mod tests {
             batch.verts.len() >= 12,
             "the panel and the selection highlight are both filled"
         );
+    }
+
+    #[test]
+    fn launcher_text_lands_where_launcher_layout_puts_it() {
+        // BLOCKER 1 regression: every child of the panel used output
+        // coordinates (layout.x + PAD, layout.y + PAD), but the panel itself is
+        // absolute at (layout.x, layout.y) — taffy resolves absolute children
+        // against the panel, so each landed at panel.origin + written position,
+        // doubled by (layout.x, layout.y). The query line meant for y≈163 came
+        // out at y≈314, below the panel. Children must be at panel-local coords;
+        // the panel's origin supplies the layout offset.
+        const PAD: f32 = 12.0;
+        let view = ruster_render::LauncherView {
+            query: "fire".into(),
+            rows: vec![
+                ruster_render::LauncherRow {
+                    label: "Firefox".into(),
+                    detail: "Web Browser".into(),
+                    group: "apps".into(),
+                    selected: true,
+                },
+                ruster_render::LauncherRow {
+                    label: "Files".into(),
+                    detail: String::new(),
+                    group: String::new(),
+                    selected: false,
+                },
+            ],
+            message: String::new(),
+            scrolled: 0,
+            total: 2,
+        };
+        let laid = lay_scene(
+            scene::launcher_elem(1920, 1080, &view, &theme(), &mut GlesTextMeasurer),
+            1920.0,
+            1080.0,
+        );
+        let expected = launcher_layout(1920, 1080, 2);
+        let panel = &laid.boxes[0];
+
+        // The sigil sits at the panel's top-left corner plus its padding, and
+        // the query right of it by the sigil's advance — exactly where the old
+        // draw_launcher put them, in output coordinates.
+        let sigil = laid
+            .texts
+            .iter()
+            .find(|t| t.line.text == ">")
+            .expect("the query sigil is drawn");
+        assert_eq!(sigil.rect.x, expected.x + PAD, "sigil at layout.x + PAD");
+        assert_eq!(sigil.rect.y, expected.y + PAD, "sigil at layout.y + PAD");
+
+        let (sigil_w, _) = GlesTextMeasurer.measure(
+            &StyledLine {
+                text: ">".into(),
+                highlights: Vec::new(),
+            },
+            15.0,
+            ruster_render::FontFamily::Ui,
+        );
+        let query = laid
+            .texts
+            .iter()
+            .find(|t| t.line.text == "fire")
+            .expect("the query text is drawn");
+        assert_eq!(query.rect.x, expected.x + PAD + sigil_w + 6.0);
+        assert_eq!(query.rect.y, expected.y + PAD);
+
+        // And the whole query line sits inside the panel, not under it.
+        assert!(query.rect.y + query.rect.h <= panel.rect.y + panel.rect.h);
+    }
+
+    #[test]
+    fn two_panes_under_one_root_get_distinct_keys() {
+        // BLOCKER 2 regression: pane_elem hardcoded the id "pane", so two panes
+        // under one compose root tripped push_children's duplicate-id debug
+        // assert and — in release — shared an element key path, collapsing both
+        // panes' glyphs into one id run. Each pane must carry its WindowId in
+        // the key.
+        let mut p0 = scene::pane_elem(
+            WindowId(0),
+            400,
+            300,
+            &styled(&["hi".to_string()]),
+            0,
+            &[],
+            "welcome",
+            &theme(),
+        );
+        p0.absolute().position(0.0, 0.0);
+        let mut p1 = scene::pane_elem(
+            WindowId(1),
+            400,
+            300,
+            &styled(&["yo".to_string()]),
+            0,
+            &[],
+            "files",
+            &theme(),
+        );
+        p1.absolute().position(0.0, 300.0);
+        let mut root = div();
+        root.children(vec![p0, p1]);
+        let laid = layout(
+            PxRect { x: 0.0, y: 0.0, w: 800.0, h: 600.0 },
+            &root,
+            &mut GlesTextMeasurer,
+        );
+
+        let firsts: Vec<&str> = laid.boxes.iter().map(|b| b.key.0.first().unwrap().as_str()).collect();
+        assert!(firsts.contains(&"pane:0"), "pane 0's boxes keyed under pane:0, got {firsts:?}");
+        assert!(firsts.contains(&"pane:1"), "pane 1's boxes keyed under pane:1, got {firsts:?}");
+        let distinct: std::collections::HashSet<&str> = firsts.iter().copied().collect();
+        assert_eq!(distinct.len(), 2, "two panes, two distinct id runs: {firsts:?}");
     }
 
     #[test]
@@ -1264,7 +1377,7 @@ mod tests {
         // glyph land there directly.
         let mut chrome = Chrome::new(theme());
         let mut pane =
-            scene::pane_elem(400, 300, &styled(&["hi".to_string()]), 0, &[], "welcome", &theme());
+            scene::pane_elem(WindowId(0), 400, 300, &styled(&["hi".to_string()]), 0, &[], "welcome", &theme());
         pane.absolute().position(50.0, 30.0);
         let laid = lay_scene(pane, 400.0, 300.0);
 

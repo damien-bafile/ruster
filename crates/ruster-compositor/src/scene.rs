@@ -340,25 +340,28 @@ pub fn launcher_elem(
 
     // The query line, with its sigil accented the way the `:` prompt's is —
     // the same cue for the same thing, an editor waiting for input.
+    //
+    // Every child is positioned at *panel-local* coordinates: the panel is
+    // absolute at (layout.x, layout.y), and taffy resolves absolute children
+    // against it, so the panel's own origin supplies the layout offset. Writing
+    // output coordinates (layout.x + PAD, ...) here doubled the offset and
+    // dropped the query line below the panel.
     let mut sigil = text(">");
-    sigil.absolute().position(layout.x + PAD, layout.y + PAD).font_size(FONT).fg(theme.whichkey_key);
+    sigil.absolute().position(PAD, PAD).font_size(FONT).fg(theme.whichkey_key);
     let mut query = text(view.query.as_str());
     query
         .absolute()
-        .position(
-            layout.x + PAD + measure_width(measurer, ">", FONT, FontFamily::Ui) + 6.0,
-            layout.y + PAD,
-        )
+        .position(PAD + measure_width(measurer, ">", FONT, FontFamily::Ui) + 6.0, PAD)
         .font_size(FONT)
         .fg(theme.whichkey_fg);
     children.push(sigil);
     children.push(query);
 
-    let mut y = layout.y + layout.query_h;
+    let mut y = layout.query_h;
     if view.rows.is_empty() {
         if !view.message.is_empty() {
             let mut message = text(view.message.as_str());
-            message.absolute().position(layout.x + PAD, y).font_size(FONT).fg(theme.gutter);
+            message.absolute().position(PAD, y).font_size(FONT).fg(theme.gutter);
             children.push(message);
         }
         panel.children(children);
@@ -368,28 +371,28 @@ pub fn launcher_elem(
     for row in view.rows.iter().take(layout.visible_rows) {
         if !row.group.is_empty() {
             let mut group = text(row.group.as_str());
-            group.absolute().position(layout.x + PAD, y).font_size(GROUP_FONT).fg(theme.gutter);
+            group.absolute().position(PAD, y).font_size(GROUP_FONT).fg(theme.gutter);
             children.push(group);
             y += layout.group_h;
         }
         if row.selected {
             let mut sel = div();
             sel.absolute()
-                .position(layout.x + 4.0, y - 2.0)
+                .position(4.0, y - 2.0)
                 .size(layout.w - 8.0, layout.row_h)
                 .bg(theme.selection_bg);
             children.push(sel);
         }
         let mut label = text(row.label.as_str());
-        label.absolute().position(layout.x + PAD * 2.0, y).font_size(FONT).fg(theme.whichkey_fg);
+        label.absolute().position(PAD * 2.0, y).font_size(FONT).fg(theme.whichkey_fg);
         children.push(label);
         if !row.detail.is_empty() {
             // Right of the label rather than right-aligned to the panel: a
             // long detail then truncates against the panel edge instead of
             // colliding with the label from the other side.
             let label_w = measure_width(measurer, &row.label, FONT, FontFamily::Ui);
-            let at = layout.x + PAD * 2.0 + label_w + 12.0;
-            if at < layout.x + layout.w - PAD {
+            let at = PAD * 2.0 + label_w + 12.0;
+            if at < layout.w - PAD {
                 let mut detail = text(row.detail.as_str());
                 detail
                     .absolute()
@@ -408,8 +411,12 @@ pub fn launcher_elem(
 /// An editor pane: title bar and a grid of buffer rows.
 ///
 /// Per-line text is absolutely positioned from the frame's grid — the same
-/// cells the pointer reads back — never by chaining advances.
+/// cells the pointer reads back — never by chaining advances. The id carries
+/// the window it tiles, so two panes under one compose root never share a key
+/// path (`push_children` rejects duplicate sibling ids).
+#[allow(clippy::too_many_arguments)]
 pub fn pane_elem(
+    id: WindowId,
     w: i32,
     h: i32,
     lines: &[StyledLine],
@@ -427,7 +434,7 @@ pub fn pane_elem(
     let numbers_x = FRAME_PAD + SIGN_COLS as f32 * body.cell_w;
 
     let mut root = div();
-    root.id("pane")
+    root.id(&format!("pane:{}", id.0))
         .absolute()
         .position(0.0, 0.0)
         .size(w as f32, h as f32)
@@ -583,6 +590,7 @@ pub fn chrome_scene(
             }
         }
         let mut pane_el = pane_elem(
+            *id,
             (rect.w as f32 * chrome_scale) as i32,
             (rect.h as f32 * chrome_scale) as i32,
             &lines,

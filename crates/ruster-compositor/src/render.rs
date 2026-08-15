@@ -627,7 +627,7 @@ mod tests {
                 surfaces.push(top);
             }
         }
-        assert_eq!(surfaces, ["window-borders", "statusline", "minibuffer", "pane"]);
+        assert_eq!(surfaces, ["window-borders", "statusline", "minibuffer", "pane:0"]);
 
         // With a launcher open the overlay carries it too — in front of the
         // hover panel, because the launcher owns the screen while it is open
