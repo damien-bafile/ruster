@@ -72,6 +72,13 @@ pub struct Servicing {
     pub chord: bool,
     /// Until the earliest pending `ruster.wm.defer`, if any.
     pub next_deferred: Option<Duration>,
+    /// A capture is waiting on a frame, and has a deadline to be given up on.
+    ///
+    /// Without this the loop sleeps until something else happens, so the
+    /// deadline never arrives: a `wlr-screencopy` client on an output that is
+    /// not being presented waited forever instead of being told `failed`. The
+    /// give-up path existed and could not run.
+    pub capture_deadline: Option<Duration>,
 }
 
 /// How long the loop may block. `None` means "until something happens".
@@ -101,6 +108,7 @@ pub fn poll_timeout(servicing: Servicing) -> Option<Duration> {
         servicing.lsp.then_some(LSP_TICK),
         servicing.chord.then_some(CHORD_TICK),
         servicing.next_deferred,
+        servicing.capture_deadline,
     ]
     .into_iter()
     .flatten()
@@ -239,6 +247,34 @@ mod poll_timeout_tests {
     /// clock to service, the loop sleeps until a source wakes it. It does not
     /// wake up to ask whether anything happened.
     #[test]
+    fn a_waiting_capture_wakes_the_loop_to_give_up_on_it() {
+        // The loop blocks until something happens, so a deadline nothing else
+        // wakes it for never arrives. A screencopy client on an output that is
+        // not being presented waited forever rather than being told `failed`:
+        // the give-up path existed and could not run.
+        assert_eq!(
+            poll_timeout(Servicing {
+                lsp: false,
+                chord: false,
+                next_deferred: None,
+                capture_deadline: Some(MS(1200)),
+            }),
+            Some(MS(1200))
+        );
+        // And it competes with the others rather than replacing them.
+        assert_eq!(
+            poll_timeout(Servicing {
+                lsp: true,
+                chord: false,
+                next_deferred: None,
+                capture_deadline: Some(MS(1200)),
+            }),
+            Some(MS(16)),
+            "the sooner deadline still wins"
+        );
+    }
+
+    #[test]
     fn with_nothing_to_service_the_loop_blocks() {
         assert_eq!(poll_timeout(Servicing::default()), None);
     }
@@ -274,6 +310,7 @@ mod poll_timeout_tests {
         assert_eq!(
             poll_timeout(Servicing {
                 next_deferred: Some(MS(900)),
+                capture_deadline: None,
                 ..Servicing::default()
             }),
             Some(MS(900))
@@ -289,6 +326,7 @@ mod poll_timeout_tests {
                 lsp: true,
                 chord: true,
                 next_deferred: Some(MS(900)),
+                capture_deadline: None,
             }),
             Some(MS(16))
         );
@@ -297,6 +335,7 @@ mod poll_timeout_tests {
                 lsp: false,
                 chord: true,
                 next_deferred: Some(MS(5)),
+                capture_deadline: None,
             }),
             Some(MS(5)),
             "a defer due in 5ms must not wait out the 250ms chord tick"
@@ -311,6 +350,7 @@ mod poll_timeout_tests {
                 lsp: true,
                 chord: true,
                 next_deferred: Some(Duration::ZERO),
+                capture_deadline: None,
             }),
             Some(Duration::ZERO)
         );

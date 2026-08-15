@@ -81,6 +81,16 @@ pub fn overdue(asked: Instant, now: Instant) -> bool {
 }
 
 impl ScreencopyState {
+    /// How long until the oldest waiting capture must be given up on.
+    ///
+    /// The loop blocks until something happens, so a deadline nothing else
+    /// wakes it for is a deadline that never arrives — and a client that asked
+    /// politely then waits forever rather than being told `failed`.
+    pub fn next_deadline(&self, now: Instant) -> Option<std::time::Duration> {
+        let oldest = self.pending.iter().map(|p| p.asked).min()?;
+        Some(TIMEOUT.saturating_sub(now.saturating_duration_since(oldest)))
+    }
+
     /// Fail every capture that has waited too long, and say why once.
     ///
     /// Returns how many were failed, which is what the test asserts on — a

@@ -1174,7 +1174,15 @@ impl<B: Backend + 'static> CompositorState<B> {
             Action::Workspace(n) => {
                 self.switch_workspace(n);
             }
-            Action::Screenshot => self.screenshot_pending = Some(std::time::Instant::now()),
+            Action::Screenshot => {
+                self.screenshot_pending = Some(std::time::Instant::now());
+                // Ask for the frame it needs, as a screencopy capture does.
+                // Without this the keybind waits for a frame that may never be
+                // invited and then reports a failure that is really the
+                // compositor's for never asking — the two capture paths had
+                // different answers to the same problem.
+                self.backend_data.request_redraw();
+            }
             Action::ToggleHelp => self.help_pinned = !self.help_pinned,
             Action::NewPane => self.open_pane(),
             Action::Edit(path) => self.open_file(&path),
