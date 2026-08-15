@@ -10,6 +10,7 @@
 //! the rule this inherits: no route into the WM can do something the others
 //! cannot.
 
+pub mod desktop;
 pub mod math;
 pub mod provider;
 
