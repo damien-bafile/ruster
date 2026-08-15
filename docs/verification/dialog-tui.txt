@@ -1,3 +1,4 @@
+ demo.rs  Dashboard  *messages*
 ─ demo.rs ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
 //! The fixture every capture opens.
 //!
@@ -13,15 +14,15 @@ use std::collections::HashMap;
 use std::fmt;
 
 /// A point in the plane.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Point {      ╭─ Install language server? ───────────────────────────────────────────╮
-    pub x: i32,         │ Runs                    cargo install rust-analyzer                  │
-    pub y: i32,         │ Dry run                 [ ] off                                      │
-}                       │ [ Install ]                                                          │
-                        │ [ Cancel ]                                                           │
-impl Point {            │                                                                      │
-    pub fn origin() -> S│ j/k move · Space toggle/cycle · Enter submit · Esc cancel            │
-        Point { x: 0, y:╰──────────────────────────────────────────────────────────────────────╯
+#[derive(Debug, Clone, C╭─ Install language server? ───────────────────────────────────────────╮
+pub struct Point {      │ Runs                    cargo install rust-analyzer                  │
+    pub x: i32,         │ Dry run                 [ ] off                                      │
+    pub y: i32,         │ [ Install ]                                                          │
+}                       │ [ Cancel ]                                                           │
+                        │                                                                      │
+impl Point {            │ j/k move · Space toggle/cycle · Enter submit · Esc cancel            │
+    pub fn origin() -> S╰──────────────────────────────────────────────────────────────────────╯
+        Point { x: 0, y: 0 }
     }
 
     // TODO: support translation by a vector rather than a scalar
@@ -36,5 +37,4 @@ impl fmt::Display for Point {
     }
 }
 
-/// Count how many times each point appears.
- -- NORMAL -- │demo.rs                                                                                          1%  1,1
+ -- NORMAL -- │                                         demo.rs                                                 1%  1,1

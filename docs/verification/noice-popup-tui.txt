@@ -1,3 +1,4 @@
+ demo.rs  Dashboard  *messages*
 ─ demo.rs ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
 //! The fixture every capture opens.
 //!
@@ -15,10 +16,10 @@ use std::fmt;
 /// A point in the plane.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Point {
-    pub x: i32,
-    pub y: i32,                          ╭─ruster─────────────────────────────╮
-}                                        │:Noice popup — a popup notification.│
-                                         ╰────────────────────────────────────╯
+    pub x: i32,                          ╭─ruster─────────────────────────────╮
+    pub y: i32,                          │:Noice popup — a popup notification.│
+}                                        ╰────────────────────────────────────╯
+
 impl Point {
     pub fn origin() -> Self {
         Point { x: 0, y: 0 }
@@ -36,5 +37,4 @@ impl fmt::Display for Point {
     }
 }
 
-/// Count how many times each point appears.
- -- NORMAL -- │demo.rs                                                                                          1%  1,1
+ -- NORMAL -- │                                         demo.rs                                                 1%  1,1

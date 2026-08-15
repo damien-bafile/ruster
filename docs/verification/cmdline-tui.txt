@@ -1,3 +1,4 @@
+ demo.rs  Dashboard  *messages*
 ─ demo.rs ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
 //! The fixture every capture opens.
 //!
@@ -35,6 +36,5 @@ impl fmt::Display for Point {
         write!(f, "({}, {})", self.x, self.y)
     }
 }
-
- -- CMDLINE -- │demo.rs                                                                                         1%  1,1
+ -- CMDLINE -- │                                        demo.rs                                                 1%  1,1
 :e /tmp/.dotnet/

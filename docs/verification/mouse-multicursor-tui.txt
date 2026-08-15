@@ -1,3 +1,4 @@
+ demo.rs ●  Dashboard  *messages*
 ─ demo.rs ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
   1 //! The fixture every capture opens.
   2 //!
@@ -8,11 +9,11 @@
   7 //! jump; and enough lines that the gutter and the scroll offset are non-trivial.
   8 //!
   9 //! Capturing the same file every time is what makes two runs comparable.
- 10
+ 10 X
  11 use Xstd::collections::HashMap;
- 12 use Xstd::fmt;
- 13
- 14 /// XA point in the plane.
+ 12 use std::fmt;
+ 13 X
+ 14 /// A point in the plane.
  15 #[derive(Debug, Clone, Copy, PartialEq)]
  16 pub struct Point {
  17     pub x: i32,
@@ -36,5 +37,4 @@
  35     }
  36 }
  37
- 38 /// Count how many times each point appears.
- -- NORMAL -- │demo.rs                                                                                        22%  14,5
+ -- NORMAL -- │                                         demo.rs                                               20%  13,1

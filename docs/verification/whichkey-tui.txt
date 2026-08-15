@@ -1,3 +1,4 @@
+ demo.rs  Dashboard  *messages*
 ─ demo.rs ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
 //! The fixture every capture opens.
 //!
@@ -21,7 +22,6 @@ pub struct Point {
 
 impl Point {
     pub fn origin() -> Self {
-        Point { x: 0, y: 0 }
  SPC
   ,  settings
   e  toggle sidebar

@@ -1,3 +1,4 @@
+ demo.rs  Dashboard  *messages*  *mason*
 ─ *mason* ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
 Language servers:
   ✓ clangd                           brew install llvm
@@ -11,16 +12,16 @@ Language servers:
 
 Debug adapters:
   · codelldb                         brew install codelldb
-  ✓ debugpy                          python3 -m pip install --user debugpy
+  · debugpy                          python3 -m pip install --user debugpy
 
 Formatters:
-  ✓ black                            python3 -m pip install --user black
+  · black                            python3 -m pip install --user black
   ✓ clang-format                     brew install clang-format
   ✓ prettier                         npm install -g prettier
   ✓ rustfmt                          rustup component add rustfmt
   · stylua                           cargo install stylua
 
-7 of 15 installed. Press Enter on a row to install it.
+5 of 15 installed. Press Enter on a row to install it.
 
 
 
@@ -36,5 +37,4 @@ Formatters:
 
 
 
-
- -- NORMAL -- │*mason*                                                                                          4%  1,1
+ -- NORMAL -- │                                         *mason*                                                 4%  1,1

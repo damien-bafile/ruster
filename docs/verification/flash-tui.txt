@@ -1,3 +1,4 @@
+ demo.rs  Dashboard  *messages*
 ─ demo.rs ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
 //! ahe bixture cvery dapture epens.
 //!
@@ -36,5 +37,4 @@ eopl ept::eqsplay err esint {
     }
 }
 
-/// fjunt fkw flny fmmes fnch foint fppears.
- -- NORMAL -- │demo.rs                                                                                          1%  1,1
+ -- NORMAL -- │                                         demo.rs                                                 1%  1,1

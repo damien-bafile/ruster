@@ -1,3 +1,4 @@
+ demo.rs  Dashboard  *messages*
 ─ demo.rs ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
 //! The fixture every capture opens.
 //!
@@ -12,17 +13,17 @@
 use std::collections::HashMap;
 use std::fmt;
 
-/// A point in the plane.
-#[deri╭─ TODO ───────────────────────────────────────────────────────────────────────────────────────────────────╮
-pub st│ >                                        │ //! Small on purpose, but chosen so one file exercises most of│
-    pu│ I demo.rs:5:20  TODO: and a FIXME for the│ //! supposed to show: keywords, strings, numbers and comments │
+/// A ╭─ TODO ───────────────────────────────────────────────────────────────────────────────────────────────────╮
+#[deri│ >                                        │ //! Small on purpose, but chosen so one file exercises most of│
+pub st│ I demo.rs:5:20  TODO: and a FIXME for the│ //! supposed to show: keywords, strings, numbers and comments │
     pu│ I demo.rs:5:31  FIXME: for the marker sca│ //! highlighter; a TODO and a FIXME for the marker scanner and│
-}     │ I demo.rs:26:8  TODO: support translation│ //! repeated identifier for multi-cursor; a two-character-pref│
-      │ I demo.rs:40:5  FIXME: this allocates a f│ //! jump; and enough lines that the gutter and the scroll offs│
-impl P│                                          │ //!                                                           │
-    pu│                                          │ //! Capturing the same file every time is what makes two runs │
-      │                                          │                                                               │
-    } ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+    pu│ I demo.rs:26:8  TODO: support translation│ //! repeated identifier for multi-cursor; a two-character-pref│
+}     │ I demo.rs:40:5  FIXME: this allocates a f│ //! jump; and enough lines that the gutter and the scroll offs│
+      │                                          │ //!                                                           │
+impl P│                                          │ //! Capturing the same file every time is what makes two runs │
+    pu│                                          │                                                               │
+      ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+    }
 
     // TODO: support translation by a vector rather than a scalar
     pub fn shifted(&self, by: i32) -> Self {
@@ -36,5 +37,4 @@ impl fmt::Display for Point {
     }
 }
 
-/// Count how many times each point appears.
- -- NORMAL -- │demo.rs                                                                                          1%  1,1
+ -- NORMAL -- │                                         demo.rs                                                 1%  1,1
