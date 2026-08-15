@@ -13,5 +13,5 @@ pub mod style;
 
 pub use element::{div, text, Elem, ElemKind, IntoLine, Styled};
 pub use id::ElementKey;
-pub use layout::{BoxNode, LayoutScene, PxRect, TextMeasurer, TextNode};
+pub use layout::{layout, BoxNode, LayoutScene, PxRect, TextMeasurer, TextNode};
 pub use style::Style;

@@ -5,6 +5,8 @@ use taffy::{AlignItems, FlexDirection, FlexWrap, JustifyContent, Position, Rect,
 /// The full style of one element: a taffy flexbox `Style` for layout, plus the
 /// visual fields taffy does not know about (color, radius, border, typography).
 /// `id` is the element's key segment, appended to its parent key during layout.
+/// `Clone` powers the layout walk's mirror tree (Task 3).
+#[derive(Clone)]
 pub struct Style {
     /// Layout in taffy's terms.
     pub taffy: taffy::Style,
