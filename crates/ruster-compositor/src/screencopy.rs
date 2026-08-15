@@ -321,7 +321,21 @@ pub fn serve<R>(
                 if len < want || pixels.len() < want {
                     return false;
                 }
-                // Copied straight through, deliberately.
+                // Copied straight through, deliberately — and *not* an
+                // inconsistency with `screenshot::capture`, which flips.
+                //
+                // Both read the same framebuffer in the same row order; that was
+                // measured rather than assumed, by reading one frame as
+                // `Abgr8888` and as `Xbgr8888` and comparing: 1,024,000 of
+                // 1,024,000 pixels identical. The difference is what happens
+                // next. A screencopy client is handed raw pixels and applies the
+                // output transform it was told about — this output carries
+                // `Transform::Flipped180`, and `grim` honours it — whereas the
+                // keybind path encodes the PNG itself and has to apply that
+                // transform on the way out.
+                //
+                // Flipping here as well produced an upside-down capture, which
+                // is what sent this looking for a bug that was not there.
                 //
                 // A GL framebuffer read is bottom-left first, so the obvious
                 // thing is to reverse the rows — and that is what this did, and

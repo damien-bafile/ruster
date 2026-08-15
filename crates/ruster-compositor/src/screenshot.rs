@@ -53,6 +53,14 @@ pub fn capture_path(index: u32) -> PathBuf {
 /// are complete by then, and `copy_framebuffer` is documented as
 /// non-destructive, so the frame the user sees is unaffected.
 ///
+/// **This writes the finished image, which is why it flips and screencopy does
+/// not.** Both read the same framebuffer — measured, byte for byte, in the same
+/// row order — so the asymmetry is downstream: a screencopy client is handed raw
+/// pixels and applies the output transform it was told about, while this path
+/// encodes the PNG itself and must apply that transform here. The winit output
+/// carries `Transform::Flipped180`. Making the two agree would break one of
+/// them.
+///
 /// `flip` reverses the row order, which the two backends need differently and
 /// the difference is not guessable — the first DRM capture ever taken came out
 /// upside down for exactly this reason. Reading a GL framebuffer directly gives
