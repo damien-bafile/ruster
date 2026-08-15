@@ -92,6 +92,29 @@
 --   workspace <1-9>          show a numbered workspace
 --   move to workspace <1-9>  send the focused window there
 --
+-- Adding to the launcher
+--
+-- `ruster.launcher.add_provider(name, fn)` registers a provider. `fn` is given
+-- the query and returns rows; `name` is the heading they appear under, and
+-- providers are ordered by how confident their best row is.
+--
+--   ruster.launcher.add_provider("sessions", function(query)
+--     if not ("work"):find(query, 1, true) then return {} end
+--     return { { label = "work", detail = "tmux", score = 900,
+--                action = "spawn foot -e tmux a -t work" } }
+--   end)
+--
+-- A row is `{ label = ..., action = ..., detail = ..., score = ... }`. `label`
+-- and `action` are required; `detail` is the greyed text on the right; `score`
+-- is 0-1000 and defaults to 500, where 1000 means "certain" and outranks
+-- everything fuzzy. `action` is an action name from the list above — the same
+-- vocabulary a keybind uses, so a provider can do anything a key can and
+-- nothing more.
+--
+-- A row that names no action is skipped with a warning; a provider that raises
+-- is reported and the rest still answer. Providers registered while running
+-- appear the next time the launcher opens.
+
 -- <direction> is left, right, up or down (or h, l, k, j). Underscores and
 -- dashes work in place of spaces, so "move_to_workspace_3" is the same action
 -- as "move to workspace 3". An action that does not parse binds nothing.

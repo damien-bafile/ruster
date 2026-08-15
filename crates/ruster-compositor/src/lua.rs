@@ -317,6 +317,21 @@ pub struct WmControl {
     queue: Rc<RefCell<VecDeque<Action>>>,
     status: Rc<RefCell<WmStatus>>,
     deferred: Rc<RefCell<Vec<(Instant, Action)>>>,
+    /// Launcher providers a config registered, in registration order.
+    providers: Rc<RefCell<Vec<(String, mlua::Function)>>>,
+}
+
+/// One row a Lua provider returned.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LuaRow {
+    pub label: String,
+    pub detail: String,
+    pub score: u32,
+    /// What accepting it runs. An action name, resolved through
+    /// `Action::from_name` — so a Lua provider can do everything a keybind can
+    /// and nothing more, which is the rule every other route into the WM
+    /// follows.
+    pub action: Action,
 }
 
 /// Move every action whose deadline has passed out of `pending`, oldest first.
@@ -355,7 +370,9 @@ impl WmControl {
         let queue: Rc<RefCell<VecDeque<Action>>> = Rc::new(RefCell::new(VecDeque::new()));
         let status = Rc::new(RefCell::new(WmStatus::default()));
         let deferred: Rc<RefCell<Vec<(Instant, Action)>>> = Rc::new(RefCell::new(Vec::new()));
-        install_wm_api(&lua, &recorded, &queue, &status, &deferred)?;
+        let providers: Rc<RefCell<Vec<(String, mlua::Function)>>> =
+            Rc::new(RefCell::new(Vec::new()));
+        install_wm_api(&lua, &recorded, &queue, &status, &deferred, &providers)?;
 
         // Evaluate as a value, not a table: a config that only calls the API
         // returns nothing, and demanding a table would make it a parse error.
@@ -370,9 +387,63 @@ impl WmControl {
                 queue,
                 status,
                 deferred,
+                providers,
             },
             shell,
         ))
+    }
+
+    /// The providers a config registered, in order.
+    pub fn provider_names(&self) -> Vec<String> {
+        self.providers
+            .borrow()
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    /// Ask provider `index` about `query`.
+    ///
+    /// Errors are returned rather than raised: a provider that throws must not
+    /// take the launcher down with it, and on a DRM boot there is nowhere for a
+    /// panic to be read.
+    pub fn provider_query(&self, index: usize, query: &str) -> Result<Vec<LuaRow>, String> {
+        // Cloned, and the borrow dropped, *before* the call. A provider is
+        // arbitrary user code and may register another one — with the borrow
+        // still held that is a `RefCell` double-borrow panic, inside a
+        // keystroke, in the display server.
+        let function = {
+            let providers = self.providers.borrow();
+            let (_, f) = providers.get(index).ok_or("no such provider")?;
+            f.clone()
+        };
+        let returned: mlua::Table = function.call(query).map_err(|e| e.to_string())?;
+        let mut rows = Vec::new();
+        for (i, row) in returned.sequence_values::<mlua::Table>().enumerate() {
+            let Ok(row) = row else { continue };
+            let label: String = row.get("label").unwrap_or_default();
+            let action: String = row.get("action").unwrap_or_default();
+            let detail: String = row.get("detail").unwrap_or_default();
+            let score: u32 = row
+                .get::<Option<u32>>("score")
+                .ok()
+                .flatten()
+                .unwrap_or(500);
+            // One malformed row is dropped, not the whole provider — the rule
+            // `ruster.wm.action` already follows by returning false rather than
+            // raising.
+            let Some(action) = Action::from_name(&action).filter(|_| !label.is_empty()) else {
+                tracing::warn!(index, row = i, %label, "launcher row ignored");
+                continue;
+            };
+            rows.push(LuaRow {
+                label,
+                detail,
+                score: score.min(ruster_picker::CONFIDENCE_MAX),
+                action,
+            });
+        }
+        Ok(rows)
     }
 
     /// Everything queued since the last call, in the order it was queued.
@@ -421,8 +492,31 @@ fn install_wm_api(
     queue: &Rc<RefCell<VecDeque<Action>>>,
     status: &Rc<RefCell<WmStatus>>,
     deferred: &Rc<RefCell<Vec<(Instant, Action)>>>,
+    providers: &Rc<RefCell<Vec<(String, mlua::Function)>>>,
 ) -> mlua::Result<()> {
     let wm = lua.create_table()?;
+
+    // `ruster.launcher.add_provider(name, fn)` — the extension point.
+    //
+    // Shaped after `ruster.context_menu.add`: a registration that hands back
+    // rows naming an *action*, not a callback. Rows resolve through
+    // `Action::from_name`, so a provider can do everything a keybind can and
+    // nothing more — a callback would be a second control plane, and the first
+    // thing it would be used for is spawning behind `persist`'s back.
+    let launcher = lua.create_table()?;
+    let p = providers.clone();
+    launcher.set(
+        "add_provider",
+        lua.create_function(move |_, (name, f): (String, mlua::Function)| {
+            if name.trim().is_empty() {
+                return Err(mlua::Error::RuntimeError(
+                    "launcher.add_provider needs a non-empty name".into(),
+                ));
+            }
+            p.borrow_mut().push((name, f));
+            Ok(())
+        })?,
+    )?;
 
     // `ruster.wm.defer(ms, "action")` — the same action vocabulary, later.
     //
@@ -571,6 +665,7 @@ fn install_wm_api(
 
     let ruster = lua.create_table()?;
     ruster.set("wm", wm)?;
+    ruster.set("launcher", launcher)?;
     lua.globals().set("ruster", ruster)?;
     Ok(())
 }
@@ -755,6 +850,18 @@ pub fn apply_config_to_shell<B: Backend + 'static>(
     shell: LuaShell,
     socket_name: &str,
 ) {
+    // Registered providers become one launcher provider each, so every group
+    // gets its own heading and its own place in the ordering. Registered at
+    // startup: one added later appears the next time the launcher opens.
+    if let Some(control) = control.as_ref() {
+        for (index, name) in control.provider_names().into_iter().enumerate() {
+            state
+                .providers
+                .push(Box::new(crate::launcher::luaprov::LuaProvider::new(
+                    name, index,
+                )));
+        }
+    }
     state.wm = control;
     state.terminal = shell.terminal.clone();
     apply_keyboard_config(state, &shell.keyboard);
@@ -1136,19 +1243,36 @@ mod tests {
     /// Entries begin at a fixed column; a line indented past it is the previous
     /// entry's description wrapping, not a new name.
     fn documented_actions(source: &str) -> Vec<String> {
-        source
-            .lines()
-            .skip_while(|l| !l.contains("Actions:"))
-            .take_while(|l| l.starts_with("--"))
-            .filter(|l| l.starts_with("--   ") && !l.starts_with("--    "))
-            .filter_map(|l| {
-                // The name is separated from its description by a run of
-                // spaces. Taking the first *word* would turn "cycle workspace"
-                // into "cycle", which is not an action.
-                let name = l.trim_start_matches('-').trim().split("  ").next()?.trim();
-                (!name.is_empty()).then(|| name.to_string())
-            })
-            .collect()
+        let mut out = Vec::new();
+        let mut in_block = false;
+        for line in source.lines() {
+            if line.contains("Actions:") {
+                in_block = true;
+                continue;
+            }
+            if !in_block {
+                continue;
+            }
+            // A bare `--` ends the list. Without this the prose that follows it
+            // is read as more entries: the launcher's own documentation has
+            // indented example lines, and they parse as action names.
+            if line.trim() == "--" && !out.is_empty() {
+                break;
+            }
+            if !line.starts_with("--   ") || line.starts_with("--    ") {
+                continue;
+            }
+            // The name is separated from its description by a run of spaces.
+            // Taking the first *word* would turn "cycle workspace" into
+            // "cycle", which is not an action.
+            if let Some(name) = line.trim_start_matches('-').trim().split("  ").next() {
+                let name = name.trim();
+                if !name.is_empty() {
+                    out.push(name.to_string());
+                }
+            }
+        }
+        out
     }
 
     /// A documented name with its placeholders removed: `focus <direction>`
@@ -1168,6 +1292,87 @@ mod tests {
             .replace("<path>", "x")
             .replace("<url>", "x")
             .replace("horizontal|vertical", "horizontal")
+    }
+
+    #[test]
+    fn a_config_can_register_launcher_providers() {
+        let (wm, _) = WmControl::from_source(
+            r#"
+            ruster.launcher.add_provider("emoji", function(q)
+              return { { label = "shrug", detail = "¯\\_(ツ)_/¯", score = 800, action = "quit" } }
+            end)
+            ruster.launcher.add_provider("sessions", function(q) return {} end)
+            "#,
+        )
+        .unwrap();
+        assert_eq!(wm.provider_names(), vec!["emoji", "sessions"]);
+
+        let rows = wm.provider_query(0, "sh").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].label, "shrug");
+        assert_eq!(rows[0].score, 800);
+        // The row named an action, and it resolved — a Lua provider can do
+        // everything a keybind can and nothing more.
+        assert_eq!(rows[0].action, Action::Quit);
+    }
+
+    #[test]
+    fn one_bad_row_does_not_discard_the_others() {
+        // The rule `ruster.wm.action` already follows: a typo costs its own line
+        // and nothing else. A provider whose third row is malformed is still a
+        // provider.
+        let (wm, _) = WmControl::from_source(
+            r#"
+            ruster.launcher.add_provider("mixed", function(q)
+              return {
+                { label = "good", action = "quit" },
+                { label = "", action = "quit" },
+                { label = "bad action", action = "not-an-action" },
+                { label = "also good", action = "screenshot" },
+              }
+            end)
+            "#,
+        )
+        .unwrap();
+        let rows = wm.provider_query(0, "x").unwrap();
+        let labels: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(labels, vec!["good", "also good"]);
+    }
+
+    #[test]
+    fn a_provider_that_throws_is_reported_not_fatal() {
+        // On a DRM boot a panic has nowhere to be read, and the compositor is
+        // the display server. An error has to come back as a value.
+        let (wm, _) = WmControl::from_source(
+            r#"ruster.launcher.add_provider("angry", function(q) error("nope") end)"#,
+        )
+        .unwrap();
+        let err = wm.provider_query(0, "x").unwrap_err();
+        assert!(err.contains("nope"), "the reason survives: {err}");
+    }
+
+    #[test]
+    fn a_provider_may_register_another_without_panicking() {
+        // The re-entrancy guard. `provider_query` clones the function and drops
+        // the `RefCell` borrow before calling it; holding the borrow across the
+        // call is a double-borrow panic inside a keystroke, in the display
+        // server.
+        let (wm, _) = WmControl::from_source(
+            r#"
+            ruster.launcher.add_provider("first", function(q)
+              ruster.launcher.add_provider("late", function(q2) return {} end)
+              return { { label = "ok", action = "quit" } }
+            end)
+            "#,
+        )
+        .unwrap();
+        let rows = wm.provider_query(0, "x").expect("must not panic");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            wm.provider_names(),
+            vec!["first", "late"],
+            "and the late registration took effect"
+        );
     }
 
     #[test]

@@ -189,7 +189,7 @@ impl Provider for MathProvider {
         "maths"
     }
 
-    fn query(&mut self, query: &str, _ctx: &ProviderCtx, _limit: usize) -> Vec<Candidate> {
+    fn query(&mut self, query: &str, _ctx: &ProviderCtx<'_>, _limit: usize) -> Vec<Candidate> {
         if !looks_like_a_sum(query) {
             return Vec::new();
         }

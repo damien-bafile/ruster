@@ -259,7 +259,7 @@ impl Provider for AppsProvider {
         );
     }
 
-    fn query(&mut self, query: &str, _ctx: &ProviderCtx, limit: usize) -> Vec<Candidate> {
+    fn query(&mut self, query: &str, _ctx: &ProviderCtx<'_>, limit: usize) -> Vec<Candidate> {
         let terminal = crate::lua::terminal_command(None).map(|(cmd, _)| cmd);
         let mut hits: Vec<Candidate> = Vec::new();
         for entry in &self.entries {

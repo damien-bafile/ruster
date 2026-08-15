@@ -47,11 +47,12 @@ pub enum Activation {
 /// What a provider may read while answering.
 ///
 /// Deliberately tiny. A provider handed the whole `CompositorState` is a
-/// provider that can re-enter `dispatch` in the middle of a keystroke.
+/// provider that can re-enter `dispatch` in the middle of a keystroke; this
+/// carries the one thing a provider legitimately needs and nothing else.
 #[derive(Default)]
-pub struct ProviderCtx {
-    /// Reserved for the Lua bridge, which needs the live VM to call back into.
-    pub _private: (),
+pub struct ProviderCtx<'a> {
+    /// The live Lua VM, for the bridge. `None` when no config loaded.
+    pub wm: Option<&'a crate::lua::WmControl>,
 }
 
 pub trait Provider {
@@ -63,7 +64,7 @@ pub trait Provider {
     fn prepare(&mut self) {}
 
     /// Score `query`, returning at most `limit` candidates, best first.
-    fn query(&mut self, query: &str, ctx: &ProviderCtx, limit: usize) -> Vec<Candidate>;
+    fn query(&mut self, query: &str, ctx: &ProviderCtx<'_>, limit: usize) -> Vec<Candidate>;
 }
 
 /// One provider's answers.
@@ -99,7 +100,7 @@ impl ProviderSet {
     }
 
     /// Ask every provider, and order what comes back.
-    pub fn query(&mut self, query: &str, ctx: &ProviderCtx, per_provider: usize) -> Vec<Group> {
+    pub fn query(&mut self, query: &str, ctx: &ProviderCtx<'_>, per_provider: usize) -> Vec<Group> {
         let groups = self
             .providers
             .iter_mut()
@@ -142,7 +143,7 @@ mod tests {
         fn name(&self) -> &str {
             self.name
         }
-        fn query(&mut self, _q: &str, _ctx: &ProviderCtx, _limit: usize) -> Vec<Candidate> {
+        fn query(&mut self, _q: &str, _ctx: &ProviderCtx<'_>, _limit: usize) -> Vec<Candidate> {
             self.scores
                 .iter()
                 .map(|&score| Candidate {

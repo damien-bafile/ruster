@@ -11,6 +11,7 @@
 //! cannot.
 
 pub mod desktop;
+pub mod luaprov;
 pub mod math;
 pub mod provider;
 

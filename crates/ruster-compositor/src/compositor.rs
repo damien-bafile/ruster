@@ -394,7 +394,9 @@ impl<B: Backend + 'static> CompositorState<B> {
         // `providers` and `launcher` are distinct fields, so these borrows are
         // disjoint. Calling `self.report(..)` in here would not be — which is
         // why nothing in this scope reports.
-        let ctx = crate::launcher::ProviderCtx::default();
+        let ctx = crate::launcher::ProviderCtx {
+            wm: self.wm.as_ref(),
+        };
         let groups = self.providers.query(&query, &ctx, PER_PROVIDER);
         if let Some(l) = self.launcher.as_mut() {
             l.set_groups(groups);
