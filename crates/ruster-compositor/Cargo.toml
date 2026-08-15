@@ -15,6 +15,7 @@ udev = ["smithay/backend_udev", "smithay/backend_drm", "smithay/backend_gbm", "s
 [dependencies]
 ruster-shell = { path = "../ruster-shell" }
 ruster-render = { path = "../ruster-render" }
+ruster-picker = { path = "../ruster-picker" }
 ruster-render-gles = { path = "../ruster-render-gles" }
 ruster-core = { path = "../ruster-core" }
 ruster-syntax = { path = "../ruster-syntax" }

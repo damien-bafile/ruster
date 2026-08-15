@@ -14,6 +14,7 @@ pub mod focus;
 pub mod highlight;
 pub mod input;
 pub mod keymap;
+pub mod launcher;
 pub mod lua;
 pub mod minibuffer;
 pub mod pane;
