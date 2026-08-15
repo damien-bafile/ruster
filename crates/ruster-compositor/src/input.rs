@@ -344,17 +344,14 @@ impl<B: Backend + 'static> CompositorState<B> {
                 // the quit hatch. Letting anything through would type the
                 // command into the focused terminal at the same time — and a
                 // keybind firing mid-line would act on a half-typed thought.
-                if compositor
-                    .minibuffer
-                    .as_ref()
-                    .is_some_and(|mb| mb.is_open())
-                {
+                if compositor.overlay_is_open() {
                     if key_state == KeyState::Pressed {
                         compositor.hold_key(
                             keycode.raw(),
-                            RepeatTarget::Prompt {
+                            RepeatTarget::Overlay {
                                 raw: keysym,
                                 modified: handle.modified_sym(),
+                                mods: *modifiers,
                             },
                         );
                         compositor.intercepted.insert(keycode.raw());
@@ -764,6 +761,12 @@ mod tests {
     const KEY_LEFTCTRL: u32 = 29 + 8;
     const KEY_LEFTALT: u32 = 56 + 8;
     const KEY_F2: u32 = 60 + 8;
+    const KEY_ESC: u32 = 1 + 8;
+    const KEY_ENTER: u32 = 28 + 8;
+    const KEY_6: u32 = 7 + 8;
+    const KEY_7: u32 = 8 + 8;
+    // `*` on the numeric keypad, which needs no shift to produce one.
+    const KEY_STAR: u32 = 55 + 8;
 
     /// A headless compositor state with the Phase 0 default keybinds installed.
     /// The [`EventLoop`] is returned alongside because `create_state` registers
@@ -1447,6 +1450,79 @@ mod tests {
              next release of it will be swallowed and the client will believe it \
              is held down"
         );
+    }
+
+    #[test]
+    fn the_launcher_takes_every_key_and_leaves_none_stuck() {
+        // The branch this shares with the `:` prompt is where today's stuck-key
+        // bug lived: a press recorded in `intercepted` and a release that
+        // recorded it again instead of clearing it left the keycode marked for
+        // the rest of the session, so the next press of that key was forwarded
+        // to the client and its release swallowed.
+        //
+        // The condition was generalised rather than the branch copied, so this
+        // asserts the same property for the launcher that already holds for the
+        // prompt.
+        let (_loop, mut state) = test_state();
+        state.dispatch(Action::Launcher);
+        assert!(state.launcher.is_some(), "the launcher opened");
+        assert!(state.overlay_is_open(), "and it takes every key");
+
+        press(&mut state, KEY_A);
+        release(&mut state, KEY_A);
+        assert_eq!(
+            state.launcher.as_ref().map(|l| l.query.as_str()),
+            Some("a"),
+            "the key went into the query"
+        );
+        assert!(
+            state.intercepted.is_empty(),
+            "and left nothing marked: {:?}",
+            state.intercepted
+        );
+    }
+
+    #[test]
+    fn opening_the_launcher_clears_what_would_be_drawn_beside_it() {
+        // Chrome panels are hoisted in one batch and the launcher in another, so
+        // a mini-buffer or hover panel left up while it is open would be drawn
+        // by a different layer and read as part of the launcher.
+        let (_loop, mut state) = test_state();
+        state.minibuffer = Some(crate::minibuffer::MiniBuffer::new(
+            crate::minibuffer::Prompt::Command,
+        ));
+        state.open_pane();
+        let id = state.shell.focus.unwrap();
+        state.show_hover(id, 0, 0, "fn main()");
+        assert!(state.hover.is_some() && state.minibuffer.is_some());
+
+        state.dispatch(Action::Launcher);
+
+        assert!(state.hover.is_none(), "the hover panel goes");
+        assert!(state.minibuffer.is_none(), "and so does the prompt");
+    }
+
+    #[test]
+    fn escape_closes_the_launcher_and_enter_runs_the_selection() {
+        let (_loop, mut state) = test_state();
+        state.dispatch(Action::Launcher);
+        press(&mut state, KEY_ESC);
+        assert!(state.launcher.is_none(), "escape closes it");
+
+        // `6*7` is answered by the maths provider, and accepting copies it.
+        state.dispatch(Action::Launcher);
+        for key in [KEY_6, KEY_STAR, KEY_7] {
+            press(&mut state, key);
+            release(&mut state, key);
+        }
+        assert_eq!(
+            state.launcher.as_ref().map(|l| l.row_count()),
+            Some(1),
+            "the sum was answered"
+        );
+        press(&mut state, KEY_ENTER);
+        assert!(state.launcher.is_none(), "accepting closes it");
+        assert_eq!(state.clipboard.text(), "42", "and the answer was copied");
     }
 
     #[test]

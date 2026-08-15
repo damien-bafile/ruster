@@ -41,7 +41,18 @@ pub enum RepeatTarget {
     /// The editor pane in `window`, as the editor key it takes.
     Pane { window: WindowId, key: KeyEvent },
     /// The open `:` prompt, as the raw/modified keysym pair it reads.
-    Prompt { raw: Keysym, modified: Keysym },
+    /// A key going to whichever modal overlay is open — the `:` prompt, or the
+    /// launcher.
+    ///
+    /// Modifiers are carried because the launcher navigates with `C-n`/`C-p`,
+    /// and a control chord produces a control character that `key_char()`
+    /// filters out. Adding them later would mean editing the interception
+    /// branch a second time, and that branch is the one not to revisit.
+    Overlay {
+        raw: Keysym,
+        modified: Keysym,
+        mods: smithay::input::keyboard::ModifiersState,
+    },
 }
 
 impl RepeatTarget {
@@ -57,7 +68,7 @@ impl RepeatTarget {
     fn repeats(&self) -> bool {
         match self {
             RepeatTarget::Pane { .. } => true,
-            RepeatTarget::Prompt { raw, .. } => !raw.is_modifier_key(),
+            RepeatTarget::Overlay { raw, .. } => !raw.is_modifier_key(),
         }
     }
 }
@@ -205,11 +216,15 @@ impl<B: Backend + 'static> CompositorState<B> {
                 self.pane_key(*key);
                 true
             }
-            RepeatTarget::Prompt { raw, modified } => {
-                if !self.minibuffer.as_ref().is_some_and(|mb| mb.is_open()) {
+            RepeatTarget::Overlay {
+                raw,
+                modified,
+                mods,
+            } => {
+                if !self.overlay_is_open() {
                     return false;
                 }
-                self.minibuffer_key(*raw, *modified);
+                self.overlay_key(*raw, *modified, *mods);
                 true
             }
         }
@@ -237,13 +252,19 @@ mod tests {
         // key it was pressed with.
         for raw in [Keysym::Shift_L, Keysym::Control_L, Keysym::Super_L] {
             assert!(
-                !RepeatTarget::Prompt { raw, modified: raw }.repeats(),
+                !RepeatTarget::Overlay {
+                    raw,
+                    modified: raw,
+                    mods: Default::default()
+                }
+                .repeats(),
                 "{raw:?} must not repeat"
             );
         }
-        assert!(RepeatTarget::Prompt {
+        assert!(RepeatTarget::Overlay {
             raw: Keysym::a,
             modified: Keysym::a,
+            mods: Default::default(),
         }
         .repeats());
     }

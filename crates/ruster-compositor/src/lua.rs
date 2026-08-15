@@ -74,6 +74,8 @@ pub enum Action {
     Definition,
     /// Show what the language server knows about the symbol under the cursor.
     Hover,
+    /// Open the launcher: apps, maths, and whatever else is registered.
+    Launcher,
     /// Pin the shortcut helper open, or unpin it.
     ToggleHelp,
     /// Open the `:` prompt (or `=` for Lua).
@@ -695,6 +697,7 @@ impl Action {
                 Some(Action::Definition)
             }
             ("hover", _, _) => Some(Action::Hover),
+            ("launcher" | "launch" | "run", _, _) => Some(Action::Launcher),
             // `w` as well as `write`, because the prompt this reaches is a `:`
             // line and `:w` is the muscle memory it inherits.
             ("write" | "w", _, _) => Some(Action::Write),

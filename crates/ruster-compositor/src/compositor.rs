@@ -199,6 +199,10 @@ pub struct CompositorState<B: Backend + 'static> {
     pub hover: Option<HoverPanel>,
     /// Screen captures a client has asked for and a frame has not yet served.
     pub screencopy: crate::screencopy::ScreencopyState,
+    /// The launcher overlay, when open.
+    pub launcher: Option<crate::launcher::Launcher>,
+    /// What answers a launcher query. Built once at startup.
+    pub providers: crate::launcher::ProviderSet,
     /// Syntax parses, one per document, refreshed when a buffer changes.
     pub highlights: std::cell::RefCell<crate::highlight::Highlights>,
     /// The seat's selection text, shared between editor panes and clients.
@@ -313,6 +317,139 @@ impl<B: Backend + 'static> CompositorState<B> {
         &self,
     ) -> Option<smithay::utils::Size<i32, smithay::utils::Physical>> {
         self.backend_data.output().current_mode().map(|m| m.size)
+    }
+
+    /// One key into the launcher.
+    ///
+    /// Text comes off the *modified* keysym and editing keys off the raw one,
+    /// the same split the mini-buffer makes: reading text off the raw sym makes
+    /// every capital lowercase.
+    pub fn launcher_key(
+        &mut self,
+        raw: Keysym,
+        modified: Keysym,
+        mods: smithay::input::keyboard::ModifiersState,
+    ) {
+        use smithay::input::keyboard::keysyms as ks;
+        let mut requery = false;
+        match raw.raw() {
+            ks::KEY_Escape => {
+                self.launcher = None;
+                return;
+            }
+            ks::KEY_Return | ks::KEY_KP_Enter => return self.launcher_accept(),
+            ks::KEY_BackSpace => {
+                let empty = self
+                    .launcher
+                    .as_mut()
+                    .map(|l| l.backspace())
+                    .unwrap_or(true);
+                if empty {
+                    self.launcher = None;
+                    return;
+                }
+                requery = true;
+            }
+            ks::KEY_Down => self.launcher_move(1),
+            ks::KEY_Up => self.launcher_move(-1),
+            ks::KEY_Tab => self.launcher_move(1),
+            ks::KEY_ISO_Left_Tab => self.launcher_move(-1),
+            // `C-n`/`C-p`, which is why the repeat target carries modifiers: a
+            // control chord produces a control character that `key_char()`
+            // filters out, so the text path below never sees these.
+            ks::KEY_n if mods.ctrl => self.launcher_move(1),
+            ks::KEY_p if mods.ctrl => self.launcher_move(-1),
+            _ => {
+                if mods.ctrl || mods.logo || mods.alt {
+                    return;
+                }
+                let Some(c) = modified.key_char().filter(|c| !c.is_control()) else {
+                    return;
+                };
+                if let Some(l) = self.launcher.as_mut() {
+                    l.push(c);
+                    requery = true;
+                }
+            }
+        }
+        if requery {
+            self.launcher_refresh();
+        }
+    }
+
+    fn launcher_move(&mut self, delta: i32) {
+        if let Some(l) = self.launcher.as_mut() {
+            l.move_selection(delta);
+        }
+    }
+
+    /// Ask every provider about the current query and keep what they say.
+    pub fn launcher_refresh(&mut self) {
+        /// Rows one provider may contribute. Enough that a real answer is not
+        /// cut off, few enough that one chatty provider cannot bury the others.
+        const PER_PROVIDER: usize = 8;
+        let Some(query) = self.launcher.as_ref().map(|l| l.query.clone()) else {
+            return;
+        };
+        // `providers` and `launcher` are distinct fields, so these borrows are
+        // disjoint. Calling `self.report(..)` in here would not be — which is
+        // why nothing in this scope reports.
+        let ctx = crate::launcher::ProviderCtx::default();
+        let groups = self.providers.query(&query, &ctx, PER_PROVIDER);
+        if let Some(l) = self.launcher.as_mut() {
+            l.set_groups(groups);
+        }
+    }
+
+    /// Run the selected row and close.
+    fn launcher_accept(&mut self) {
+        let Some(activation) = self.launcher.as_mut().and_then(|l| l.accept()) else {
+            self.launcher = None;
+            return;
+        };
+        self.launcher = None;
+        match activation {
+            crate::launcher::Activation::Action(action) => self.dispatch(action),
+            crate::launcher::Activation::Copy(text) => self.copy_text(text),
+            crate::launcher::Activation::Report(message) => self.report(message),
+        }
+    }
+
+    /// Put text on the seat selection, as yanking from a pane does.
+    pub fn copy_text(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        self.clipboard.set_from_pane(text.clone());
+        set_data_device_selection(
+            &self.display_handle,
+            &self.seat.clone(),
+            crate::clipboard::mime_types(),
+            (),
+        );
+        self.report(format!("copied: {text}"));
+    }
+
+    /// Whether a modal overlay is taking every key right now.
+    ///
+    /// One question with one answer, asked by the key interception branch and by
+    /// key repeat. The launcher and the `:` prompt cannot both be open —
+    /// opening the launcher closes the prompt — so this is an either, not a
+    /// precedence.
+    pub fn overlay_is_open(&self) -> bool {
+        self.launcher.is_some() || self.minibuffer.as_ref().is_some_and(|mb| mb.is_open())
+    }
+
+    /// Feed one key to whichever overlay is open.
+    pub fn overlay_key(
+        &mut self,
+        raw: Keysym,
+        modified: Keysym,
+        mods: smithay::input::keyboard::ModifiersState,
+    ) {
+        if self.launcher.is_some() {
+            self.launcher_key(raw, modified, mods);
+            return;
+        }
+        self.minibuffer_key(raw, modified);
     }
 
     /// Feed one keypress to the open prompt.
@@ -1041,6 +1178,16 @@ impl<B: Backend + 'static> CompositorState<B> {
             Action::Edit(path) => self.open_file(&path),
             Action::Definition => self.lsp_definition(),
             Action::Hover => self.lsp_hover(),
+            Action::Launcher => {
+                // The overlay owns the screen while it is up: a which-key panel
+                // or a hover float beside it would be drawn by a different
+                // batch and read as part of it.
+                self.minibuffer = None;
+                self.hover = None;
+                self.providers.prepare();
+                self.launcher = Some(crate::launcher::Launcher::new());
+                self.launcher_refresh();
+            }
             Action::Write => self.write_pane(),
             Action::ShowBuffer(name) => self.show_named_document(&name),
             Action::Bind(binding, action) => self.keymap.bind(&binding, &action),
@@ -1440,6 +1587,15 @@ pub fn create_state<B: Backend + 'static>(
         lsp: ruster_lsp::state::LspState::new(),
         hover: None,
         screencopy: crate::screencopy::ScreencopyState::default(),
+        launcher: None,
+        providers: {
+            // Registration order is the tie-break when two providers are
+            // equally confident, so it is the order they appear in.
+            let mut set = crate::launcher::ProviderSet::default();
+            set.push(Box::new(crate::launcher::math::MathProvider));
+            set.push(Box::new(crate::launcher::desktop::AppsProvider::default()));
+            set
+        },
         highlights: std::cell::RefCell::new(crate::highlight::Highlights::default()),
         clipboard: crate::clipboard::Clipboard::default(),
         panes: crate::pane::Panes::new(),
