@@ -116,10 +116,18 @@ fn pump(
         chord: state.chord.is_active(),
         next_deferred: state.wm.as_ref().and_then(|wm| wm.next_due(now)),
     });
+    // Flush *before* sleeping, not after waking.
+    //
+    // The rest of the iteration runs before this — including rendering, which is
+    // where a screencopy capture is served. Flushing after the dispatch meant
+    // anything produced by that work sat in the connection buffer while the
+    // compositor blocked, and a client waiting on it had no way to wake anyone:
+    // `grim` sent `copy`, the copy ran, `ready` was written, and both processes
+    // then slept until grim's timeout. A deadlock, not a slow path.
+    state.display_handle.flush_clients().unwrap();
     if event_loop.dispatch(timeout, state).is_err() {
         return false;
     }
-    state.display_handle.flush_clients().unwrap();
     true
 }
 
@@ -281,6 +289,12 @@ fn run_winit() -> anyhow::Result<()> {
                 })
                 .inspect(|_| {
                     let waiting = std::mem::take(&mut state.screencopy.pending);
+                    if !waiting.is_empty() {
+                        tracing::debug!(
+                            n = waiting.len(),
+                            "screencopy: render pass reached the pending list"
+                        );
+                    }
                     if let Some(size) = state.backend_data.output.current_mode().map(|m| m.size) {
                         ruster_compositor::screencopy::serve(waiting, renderer, &fb, size);
                     }

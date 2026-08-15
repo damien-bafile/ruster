@@ -228,6 +228,12 @@ impl<B: Backend + 'static> Dispatch<ZwlrScreencopyFrameV1, FrameData> for Compos
             frame.failed();
             return;
         }
+        tracing::debug!(
+            w = data.size.w,
+            h = data.size.h,
+            with_damage,
+            "screencopy: capture queued"
+        );
         state.screencopy.pending.push(Pending {
             frame: frame.clone(),
             buffer,
@@ -261,6 +267,12 @@ pub fn serve<R>(
     if pending.is_empty() {
         return;
     }
+    tracing::debug!(
+        count = pending.len(),
+        w = size.w,
+        h = size.h,
+        "screencopy: serving"
+    );
     // Read the framebuffer once for all of them: two clients recording at the
     // same time should cost one readback, and the readback is the expensive
     // half.
@@ -299,18 +311,19 @@ pub fn serve<R>(
                 if len < want || pixels.len() < want {
                     return false;
                 }
-                // A direct GL framebuffer read is bottom-left first, so the rows
-                // are reversed on the way out rather than announced with
-                // `y_invert`. Clients are allowed to handle that flag and `grim`
-                // does, but a capture that is upright for everyone is worth one
-                // memcpy per row — and the DRM path already writes top-left, so
-                // sending the flag would be wrong on one backend either way.
-                for row in 0..height {
-                    let src = (height - 1 - row) * stride;
-                    let dst = row * stride;
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(pixels[src..].as_ptr(), ptr.add(dst), stride);
-                    }
+                // Copied straight through, deliberately.
+                //
+                // A GL framebuffer read is bottom-left first, so the obvious
+                // thing is to reverse the rows — and that is what this did, and
+                // it produced an upside-down capture. The winit output carries
+                // `Transform::Flipped180`, which the renderer has already applied
+                // when compositing, and that cancels the readback's own
+                // inversion. Flipping again re-introduces it.
+                //
+                // Which way up a buffer is cannot be reasoned about from one end
+                // alone; this is what the capture actually looks like.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(pixels.as_ptr(), ptr, stride * height);
                 }
                 true
             });

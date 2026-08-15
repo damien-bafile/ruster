@@ -26,7 +26,7 @@ use smithay::wayland::{
         CompositorState as WlCompositorState, SurfaceAttributes,
     },
     cursor_shape::CursorShapeManagerState,
-    output::OutputHandler,
+    output::{OutputHandler, OutputManagerState},
     selection::data_device::{
         request_data_device_client_selection, set_data_device_focus, set_data_device_selection,
         ClientDndGrabHandler, DataDeviceHandler, DataDeviceState, ServerDndGrabHandler,
@@ -1675,6 +1675,15 @@ fn init_globals<B: Backend + 'static>(dh: &DisplayHandle, seat_name: String) -> 
     // this only gives clients a way to name the shape they want instead of each
     // one loading an XCursor theme and attaching its own surface.
     let cursor_shape_state = CursorShapeManagerState::new::<CompositorState<B>>(dh);
+    // `zxdg_output_manager_v1`, alongside the `wl_output` each backend creates.
+    //
+    // It reports an output's position and size in *logical* coordinates, which
+    // is what a client compositing several outputs needs and what `wl_output`
+    // alone cannot express. Without it `grim` says "guessing the output layout"
+    // and guesses 0x0, so a capture that worked in every other respect was
+    // written as a zero-by-zero PNG. The delegate for this was already in place;
+    // only the global was missing.
+    let _output_manager_state = OutputManagerState::new_with_xdg_output::<CompositorState<B>>(dh);
     // wlr-screencopy. Not a smithay state object — the protocol is not
     // implemented there, so this is a bare global whose `Dispatch` impls live in
     // `crate::screencopy`. Version 3 for `buffer_done`; only shm buffers are
