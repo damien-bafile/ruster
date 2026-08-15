@@ -1,27 +1,25 @@
 //! The compositor's chrome as a declarative scene.
 //!
-//! Each widget is built as an [`Elem`] tree with the exact geometry the old
-//! `Chrome::draw_*` methods produce. The parity test in `render.rs` lays both
-//! sides out and compares vertex and glyph batches byte-for-byte, so these
-//! builders and the chrome they are due to replace can never disagree. `compose`
-//! is the whole frame in painter's order, and `chrome_scene` assembles one from
-//! a [`FrameInput`], handing the hover panel back as the overlay layer — the
-//! only chrome drawn in front of the base batch.
+//! Each widget is built as an [`Elem`] tree with the geometry the chrome's old
+//! hand-built `draw_*` methods produced. `compose` is the whole frame in
+//! painter's order, and `chrome_scene` assembles one from a [`FrameInput`],
+//! handing the overlay layer back separately — the launcher and the hover
+//! panel, the only chrome drawn in front of the base batch.
 
-use ruster_render::{Color, StyledLine, Theme, WhichKeyEntry, WhichKeyView};
+use ruster_render::{Color, LauncherView, StyledLine, Theme, WhichKeyEntry, WhichKeyView};
 use ruster_render_elements::{div, text, Elem, Styled, TextMeasurer};
 use ruster_render_gles::atlas::FontFamily;
 use ruster_shell::{Rect, WindowId};
 
 use crate::chrome::{
-    runs, severity_sign, FrameBody, HoverAnchor, TreeStatus, BORDER_WIDTH, FRAME_BAR_H, FRAME_PAD,
-    SIGN_COLS,
+    launcher_layout, runs, severity_sign, FrameBody, HoverAnchor, TreeStatus, BORDER_WIDTH,
+    FRAME_BAR_H, FRAME_PAD, SIGN_COLS,
 };
 use crate::chrome::gutter_width;
 use crate::compositor::PANE_FONT_PX;
 use crate::render::{chrome_height, FrameInput};
 
-/// The statusline's accent mode segment width, from `draw_statusline`.
+/// The statusline's accent mode segment width.
 const STATUSLINE_MODE_W: f32 = 64.0;
 
 /// Measure a plain string through the scene's measurer.
@@ -41,8 +39,9 @@ fn measure_width(measurer: &mut impl TextMeasurer, s: &str, size: f32, family: F
 /// value the atlas bakes into a glyph cell.
 ///
 /// `severity_sign` hands out colours as the `(f32, f32, f32, f32)` tuple the old
-/// draw path consumed; converting back with the same rounding `rgb8` applies
-/// makes the scene's text colour bit-identical to the old path's.
+/// draw path consumed; converting back with the same rounding the old path's
+/// `rgb8` free function applied makes the scene's text colour bit-identical to
+/// the old path's.
 fn tuple_color(color: (f32, f32, f32, f32)) -> Color {
     let to_u8 = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
     Color::Rgb(to_u8(color.0), to_u8(color.1), to_u8(color.2))
@@ -180,15 +179,14 @@ pub fn minibuffer_elem(
 /// The which-key overlay: a panel in as many columns as it takes to show every
 /// binding.
 ///
-/// The column chunking (`per_col`, `columns`) and the width clamp are
-/// `draw_whichkey`'s, kept verbatim; taffy then sizes each column from the
+/// The column chunking (`per_col`, `columns`) and the width clamp are the old
+/// which-key painter's, kept verbatim; taffy then sizes each column from the
 /// measured text, which reproduces the old measured `widths` exactly.
 pub fn whichkey_elem(
     output_w: i32,
     output_h: i32,
     view: &WhichKeyView,
     theme: &Theme,
-    _measurer: &mut impl TextMeasurer,
 ) -> Elem {
     const ROW_H: f32 = 20.0;
     const PAD: f32 = 10.0;
@@ -308,6 +306,105 @@ pub fn hover_elem(
     panel
 }
 
+/// The command launcher: a centered panel with a query line and the first page
+/// of rows.
+///
+/// The old launcher painter's geometry kept verbatim, rows positioned by the
+/// shared [`launcher_layout`] — the same numbers the pointer hit-testing reads
+/// back — with the selection rectangle behind its row's text the way the old
+/// path drew it. The panel is part of the overlay: it owns the screen while it
+/// is open.
+pub fn launcher_elem(
+    output_w: i32,
+    output_h: i32,
+    view: &LauncherView,
+    theme: &Theme,
+    measurer: &mut impl TextMeasurer,
+) -> Elem {
+    const FONT: f32 = 15.0;
+    const GROUP_FONT: f32 = 12.0;
+    const PAD: f32 = 12.0;
+
+    let layout = launcher_layout(output_w, output_h, view.rows.len());
+
+    let mut panel = div();
+    panel
+        .id("launcher")
+        .absolute()
+        .position(layout.x, layout.y)
+        .size(layout.w, layout.h)
+        .bg(theme.whichkey_bg)
+        .radius(8.0);
+
+    let mut children: Vec<Elem> = Vec::new();
+
+    // The query line, with its sigil accented the way the `:` prompt's is —
+    // the same cue for the same thing, an editor waiting for input.
+    let mut sigil = text(">");
+    sigil.absolute().position(layout.x + PAD, layout.y + PAD).font_size(FONT).fg(theme.whichkey_key);
+    let mut query = text(view.query.as_str());
+    query
+        .absolute()
+        .position(
+            layout.x + PAD + measure_width(measurer, ">", FONT, FontFamily::Ui) + 6.0,
+            layout.y + PAD,
+        )
+        .font_size(FONT)
+        .fg(theme.whichkey_fg);
+    children.push(sigil);
+    children.push(query);
+
+    let mut y = layout.y + layout.query_h;
+    if view.rows.is_empty() {
+        if !view.message.is_empty() {
+            let mut message = text(view.message.as_str());
+            message.absolute().position(layout.x + PAD, y).font_size(FONT).fg(theme.gutter);
+            children.push(message);
+        }
+        panel.children(children);
+        return panel;
+    }
+
+    for row in view.rows.iter().take(layout.visible_rows) {
+        if !row.group.is_empty() {
+            let mut group = text(row.group.as_str());
+            group.absolute().position(layout.x + PAD, y).font_size(GROUP_FONT).fg(theme.gutter);
+            children.push(group);
+            y += layout.group_h;
+        }
+        if row.selected {
+            let mut sel = div();
+            sel.absolute()
+                .position(layout.x + 4.0, y - 2.0)
+                .size(layout.w - 8.0, layout.row_h)
+                .bg(theme.selection_bg);
+            children.push(sel);
+        }
+        let mut label = text(row.label.as_str());
+        label.absolute().position(layout.x + PAD * 2.0, y).font_size(FONT).fg(theme.whichkey_fg);
+        children.push(label);
+        if !row.detail.is_empty() {
+            // Right of the label rather than right-aligned to the panel: a
+            // long detail then truncates against the panel edge instead of
+            // colliding with the label from the other side.
+            let label_w = measure_width(measurer, &row.label, FONT, FontFamily::Ui);
+            let at = layout.x + PAD * 2.0 + label_w + 12.0;
+            if at < layout.x + layout.w - PAD {
+                let mut detail = text(row.detail.as_str());
+                detail
+                    .absolute()
+                    .position(at, y + 2.0)
+                    .font_size(GROUP_FONT)
+                    .fg(theme.gutter);
+                children.push(detail);
+            }
+        }
+        y += layout.row_h;
+    }
+    panel.children(children);
+    panel
+}
+
 /// An editor pane: title bar and a grid of buffer rows.
 ///
 /// Per-line text is absolutely positioned from the frame's grid — the same
@@ -406,8 +503,9 @@ pub fn compose(pieces: Vec<Elem>, _theme: &Theme, w: f32, h: f32) -> Elem {
 
 /// Assemble the whole frame's chrome as one scene, in the order the old draw
 /// path emitted it: window borders, statusline, mini-buffer, which-key, then
-/// the editor panes. The hover panel comes back separately, as the overlay that
-/// is drawn in front of the base batch.
+/// the editor panes. The overlay layer comes back separately, drawn in front
+/// of the base batch — the launcher first, then the hover panel, so a hover on
+/// text under the launcher still renders above it.
 pub fn chrome_scene(
     frame: &FrameInput,
     theme: &Theme,
@@ -437,7 +535,7 @@ pub fn chrome_scene(
     }
 
     if let Some(view) = &frame.whichkey {
-        pieces.push(whichkey_elem(size.w, size.h, view, theme, measurer));
+        pieces.push(whichkey_elem(size.w, size.h, view, theme));
     }
 
     // Editor panes, at the rectangles the layout gave them. Chrome is measured
@@ -498,7 +596,17 @@ pub fn chrome_scene(
     }
 
     let base = compose(pieces, theme, w, h);
-    let overlay = hover_at
-        .map(|(anchor, lines)| hover_elem(size.w, size.h, anchor, lines, theme, measurer));
+    let mut overlay_pieces: Vec<Elem> = Vec::new();
+    if let Some(view) = &frame.launcher {
+        overlay_pieces.push(launcher_elem(size.w, size.h, view, theme, measurer));
+    }
+    if let Some((anchor, lines)) = hover_at {
+        overlay_pieces.push(hover_elem(size.w, size.h, anchor, lines, theme, measurer));
+    }
+    let overlay = if overlay_pieces.is_empty() {
+        None
+    } else {
+        Some(compose(overlay_pieces, theme, w, h))
+    };
     (base, overlay)
 }

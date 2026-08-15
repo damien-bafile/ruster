@@ -30,6 +30,8 @@ The spec (`docs/superpowers/specs/2026-08-15-gpui-elements-design.md`, commit `4
 | `.min_w_0()` mirrors GPUI's `min-width: auto` | taffy 0.13 auto min size can grow a flex item past its content on overflow | Shipped; the pane's per-line text nodes are absolutely positioned so this only matters for which-key/statusline columns (parity-tested) |
 | Spec's `Elem` has `id: Option<String>` on the struct | Id path must be derivable during the layout walk, including for **un-named** children | `Style` carries `id: Option<String>`; the build walk derives `ElementKey` per node (root `ElementKey(vec![])`, child = parent + `id` or index), so `layout` builds keys without a separate tree walk |
 | — | `ruster-core/workspace.rs:132` has `impl Default for BufferStore`, but Panes, Highlights, Keymap, LspState have no confirmed `Default` | Ordering test drives a composition helper, **not** a `FrameInput` |
+| Task 6 is silent on the launcher | The launcher predates the plan (the plan's `draw_*` list omits `draw_launcher`) but the task brief mandates it in the flip | `draw_launcher` is deleted with the rest; `launcher_elem` (scene.rs) composes it from `launcher_layout` and the confirmed draw geometry; it joins the hover panel in the **overlay**, composed first so hover still renders above it. `launcher_layout`/`LauncherLayout` stay (external `.visible_rows` users in `backend/drm.rs`/`winit_main.rs`) |
+| `translate_since_moves_both_panels_and_glyphs` | `translate_since` is deleted at the flip, so the old test name/scope is dead | Re-anchored as `a_pane_at_a_non_zero_rect_lands_offset_correctly`: a pane absolutely positioned at a tile origin lands there (boxes and glyphs) with no post-hoc translation |
 
 ## Global Constraints
 
@@ -185,8 +187,8 @@ Build the per-widget `*_elem` functions, `chrome_scene`, and the **parity gate**
 
 `collect_render_elements` switches to `build → layout → scene_to_chrome_batch`, and every superseded hand-built path is deleted.
 
-- [ ] **TDD fail:** no test fails yet — this is a mechanical flip; the **parity test from Task 5 is deleted in this task** and the remaining tests must still pass.
-- [ ] `render.rs::collect_render_elements` (lines 179-345): replace the `draw_*` block with:
+- [x] **TDD fail:** no test fails yet — this is a mechanical flip; the **parity test from Task 5 is deleted in this task** and the remaining tests must still pass.
+- [x] `render.rs::collect_render_elements` (lines 179-345): replace the `draw_*` block with:
   ```rust
   let (base, overlay) = scene::chrome_scene(scene, &chrome.theme, &mut GlesTextMeasurer);
   let area = PxRect { x: 0.0, y: 0.0, w: size.w as f32, h: size.h as f32 };
@@ -195,12 +197,12 @@ Build the per-widget `*_elem` functions, `chrome_scene`, and the **parity gate**
   let overlay_batch = overlay.map(|o| { let s = layout(area, &o, &mut GlesTextMeasurer); scene_to_chrome_batch(&s, &mut chrome.atlas) });
   ```
   then emit exactly as today: overlay glyphs → overlay solids `.rev()` → base glyphs → base solids `.rev()` (render.rs:316-345). Add a `Chrome::theme()` accessor (`&self` — the field `theme` stays private).
-- [ ] `glyph_elements` (render.rs:444-493): zip `glyphs` with `glyph_keys`; group consecutive equal keys; `chrome.element_ids(&key, n)` per group instead of `chrome.glyph_id(index)`.
-- [ ] `Chrome`: `glyph_ids: Vec<Id>` (chrome.rs:352, `glyph_id` at 404-409) → `id_map: HashMap<ElementKey, Vec<Id>>` + `pub fn element_ids(&mut self, key: &ElementKey, len: usize) -> Vec<Id>` (grow with `Id::new()` on first sight, clone out `len`). Add `use ruster_render_elements::ElementKey;` (compositor gains the dep — it already will via render-gles re-export, but import directly).
-- [ ] `bench_glyphs` (chrome.rs:696-785): keep, but push one unique `ElementKey(vec![format!("bench:{i}")])` per glyph.
-- [ ] Delete from chrome.rs: `ChromeBatch`, `BatchMark`, `mark`, `translate_since`, `OverlayBatch`, all `draw_*` methods (`draw_statusline`, `draw_editor_frame`, `draw_window_borders`, `draw_minibuffer`, `draw_hover`, `draw_whichkey`), `text`/`text_in`, `rgb8`. Keep: `FrameBody`, `runs`, `severity_sign`, `gutter_width`, `gutter_cols`, `SIGN_COLS`, `FRAME_BAR_H`, `FRAME_PAD`, `PANE_FONT_PX`, `HoverAnchor`, `Chrome::new`, `atlas_texture`, `cursor_element`, `solid_elements_from_verts`, the `chrome_height` call in render.rs.
-- [ ] Delete the Task 5 parity test (its purpose is served); keep the **ordering test** and the existing `statusline_emits_quads` / `whichkey_panel_renders_its_view` / hover / cell-origin tests — re-anchor any that asserted `ChromeBatch`/`mark` internals onto the scene path.
-- [ ] **Verify:** `cargo build` (warnings clean), `cargo test -p ruster-compositor -p ruster-render-gles -p ruster-render-elements`, `cargo clippy --all-targets -- -D warnings` — all green; `rg "draw_statusline|draw_editor_frame|draw_whichkey|draw_hover|translate_since|OverlayBatch|glyph_ids|glyph_id"` in the compositor returns nothing.
+- [x] `glyph_elements` (render.rs:444-493): zip `glyphs` with `glyph_keys`; group consecutive equal keys; `chrome.element_ids(&key, n)` per group instead of `chrome.glyph_id(index)`.
+- [x] `Chrome`: `glyph_ids: Vec<Id>` (chrome.rs:352, `glyph_id` at 404-409) → `id_map: HashMap<ElementKey, Vec<Id>>` + `pub fn element_ids(&mut self, key: &ElementKey, len: usize) -> Vec<Id>` (grow with `Id::new()` on first sight, clone out `len`). Add `use ruster_render_elements::ElementKey;` (compositor gains the dep — it already will via render-gles re-export, but import directly).
+- [x] `bench_glyphs` (chrome.rs:696-785): keep, but push one unique `ElementKey(vec![format!("bench:{i}")])` per glyph.
+- [x] Delete from chrome.rs: `ChromeBatch`, `BatchMark`, `mark`, `translate_since`, `OverlayBatch`, all `draw_*` methods (`draw_statusline`, `draw_editor_frame`, `draw_window_borders`, `draw_minibuffer`, `draw_hover`, `draw_whichkey`, `draw_launcher`), `text`/`text_in`, `rgb8`. Keep: `FrameBody`, `runs`, `severity_sign`, `gutter_width`, `gutter_cols`, `launcher_layout`, `LauncherLayout`, `SIGN_COLS`, `FRAME_BAR_H`, `FRAME_PAD`, `PANE_FONT_PX`, `HoverAnchor`, `Chrome::new`, `atlas_texture`, `cursor_element`, `solid_elements_from_verts`, the `chrome_height` call in render.rs.
+- [x] Delete the Task 5 parity test (its purpose is served); keep the **ordering test** and the existing `statusline_emits_quads` / `whichkey_panel_renders_its_view` / hover / cell-origin tests — re-anchor any that asserted `ChromeBatch`/`mark` internals onto the scene path (incl. `statusline_colors_are_legible`, now driven through `scene_to_chrome_batch`, and `translate_since_moves_both_panels_and_glyphs` → `a_pane_at_a_non_zero_rect_lands_offset_correctly`). The `chrome_scene` overlay test gained a launcher case.
+- [x] **Verify:** `cargo build` (warnings clean), `cargo test -p ruster-compositor -p ruster-render-gles -p ruster-render-elements`, `cargo clippy --all-targets -- -D warnings` — all green (284 + 1 + 28 + 29 tests pass); `rg "draw_statusline|draw_editor_frame|draw_whichkey|draw_hover|draw_launcher|draw_minibuffer|translate_since|OverlayBatch|glyph_ids|glyph_id|text_in"` in the compositor returns nothing.
 - Commit: `feat: render chrome through the declarative scene; delete hand-built geometry`
 
 ### Task 7 — Verification & docs
