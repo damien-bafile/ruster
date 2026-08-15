@@ -15,6 +15,22 @@ pub enum UIMode {
     Emacs,
 }
 
+/// Which face to shape and rasterize with.
+///
+/// Chrome is proportional and should stay that way — it is UI text. A text grid
+/// cannot be: column alignment, cursor placement, the gutter and
+/// click-to-position all assume every cell is the same width, and a
+/// sans-serif default would render code proportionally, so an editor pane
+/// built on the chrome path would render code in a proportional font.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum FontFamily {
+    /// Proportional, for chrome.
+    #[default]
+    Ui,
+    /// Fixed-advance, for text grids.
+    Mono,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Color {
     Default,

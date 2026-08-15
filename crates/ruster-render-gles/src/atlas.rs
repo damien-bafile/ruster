@@ -4,6 +4,8 @@ use std::time::{Duration, Instant};
 
 use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent};
 
+pub use ruster_render::FontFamily;
+
 /// A single glyph's pixel rect (in the destination) and UV rect (in the atlas).
 ///
 /// `x`/`y` are the offset from the glyph's layout origin — the pen position on
@@ -59,32 +61,13 @@ pub struct TextLayout {
 /// draw path renderer-agnostic.
 type GlyphKey = (u32, [u8; 3], char, FontFamily);
 
-/// Which face to shape and rasterize with.
-///
-/// Chrome is proportional and should stay that way — it is UI text. A text grid
-/// cannot be: column alignment, cursor placement, the gutter and
-/// click-to-position all assume every cell is the same width, and
-/// `Attrs::new()` gives cosmic-text's *sans-serif* default, so an editor pane
-/// built on the chrome path would render code in a proportional font.
-///
-/// Part of the atlas key, not just the shaping call: the same character at the
-/// same size and colour is a different bitmap in each family, and sharing one
-/// cell between them would hand whichever asked second the wrong glyph.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-pub enum FontFamily {
-    /// Proportional, for chrome.
-    #[default]
-    Ui,
-    /// Fixed-advance, for text grids.
-    Mono,
-}
-
-impl FontFamily {
-    fn attrs(self) -> Attrs<'static> {
-        match self {
-            FontFamily::Ui => Attrs::new(),
-            FontFamily::Mono => Attrs::new().family(Family::Monospace),
-        }
+/// The cosmic-text `Attrs` a [`FontFamily`] shapes with. [`FontFamily`] itself
+/// lives in `ruster-render` — it is portable — and this is the Linux-only half
+/// that maps it onto a cosmic-text family.
+pub fn family_attrs(family: FontFamily) -> Attrs<'static> {
+    match family {
+        FontFamily::Ui => Attrs::new(),
+        FontFamily::Mono => Attrs::new().family(Family::Monospace),
     }
 }
 
@@ -303,7 +286,7 @@ impl Atlas {
 
         let metrics = Metrics::new(font_size_px as f32, font_size_px as f32 + 4.0);
         let mut buf = Buffer::new(font_system, metrics);
-        buf.set_text(&String::from(c), &family.attrs(), Shaping::Advanced, None);
+        buf.set_text(&String::from(c), &family_attrs(family), Shaping::Advanced, None);
         buf.shape_until_scroll(font_system, false);
 
         // The first laid-out glyph of the first run is our character. `line_y`
@@ -469,7 +452,7 @@ pub fn layout_text_in(
         let mut fs = thread.borrow_mut();
         let metrics = Metrics::new(font_size_px as f32, font_size_px as f32 + 4.0);
         let mut buf = Buffer::new(&mut fs, metrics);
-        buf.set_text(text, &family.attrs(), Shaping::Basic, None);
+        buf.set_text(text, &family_attrs(family), Shaping::Basic, None);
         if let Some(w) = wrap_width {
             buf.set_size(Some(w), None);
         }

@@ -13,7 +13,9 @@ use crate::compositor::PANE_FONT_PX;
 use ruster_render::{Color, StyledLine, SyntaxStyle, Theme, WhichKeyEntry, WhichKeyView};
 use ruster_render_gles::atlas::{cell_metrics, layout_text, layout_text_in, Atlas, FontFamily};
 use ruster_render_gles::cursor::CursorBitmap;
-use ruster_render_gles::geometry::{rect_verts, rounded_rect_verts, GlyphQuad, Vertex};
+pub use ruster_render_gles::geometry::{
+    rect_verts, rounded_rect_verts, BatchMark, ChromeBatch, GlyphQuad, Vertex,
+};
 use ruster_shell::{Layout, Rect, WindowId};
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::solid::{SolidColorBuffer, SolidColorRenderElement};
@@ -346,49 +348,6 @@ pub struct HoverAnchor {
     pub x: f32,
     pub y: f32,
     pub cell_h: f32,
-}
-
-/// One frame's worth of chrome geometry: solid quads and textured glyph quads,
-/// both in physical pixels with the origin at the output's top-left.
-///
-/// The two lists are appended in painter's order — a panel's background, then
-/// the glyphs that sit on it — and `render_frame` reverses them into smithay's
-/// front-to-back element order.
-#[derive(Debug, Default)]
-pub struct ChromeBatch {
-    pub verts: Vec<Vertex>,
-    pub glyphs: Vec<GlyphQuad>,
-}
-
-/// How much of a [`ChromeBatch`] had been drawn at some point, so a later
-/// [`ChromeBatch::translate_since`] can move everything drawn after it.
-#[derive(Debug, Clone, Copy)]
-pub struct BatchMark {
-    verts: usize,
-    glyphs: usize,
-}
-
-impl ChromeBatch {
-    /// Record the current end of the batch.
-    pub fn mark(&self) -> BatchMark {
-        BatchMark {
-            verts: self.verts.len(),
-            glyphs: self.glyphs.len(),
-        }
-    }
-
-    /// Shift everything appended since `mark` by `(dx, dy)`. `render_frame` uses
-    /// this to centre the welcome editor frame after laying it out at the origin.
-    pub fn translate_since(&mut self, mark: BatchMark, dx: f32, dy: f32) {
-        for v in &mut self.verts[mark.verts..] {
-            v[0] += dx;
-            v[1] += dy;
-        }
-        for g in &mut self.glyphs[mark.glyphs..] {
-            g.x += dx;
-            g.y += dy;
-        }
-    }
 }
 
 /// The compositor's UI chrome: statusline, editor frame, which-key overlay.

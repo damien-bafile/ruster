@@ -22,6 +22,49 @@ pub struct GlyphQuad {
     pub v1: f32,
 }
 
+/// One frame's worth of chrome geometry: solid quads and textured glyph quads,
+/// both in physical pixels with the origin at the output's top-left.
+///
+/// The two lists are appended in painter's order — a panel's background, then
+/// the glyphs that sit on it — and `render_frame` reverses them into smithay's
+/// front-to-back element order.
+#[derive(Debug, Default)]
+pub struct ChromeBatch {
+    pub verts: Vec<Vertex>,
+    pub glyphs: Vec<GlyphQuad>,
+}
+
+/// How much of a [`ChromeBatch`] had been drawn at some point, so a later
+/// [`ChromeBatch::translate_since`] can move everything drawn after it.
+#[derive(Debug, Clone, Copy)]
+pub struct BatchMark {
+    verts: usize,
+    glyphs: usize,
+}
+
+impl ChromeBatch {
+    /// Record the current end of the batch.
+    pub fn mark(&self) -> BatchMark {
+        BatchMark {
+            verts: self.verts.len(),
+            glyphs: self.glyphs.len(),
+        }
+    }
+
+    /// Shift everything appended since `mark` by `(dx, dy)`. `render_frame` uses
+    /// this to centre the welcome editor frame after laying it out at the origin.
+    pub fn translate_since(&mut self, mark: BatchMark, dx: f32, dy: f32) {
+        for v in &mut self.verts[mark.verts..] {
+            v[0] += dx;
+            v[1] += dy;
+        }
+        for g in &mut self.glyphs[mark.glyphs..] {
+            g.x += dx;
+            g.y += dy;
+        }
+    }
+}
+
 pub fn rect_verts(x: f32, y: f32, w: f32, h: f32, color: (f32, f32, f32, f32)) -> Vec<Vertex> {
     let (r, g, b, a) = color;
     vec![
