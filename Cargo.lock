@@ -2529,6 +2529,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ruster-picker"
+version = "0.1.0"
+dependencies = [
+ "nucleo-matcher",
+ "ruster-render",
+]
+
+[[package]]
 name = "ruster-project"
 version = "0.1.0"
 dependencies = [
@@ -2605,7 +2613,6 @@ dependencies = [
  "crossterm",
  "dirs",
  "ignore",
- "nucleo-matcher",
  "ratatui",
  "ruster-core",
  "ruster-dap",
@@ -2613,6 +2620,7 @@ dependencies = [
  "ruster-lsp",
  "ruster-lua",
  "ruster-notify",
+ "ruster-picker",
  "ruster-project",
  "ruster-render",
  "ruster-syntax",

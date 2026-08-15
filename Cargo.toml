@@ -1,3 +1,3 @@
 [workspace]
-members = ["crates/ruster-core", "crates/ruster-notify", "crates/ruster-render", "crates/ruster-syntax", "crates/ruster-lua", "crates/ruster-lsp", "crates/ruster-terminal", "crates/ruster-git", "crates/ruster-project", "crates/ruster-dap", "crates/ruster-tui", "crates/ruster-bin", "crates/ruster-render-raylib", "crates/ruster-shell", "crates/ruster-render-gles", "crates/ruster-compositor"]
+members = ["crates/ruster-core", "crates/ruster-notify", "crates/ruster-render", "crates/ruster-syntax", "crates/ruster-lua", "crates/ruster-lsp", "crates/ruster-terminal", "crates/ruster-git", "crates/ruster-project", "crates/ruster-dap", "crates/ruster-picker", "crates/ruster-tui", "crates/ruster-bin", "crates/ruster-render-raylib", "crates/ruster-shell", "crates/ruster-render-gles", "crates/ruster-compositor"]
 resolver = "2"

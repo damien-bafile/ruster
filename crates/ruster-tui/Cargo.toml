@@ -22,5 +22,5 @@ ratatui = "0.28"
 crossterm = "0.28"
 tokio = { version = "1", features = ["rt", "time", "sync", "macros"] }
 dirs = "5"
-nucleo-matcher = "0.3"
+ruster-picker = { path = "../ruster-picker" }
 ignore = "0.4"

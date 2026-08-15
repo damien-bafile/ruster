@@ -1,0 +1,14 @@
+[package]
+name = "ruster-picker"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+ruster-render = { path = "../ruster-render" }
+# The one fuzzy matcher in the product. It lives here rather than in
+# `ruster-render` so the view-model crate keeps its single dependency: this crate
+# is the state machine, that one is the shapes it produces.
+nucleo-matcher = "0.3"
