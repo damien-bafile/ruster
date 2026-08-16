@@ -221,6 +221,8 @@ fn run_winit() -> anyhow::Result<()> {
                 state.backend_data.output.current_mode().map(|m| m.size),
             )
         });
+        // Set by the render closure when it read the framebuffer back.
+        let readback_happened = std::cell::Cell::new(false);
         let frame_started = std::time::Instant::now();
         let render_res = state
             .backend_data
@@ -289,6 +291,10 @@ fn run_winit() -> anyhow::Result<()> {
                     _ => unreachable!(),
                 })
                 .inspect(|_| {
+                    // Whether this frame read the framebuffer back. A readback
+                    // leaves a different EGL draw surface current, and the swap
+                    // below fails on it — see the rebind after the match.
+                    let mut captured = false;
                     let waiting = std::mem::take(&mut state.screencopy.pending);
                     if !waiting.is_empty() {
                         tracing::debug!(
@@ -297,12 +303,14 @@ fn run_winit() -> anyhow::Result<()> {
                         );
                     }
                     if let Some(size) = state.backend_data.output.current_mode().map(|m| m.size) {
+                        captured |= !waiting.is_empty();
                         ruster_compositor::screencopy::serve(waiting, renderer, &fb, size);
                     }
                     // After the frame is drawn and before it is submitted: the
                     // contents are complete, and the copy is non-destructive so
                     // what reaches the screen is unchanged.
                     if let Some((path, Some(size))) = shot {
+                        captured = true;
                         match ruster_compositor::screenshot::capture(
                             renderer,
                             &fb,
@@ -315,8 +323,36 @@ fn run_winit() -> anyhow::Result<()> {
                             Err(err) => tracing::warn!("screenshot failed: {err}"),
                         }
                     }
+                    if captured {
+                        readback_happened.set(true);
+                    }
                 })
             });
+        // A frame that was read back is not submitted.
+        //
+        // A readback leaves the EGL surface off-current. `submit` then fails
+        // with `EGL_BAD_SURFACE: EGLSurface is not current draw surface`,
+        // smithay tries to recreate the surface, that fails with BAD_ALLOC —
+        // a wl_egl_window can only carry one — and the context is gone for the
+        // rest of the session. It was recorded as a one-frame stutter and is
+        // not: the next frame never renders, so the *first* capture ends
+        // rendering and every capture after it fails for want of a frame. Two
+        // screenshots four seconds apart produced one file and one "no frame
+        // has been rendered".
+        //
+        // Rebinding the surface first was tried and does not restore it. So the
+        // swap is skipped instead, and another frame asked for: the capture is
+        // complete, the pixels are already read, and the only thing lost is
+        // presenting a frame the host will be shown a moment later anyway.
+        // Costing a frame is what this was always believed to cost.
+        if readback_happened.get() {
+            state.backend_data.backend.window().request_redraw();
+            report_frame_time(frame_started.elapsed());
+            if !pump(&mut event_loop, &mut state) {
+                break;
+            }
+            continue;
+        }
         match render_res {
             Ok(Some(damage)) => {
                 if let Err(err) = state.backend_data.backend.submit(Some(&damage)) {
