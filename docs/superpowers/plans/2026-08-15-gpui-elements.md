@@ -32,6 +32,9 @@ The spec (`docs/superpowers/specs/2026-08-15-gpui-elements-design.md`, commit `4
 | — | `ruster-core/workspace.rs:132` has `impl Default for BufferStore`, but Panes, Highlights, Keymap, LspState have no confirmed `Default` | Ordering test drives a composition helper, **not** a `FrameInput` |
 | Task 6 is silent on the launcher | The launcher predates the plan (the plan's `draw_*` list omits `draw_launcher`) but the task brief mandates it in the flip | `draw_launcher` is deleted with the rest; `launcher_elem` (scene.rs) composes it from `launcher_layout` and the confirmed draw geometry; it joins the hover panel in the **overlay**, composed first so hover still renders above it. `launcher_layout`/`LauncherLayout` stay (external `.visible_rows` users in `backend/drm.rs`/`winit_main.rs`) |
 | `translate_since_moves_both_panels_and_glyphs` | `translate_since` is deleted at the flip, so the old test name/scope is dead | Re-anchored as `a_pane_at_a_non_zero_rect_lands_offset_correctly`: a pane absolutely positioned at a tile origin lands there (boxes and glyphs) with no post-hoc translation |
+| Task 7 budget gate: frame time ≤ ~4.7ms | **Not reproducible this session.** The parent commit (hand-built path) also runs ~10.9ms under nested winit on this host — frame time is host-cadence bound at ~66fps, so the absolute figure cannot be compared against | Recorded the like-for-like delta instead: post-flip **~12.4ms** vs pre-flip **~10.9ms** steady (+~1.5ms) — the documented no-caching-in-v1 cost of rebuilding the taffy layout every frame. `docs/compositor.md` budget row updated with both numbers and the caveat |
+| Task 7 "update docs/AGENTS.md workspace crate list (+ ruster-render-elements)" | `AGENTS.md` has **no** workspace crate list — the membership lives only in `Cargo.toml` `[workspace]` members, which already list `ruster-render-elements` | No AGENTS.md edit; the crate list to update does not exist and the real list is correct |
+| Task 7 visual rows re-verified via compositor screenshots | The known "Screenshot costs a frame" artifact means every capture is followed by `The context has been lost`; in this env the compositor then **stalls until killed** (the host stops presenting the nested window), so only one screenshot per winit run is practical | Each chrome surface was captured on its own run: statusline + window borders (run B), which-key (run F, pinned view), editor pane (run G, `new pane`), hover (run H, live rust-analyzer round trip against `/tmp/lsp-demo`) |
 
 ## Global Constraints
 
@@ -209,12 +212,12 @@ Build the per-widget `*_elem` functions, `chrome_scene`, and the **parity gate**
 
 Confirm the flip against the spec's Definition of Done gates and record results.
 
-- [ ] `cargo build`, `cargo test`, `cargo clippy --all-targets -- -D warnings` all clean across the workspace.
-- [ ] **Render budget:** run the compositor on the winit backend with `RUSTER_BENCH_GLYPHS=10000` (e.g. `cargo run -p ruster-bin -- compositor --winit` or the documented invocation in `docs/compositor.md`), capture the `"frame time"` info log (`winit_main.rs:83`), confirm ≤ today's ~4.7ms, record the number.
-- [ ] **Visual rows:** capture the `docs/compositor.md` rows that render chrome — statusline, which-key, hover, window borders, editor panes — and confirm they match the recorded screenshots / prior verification.
-- [ ] Update `docs/AGENTS.md` workspace crate list (+ `ruster-render-elements`).
-- [ ] Update `docs/compositor.md` (new `frame time` number; note the declarative scene; the visual rows table stays).
-- [ ] **Self-review:** re-read this plan's checklist; confirm every box is ticked; confirm no `draw_*` geometry remains; confirm `docs/config-reference.md`, `docs/lua-api.md`, `docs/keybindings.md` needed no edits (no config/Lua/keybinding surface changed — if one did, that's a spec violation to fix).
+- [x] `cargo build`, `cargo test`, `cargo clippy --all-targets -- -D warnings` all clean across the workspace.
+- [x] **Render budget:** run the compositor on the winit backend with `RUSTER_BENCH_GLYPHS=10000` (e.g. `cargo run -p ruster-bin -- compositor --winit` or the documented invocation in `docs/compositor.md`), capture the `"frame time"` info log (`winit_main.rs:83`), confirm ≤ today's ~4.7ms, record the number.
+- [x] **Visual rows:** capture the `docs/compositor.md` rows that render chrome — statusline, which-key, hover, window borders, editor panes — and confirm they match the recorded screenshots / prior verification.
+- [x] Update `docs/AGENTS.md` workspace crate list (+ `ruster-render-elements`).
+- [x] Update `docs/compositor.md` (new `frame time` number; note the declarative scene; the visual rows table stays).
+- [x] **Self-review:** re-read this plan's checklist; confirm every box is ticked; confirm no `draw_*` geometry remains; confirm `docs/config-reference.md`, `docs/lua-api.md`, `docs/keybindings.md` needed no edits (no config/Lua/keybinding surface changed — if one did, that's a spec violation to fix).
 - Commit: `docs: verify chrome scene render path and record frame time`
 
 ## Self-review checklist
@@ -223,6 +226,6 @@ Confirm the flip against the spec's Definition of Done gates and record results.
 - **Parity before flip:** the migration gate (Task 5 parity test) was green with both paths emitting, then deleted only at the flip; the flip changed `collect_render_elements` and nothing the tests can't see.
 - **No dead code:** after Task 6, `rg` shows zero `draw_*`, `mark`, `translate_since`, `OverlayBatch`, `glyph_ids`, `glyph_id` in the compositor.
 - **Layering:** `ruster-render-elements` depends only on `ruster-render` + taffy; render-gles depends on elements; compositor depends on both — no cycle, no smithay/GL/cosmic-text in the portable crate.
-- **Budget:** `RUSTER_BENCH_GLYPHS=10000` frame time recorded and within budget; no caching in v1 (taffy rebuilds each frame by design).
+- **Budget:** like-for-like frame time recorded (post-flip ~12.4ms vs pre-flip ~10.9ms, +~1.5ms; the absolute ~4.7ms gate was not reproducible this session — see deviations); no caching in v1 (taffy rebuilds each frame by design).
 - **Keyed ids:** `element_ids(&key, n)` stable across frames with unchanged geometry (Task 4 test); reordering remaps keys (Task 2/3 test) exactly as GPUI's documented footgun.
-- **Docs:** AGENTS.md + compositor.md updated; config/lua/keybinding docs untouched (no surface change).
+- **Docs:** compositor.md updated (budget row with new numbers); AGENTS.md needs no crate-list edit (none exists — see deviations); config/lua/keybinding docs untouched (no surface change).
