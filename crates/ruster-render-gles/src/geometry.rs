@@ -39,38 +39,6 @@ pub struct ChromeBatch {
     pub glyph_keys: Vec<ElementKey>,
 }
 
-/// How much of a [`ChromeBatch`] had been drawn at some point, so a later
-/// [`ChromeBatch::translate_since`] can move everything drawn after it.
-#[derive(Debug, Clone, Copy)]
-pub struct BatchMark {
-    verts: usize,
-    glyphs: usize,
-}
-
-impl ChromeBatch {
-    /// Record the current end of the batch.
-    pub fn mark(&self) -> BatchMark {
-        BatchMark {
-            verts: self.verts.len(),
-            glyphs: self.glyphs.len(),
-        }
-    }
-
-    /// Shift everything appended since `mark` by `(dx, dy)`. `render_frame` uses
-    /// this to centre the welcome editor frame after laying it out at the origin.
-    /// `glyph_keys` is left alone: a key is per-glyph identity, not a position.
-    pub fn translate_since(&mut self, mark: BatchMark, dx: f32, dy: f32) {
-        for v in &mut self.verts[mark.verts..] {
-            v[0] += dx;
-            v[1] += dy;
-        }
-        for g in &mut self.glyphs[mark.glyphs..] {
-            g.x += dx;
-            g.y += dy;
-        }
-    }
-}
-
 pub fn rect_verts(x: f32, y: f32, w: f32, h: f32, color: (f32, f32, f32, f32)) -> Vec<Vertex> {
     let (r, g, b, a) = color;
     vec![

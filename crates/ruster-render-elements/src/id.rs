@@ -16,11 +16,6 @@ impl ElementKey {
         ElementKey(v)
     }
 
-    /// Push a segment onto this key in place.
-    pub fn push(&mut self, seg: &str) {
-        self.0.push(seg.to_string());
-    }
-
     /// The most recently appended segment, if any.
     pub fn last(&self) -> Option<&str> {
         self.0.last().map(|s| s.as_str())

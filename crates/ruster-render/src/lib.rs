@@ -22,6 +22,10 @@ pub enum UIMode {
 /// click-to-position all assume every cell is the same width, and a
 /// sans-serif default would render code proportionally, so an editor pane
 /// built on the chrome path would render code in a proportional font.
+///
+/// The family is also part of the glyph atlas key: the same character in a
+/// different family is a different bitmap, so `Ui` and `Mono` never share an
+/// atlas entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum FontFamily {
     /// Proportional, for chrome.

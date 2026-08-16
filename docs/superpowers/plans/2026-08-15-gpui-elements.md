@@ -79,38 +79,38 @@ The spec (`docs/superpowers/specs/2026-08-15-gpui-elements-design.md`, commit `4
 
 Relocate the two shared types the portable crate must name, with source-compatibility re-exports.
 
-- [ ] **TDD fail:** add a compile-error test — `cargo build -p ruster-render` fails because `ruster_render::FontFamily` does not exist.
-- [ ] Move `FontFamily` enum (derives Debug/Clone/Copy/PartialEq/Eq/Hash/Default) from `ruster-render-gles/src/atlas.rs:74` into `crates/ruster-render/src/lib.rs`.
-- [ ] In render-gles `atlas.rs`: `use ruster_render::FontFamily; pub use ruster_render::FontFamily;` at the module top (re-export keeps `ruster_render_gles::atlas::FontFamily` paths compiling) and replace `FontFamily::attrs(self)` (atlas.rs:82) with `pub fn family_attrs(family: FontFamily) -> Attrs<'static>`; update `Buffer::set_text` call sites that used `.attrs()`.
-- [ ] Move `ChromeBatch`/`BatchMark`/`mark`/`translate_since` from `chrome.rs:296-331` into `ruster-render-gles/src/geometry.rs` (after `GlyphQuad`), keeping `#[derive(Debug, Default)]` / `#[derive(Debug, Clone, Copy)]`.
-- [ ] Delete them from chrome.rs; import `use ruster_render_gles::geometry::{rect_verts, rounded_rect_verts, BatchMark, ChromeBatch, GlyphQuad, Vertex};` (chrome.rs:16 already imports the first two + GlyphQuad + Vertex).
-- [ ] **TDD pass:** `cargo build` + `cargo test -p ruster-render-gles -p ruster-compositor` green.
+- [x] **TDD fail:** add a compile-error test — `cargo build -p ruster-render` fails because `ruster_render::FontFamily` does not exist.
+- [x] Move `FontFamily` enum (derives Debug/Clone/Copy/PartialEq/Eq/Hash/Default) from `ruster-render-gles/src/atlas.rs:74` into `crates/ruster-render/src/lib.rs`.
+- [x] In render-gles `atlas.rs`: `use ruster_render::FontFamily; pub use ruster_render::FontFamily;` at the module top (re-export keeps `ruster_render_gles::atlas::FontFamily` paths compiling) and replace `FontFamily::attrs(self)` (atlas.rs:82) with `pub fn family_attrs(family: FontFamily) -> Attrs<'static>`; update `Buffer::set_text` call sites that used `.attrs()`.
+- [x] Move `ChromeBatch`/`BatchMark`/`mark`/`translate_since` from `chrome.rs:296-331` into `ruster-render-gles/src/geometry.rs` (after `GlyphQuad`), keeping `#[derive(Debug, Default)]` / `#[derive(Debug, Clone, Copy)]`.
+- [x] Delete them from chrome.rs; import `use ruster_render_gles::geometry::{rect_verts, rounded_rect_verts, BatchMark, ChromeBatch, GlyphQuad, Vertex};` (chrome.rs:16 already imports the first two + GlyphQuad + Vertex).
+- [x] **TDD pass:** `cargo build` + `cargo test -p ruster-render-gles -p ruster-compositor` green.
 - Commit: `refactor: move FontFamily and ChromeBatch so the elements crate can name them`
 
 ### Task 2 — `ruster-render-elements`: builder, style, id
 
 Land the crate skeleton: `Elem` tree, `div()`/`text()` builders, `Styled` builder, `Style`, `ElementKey`.
 
-- [ ] Add workspace member `crates/ruster-render-elements`; create `Cargo.toml` (deps `ruster-render`, `taffy = "0.13"`).
-- [ ] `id.rs`: `#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)] pub struct ElementKey(pub Vec<String>);` + `child(&self, seg: &str) -> ElementKey` (push clone), `last()`.
-- [ ] `element.rs`: `pub struct Elem { pub style: Style, pub kind: ElemKind }`; `pub enum ElemKind { Container { children: Vec<Elem> }, Text { line: StyledLine } }`; `pub fn div() -> Elem`; `pub fn text(impl Into<StyledLine>) -> Elem`; `impl Elem { pub fn children(&mut self, children: Vec<Elem>) -> &mut Self }` (panics on `Text` leaf — a text cannot have children).
-- [ ] `style.rs`: `pub struct Style { pub taffy: taffy::Style, pub bg: Option<Color>, pub fg: Option<Color>, pub radius: f32, pub border_width: f32, pub border_color: Color, pub font_size: f32, pub font_family: FontFamily, pub bold: bool, pub id: Option<String> }` + `impl Default`.
-- [ ] `Styled` trait with `#[allow(clippy::should_implement_trait)]` on `fn style` (name clash with field `style`): `flex_col() flex_row() flex_wrap() flex_grow(f32) flex_shrink(f32) size(w,h) w() h() min_w_0() gap(f32) padding() padding_x() padding_y() padding_left/right/top/bottom(f32) justify_center() items_center() absolute() position(x,y) bg(Color) fg(Color) radius(f32) border_1() border_color(Color) font_size(f32) font_family(FontFamily) bold() id(&str) style(fn(&mut taffy::Style))`.
+- [x] Add workspace member `crates/ruster-render-elements`; create `Cargo.toml` (deps `ruster-render`, `taffy = "0.13"`).
+- [x] `id.rs`: `#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)] pub struct ElementKey(pub Vec<String>);` + `child(&self, seg: &str) -> ElementKey` (push clone), `last()`.
+- [x] `element.rs`: `pub struct Elem { pub style: Style, pub kind: ElemKind }`; `pub enum ElemKind { Container { children: Vec<Elem> }, Text { line: StyledLine } }`; `pub fn div() -> Elem`; `pub fn text(impl Into<StyledLine>) -> Elem`; `impl Elem { pub fn children(&mut self, children: Vec<Elem>) -> &mut Self }` (panics on `Text` leaf — a text cannot have children).
+- [x] `style.rs`: `pub struct Style { pub taffy: taffy::Style, pub bg: Option<Color>, pub fg: Option<Color>, pub radius: f32, pub border_width: f32, pub border_color: Color, pub font_size: f32, pub font_family: FontFamily, pub bold: bool, pub id: Option<String> }` + `impl Default`.
+- [x] `Styled` trait with `#[allow(clippy::should_implement_trait)]` on `fn style` (name clash with field `style`): `flex_col() flex_row() flex_wrap() flex_grow(f32) flex_shrink(f32) size(w,h) w() h() min_w_0() gap(f32) padding() padding_x() padding_y() padding_left/right/top/bottom(f32) justify_center() items_center() absolute() position(x,y) bg(Color) fg(Color) radius(f32) border_1() border_color(Color) font_size(f32) font_family(FontFamily) bold() id(&str) style(fn(&mut taffy::Style))`.
   - `size(w,h)`/`w`/`h`/`gap`/`padding*`/`min_w_0`/`position` take `f32` and map to `taffy::Style` via `taffy::prelude::{length, auto, zero, LengthPercentage, LengthPercentageAuto, Dimension}`; `absolute()` sets `taffy.position = Position::Absolute` and the `.position(x,y)` sets `inset.left/top`.
   - `flex_*`/`justify_center`/`items_center` map to the taffy enum fields; `flex_grow`/`flex_shrink` to the f32 fields.
   - Font/visual fields go on the Style struct's own fields, not taffy.
-- [ ] `element.rs`: `impl Styled for Elem` delegating to `self.style`; make `Styled` callable in a chain ending before `children` (return `&mut Self`).
-- [ ] `lib.rs`: `pub use element::{div, text, Elem, ElemKind, Styled}; pub use style::Style; pub use id::ElementKey; pub use layout::{layout, BoxNode, LayoutScene, PxRect, TextMeasurer, TextNode};`
-- [ ] **Tests (TDD):** builder → taffy mapping unit tests: `size`/`position` land on `Style.taffy`; `id()` lands on `Style.id`; a `text` leaf cannot take `children` (panics); `ElementKey` root is empty and `child()` appends. Reordering-the-tree-remaps-keys test: two siblings with `.id("a")`/`.id("b")` produce different keys when swapped.
-- [ ] **Verify:** `cargo test -p ruster-render-elements` green; `cargo clippy --all-targets -- -D warnings` clean.
+- [x] `element.rs`: `impl Styled for Elem` delegating to `self.style`; make `Styled` callable in a chain ending before `children` (return `&mut Self`).
+- [x] `lib.rs`: `pub use element::{div, text, Elem, ElemKind, Styled}; pub use style::Style; pub use id::ElementKey; pub use layout::{layout, BoxNode, LayoutScene, PxRect, TextMeasurer, TextNode};`
+- [x] **Tests (TDD):** builder → taffy mapping unit tests: `size`/`position` land on `Style.taffy`; `id()` lands on `Style.id`; a `text` leaf cannot take `children` (panics); `ElementKey` root is empty and `child()` appends. Reordering-the-tree-remaps-keys test: two siblings with `.id("a")`/`.id("b")` produce different keys when swapped.
+- [x] **Verify:** `cargo test -p ruster-render-elements` green; `cargo clippy --all-targets -- -D warnings` clean.
 - Commit: `feat: ruster-render-elements builder, style and element ids`
 
 ### Task 3 — `layout()`: taffy build + pure `LayoutScene`
 
 The heart of the crate: walk the tree, build a `TaffyTree<NodeCtx>` in lockstep with a mirror `SceneNode` tree, measure text leaves through the injected `TextMeasurer`, run taffy, read back rects, emit painter's-order `LayoutScene`.
 
-- [ ] **TDD fail:** a golden test (below) fails because `layout` does not exist.
-- [ ] `layout.rs`:
+- [x] **TDD fail:** a golden test (below) fails because `layout` does not exist.
+- [x] `layout.rs`:
   ```rust
   pub trait TextMeasurer {
       fn measure(&mut self, line: &StyledLine, font_size: f32, family: FontFamily) -> (f32, f32);
@@ -124,40 +124,40 @@ The heart of the crate: walk the tree, build a `TaffyTree<NodeCtx>` in lockstep 
   #[derive(Debug, Clone, PartialEq, Default)]
   pub struct LayoutScene { pub boxes: Vec<BoxNode>, pub texts: Vec<TextNode> }
   ```
-- [ ] Internal `NodeCtx { key: ElementKey, kind: NodeKind, parent_key: ElementKey }` and `SceneNode { node: NodeId, ctx: NodeCtx, style: Style }` mirror; build walks `Elem`:
+- [x] Internal `NodeCtx { key: ElementKey, kind: NodeKind, parent_key: ElementKey }` and `SceneNode { node: NodeId, ctx: NodeCtx, style: Style }` mirror; build walks `Elem`:
   - `RootStyle`: `taffy::Style { size: area.size, position: Relative }`; the root gets `ElementKey(vec![])`.
   - Containers → `new_with_children`; Text leaves → `new_leaf_with_context` (context carries `StyledLine`, `font_size`, `family`).
   - Key derivation per child: `key = parent_key.child(child.id.unwrap_or(&index.to_string()))`; duplicate `.id()` under one parent → `debug_assert!` in debug, later wins in release (GPUI contract).
   - `.absolute()` nodes are plain children of the root/container (taffy `Position::Absolute`); their `position(x,y)` set `inset`.
-- [ ] `compute_layout_with_measure` against `area.size` with a closure capturing `&mut measurer`: if `Option<&mut NodeCtx>` says the node is a text leaf, call `measurer.measure(line, font_size, family)` and return `Size { width, height }`, else `Size::ZERO`.
-- [ ] Read-back walk (mirror tree, accumulate parent origin from `tree.layout(node)`):
+- [x] `compute_layout_with_measure` against `area.size` with a closure capturing `&mut measurer`: if `Option<&mut NodeCtx>` says the node is a text leaf, call `measurer.measure(line, font_size, family)` and return `Size { width, height }`, else `Size::ZERO`.
+- [x] Read-back walk (mirror tree, accumulate parent origin from `tree.layout(node)`):
   - Emit container `BoxNode` (bg present or border_width > 0) at its rect **before** children (painter's order), with `fill = bg.into()` (ruster-render `impl From<Color> for (f32,f32,f32,f32)` exists; `Color::Default` → white, matching current tessellation), `radius`, border.
   - Emit each `Text` leaf's `TextNode` at its computed rect with its effective `fg` (explicit, else inherited container fg, else `Color::Default`), `font_size`, `family`, `bold`, `key`.
   - `fg` inheritance is threaded as the build walk descends (a `parent_fg: Option<Color>`).
-- [ ] **Tests (TDD):** a mock `TextMeasurer` (returns `(len * 8.0, font_size + 4.0)`) + golden layout tests reproducing each widget's hardcoded numbers:
+- [x] **Tests (TDD):** a mock `TextMeasurer` (returns `(len * 8.0, font_size + 4.0)`) + golden layout tests reproducing each widget's hardcoded numbers:
   - statusline: bar at `(0, h-40, w, 40)`, mode box `(0, y, 64, 40)`, "N" at `(24, pad)`, ws at `(76, y+pad)`, indicator after `ws_w+20`, title after `ind_w+20` (`pad = (40-16)/2 = 12`);
   - which-key: panel at `(12,12)` with `w`/`h` from column chunking arithmetic; a column's width = max over rows of `key_w + 8 + desc_w`;
   - hover: pre-measured `w = (text_w + 16).min(output_w - 8)`, `h = 16 + lines*18`, below/above flip, x clamp;
   - a pane: `body.x = FRAME_PAD + gutter_cols*cell_w`, `body.y = FRAME_BAR_H + FRAME_PAD`, first run glyph origin;
   - absolute vs in-flow ordering: a pane drawn at an absolute `(x,y)` origin vs the same content in-flow yields identical rects.
   - Reorder-remaps-keys test (from Task 2) now at the layout level.
-- [ ] **Verify:** `cargo test -p ruster-render-elements` green; clippy clean.
+- [x] **Verify:** `cargo test -p ruster-render-elements` green; clippy clean.
 - Commit: `feat: taffy layout to a pure painter's-order LayoutScene`
 
 ### Task 4 — render-gles: `GlesTextMeasurer` + `scene_to_chrome_batch`
 
 Tessellate `LayoutScene` into the existing `ChromeBatch` (now carrying `glyph_keys`), and provide the measurer.
 
-- [ ] **TDD fail:** a tessellation test (below) fails because `scene_to_chrome_batch` does not exist.
-- [ ] `tessellate.rs`:
+- [x] **TDD fail:** a tessellation test (below) fails because `scene_to_chrome_batch` does not exist.
+- [x] `tessellate.rs`:
   - `pub struct GlesTextMeasurer;` implementing `TextMeasurer` via `layout_text_in(&line.text, font_size as u32, None, family)` → `(width_px, font_size as f32 + 4.0)` (matching `cell_metrics`'s height rule; width equals what the atlas will tessellate).
   - `pub fn scene_to_chrome_batch(scene: &LayoutScene, atlas: &mut Atlas) -> ChromeBatch`:
     - `BoxNode`: `rect_verts` or `rounded_rect_verts` (radius); border as 4 thin rects (top/bottom/left/right, `border_width`) when `border_width > 0`; push verts in `BoxNode` emission order.
     - `TextNode`: `layout_text_in(&line.text, font_size as u32, None, family)`, then per glyph `atlas.glyph_in(font_size as u32, rgb8(fg), c, family)` (skip empty) pushing `GlyphQuad { x: rect.x + gx + g.x, y: rect.y + g.y, w, h, u0..v1 }` and one `ElementKey` clone into `glyph_keys` per glyph.
     - `rgb8` (chrome.rs:926) moves here (or into geometry.rs); chrome.rs's `text_in` is deleted at flip so no duplicate.
-- [ ] Add `ChromeBatch.glyph_keys: Vec<ElementKey>` (Task 1 moved ChromeBatch — extend it here; `Default` still derives; `translate_since` also shifts keys? No — keys are per-glyph identity, not position, so `translate_since` leaves them; it is deleted at flip anyway).
-- [ ] **Tests (TDD):** box→vertex counts (rect = 6 verts, rounded ≥ 6, radius clamped like `rounded_rect_verts`), border = 4 rects, text→glyph quads + atlas UVs (a known string at a known position yields the same quads as the old `text_in` did), `glyph_keys` length == glyph count, and **id stability**: two `scene_to_chrome_batch` calls with unchanged geometry produce equal `glyph_keys`.
-- [ ] **Verify:** `cargo test -p ruster-render-gles` green (incl. existing geometry/atlas tests); clippy clean.
+- [x] Add `ChromeBatch.glyph_keys: Vec<ElementKey>` (Task 1 moved ChromeBatch — extend it here; `Default` still derives; `translate_since` also shifts keys? No — keys are per-glyph identity, not position, so `translate_since` leaves them; it is deleted at flip anyway).
+- [x] **Tests (TDD):** box→vertex counts (rect = 6 verts, rounded ≥ 6, radius clamped like `rounded_rect_verts`), border = 4 rects, text→glyph quads + atlas UVs (a known string at a known position yields the same quads as the old `text_in` did), `glyph_keys` length == glyph count, and **id stability**: two `scene_to_chrome_batch` calls with unchanged geometry produce equal `glyph_keys`.
+- [x] **Verify:** `cargo test -p ruster-render-gles` green (incl. existing geometry/atlas tests); clippy clean.
 - Commit: `feat: tessellate LayoutScene to ChromeBatch with keyed glyph ids`
 
 ### Task 5 — compositor `scene.rs`: builders + parity test
