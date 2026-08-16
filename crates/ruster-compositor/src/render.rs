@@ -165,21 +165,80 @@ where
 {
     let mut elements: Vec<ChromeRenderElements<R>> = Vec::new();
 
-    // The pointer goes in front of everything, chrome included.
-    if let Some(chrome) = chrome.as_mut() {
-        elements.extend(cursor_elements(
-            chrome,
-            renderer,
-            scene.cursor_status,
-            scene.cursor_location,
-            scene.output.current_scale().fractional_scale(),
-        ));
+    for stage in FRONT_TO_BACK {
+        match stage {
+            Stage::Cursor => {
+                if let Some(chrome) = chrome.as_mut() {
+                    elements.extend(cursor_elements(
+                        chrome,
+                        renderer,
+                        scene.cursor_status,
+                        scene.cursor_location,
+                        scene.output.current_scale().fractional_scale(),
+                    ));
+                }
+            }
+            Stage::Layer(which) => elements.extend(layer_elements(scene, renderer, which)),
+            Stage::Chrome => elements.extend(chrome_elements(scene, chrome, renderer)),
+            Stage::Windows => elements.extend(window_elements(scene, renderer)),
+        }
     }
 
+    elements
+}
+
+/// One band of the frame, in the order the bands are emitted.
+///
+/// The order used to live in the statement order of `collect_render_elements`,
+/// where nothing could assert it and getting it wrong was silent: a bar emitted
+/// after the chrome still maps, still configures, still renders one element per
+/// frame, and is simply never seen, because ruster draws its own statusline
+/// along the same edge. That cost an afternoon. As data it is one array a test
+/// can read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stage {
+    /// The pointer, in front of everything including chrome.
+    Cursor,
+    /// One `wlr-layer-shell` layer.
+    Layer(WlrLayer),
+    /// Everything the compositor draws itself: statusline, borders, panes,
+    /// which-key, the launcher.
+    Chrome,
+    /// Tiled toplevels and their popups.
+    Windows,
+}
+
+/// Every band of a frame, front to back — which is the order a smithay element
+/// list wants, not painter's order.
+///
+/// `Overlay` and `Top` sit in front of [`Stage::Chrome`] deliberately: ruster's
+/// statusline is the fallback for when nothing better is there, and a client
+/// that went to the trouble of asking for the space wins it. `Bottom` and
+/// `Background` — where a wallpaper setter lives — go behind the windows.
+pub const FRONT_TO_BACK: [Stage; 7] = [
+    Stage::Cursor,
+    Stage::Layer(WlrLayer::Overlay),
+    Stage::Layer(WlrLayer::Top),
+    Stage::Chrome,
+    Stage::Windows,
+    Stage::Layer(WlrLayer::Bottom),
+    Stage::Layer(WlrLayer::Background),
+];
+
+/// Everything the compositor draws itself, as render elements.
+fn chrome_elements<R: Renderer + ImportAll + ImportMem>(
+    scene: &FrameInput<'_>,
+    chrome: &mut Option<Chrome>,
+    renderer: &mut R,
+) -> Vec<ChromeRenderElements<R>>
+where
+    <R as RendererSuper>::TextureId: Clone + 'static,
+{
+    let mut elements: Vec<ChromeRenderElements<R>> = Vec::new();
     // Chrome is drawn unconditionally and sits above the client surface; the
     // statusline bar spans the bottom of the output, the which-key overlay
     // floats top-left, and the welcome editor frame is centred.
-    if let Some(chrome) = chrome {
+    if let Some(chrome) = chrome.as_mut() {
         let size = scene
             .output
             .current_mode()
@@ -355,18 +414,24 @@ where
         );
     }
 
-    // Layer surfaces above the windows: `Top` is where a bar lives, `Overlay`
-    // where a notification or a lock screen does. Emitted before the window loop
-    // because this list is front-to-back.
-    for layer in [WlrLayer::Overlay, WlrLayer::Top] {
-        elements.extend(layer_elements(scene, renderer, layer));
-    }
+    elements
+}
 
-    // Every tiled window, at the rectangle the container tree gave it. Drawn
-    // back to front in reverse layout order so the focused window — which is
-    // listed first below — ends up nearest the front; tiled windows do not
-    // overlap, so the order only matters for the moment during a resize when
-    // two rectangles briefly disagree.
+/// Every tiled window, at the rectangle the container tree gave it, with each
+/// window's popups in front of it.
+///
+/// Drawn back to front in reverse layout order so the focused window — which is
+/// listed first — ends up nearest the front; tiled windows do not overlap, so
+/// the order only matters for the moment during a resize when two rectangles
+/// briefly disagree.
+fn window_elements<R: Renderer + ImportAll + ImportMem>(
+    scene: &FrameInput<'_>,
+    renderer: &mut R,
+) -> Vec<ChromeRenderElements<R>>
+where
+    <R as RendererSuper>::TextureId: Clone + 'static,
+{
+    let mut elements: Vec<ChromeRenderElements<R>> = Vec::new();
     let scale = Scale::from(scene.output.current_scale().fractional_scale());
     for (id, rect) in scene.geometry.iter().rev() {
         let Some(surface) = scene.toplevels.get(id) else {
@@ -398,12 +463,6 @@ where
         );
     }
 
-    // And the two that sit beneath the windows: `Bottom`, and `Background`,
-    // which is what a wallpaper setter uses.
-    for layer in [WlrLayer::Bottom, WlrLayer::Background] {
-        elements.extend(layer_elements(scene, renderer, layer));
-    }
-
     elements
 }
 
@@ -430,11 +489,9 @@ where
         };
         let origin = geometry.loc.to_physical_precise_round(scale);
         let tree = SurfaceTree::from_surface(layer.wl_surface());
-        out.extend(
-            AsRenderElements::<R>::render_elements(&tree, renderer, origin, scale, 1.0)
-                .into_iter()
-                .map(ChromeRenderElements::Surface),
-        );
+        let elements: Vec<_> =
+            AsRenderElements::<R>::render_elements(&tree, renderer, origin, scale, 1.0);
+        out.extend(elements.into_iter().map(ChromeRenderElements::Surface));
     }
     out
 }
@@ -588,6 +645,72 @@ pub fn send_frame_callbacks(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Where a stage sits in the frame, or a panic naming the one that is
+    /// missing — an unwrap here would report "called on a None value" about an
+    /// array whose contents are the subject of every assertion below.
+    fn depth(stage: Stage) -> usize {
+        FRONT_TO_BACK
+            .iter()
+            .position(|s| *s == stage)
+            .unwrap_or_else(|| panic!("{stage:?} is not emitted at all"))
+    }
+
+    #[test]
+    fn a_client_bar_is_drawn_in_front_of_the_compositors_own_statusline() {
+        // The bug this exists for: `Top` was emitted after `Chrome`, so a bar
+        // anchored to the bottom of the output landed under ruster's statusline
+        // and was invisible — while still mapping, configuring and rendering an
+        // element every frame, so every log said it was working.
+        assert!(
+            depth(Stage::Layer(WlrLayer::Top)) < depth(Stage::Chrome),
+            "a bar must beat the statusline it overlaps"
+        );
+        // A lock screen or a notification beats a bar, and both beat chrome.
+        assert!(depth(Stage::Layer(WlrLayer::Overlay)) < depth(Stage::Layer(WlrLayer::Top)));
+        // The pointer is in front of all of it, including a lock screen.
+        assert_eq!(depth(Stage::Cursor), 0);
+    }
+
+    #[test]
+    fn wallpaper_layers_stay_behind_the_windows_they_are_behind() {
+        // The other half: `Bottom` and `Background` are *below* the windows, so
+        // a wallpaper setter cannot paint over the desktop it decorates.
+        for below in [WlrLayer::Bottom, WlrLayer::Background] {
+            assert!(
+                depth(Stage::Layer(below)) > depth(Stage::Windows),
+                "{below:?} must stay behind the windows"
+            );
+        }
+        // And the wallpaper is behind the layer above it, not level with it.
+        assert!(
+            depth(Stage::Layer(WlrLayer::Background)) > depth(Stage::Layer(WlrLayer::Bottom)),
+            "the wallpaper is the backmost thing there is"
+        );
+    }
+
+    #[test]
+    fn every_layer_is_emitted_exactly_once() {
+        // A layer dropped from the array is a protocol the compositor advertises
+        // and then silently ignores; a layer listed twice draws it over itself.
+        for which in [
+            WlrLayer::Background,
+            WlrLayer::Bottom,
+            WlrLayer::Top,
+            WlrLayer::Overlay,
+        ] {
+            let n = FRONT_TO_BACK
+                .iter()
+                .filter(|s| **s == Stage::Layer(which))
+                .count();
+            assert_eq!(n, 1, "{which:?} is emitted {n} times");
+        }
+        assert_eq!(
+            FRONT_TO_BACK.len(),
+            7,
+            "four layers, plus cursor/chrome/windows"
+        );
+    }
 
     #[test]
     fn chrome_height_never_exceeds_output() {

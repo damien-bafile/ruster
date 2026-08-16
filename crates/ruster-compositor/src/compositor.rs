@@ -1825,6 +1825,14 @@ impl<B: Backend + 'static> CompositorHandler for CompositorState<B> {
         // way a popup does — and the map has to be re-arranged when one changes,
         // or a bar that grew keeps its old strip and the windows keep the old
         // gap.
+        //
+        // The configure is sent with `send_pending_configure`, and emphatically
+        // *not* with `ensure_configured`, whose name reads like a request and is
+        // an assertion: it raises a protocol error when the surface has not been
+        // configured, which on a first commit it never has. It killed the client
+        // it was meant to be serving — `Protocol error 2 on
+        // zwlr_layer_surface_v1: layer_surface has never been configured`, from
+        // the compositor, to a bar doing exactly the right thing.
         {
             let output = self.backend_data.output().clone();
             let mut map = smithay::desktop::layer_map_for_output(&output);
@@ -1832,10 +1840,25 @@ impl<B: Backend + 'static> CompositorHandler for CompositorState<B> {
                 .layer_for_surface(surface, smithay::desktop::WindowSurfaceType::ALL)
                 .cloned();
             if let Some(layer) = found {
-                let initial = !layer.layer_surface().ensure_configured();
-                if map.arrange() || initial {
-                    drop(map);
-                    // Outside the map's borrow: re-tiling reads it again.
+                // Arranged before the configure is sent, because the configure
+                // carries the size and the arrangement is what decides it.
+                let rearranged = map.arrange();
+                drop(map);
+                layer.layer_surface().send_pending_configure();
+                if rearranged {
+                    // One line per bar that maps, resizes or goes away — not per
+                    // frame. It is the only place the exclusive zone becomes
+                    // visible from outside: a bar that maps but is ignored, and
+                    // a bar that is honoured, look identical until this prints
+                    // an area shorter than the output.
+                    let area = self.output_rect();
+                    tracing::info!(
+                        x = area.x,
+                        y = area.y,
+                        w = area.w,
+                        h = area.h,
+                        "layer surfaces rearranged; tiling into"
+                    );
                     self.reconfigure_tiles();
                 }
             }

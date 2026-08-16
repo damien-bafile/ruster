@@ -2443,6 +2443,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ruster-bar"
+version = "0.1.0"
+dependencies = [
+ "memmap2",
+ "wayland-client",
+ "wayland-protocols-wlr",
+]
+
+[[package]]
 name = "ruster-bin"
 version = "0.1.0"
 dependencies = [

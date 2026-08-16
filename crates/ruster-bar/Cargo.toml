@@ -1,0 +1,15 @@
+[package]
+name = "ruster-bar"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "ruster-bar"
+path = "src/main.rs"
+
+# Linux-only for the same reason the compositor is: layer-shell is a Wayland
+# protocol, and off Linux the binary is a stub that says so.
+[target.'cfg(target_os = "linux")'.dependencies]
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+memmap2 = "0.9"
