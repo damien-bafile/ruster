@@ -1,0 +1,8 @@
+[package]
+name = "ruster-render-elements"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ruster-render = { path = "../ruster-render" }
+taffy = "0.13"

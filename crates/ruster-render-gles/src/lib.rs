@@ -10,3 +10,4 @@
 pub mod atlas;
 pub mod cursor;
 pub mod geometry;
+pub mod tessellate;

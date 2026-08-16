@@ -1,3 +1,5 @@
+use ruster_render_elements::ElementKey;
+
 /// One vertex: x, y, (reserved), r, g, b, a.
 ///
 /// Sized for a `gl::VertexAttribPointer` of two attributes: a 2f32 position
@@ -20,6 +22,21 @@ pub struct GlyphQuad {
     pub v0: f32,
     pub u1: f32,
     pub v1: f32,
+}
+
+/// One frame's worth of chrome geometry: solid quads and textured glyph quads,
+/// both in physical pixels with the origin at the output's top-left.
+///
+/// The two lists are appended in painter's order — a panel's background, then
+/// the glyphs that sit on it — and `render_frame` reverses them into smithay's
+/// front-to-back element order.
+#[derive(Debug, Default)]
+pub struct ChromeBatch {
+    pub verts: Vec<Vertex>,
+    pub glyphs: Vec<GlyphQuad>,
+    /// Which [`ElementKey`] each glyph in [`ChromeBatch::glyphs`] belongs to, one
+    /// per emitted glyph and in the same order.
+    pub glyph_keys: Vec<ElementKey>,
 }
 
 pub fn rect_verts(x: f32, y: f32, w: f32, h: f32, color: (f32, f32, f32, f32)) -> Vec<Vertex> {

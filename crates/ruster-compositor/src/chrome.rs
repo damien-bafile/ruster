@@ -3,18 +3,23 @@
 //! Chrome is drawn as two kinds of quad, collected into a [`ChromeBatch`]: flat
 //! vertex geometry for panels and bars (`Vertex` = x, y, reserved, reserved, r,
 //! g, b, a), and textured glyph quads carrying a UV rect into the glyph atlas.
-//! The `draw_*` methods are pure and testable — they never touch GL — and are
-//! the geometry source of truth. `render_frame` turns the batch into smithay
-//! render elements and composites it above the client surface.
+//! The geometry itself now lives in `scene.rs` — a declarative element tree run
+//! through the portable layout engine — so what survives here is the chrome's
+//! non-scene support: the glyph atlas, keyed render-element ids, the cursor,
+//! the editor-frame grid helpers and the launcher layout. `render_frame` turns
+//! a batch into smithay render elements and composites it above the client
+//! surface.
 
 use std::any::Any;
+use std::collections::HashMap;
 
 use crate::compositor::PANE_FONT_PX;
-use ruster_render::{Color, StyledLine, SyntaxStyle, Theme, WhichKeyEntry, WhichKeyView};
-use ruster_render_gles::atlas::{cell_metrics, layout_text, layout_text_in, Atlas, FontFamily};
+use ruster_render::{Color, StyledLine, SyntaxStyle, Theme};
+use ruster_render_elements::ElementKey;
+use ruster_render_gles::atlas::{cell_metrics, Atlas};
 use ruster_render_gles::cursor::CursorBitmap;
-use ruster_render_gles::geometry::{rect_verts, rounded_rect_verts, GlyphQuad, Vertex};
-use ruster_shell::{Layout, Rect, WindowId};
+pub use ruster_render_gles::geometry::{ChromeBatch, GlyphQuad, Vertex};
+use ruster_shell::Layout;
 use smithay::backend::allocator::Fourcc;
 use smithay::backend::renderer::element::solid::{SolidColorBuffer, SolidColorRenderElement};
 use smithay::backend::renderer::element::texture::TextureRenderElement;
@@ -59,15 +64,15 @@ impl TreeStatus {
 ///
 /// Thin enough that covering that many pixels of the client costs nothing
 /// legible, thick enough to read at a glance on a 1440p display.
-const BORDER_WIDTH: f32 = 2.0;
+pub(crate) const BORDER_WIDTH: f32 = 2.0;
 
 /// One stretch of a line drawn in a single colour.
-struct Run {
+pub(crate) struct Run {
     /// Column the run starts at, in cells from the body's left edge.
-    column: usize,
-    text: String,
+    pub(crate) column: usize,
+    pub(crate) text: String,
     /// `None` where the highlighter had no opinion, which is most of a line.
-    color: Option<Color>,
+    pub(crate) color: Option<Color>,
 }
 
 /// A line split into runs: each highlighted span, and the plain text between.
@@ -75,7 +80,7 @@ struct Run {
 /// The gaps matter as much as the spans. A highlighter colours keywords and
 /// leaves the spaces and identifiers between them alone, so drawing only the
 /// spans would draw only a fraction of the line.
-fn runs(line: &StyledLine) -> Vec<Run> {
+pub(crate) fn runs(line: &StyledLine) -> Vec<Run> {
     let chars: Vec<char> = line.text.chars().collect();
     let mut out = Vec::new();
     let mut at = 0usize;
@@ -138,7 +143,7 @@ fn syntax_color(style: &SyntaxStyle) -> Option<Color> {
 /// The palette has no `diagnostic_*` roles of its own, which is what this
 /// should use; adding them means the Lua override plumbing and the theme parity
 /// test, and belongs with the rest of the Phase 2 theming work.
-fn severity_sign(severity: u8, theme: &Theme) -> (&'static str, (f32, f32, f32, f32)) {
+pub(crate) fn severity_sign(severity: u8, theme: &Theme) -> (&'static str, (f32, f32, f32, f32)) {
     match severity {
         1 => ("E", theme.accent.into()),
         2 => ("W", theme.fg.into()),
@@ -152,20 +157,19 @@ fn severity_sign(severity: u8, theme: &Theme) -> (&'static str, (f32, f32, f32, 
 /// Sized to the largest number that will be shown rather than to the buffer, so
 /// a 10,000-line file does not reserve five columns while showing lines 1-40 —
 /// and zero when there is nothing to number, so an empty pane has no gutter.
-fn gutter_width(first_line: usize, shown: usize) -> usize {
+pub(crate) fn gutter_width(first_line: usize, shown: usize) -> usize {
     if shown == 0 {
         return 0;
     }
     let last = first_line + shown;
     last.to_string().len() + 1
 }
-
 /// The diagnostic sign's own column, left of the line numbers.
 ///
 /// It has to be its own column. Drawing the sign at the gutter's origin and
 /// then the right-aligned number at the same origin painted one over the other:
 /// the numbers won, and three real diagnostics rendered as an unchanged frame.
-const SIGN_COLS: usize = 1;
+pub(crate) const SIGN_COLS: usize = 1;
 
 /// Total gutter width: the sign column plus the numbers.
 ///
@@ -181,20 +185,19 @@ fn gutter_cols(first_line: usize, shown: usize) -> usize {
 }
 
 /// Height of an editor frame's title bar, in physical pixels.
-const FRAME_BAR_H: f32 = 28.0;
+pub(crate) const FRAME_BAR_H: f32 = 28.0;
 
 /// Gap between an editor frame's edge and its contents, in physical pixels.
-const FRAME_PAD: f32 = 6.0;
+pub(crate) const FRAME_PAD: f32 = 6.0;
 
 /// Where an editor frame's text starts and how big one cell is, in physical
 /// pixels measured from the frame's own top-left.
 ///
-/// The one description of that layout: [`Chrome::draw_editor_frame`] positions
-/// its rows from this and the pointer reads the same numbers back out, so the
-/// grid on screen and the grid under the mouse cannot be measured two ways.
-/// That is the same reason `tile_under` and `geometry()` are one list — a
-/// second opinion about a rectangle is how a click lands somewhere other than
-/// where it looked.
+/// The one description of that layout: the pane's rows are positioned from this
+/// and the pointer reads the same numbers back out, so the grid on screen and
+/// the grid under the mouse cannot be measured two ways. That is the same
+/// reason `tile_under` and `geometry()` are one list — a second opinion about a
+/// rectangle is how a click lands somewhere other than where it looked.
 ///
 /// `ruster_render::TextArea` answers the equivalent question for the editor's
 /// windows and deliberately is not reused here: it counts in whole cells, from
@@ -317,78 +320,17 @@ pub fn launcher_layout(output_w: i32, output_h: i32, rows: usize) -> LauncherLay
     }
 }
 
-/// The layer drawn in front of everything in the base [`ChromeBatch`], glyphs
-/// included.
-///
-/// `collect_render_elements` hoists every glyph in front of every panel, which
-/// is only sound while chrome panels do not overlap each other — the comment
-/// there says so. A panel that covers *text* breaks it: the text is a glyph, the
-/// panel is a background, and the glyph wins. That is not hypothetical, and it
-/// is not only about the launcher — the hover panel covers the pane text it
-/// describes and has been drawing behind it.
-///
-/// A newtype rather than a second `ChromeBatch` so the distinction is the
-/// compiler's to keep: a `draw_*` that must go in front takes this type, and
-/// passing the base batch does not compile. An invariant a test has to remember
-/// is an invariant that rots.
-#[derive(Debug, Default)]
-pub struct OverlayBatch(pub ChromeBatch);
-
 /// Where a hover panel hangs: the caret's top-left pixel in *output*
 /// coordinates, and the height of the cell it sits on.
 ///
 /// Output coordinates rather than frame-local ones because the panel is drawn
-/// after every pane, outside the `translate_since` that moves a frame into its
-/// tile — so the caller has already added the tile's origin, using the same
-/// [`FrameBody`] that drew the text.
+/// after every pane, in the overlay layer — the caller has already added the
+/// tile's origin, using the same [`FrameBody`] that drew the text.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HoverAnchor {
     pub x: f32,
     pub y: f32,
     pub cell_h: f32,
-}
-
-/// One frame's worth of chrome geometry: solid quads and textured glyph quads,
-/// both in physical pixels with the origin at the output's top-left.
-///
-/// The two lists are appended in painter's order — a panel's background, then
-/// the glyphs that sit on it — and `render_frame` reverses them into smithay's
-/// front-to-back element order.
-#[derive(Debug, Default)]
-pub struct ChromeBatch {
-    pub verts: Vec<Vertex>,
-    pub glyphs: Vec<GlyphQuad>,
-}
-
-/// How much of a [`ChromeBatch`] had been drawn at some point, so a later
-/// [`ChromeBatch::translate_since`] can move everything drawn after it.
-#[derive(Debug, Clone, Copy)]
-pub struct BatchMark {
-    verts: usize,
-    glyphs: usize,
-}
-
-impl ChromeBatch {
-    /// Record the current end of the batch.
-    pub fn mark(&self) -> BatchMark {
-        BatchMark {
-            verts: self.verts.len(),
-            glyphs: self.glyphs.len(),
-        }
-    }
-
-    /// Shift everything appended since `mark` by `(dx, dy)`. `render_frame` uses
-    /// this to centre the welcome editor frame after laying it out at the origin.
-    pub fn translate_since(&mut self, mark: BatchMark, dx: f32, dy: f32) {
-        for v in &mut self.verts[mark.verts..] {
-            v[0] += dx;
-            v[1] += dy;
-        }
-        for g in &mut self.glyphs[mark.glyphs..] {
-            g.x += dx;
-            g.y += dy;
-        }
-    }
 }
 
 /// The compositor's UI chrome: statusline, editor frame, which-key overlay.
@@ -404,13 +346,15 @@ pub struct Chrome {
     cursor: CursorBitmap,
     cursor_texture: Option<Box<dyn Any>>,
     cursor_id: Id,
-    /// One render-element id per glyph slot, reused across frames.
+    /// One render-element id per glyph, keyed by the element the glyph belongs
+    /// to and reused across frames.
     ///
     /// The damage tracker keys element state by id, so glyphs sharing one id
     /// would collapse into a single tracked element and damage the wrong
-    /// regions. Ids are handed out by position in the batch and kept stable, so
-    /// a glyph that does not move reports no damage.
-    glyph_ids: Vec<Id>,
+    /// regions. Ids are keyed by [`ElementKey`]: a glyph that does not move
+    /// keeps its id, and a chrome element that moves to a new place in the tree
+    /// takes a fresh key and fresh ids rather than stealing its neighbour's.
+    id_map: HashMap<ElementKey, Vec<Id>>,
     /// The colours everything here draws in, from the user's config.
     theme: Theme,
 }
@@ -424,8 +368,16 @@ impl Chrome {
             cursor: CursorBitmap::arrow(),
             cursor_texture: None,
             cursor_id: Id::new(),
-            glyph_ids: Vec::new(),
+            id_map: HashMap::new(),
         }
+    }
+
+    /// The theme the chrome draws in.
+    ///
+    /// The scene builders need the theme to colour their widgets, but the field
+    /// stays private so a frame's chrome is one consistent palette.
+    pub fn theme(&self) -> &Theme {
+        &self.theme
     }
 
     /// The uploaded glyph atlas for `renderer`, re-uploading when the atlas has
@@ -461,12 +413,19 @@ impl Chrome {
         Some(texture)
     }
 
-    /// A stable render-element id for the glyph at `index` in the batch.
-    pub fn glyph_id(&mut self, index: usize) -> Id {
-        while self.glyph_ids.len() <= index {
-            self.glyph_ids.push(Id::new());
+    /// A stable render-element id for `len` consecutive glyphs of `key`.
+    ///
+    /// The first glyphs of a key grow a fresh run of ids; later frames reuse
+    /// them, so a glyph that does not move reports no damage, and reordering
+    /// the chrome remaps keys instead of remapping positions. Each run is
+    /// handed out whole so no two keys ever share an id.
+    pub fn element_ids(&mut self, key: &ElementKey, len: usize) -> Vec<Id> {
+        let ids = self.id_map.entry(key.clone()).or_default();
+        while ids.len() < len {
+            ids.push(Id::new());
         }
-        self.glyph_ids[index].clone()
+        debug_assert!(ids.len() >= len);
+        ids[..len].to_vec()
     }
 
     /// The built-in arrow cursor, positioned so its hotspot sits at `location`.
@@ -516,238 +475,6 @@ impl Chrome {
         ))
     }
 
-    /// Bottom statusline: returns its height in px.
-    ///
-    /// Layout (left→right): an accent mode segment with the mode letter in the
-    /// accent foreground, then the workspace label and the focused toplevel's
-    /// title in the statusline foreground — all legible against the statusline
-    /// background. Height is derived from the output via [`crate::render::chrome_height`].
-    pub fn draw_statusline(
-        &mut self,
-        w: i32,
-        h: i32,
-        workspace: u32,
-        focused_title: &str,
-        tree: TreeStatus,
-        batch: &mut ChromeBatch,
-    ) -> i32 {
-        let bar_h = crate::render::chrome_height(h);
-        let y = (h - bar_h) as f32;
-        let bar_w = w as f32;
-        let bg: (f32, f32, f32, f32) = self.theme.statusline_bg.into();
-        let fg: (f32, f32, f32, f32) = self.theme.statusline_fg.into();
-        let accent: (f32, f32, f32, f32) = self.theme.accent.into();
-        let accent_fg: (f32, f32, f32, f32) = self.theme.accent_fg.into();
-
-        batch
-            .verts
-            .extend(rect_verts(0.0, y, bar_w, bar_h as f32, bg));
-
-        // Mode segment: accent background, "N" (Normal) in the accent foreground.
-        let mode_w = 64.0;
-        let pad = (bar_h as f32 - 16.0) / 2.0;
-        batch
-            .verts
-            .extend(rect_verts(0.0, y, mode_w, bar_h as f32, accent));
-        self.text("N", 16, (mode_w - 16.0) / 2.0, y + pad, accent_fg, batch);
-
-        // Workspace label + focused title in the statusline foreground.
-        let ws = format!("WS {workspace}");
-        let title = if focused_title.is_empty() {
-            "(no client)"
-        } else {
-            focused_title
-        };
-        let cursor = mode_w + 12.0;
-        let ws_w = self.text(&ws, 16, cursor, y + pad, fg, batch);
-        let mut cursor = cursor + ws_w + 20.0;
-
-        // The layout the next window will use, and how many share the screen.
-        // Neither is inferable from the screen: two windows side by side look
-        // the same whether the next one lands beside them or under them, and a
-        // floating window looks like any other until it overlaps something.
-        let indicator = tree.indicator();
-        let ind_w = self.text(&indicator, 16, cursor, y + pad, accent, batch);
-        cursor += ind_w + 20.0;
-
-        self.text(title, 16, cursor, y + pad, fg, batch);
-
-        bar_h
-    }
-
-    /// A synthetic editor frame: mode-line title + buffer rows. Phase 0 shows a
-    /// welcome buffer; buffer-driven content lands with the embedded editor.
-    #[allow(clippy::too_many_arguments)]
-    pub fn draw_editor_frame(
-        &mut self,
-        w: i32,
-        h: i32,
-        buffer: &[StyledLine],
-        first_line: usize,
-        severities: &[Option<u8>],
-        title: &str,
-        batch: &mut ChromeBatch,
-    ) {
-        let bar_h = FRAME_BAR_H;
-        let bg: (f32, f32, f32, f32) = self.theme.bg.into();
-        let fg: (f32, f32, f32, f32) = self.theme.fg.into();
-        let accent: (f32, f32, f32, f32) = self.theme.accent.into();
-        let accent_fg: (f32, f32, f32, f32) = self.theme.accent_fg.into();
-
-        batch
-            .verts
-            .extend(rounded_rect_verts(0.0, 0.0, w as f32, h as f32, 4.0, bg));
-        batch
-            .verts
-            .extend(rect_verts(0.0, 0.0, w as f32, bar_h, accent));
-        self.text(title, 16, FRAME_PAD, (bar_h - 16.0) / 2.0, accent_fg, batch);
-
-        // The body is a character grid, so it is laid out on cell metrics
-        // rather than a fixed chrome line height — the two are different
-        // numbers, and using a chrome constant would drift a row out of
-        // alignment every few lines. The old `line_h: 24` field went with it.
-        let body = FrameBody::new(first_line, buffer.len());
-        let number_cols = gutter_width(first_line, buffer.len());
-        let rows = ((h as f32 - bar_h - 8.0) / body.cell_h).max(0.0) as usize;
-        let gutter_color: (f32, f32, f32, f32) = self.theme.gutter.into();
-        // Numbers start past the sign column, which is what keeps the two from
-        // being drawn on top of each other.
-        let numbers_x = FRAME_PAD + SIGN_COLS as f32 * body.cell_w;
-
-        for (row, line) in buffer.iter().take(rows).enumerate() {
-            let gy = body.y + row as f32 * body.cell_h;
-            // A sign left of the number, in the severity's colour. One column,
-            // because the gutter is already competing with the text for width
-            // and a diagnostic is a pointer to a line rather than the message
-            // itself.
-            if let Some(severity) = severities.get(row).copied().flatten() {
-                let (glyph, color) = severity_sign(severity, &self.theme);
-                self.text_in(
-                    glyph,
-                    PANE_FONT_PX,
-                    FRAME_PAD,
-                    gy,
-                    color,
-                    FontFamily::Mono,
-                    batch,
-                );
-            }
-            if number_cols > 0 {
-                // Right-aligned, the way every editor draws line numbers: the
-                // units column has to line up or the eye cannot scan it.
-                let number = format!("{:>width$} ", first_line + row + 1, width = number_cols - 1);
-                self.text_in(
-                    &number,
-                    PANE_FONT_PX,
-                    numbers_x,
-                    gy,
-                    gutter_color,
-                    FontFamily::Mono,
-                    batch,
-                );
-            }
-            // One run per span, positioned by *cell* rather than by chaining
-            // advances from the previous run. The runs are separate draw calls,
-            // and accumulating their widths would let a rounding difference
-            // slide a character out of its column — the grid is the authority,
-            // exactly as it is for the click that lands on it.
-            for run in runs(line) {
-                self.text_in(
-                    &run.text,
-                    PANE_FONT_PX,
-                    body.x + run.column as f32 * body.cell_w,
-                    gy,
-                    run.color.map(Into::into).unwrap_or(fg),
-                    FontFamily::Mono,
-                    batch,
-                );
-            }
-        }
-    }
-
-    /// Bottom which-key overlay panel.
-    /// Outline every visible window, marking the focused one.
-    ///
-    /// Without this nothing on screen says which window takes the next
-    /// keystroke: a tiling compositor gives them all the same shape and the
-    /// same chrome, and the only other cue — the title in the statusline —
-    /// names the window without pointing at it.
-    ///
-    /// Drawn *over* the outermost pixels of each window rather than by insetting
-    /// the layout. Insetting is what i3 does and looks better, but it would mean
-    /// changing `geometry()`, `reconfigure_tiles` and `tile_under` in step; any
-    /// disagreement between them puts the pointer somewhere other than where it
-    /// looks, which is a bug this compositor has already had once.
-    ///
-    /// `scale` converts the layout's logical rectangles to the physical pixels
-    /// the rest of the chrome is measured in.
-    pub fn draw_window_borders(
-        &mut self,
-        windows: &[(WindowId, Rect)],
-        focus: Option<WindowId>,
-        scale: f64,
-        batch: &mut ChromeBatch,
-    ) {
-        let s = scale as f32;
-        let width = (BORDER_WIDTH * s).max(1.0);
-        for (id, rect) in windows {
-            let color: (f32, f32, f32, f32) = if Some(*id) == focus {
-                self.theme.border_focused.into()
-            } else {
-                self.theme.border_unfocused.into()
-            };
-            let (x, y) = (rect.x as f32 * s, rect.y as f32 * s);
-            let (w, h) = (rect.w as f32 * s, rect.h as f32 * s);
-            if w <= 0.0 || h <= 0.0 {
-                continue;
-            }
-            batch.verts.extend(rect_verts(x, y, w, width, color));
-            batch
-                .verts
-                .extend(rect_verts(x, y + h - width, w, width, color));
-            batch.verts.extend(rect_verts(x, y, width, h, color));
-            batch
-                .verts
-                .extend(rect_verts(x + w - width, y, width, h, color));
-        }
-    }
-
-    /// Draw the `:` line along the bottom, just above the statusline.
-    ///
-    /// The sigil is drawn in `cmdline_accent` and the rest in `cmdline_fg`,
-    /// which is what distinguishes "waiting for a command" from "showing you a
-    /// message" — the two otherwise share a row and a colour. A message has no
-    /// sigil and so is drawn entirely in the text colour.
-    pub fn draw_minibuffer(
-        &mut self,
-        output_w: i32,
-        output_h: i32,
-        line: &str,
-        sigil_len: usize,
-        batch: &mut ChromeBatch,
-    ) {
-        let bar_h = crate::render::chrome_height(output_h) as f32;
-        let h = bar_h;
-        let y = output_h as f32 - bar_h - h;
-        let bg: (f32, f32, f32, f32) = self.theme.cmdline_bg.into();
-        let fg: (f32, f32, f32, f32) = self.theme.cmdline_fg.into();
-        let accent: (f32, f32, f32, f32) = self.theme.cmdline_accent.into();
-
-        batch
-            .verts
-            .extend(rect_verts(0.0, y, output_w as f32, h, bg));
-        let font = (h * 0.5) as u32;
-        let ty = y + h * 0.25;
-        let (sigil, rest) = line.split_at(sigil_len.min(line.len()));
-        let mut x = 10.0;
-        if !sigil.is_empty() {
-            x += self.text(sigil, font, x, ty, accent, batch);
-        }
-        if !rest.is_empty() {
-            self.text(rest, font, x, ty, fg, batch);
-        }
-    }
-
     /// Emit `n` glyph quads of synthetic load, for measuring how many render
     /// elements a frame can carry (`RUSTER_BENCH_GLYPHS`).
     ///
@@ -756,7 +483,8 @@ impl Chrome {
     /// per-element work in the damage tracker plus sampling the atlas texture.
     pub fn bench_glyphs(&mut self, n: usize, batch: &mut ChromeBatch) {
         let fg: (f32, f32, f32, f32) = self.theme.fg.into();
-        let rgb = rgb8(fg);
+        let to_u8 = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
+        let rgb = [to_u8(fg.0), to_u8(fg.1), to_u8(fg.2)];
         for i in 0..n {
             // Cycle a few characters so the atlas holds more than one cell,
             // and step positions so no two quads coincide.
@@ -776,294 +504,14 @@ impl Chrome {
                 u1: g.u1,
                 v1: g.v1,
             });
+            // Each bench glyph is its own element, so the damage tracker counts
+            // every one rather than collapsing the run into a single id.
+            batch
+                .glyph_keys
+                .push(ElementKey(vec![format!("bench:{i}")]));
         }
-    }
-
-    /// Draw the which-key panel: a half-typed chord's continuations, or the
-    /// whole keymap when the helper is pinned.
-    ///
-    /// Lays out in as many columns as it takes to show every row, because the
-    /// alternative is truncating — and a shortcut reference that silently omits
-    /// shortcuts is worse than none. Column widths are measured from the text
-    /// rather than fixed, so a keymap of short binds does not reserve room for
-    /// long ones.
-    ///
-    /// Takes the [`WhichKeyView`] the editor also renders, which is what lets
-    /// the key and its description be drawn in different colours; they used to
-    /// be one concatenated string and therefore one colour.
-    /// A launcher panel, and the rows that fit in it.
-    ///
-    /// See [`launcher_layout`] for where it goes and why.
-    pub fn draw_launcher(
-        &mut self,
-        output_w: i32,
-        output_h: i32,
-        view: &ruster_render::LauncherView,
-        batch: &mut OverlayBatch,
-    ) -> LauncherLayout {
-        const FONT: u32 = 15;
-        const GROUP_FONT: u32 = 12;
-        const PAD: f32 = 12.0;
-
-        let layout = launcher_layout(output_w, output_h, view.rows.len());
-        let bg: (f32, f32, f32, f32) = self.theme.whichkey_bg.into();
-        let fg: (f32, f32, f32, f32) = self.theme.whichkey_fg.into();
-        let accent: (f32, f32, f32, f32) = self.theme.whichkey_key.into();
-        let dim: (f32, f32, f32, f32) = self.theme.gutter.into();
-        let sel: (f32, f32, f32, f32) = self.theme.selection_bg.into();
-        let batch = &mut batch.0;
-
-        batch.verts.extend(rounded_rect_verts(
-            layout.x, layout.y, layout.w, layout.h, 8.0, bg,
-        ));
-
-        // The query line, with its sigil accented the way the `:` prompt's is —
-        // the same cue for the same thing, an editor waiting for input.
-        let advance = self.text(">", FONT, layout.x + PAD, layout.y + PAD, accent, batch);
-        self.text(
-            &view.query,
-            FONT,
-            layout.x + PAD + advance + 6.0,
-            layout.y + PAD,
-            fg,
-            batch,
-        );
-
-        let mut y = layout.y + layout.query_h;
-        if view.rows.is_empty() {
-            if !view.message.is_empty() {
-                self.text(&view.message, FONT, layout.x + PAD, y, dim, batch);
-            }
-            return layout;
-        }
-
-        for row in view.rows.iter().take(layout.visible_rows) {
-            if !row.group.is_empty() {
-                self.text(&row.group, GROUP_FONT, layout.x + PAD, y, dim, batch);
-                y += layout.group_h;
-            }
-            if row.selected {
-                batch.verts.extend(rect_verts(
-                    layout.x + 4.0,
-                    y - 2.0,
-                    layout.w - 8.0,
-                    layout.row_h,
-                    sel,
-                ));
-            }
-            let label_w = self.text(&row.label, FONT, layout.x + PAD * 2.0, y, fg, batch);
-            if !row.detail.is_empty() {
-                // Right of the label rather than right-aligned to the panel: a
-                // long detail then truncates against the panel edge instead of
-                // colliding with the label from the other side.
-                let at = layout.x + PAD * 2.0 + label_w + 12.0;
-                if at < layout.x + layout.w - PAD {
-                    self.text(&row.detail, GROUP_FONT, at, y + 2.0, dim, batch);
-                }
-            }
-            y += layout.row_h;
-        }
-        layout
-    }
-
-    /// A hover panel, anchored under the caret it describes.
-    ///
-    /// See [`HoverAnchor`] for what the anchor is measured against.
-    ///
-    /// `(cell_x, cell_y)` is the caret's top-left pixel in output coordinates —
-    /// worked out by the caller from the same [`FrameBody`] that drew the text,
-    /// so the panel cannot point at a different character than the one asked
-    /// about. Returns the rectangle it drew, which is what the tests measure.
-    ///
-    /// The panel flips above the caret when there is no room below it, which is
-    /// most of the time on the last few lines of a pane; without that a hover on
-    /// the bottom line is drawn off the output and reads as nothing happening.
-    pub fn draw_hover(
-        &mut self,
-        output_w: i32,
-        output_h: i32,
-        anchor: HoverAnchor,
-        lines: &[String],
-        batch: &mut OverlayBatch,
-    ) -> (f32, f32, f32, f32) {
-        // Unwrapped once here rather than threading the newtype through the
-        // drawing below: the type has already done its job at the boundary.
-        let batch = &mut batch.0;
-        let HoverAnchor {
-            x: cell_x,
-            y: cell_y,
-            cell_h,
-        } = anchor;
-        const FONT: u32 = 14;
-        const ROW_H: f32 = 18.0;
-        const PAD: f32 = 8.0;
-
-        let bg: (f32, f32, f32, f32) = self.theme.whichkey_bg.into();
-        let fg: (f32, f32, f32, f32) = self.theme.whichkey_fg.into();
-
-        let text_w = lines
-            .iter()
-            .map(|l| layout_text(l, FONT, None).width_px)
-            .fold(0.0f32, f32::max);
-        let w = (text_w + PAD * 2.0).min(output_w as f32 - 8.0);
-        let h = PAD * 2.0 + lines.len() as f32 * ROW_H;
-
-        // Below the caret by default, above it when that would not fit.
-        let below = cell_y + cell_h;
-        let y = if below + h <= output_h as f32 {
-            below
-        } else {
-            (cell_y - h).max(4.0)
-        };
-        // And clamped horizontally, so a hover in the last column is not drawn
-        // half off the right edge.
-        let x = cell_x.min(output_w as f32 - w - 4.0).max(4.0);
-
-        batch.verts.extend(rounded_rect_verts(x, y, w, h, 6.0, bg));
-        let mut ty = y + PAD;
-        for line in lines {
-            self.text(line, FONT, x + PAD, ty, fg, batch);
-            ty += ROW_H;
-        }
-        (x, y, w, h)
-    }
-
-    pub fn draw_whichkey(
-        &mut self,
-        output_w: i32,
-        output_h: i32,
-        view: &WhichKeyView,
-        batch: &mut ChromeBatch,
-    ) {
-        const FONT: u32 = 14;
-        const ROW_H: f32 = 20.0;
-        const PAD: f32 = 10.0;
-        const GAP: f32 = 8.0;
-        const COL_GAP: f32 = 18.0;
-
-        let bg: (f32, f32, f32, f32) = self.theme.whichkey_bg.into();
-        let fg: (f32, f32, f32, f32) = self.theme.whichkey_fg.into();
-        let key_color: (f32, f32, f32, f32) = self.theme.whichkey_key.into();
-
-        // Rows per column, from the room actually available above the
-        // statusline. A laptop panel and a 1440p display do not fit the same
-        // list, so this cannot be a constant.
-        let title_h = if view.title.is_empty() { 0.0 } else { ROW_H };
-        let usable_h = (output_h as f32 * 0.8 - PAD * 2.0 - title_h).max(ROW_H);
-        let per_col = ((usable_h / ROW_H) as usize).max(1);
-        let columns: Vec<&[WhichKeyEntry]> = view.rows.chunks(per_col).collect();
-
-        // Measure each column so a narrow one costs narrow space.
-        let widths: Vec<f32> = columns
-            .iter()
-            .map(|col| {
-                col.iter()
-                    .map(|e| {
-                        layout_text(&e.key, FONT, None).width_px
-                            + GAP
-                            + layout_text(&e.desc, FONT, None).width_px
-                    })
-                    .fold(0.0f32, f32::max)
-            })
-            .collect();
-
-        let rows_drawn = columns.first().map(|c| c.len()).unwrap_or(0);
-        let h = PAD * 2.0 + title_h + rows_drawn as f32 * ROW_H;
-        let w = PAD * 2.0
-            + widths.iter().sum::<f32>()
-            + COL_GAP * columns.len().saturating_sub(1) as f32;
-        let (x, y) = (12.0, 12.0);
-
-        batch.verts.extend(rounded_rect_verts(
-            x,
-            y,
-            w.min(output_w as f32 - 24.0),
-            h,
-            6.0,
-            bg,
-        ));
-
-        let mut ty = y + PAD;
-        if !view.title.is_empty() {
-            self.text(&view.title, FONT, x + PAD, ty, key_color, batch);
-            ty += ROW_H;
-        }
-        let mut cx = x + PAD;
-        for (col, width) in columns.iter().zip(&widths) {
-            let mut row_y = ty;
-            for entry in col.iter() {
-                // The key in the accent, the description in the panel text, so
-                // the thing you have to press is the thing that stands out.
-                let advance = self.text(&entry.key, FONT, cx, row_y, key_color, batch);
-                self.text(&entry.desc, FONT, cx + advance + GAP, row_y, fg, batch);
-                row_y += ROW_H;
-            }
-            cx += width + COL_GAP;
-        }
-    }
-
-    /// Lay `text` out and append one textured quad per glyph, positioned at
-    /// `(x, y)` — the pen position and the top of the line box — plus the
-    /// layout's per-glyph advance and the glyph's own bearing. Returns the run's
-    /// advance width so callers can chain text to the right.
-    ///
-    /// Glyphs with no bitmap (spaces, control chars) advance the pen and draw
-    /// nothing.
-    fn text(
-        &mut self,
-        text: &str,
-        font_size: u32,
-        x: f32,
-        y: f32,
-        color: (f32, f32, f32, f32),
-        batch: &mut ChromeBatch,
-    ) -> f32 {
-        self.text_in(text, font_size, x, y, color, FontFamily::Ui, batch)
-    }
-
-    /// As [`text`](Self::text), in a specific face.
-    ///
-    /// Chrome is proportional; a pane's body is not. Column alignment, the
-    /// gutter and (in Stage 3) click-to-position all assume a fixed advance.
-    #[allow(clippy::too_many_arguments)]
-    fn text_in(
-        &mut self,
-        text: &str,
-        font_size: u32,
-        x: f32,
-        y: f32,
-        color: (f32, f32, f32, f32),
-        family: FontFamily,
-        batch: &mut ChromeBatch,
-    ) -> f32 {
-        let rgb = rgb8(color);
-        let layout = layout_text_in(text, font_size, None, family);
-        for (gx, _, c) in layout.glyphs {
-            let g = self.atlas.glyph_in(font_size, rgb, c, family);
-            if g.is_empty() {
-                continue;
-            }
-            batch.glyphs.push(GlyphQuad {
-                x: x + gx + g.x,
-                y: y + g.y,
-                w: g.w,
-                h: g.h,
-                u0: g.u0,
-                v0: g.v0,
-                u1: g.u1,
-                v1: g.v1,
-            });
-        }
-        layout.width_px
     }
 }
-
-/// A chrome colour as the 8-bit RGB the atlas bakes into a glyph cell.
-fn rgb8(color: (f32, f32, f32, f32)) -> [u8; 3] {
-    let to_u8 = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
-    [to_u8(color.0), to_u8(color.1), to_u8(color.2)]
-}
-
 /// Convert a chrome vertex batch (physical pixels, origin top-left) into
 /// smithay solid-color render elements, one per 6-vertex quad.
 ///
@@ -1207,7 +655,7 @@ mod tests {
         assert_eq!(syntax_color(&hl((9, 9, 9))), Some(Color::Rgb(9, 9, 9)));
     }
 
-    /// Plain lines as the styled ones `draw_editor_frame` now takes.
+    /// Plain lines as the styled ones `pane_elem` takes.
     fn styled(lines: &[String]) -> Vec<StyledLine> {
         lines
             .iter()
@@ -1228,8 +676,12 @@ mod tests {
             (WindowId(0), Rect::new(0, 0, 100, 100)),
             (WindowId(1), Rect::new(100, 0, 100, 100)),
         ];
-        let mut batch = ChromeBatch::default();
-        chrome.draw_window_borders(&windows, Some(WindowId(1)), 1.0, &mut batch);
+        let batch = new_batch(
+            scene::window_borders_elem(&windows, Some(WindowId(1)), 1.0, &theme()),
+            200.0,
+            100.0,
+            &mut chrome.atlas,
+        );
 
         // Four edges per window, two triangles each, three vertices a triangle.
         assert_eq!(batch.verts.len(), 2 * 4 * 6);
@@ -1254,8 +706,12 @@ mod tests {
             (WindowId(0), Rect::new(0, 0, 50, 50)),
             (WindowId(1), Rect::new(50, 0, 50, 50)),
         ];
-        let mut batch = ChromeBatch::default();
-        chrome.draw_window_borders(&windows, None, 1.0, &mut batch);
+        let batch = new_batch(
+            scene::window_borders_elem(&windows, None, 1.0, &theme()),
+            100.0,
+            50.0,
+            &mut chrome.atlas,
+        );
         let colors: std::collections::BTreeSet<[u32; 4]> = batch
             .verts
             .iter()
@@ -1270,8 +726,12 @@ mod tests {
         // layout, so a border that strayed outside would land on the neighbour.
         let mut chrome = Chrome::new(Theme::default());
         let rect = Rect::new(10, 20, 100, 80);
-        let mut batch = ChromeBatch::default();
-        chrome.draw_window_borders(&[(WindowId(0), rect)], None, 1.0, &mut batch);
+        let batch = new_batch(
+            scene::window_borders_elem(&[(WindowId(0), rect)], None, 1.0, &theme()),
+            120.0,
+            110.0,
+            &mut chrome.atlas,
+        );
         for v in &batch.verts {
             assert!(
                 v[0] >= 10.0 && v[0] <= 110.0,
@@ -1292,19 +752,27 @@ mod tests {
         // so a 2x display would otherwise get a border at half the size and in
         // the wrong place.
         let mut chrome = Chrome::new(Theme::default());
-        let mut batch = ChromeBatch::default();
-        chrome.draw_window_borders(
-            &[(WindowId(0), Rect::new(0, 0, 100, 100))],
-            None,
-            2.0,
-            &mut batch,
+        let batch = new_batch(
+            scene::window_borders_elem(
+                &[(WindowId(0), Rect::new(0, 0, 100, 100))],
+                None,
+                2.0,
+                &theme(),
+            ),
+            200.0,
+            200.0,
+            &mut chrome.atlas,
         );
         let max_x = batch.verts.iter().map(|v| v[0]).fold(0.0f32, f32::max);
         assert_eq!(max_x, 200.0, "a 100px logical window is 200px physical");
     }
 
     use super::*;
+    use crate::scene;
     use ruster_render::Theme;
+    use ruster_render_elements::{div, layout, Elem, LayoutScene, PxRect, Styled, TextMeasurer};
+    use ruster_render_gles::tessellate::{scene_to_chrome_batch, GlesTextMeasurer};
+    use ruster_shell::{Rect, WindowId};
 
     fn theme() -> Theme {
         Theme::default()
@@ -1318,11 +786,46 @@ mod tests {
         }
     }
 
+    /// Run an element through the same path `render_frame` does, returning the
+    /// laid-out scene. The element is wrapped in a sized root: an absolutely
+    /// positioned widget can never be the layout root, because `layout`
+    /// replaces the root's geometry with the area it is given.
+    fn lay_scene(elem: Elem, w: f32, h: f32) -> LayoutScene {
+        let mut root = div();
+        root.id("root").size(w, h).children(vec![elem]);
+        layout(
+            PxRect {
+                x: 0.0,
+                y: 0.0,
+                w,
+                h,
+            },
+            &root,
+            &mut GlesTextMeasurer,
+        )
+    }
+
+    /// Tessellate a laid-out element into a batch, the way a frame would.
+    fn new_batch(elem: Elem, w: f32, h: f32, atlas: &mut Atlas) -> ChromeBatch {
+        scene_to_chrome_batch(&lay_scene(elem, w, h), atlas)
+    }
+
+    /// A chrome colour as the 8-bit RGB the atlas bakes into a glyph cell.
+    fn rgb8(color: (f32, f32, f32, f32)) -> [u8; 3] {
+        let to_u8 = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
+        [to_u8(color.0), to_u8(color.1), to_u8(color.2)]
+    }
+
     #[test]
     fn statusline_emits_quads() {
         let mut chrome = Chrome::new(theme());
-        let mut batch = ChromeBatch::default();
-        let h = chrome.draw_statusline(800, 600, 1, "foot", status(), &mut batch);
+        let h = crate::render::chrome_height(600);
+        let batch = new_batch(
+            scene::statusline_elem(800, 600, 1, "foot", status(), &theme()),
+            800.0,
+            600.0,
+            &mut chrome.atlas,
+        );
         assert!(h > 0);
         assert!(batch.verts.len() >= 6);
         // every vertex within the bar band
@@ -1376,8 +879,13 @@ mod tests {
         // the batch as glyph quads inside the bar — not as solid blocks, and not
         // dropped on the floor.
         let mut chrome = Chrome::new(theme());
-        let mut batch = ChromeBatch::default();
-        let h = chrome.draw_statusline(800, 600, 1, "foot", status(), &mut batch);
+        let h = crate::render::chrome_height(600);
+        let batch = new_batch(
+            scene::statusline_elem(800, 600, 1, "foot", status(), &theme()),
+            800.0,
+            600.0,
+            &mut chrome.atlas,
+        );
         assert!(
             batch.glyphs.len() >= "N".len() + "WS 1".len(),
             "expected a glyph per drawn character, got {}",
@@ -1397,8 +905,21 @@ mod tests {
     fn editor_frame_renders_title_and_lines() {
         let mut chrome = Chrome::new(theme());
         let buf: Vec<String> = (0..20).map(|i| format!("line {i}")).collect();
-        let mut batch = ChromeBatch::default();
-        chrome.draw_editor_frame(400, 300, &styled(&buf), 0, &[], "welcome", &mut batch);
+        let batch = new_batch(
+            scene::pane_elem(
+                WindowId(0),
+                400,
+                300,
+                &styled(&buf),
+                0,
+                &[],
+                "welcome",
+                &theme(),
+            ),
+            400.0,
+            300.0,
+            &mut chrome.atlas,
+        );
         assert!(batch.verts.len() >= 6 * 2); // frame + title bar
         assert!(!batch.glyphs.is_empty(), "title and rows draw glyphs");
     }
@@ -1406,18 +927,23 @@ mod tests {
     #[test]
     fn a_hover_panel_hangs_below_the_caret_when_there_is_room() {
         let mut chrome = Chrome::new(theme());
-        let mut batch = OverlayBatch::default();
         let lines = vec!["fn main()".to_string(), "the entry point".to_string()];
         let anchor = HoverAnchor {
             x: 100.0,
             y: 100.0,
             cell_h: 16.0,
         };
-        let (x, y, _, h) = chrome.draw_hover(1920, 1080, anchor, &lines, &mut batch);
-        assert_eq!(x, 100.0, "aligned with the caret's column");
-        assert_eq!(y, 116.0, "directly under the caret's cell");
-        assert!(y + h <= 1080.0);
-        assert!(!batch.0.glyphs.is_empty(), "the panel draws its text");
+        let laid = lay_scene(
+            scene::hover_elem(1920, 1080, anchor, &lines, &theme(), &mut GlesTextMeasurer),
+            1920.0,
+            1080.0,
+        );
+        let panel = &laid.boxes[0];
+        assert_eq!(panel.rect.x, 100.0, "aligned with the caret's column");
+        assert_eq!(panel.rect.y, 116.0, "directly under the caret's cell");
+        assert!(panel.rect.y + panel.rect.h <= 1080.0);
+        let batch = scene_to_chrome_batch(&laid, &mut chrome.atlas);
+        assert!(!batch.glyphs.is_empty(), "the panel draws its text");
     }
 
     #[test]
@@ -1470,7 +996,6 @@ mod tests {
     #[test]
     fn the_launcher_draws_its_query_and_its_rows() {
         let mut chrome = Chrome::new(theme());
-        let mut overlay = OverlayBatch::default();
         let view = ruster_render::LauncherView {
             query: "fire".into(),
             rows: vec![
@@ -1491,16 +1016,154 @@ mod tests {
             scrolled: 0,
             total: 2,
         };
-        let drawn = chrome.draw_launcher(1920, 1080, &view, &mut overlay);
-        assert_eq!(
-            drawn,
-            launcher_layout(1920, 1080, 2),
-            "what was drawn is what the layout said"
+        let laid = lay_scene(
+            scene::launcher_elem(1920, 1080, &view, &theme(), &mut GlesTextMeasurer),
+            1920.0,
+            1080.0,
         );
-        assert!(!overlay.0.glyphs.is_empty(), "the rows are drawn");
+        // The panel is where the layout said it would be.
+        let expected = launcher_layout(1920, 1080, 2);
+        assert_eq!(laid.boxes[0].rect.x, expected.x);
+        assert_eq!(laid.boxes[0].rect.y, expected.y);
+        assert_eq!(laid.boxes[0].rect.w, expected.w);
+        assert_eq!(laid.boxes[0].rect.h, expected.h);
+        let batch = scene_to_chrome_batch(&laid, &mut chrome.atlas);
+        assert!(!batch.glyphs.is_empty(), "the rows are drawn");
         assert!(
-            overlay.0.verts.len() >= 12,
+            batch.verts.len() >= 12,
             "the panel and the selection highlight are both filled"
+        );
+    }
+
+    #[test]
+    fn launcher_text_lands_where_launcher_layout_puts_it() {
+        // BLOCKER 1 regression: every child of the panel used output
+        // coordinates (layout.x + PAD, layout.y + PAD), but the panel itself is
+        // absolute at (layout.x, layout.y) — taffy resolves absolute children
+        // against the panel, so each landed at panel.origin + written position,
+        // doubled by (layout.x, layout.y). The query line meant for y≈163 came
+        // out at y≈314, below the panel. Children must be at panel-local coords;
+        // the panel's origin supplies the layout offset.
+        const PAD: f32 = 12.0;
+        let view = ruster_render::LauncherView {
+            query: "fire".into(),
+            rows: vec![
+                ruster_render::LauncherRow {
+                    label: "Firefox".into(),
+                    detail: "Web Browser".into(),
+                    group: "apps".into(),
+                    selected: true,
+                },
+                ruster_render::LauncherRow {
+                    label: "Files".into(),
+                    detail: String::new(),
+                    group: String::new(),
+                    selected: false,
+                },
+            ],
+            message: String::new(),
+            scrolled: 0,
+            total: 2,
+        };
+        let laid = lay_scene(
+            scene::launcher_elem(1920, 1080, &view, &theme(), &mut GlesTextMeasurer),
+            1920.0,
+            1080.0,
+        );
+        let expected = launcher_layout(1920, 1080, 2);
+        let panel = &laid.boxes[0];
+
+        // The sigil sits at the panel's top-left corner plus its padding, and
+        // the query right of it by the sigil's advance — exactly where the
+        // hand-built launcher put them, in output coordinates.
+        let sigil = laid
+            .texts
+            .iter()
+            .find(|t| t.line.text == ">")
+            .expect("the query sigil is drawn");
+        assert_eq!(sigil.rect.x, expected.x + PAD, "sigil at layout.x + PAD");
+        assert_eq!(sigil.rect.y, expected.y + PAD, "sigil at layout.y + PAD");
+
+        let (sigil_w, _) = GlesTextMeasurer.measure(
+            &StyledLine {
+                text: ">".into(),
+                highlights: Vec::new(),
+            },
+            15.0,
+            ruster_render::FontFamily::Ui,
+        );
+        let query = laid
+            .texts
+            .iter()
+            .find(|t| t.line.text == "fire")
+            .expect("the query text is drawn");
+        assert_eq!(query.rect.x, expected.x + PAD + sigil_w + 6.0);
+        assert_eq!(query.rect.y, expected.y + PAD);
+
+        // And the whole query line sits inside the panel, not under it.
+        assert!(query.rect.y + query.rect.h <= panel.rect.y + panel.rect.h);
+    }
+
+    #[test]
+    fn two_panes_under_one_root_get_distinct_keys() {
+        // BLOCKER 2 regression: pane_elem hardcoded the id "pane", so two panes
+        // under one compose root tripped push_children's duplicate-id debug
+        // assert and — in release — shared an element key path, collapsing both
+        // panes' glyphs into one id run. Each pane must carry its WindowId in
+        // the key.
+        let mut p0 = scene::pane_elem(
+            WindowId(0),
+            400,
+            300,
+            &styled(&["hi".to_string()]),
+            0,
+            &[],
+            "welcome",
+            &theme(),
+        );
+        p0.absolute().position(0.0, 0.0);
+        let mut p1 = scene::pane_elem(
+            WindowId(1),
+            400,
+            300,
+            &styled(&["yo".to_string()]),
+            0,
+            &[],
+            "files",
+            &theme(),
+        );
+        p1.absolute().position(0.0, 300.0);
+        let mut root = div();
+        root.children(vec![p0, p1]);
+        let laid = layout(
+            PxRect {
+                x: 0.0,
+                y: 0.0,
+                w: 800.0,
+                h: 600.0,
+            },
+            &root,
+            &mut GlesTextMeasurer,
+        );
+
+        let firsts: Vec<&str> = laid
+            .boxes
+            .iter()
+            .map(|b| b.key.0.first().unwrap().as_str())
+            .collect();
+        assert!(
+            firsts.contains(&"pane:0"),
+            "pane 0's boxes keyed under pane:0, got {firsts:?}"
+        );
+        assert!(
+            firsts.contains(&"pane:1"),
+            "pane 1's boxes keyed under pane:1, got {firsts:?}"
+        );
+        let distinct: std::collections::HashSet<&str> = firsts.iter().copied().collect();
+        assert_eq!(
+            distinct.len(),
+            2,
+            "two panes, two distinct id runs: {firsts:?}"
         );
     }
 
@@ -1509,14 +1172,18 @@ mod tests {
         // Opening it must show something immediately, before a provider has
         // said anything — an overlay that appears blank reads as a crash.
         let mut chrome = Chrome::new(theme());
-        let mut overlay = OverlayBatch::default();
         let view = ruster_render::LauncherView {
             message: "no matches".into(),
             ..Default::default()
         };
-        chrome.draw_launcher(1920, 1080, &view, &mut overlay);
-        assert!(!overlay.0.verts.is_empty(), "the panel is there");
-        assert!(!overlay.0.glyphs.is_empty(), "and it says so");
+        let batch = new_batch(
+            scene::launcher_elem(1920, 1080, &view, &theme(), &mut GlesTextMeasurer),
+            1920.0,
+            1080.0,
+            &mut chrome.atlas,
+        );
+        assert!(!batch.verts.is_empty(), "the panel is there");
+        assert!(!batch.glyphs.is_empty(), "and it says so");
     }
 
     #[test]
@@ -1528,28 +1195,38 @@ mod tests {
         // by every test, and wrong on screen. Hover was proven headlessly and
         // never captured, which is how it went unnoticed.
         //
-        // The type already prevents the mistake; this asserts the split is real
-        // rather than a wrapper both halves end up in.
+        // The overlay is now a separate batch, distinct from the base: the
+        // scene path cannot smear the hover's panels into the base layer's
+        // geometry.
         let mut chrome = Chrome::new(theme());
-        let mut base = ChromeBatch::default();
-        let mut overlay = OverlayBatch::default();
-        chrome.draw_statusline(1920, 1080, 1, "x", status(), &mut base);
+        let base = new_batch(
+            scene::statusline_elem(1920, 1080, 1, "x", status(), &theme()),
+            1920.0,
+            1080.0,
+            &mut chrome.atlas,
+        );
         let base_panels = base.verts.len();
 
-        chrome.draw_hover(
-            1920,
-            1080,
-            HoverAnchor {
-                x: 100.0,
-                y: 100.0,
-                cell_h: 16.0,
-            },
-            &["fn main()".to_string()],
-            &mut overlay,
+        let overlay = new_batch(
+            scene::hover_elem(
+                1920,
+                1080,
+                HoverAnchor {
+                    x: 100.0,
+                    y: 100.0,
+                    cell_h: 16.0,
+                },
+                &["fn main()".to_string()],
+                &theme(),
+                &mut GlesTextMeasurer,
+            ),
+            1920.0,
+            1080.0,
+            &mut chrome.atlas,
         );
 
         assert!(
-            !overlay.0.verts.is_empty() && !overlay.0.glyphs.is_empty(),
+            !overlay.verts.is_empty() && !overlay.glyphs.is_empty(),
             "the hover panel belongs to the overlay layer"
         );
         assert_eq!(
@@ -1564,38 +1241,48 @@ mod tests {
         // The failure this prevents is silent: a hover on one of the last lines
         // of a pane is drawn past the bottom of the output, and a panel nobody
         // can see is indistinguishable from a server that said nothing.
-        let mut chrome = Chrome::new(theme());
-        let mut batch = OverlayBatch::default();
         let lines = vec!["fn main()".to_string(), "the entry point".to_string()];
         let anchor = HoverAnchor {
             x: 100.0,
             y: 1070.0,
             cell_h: 16.0,
         };
-        let (_, y, _, h) = chrome.draw_hover(1920, 1080, anchor, &lines, &mut batch);
-        assert!(
-            y + h <= 1070.0,
-            "the panel should sit above the caret, not run off the output: y={y} h={h}"
+        let laid = lay_scene(
+            scene::hover_elem(1920, 1080, anchor, &lines, &theme(), &mut GlesTextMeasurer),
+            1920.0,
+            1080.0,
         );
-        assert!(y >= 0.0, "and not above the top edge either");
+        let panel = &laid.boxes[0];
+        assert!(
+            panel.rect.y + panel.rect.h <= 1070.0,
+            "the panel should sit above the caret, not run off the output: y={} h={}",
+            panel.rect.y,
+            panel.rect.h
+        );
+        assert!(panel.rect.y >= 0.0, "and not above the top edge either");
     }
 
     #[test]
     fn a_hover_panel_in_the_last_column_stays_on_screen() {
-        let mut chrome = Chrome::new(theme());
-        let mut batch = OverlayBatch::default();
         let lines = vec!["a fairly long explanation of a symbol".to_string()];
         let anchor = HoverAnchor {
             x: 1900.0,
             y: 100.0,
             cell_h: 16.0,
         };
-        let (x, _, w, _) = chrome.draw_hover(1920, 1080, anchor, &lines, &mut batch);
-        assert!(
-            x + w <= 1920.0,
-            "a hover in the last column must be pulled back on screen: x={x} w={w}"
+        let laid = lay_scene(
+            scene::hover_elem(1920, 1080, anchor, &lines, &theme(), &mut GlesTextMeasurer),
+            1920.0,
+            1080.0,
         );
-        assert!(x >= 0.0);
+        let panel = &laid.boxes[0];
+        assert!(
+            panel.rect.x + panel.rect.w <= 1920.0,
+            "a hover in the last column must be pulled back on screen: x={} w={}",
+            panel.rect.x,
+            panel.rect.w
+        );
+        assert!(panel.rect.x >= 0.0);
     }
 
     #[test]
@@ -1636,8 +1323,12 @@ mod tests {
             ],
             anim: 1.0,
         };
-        let mut batch = ChromeBatch::default();
-        chrome.draw_whichkey(1920, 1080, &view, &mut batch);
+        let batch = new_batch(
+            scene::whichkey_elem(1920, 1080, &view, &theme()),
+            1920.0,
+            1080.0,
+            &mut chrome.atlas,
+        );
         assert!(!batch.verts.is_empty());
         assert!(!batch.glyphs.is_empty());
     }
@@ -1655,8 +1346,12 @@ mod tests {
             }],
             anim: 1.0,
         };
-        let mut batch = ChromeBatch::default();
-        chrome.draw_whichkey(1920, 1080, &view, &mut batch);
+        let _ = new_batch(
+            scene::whichkey_elem(1920, 1080, &view, &theme()),
+            1920.0,
+            1080.0,
+            &mut chrome.atlas,
+        );
         let theme = theme();
         assert_ne!(
             theme.whichkey_key, theme.whichkey_fg,
@@ -1688,9 +1383,13 @@ mod tests {
             rows,
             anim: 1.0,
         };
-        let mut batch = ChromeBatch::default();
         // A short output, so 60 rows cannot possibly stack vertically.
-        chrome.draw_whichkey(1920, 400, &view, &mut batch);
+        let batch = new_batch(
+            scene::whichkey_elem(1920, 400, &view, &theme()),
+            1920.0,
+            400.0,
+            &mut chrome.atlas,
+        );
 
         let xs: Vec<f32> = batch.glyphs.iter().map(|g| g.x).collect();
         let min_x = xs.iter().copied().fold(f32::MAX, f32::min);
@@ -1704,44 +1403,48 @@ mod tests {
     }
 
     #[test]
-    fn translate_since_moves_both_panels_and_glyphs() {
+    fn a_pane_at_a_non_zero_rect_lands_offset_correctly() {
+        // The old painter translated a pane laid out at the origin into its tile
+        // after the fact. The scene does it up front: the pane element is
+        // absolutely positioned at the tile's origin, so its title bar and every
+        // glyph land there directly.
         let mut chrome = Chrome::new(theme());
-        let mut batch = ChromeBatch::default();
-        chrome.draw_editor_frame(
+        let mut pane = scene::pane_elem(
+            WindowId(0),
             400,
             300,
             &styled(&["hi".to_string()]),
             0,
             &[],
             "welcome",
-            &mut batch,
+            &theme(),
         );
-        let (vert, glyph) = (batch.verts[0], batch.glyphs[0]);
+        pane.absolute().position(50.0, 30.0);
+        let laid = lay_scene(pane, 400.0, 300.0);
 
-        let mark = batch.mark();
-        chrome.draw_editor_frame(
-            400,
-            300,
-            &styled(&["hi".to_string()]),
-            0,
-            &[],
-            "welcome",
-            &mut batch,
+        // The pane's background and title bar sit at the tile origin.
+        assert_eq!(laid.boxes[0].rect.x, 50.0, "the pane lands at the tile's x");
+        assert_eq!(laid.boxes[0].rect.y, 30.0, "and at its y");
+        assert!(
+            laid.boxes
+                .iter()
+                .skip(1)
+                .all(|b| b.rect.x >= 50.0 && b.rect.y >= 30.0),
+            "nothing draws outside the pane's origin"
         );
-        batch.translate_since(mark, 10.0, 20.0);
-
-        // Everything before the mark stays put; everything after it shifts.
-        assert_eq!(batch.verts[0], vert);
-        assert_eq!(batch.glyphs[0], glyph);
-        let moved_vert = batch.verts[vert_count(&batch)];
-        assert_eq!(
-            (moved_vert[0], moved_vert[1]),
-            (vert[0] + 10.0, vert[1] + 20.0)
+        assert!(
+            laid.texts
+                .iter()
+                .all(|t| t.rect.x >= 50.0 && t.rect.y >= 30.0),
+            "and no glyph draws outside it either"
         );
-    }
 
-    fn vert_count(batch: &ChromeBatch) -> usize {
-        batch.verts.len() / 2
+        // Tessellated, the first title glyph is offset with the pane.
+        let batch = scene_to_chrome_batch(&laid, &mut chrome.atlas);
+        assert!(
+            batch.glyphs[0].x >= 50.0 && batch.glyphs[0].y >= 30.0,
+            "the title glyph is inside the pane"
+        );
     }
 
     #[test]
@@ -1750,10 +1453,14 @@ mod tests {
         // mode glyph in the accent foreground), never in the accent color that
         // fills the mode segment — the brief flagged amber-on-amber as a bug.
         // Glyph colour is baked into the atlas cell, so ask the atlas which
-        // cells the draw actually produced.
+        // cells the scene actually produced.
         let mut chrome = Chrome::new(theme());
-        let mut batch = ChromeBatch::default();
-        let _ = chrome.draw_statusline(800, 600, 1, "foot", status(), &mut batch);
+        let laid = lay_scene(
+            scene::statusline_elem(800, 600, 1, "foot", status(), &theme()),
+            800.0,
+            600.0,
+        );
+        let batch = scene_to_chrome_batch(&laid, &mut chrome.atlas);
         let quad = |i: usize| &batch.verts[i * 6..i * 6 + 6];
         assert!(
             quad(0).iter().all(|v| v[4] == 69.0 / 255.0),

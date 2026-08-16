@@ -21,6 +21,7 @@ pub mod pane;
 pub mod persist;
 pub mod render;
 pub mod repeat;
+pub mod scene;
 pub mod screencopy;
 pub mod screenshot;
 pub mod shell;

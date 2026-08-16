@@ -3,9 +3,10 @@
 //!
 //! Phase 0 draws the focused xdg toplevel fullscreen over a plain clear
 //! color, then ruster's chrome (statusline, editor frame, which-key) on top of
-//! it. [`Chrome`] produces a [`ChromeBatch`] of panel quads and glyph quads;
-//! panels become solid-color elements and glyphs become textured elements
-//! sampling the glyph atlas, which is uploaded once per change.
+//! it. The chrome is built as a declarative scene in `scene.rs`, laid out and
+//! tessellated into a [`ChromeBatch`] of panel quads and glyph quads; panels
+//! become solid-color elements and glyphs become textured elements sampling
+//! the glyph atlas, which is uploaded once per change.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -32,8 +33,11 @@ use smithay::wayland::compositor::with_states;
 use smithay::wayland::shell::wlr_layer::Layer as WlrLayer;
 use smithay::wayland::shell::xdg::ToplevelSurface;
 
-use crate::chrome::{solid_elements_from_verts, Chrome, ChromeBatch, TreeStatus};
+use crate::chrome::{solid_elements_from_verts, Chrome, TreeStatus};
+use crate::scene;
+use ruster_render_elements::{layout, ElementKey, PxRect};
 use ruster_render_gles::geometry::GlyphQuad;
+use ruster_render_gles::tessellate::{scene_to_chrome_batch, GlesTextMeasurer};
 
 /// Background the compositor clears the output to each frame.
 pub const CLEAR_COLOR: Color32F = Color32F::BLACK;
@@ -237,177 +241,88 @@ where
     let mut elements: Vec<ChromeRenderElements<R>> = Vec::new();
     // Chrome is drawn unconditionally and sits above the client surface; the
     // statusline bar spans the bottom of the output, the which-key overlay
-    // floats top-left, and the welcome editor frame is centred.
+    // floats top-left, and the editor panes sit where the layout put them.
     if let Some(chrome) = chrome.as_mut() {
         let size = scene
             .output
             .current_mode()
             .map(|mode| mode.size)
             .unwrap_or_default();
-        let mut batch = ChromeBatch::default();
-        // Anything that covers text goes here instead, and is emitted in front
-        // of this batch's glyphs as well as its panels. See `OverlayBatch`.
-        let mut overlay = crate::chrome::OverlayBatch::default();
-        // First in the batch, so everything else lands in front of it: the
-        // tiling area covers the whole output, statusline included, so a
-        // full-height window's border would otherwise sit on top of the bar.
-        chrome.draw_window_borders(
-            scene.geometry,
-            scene.focus,
-            scene.output.current_scale().fractional_scale(),
-            &mut batch,
-        );
-        chrome.draw_statusline(
-            size.w,
-            size.h,
-            scene.workspace,
-            scene.focused_title,
-            scene.tree_status,
-            &mut batch,
-        );
+        let render_scale = scene.output.current_scale().fractional_scale();
 
-        if let Some(mb) = scene.minibuffer {
-            chrome.draw_minibuffer(size.w, size.h, &mb.display(), mb.sigil_len(), &mut batch);
-        }
-
-        // No editor frame. It drew a hardcoded welcome buffer over the middle
-        // of the screen — a Phase 3 placeholder standing in for a real
-        // `ruster-core` buffer in a tile, and until that exists it is an
-        // obstruction with nothing behind it. `Chrome::draw_editor_frame` stays
-        // for the tile that will replace it.
-
-        // Only while something is pending. It used to be drawn every frame
-        // from a hardcoded pair, so it was permanently on screen and never
-        // about anything.
-        if let Some(view) = &scene.whichkey {
-            chrome.draw_whichkey(size.w, size.h, view, &mut batch);
-        }
-
-        // Editor panes, at the rectangles the layout gave them. Drawn inside the
-        // chrome batch so they sit above client surfaces and below the
-        // statusline, which is where a tile belongs — and so a pane's frame is
-        // translated by the same `translate_since` the rest of the chrome uses
-        // rather than a second positioning scheme.
-        // Chrome is measured in physical pixels and the layout in logical ones,
-        // the same conversion `draw_window_borders` does.
-        let chrome_scale = scene.output.current_scale().fractional_scale() as f32;
-        // Where the hover panel's caret ended up, filled in by the pane that
-        // owns it. Resolved inside the loop because the gutter — and therefore
-        // the first text column — depends on which lines that pane is showing,
-        // and worked out again here it would be a second opinion about the same
-        // grid.
-        let mut hover_at: Option<(crate::chrome::HoverAnchor, &[String])> = None;
-        for (id, rect) in scene.geometry {
-            let Some(pane) = scene.panes.get(id) else {
-                continue;
-            };
-            let mark = batch.mark();
-            // The text lives in the store; the pane holds a handle to it.
-            let Some(doc) = scene.buffers.get(pane.doc) else {
-                continue;
-            };
-            let (first_line, lines) = pane.visible_lines(&doc.buffer);
-            // Highlighted here rather than in the pane: the parse belongs to the
-            // document, and two panes on one file share it.
-            let extension = doc
-                .file_path
-                .as_ref()
-                .and_then(|p| p.extension())
-                .and_then(|e| e.to_str())
-                .unwrap_or("");
-            let lines = scene.highlights.borrow_mut().styled_lines(
-                pane.doc,
-                extension,
-                &doc.buffer,
-                first_line,
-                &lines,
-            );
-            let severities =
-                pane.line_severities(scene.lsp.diagnostics(pane.doc), first_line, lines.len());
-            // Only while the line it describes is actually on screen: a panel
-            // anchored to a caret that has been scrolled away would sit at the
-            // frame's edge pointing at whatever is there now.
-            if let Some(hover) = scene.hover.filter(|h| h.pane == *id) {
-                if (first_line..first_line + lines.len()).contains(&hover.row) {
-                    let body = crate::chrome::FrameBody::new(first_line, lines.len());
-                    let (bx, by) = body.cell_origin(hover.row - first_line, hover.col);
-                    hover_at = Some((
-                        crate::chrome::HoverAnchor {
-                            x: rect.x as f32 * chrome_scale + bx,
-                            y: rect.y as f32 * chrome_scale + by,
-                            cell_h: body.cell_h,
-                        },
-                        &hover.lines,
-                    ));
-                }
-            }
-            chrome.draw_editor_frame(
-                (rect.w as f32 * chrome_scale) as i32,
-                (rect.h as f32 * chrome_scale) as i32,
-                &lines,
-                first_line,
-                &severities,
-                &doc.name,
-                &mut batch,
-            );
-            batch.translate_since(
-                mark,
-                rect.x as f32 * chrome_scale,
-                rect.y as f32 * chrome_scale,
-            );
-        }
-
-        // The launcher owns the screen while it is open, so it is drawn last
-        // and into the overlay layer — over the panes, and clear of the bars at
-        // the bottom by construction. See `launcher_layout`.
-        if let Some(view) = &scene.launcher {
-            chrome.draw_launcher(size.w, size.h, view, &mut overlay);
-        }
-
-        // After every pane, so it sits above the text it explains rather than
-        // under the next tile the loop draws.
-        if let Some((anchor, lines)) = hover_at {
-            chrome.draw_hover(size.w, size.h, anchor, lines, &mut overlay);
-        }
+        // The whole frame is one declarative scene: `chrome_scene` assembles
+        // the widgets, `layout` turns the tree into pure geometry, and
+        // `scene_to_chrome_batch` tessellates it. Anything that covers text —
+        // the launcher and the hover panel — comes back as its own overlay
+        // element, so it is emitted in front of the base batch's glyphs as well
+        // as its panels.
+        let mut measurer = GlesTextMeasurer;
+        let (base, overlay) = scene::chrome_scene(scene, chrome.theme(), &mut measurer);
+        let area = PxRect {
+            x: 0.0,
+            y: 0.0,
+            w: size.w as f32,
+            h: size.h as f32,
+        };
+        let base_scene = layout(area, &base, &mut measurer);
+        let mut base_batch = scene_to_chrome_batch(&base_scene, &mut chrome.atlas);
+        let overlay_batch = overlay.map(|o| {
+            let scene = layout(area, &o, &mut measurer);
+            scene_to_chrome_batch(&scene, &mut chrome.atlas)
+        });
 
         // Synthetic load, when asked for. Real glyphs from the atlas rather than
         // empty quads, so the measurement includes the texture the renderer
         // actually samples.
         let bench = bench_glyph_count();
         if bench > 0 {
-            chrome.bench_glyphs(bench, &mut batch);
+            chrome.bench_glyphs(bench, &mut base_batch);
         }
 
         // Glyphs first, then panels. Within a panel the glyphs are drawn on top
         // of its background, and chrome panels never overlap each other, so
         // hoisting every glyph in front of every panel is equivalent to a strict
         // reverse of painter's order and saves interleaving the two lists.
-        let render_scale = scene.output.current_scale().fractional_scale();
+        //
         // The overlay layer first. A smithay element list is front-to-back, so
         // emitting it ahead of the base layer puts it in front of the base
         // layer's *glyphs* too — which is the whole reason it exists, since a
         // panel that covers text loses to that text under the hoist below.
-        elements.extend(
-            glyph_elements(chrome, renderer, &overlay.0.glyphs, render_scale)
+        if let Some(overlay_batch) = &overlay_batch {
+            elements.extend(
+                glyph_elements(
+                    chrome,
+                    renderer,
+                    &overlay_batch.glyphs,
+                    &overlay_batch.glyph_keys,
+                    render_scale,
+                )
                 .into_iter()
                 .map(ChromeRenderElements::Texture),
-        );
+            );
+            elements.extend(
+                solid_elements_from_verts(&overlay_batch.verts)
+                    .into_iter()
+                    .rev()
+                    .map(ChromeRenderElements::Solid),
+            );
+        }
         elements.extend(
-            solid_elements_from_verts(&overlay.0.verts)
-                .into_iter()
-                .rev()
-                .map(ChromeRenderElements::Solid),
-        );
-        elements.extend(
-            glyph_elements(chrome, renderer, &batch.glyphs, render_scale)
-                .into_iter()
-                .map(ChromeRenderElements::Texture),
+            glyph_elements(
+                chrome,
+                renderer,
+                &base_batch.glyphs,
+                &base_batch.glyph_keys,
+                render_scale,
+            )
+            .into_iter()
+            .map(ChromeRenderElements::Texture),
         );
         // The panel batch is in painter's order but a smithay element list is
         // front-to-back. Reverse it, or every background occludes the accent
         // segments drawn on top of it.
         elements.extend(
-            solid_elements_from_verts(&batch.verts)
+            solid_elements_from_verts(&base_batch.verts)
                 .into_iter()
                 .rev()
                 .map(ChromeRenderElements::Solid),
@@ -565,10 +480,16 @@ where
 /// itself in logical pixels and scales by the output scale at render time — so
 /// the destination size is divided by that scale here to land back on the exact
 /// physical rect the atlas rasterized for.
+///
+/// `glyph_keys` pairs each glyph with the element it belongs to. Consecutive
+/// glyphs sharing one key draw with one stable run of ids, so the damage
+/// tracker keys a whole element (say, one pane's line numbers) to one id run
+/// rather than to a position in the batch.
 fn glyph_elements<R: Renderer + ImportMem>(
     chrome: &mut Chrome,
     renderer: &mut R,
     glyphs: &[GlyphQuad],
+    glyph_keys: &[ElementKey],
     render_scale: f64,
 ) -> Vec<TextureRenderElement<<R as RendererSuper>::TextureId>>
 where
@@ -577,15 +498,27 @@ where
     if glyphs.is_empty() {
         return Vec::new();
     }
+    debug_assert_eq!(
+        glyphs.len(),
+        glyph_keys.len(),
+        "every glyph must carry the key of the element it belongs to"
+    );
     let Some(texture) = chrome.atlas_texture(renderer) else {
         return Vec::new();
     };
     let context_id = renderer.context_id();
     let atlas_size = chrome.atlas.texture_size as f64;
-    glyphs
-        .iter()
-        .enumerate()
-        .map(|(index, g)| {
+
+    let mut elements = Vec::with_capacity(glyphs.len());
+    let mut start = 0;
+    while start < glyphs.len() {
+        let key = &glyph_keys[start];
+        let mut end = start + 1;
+        while end < glyphs.len() && &glyph_keys[end] == key {
+            end += 1;
+        }
+        let ids = chrome.element_ids(key, end - start);
+        for (g, id) in glyphs[start..end].iter().zip(ids) {
             // `src` is in the texture's own pixels (the buffer has scale 1, so
             // logical and buffer coordinates coincide).
             let src = Rectangle::new(
@@ -599,8 +532,8 @@ where
                 (g.w as f64 / render_scale).round() as i32,
                 (g.h as f64 / render_scale).round() as i32,
             ));
-            TextureRenderElement::from_static_texture(
-                chrome.glyph_id(index),
+            elements.push(TextureRenderElement::from_static_texture(
+                id,
                 context_id.clone(),
                 Point::<f64, Physical>::from((g.x as f64, g.y as f64)),
                 texture.clone(),
@@ -611,9 +544,11 @@ where
                 Some(logical),
                 None,
                 Kind::Unspecified,
-            )
-        })
-        .collect()
+            ));
+        }
+        start = end;
+    }
+    elements
 }
 
 /// Deliver frame callbacks to every window on screen, against the time of the
@@ -721,6 +656,238 @@ mod tests {
             FRONT_TO_BACK.len(),
             7,
             "four layers, plus cursor/chrome/windows"
+        );
+    }
+
+    use crate::compositor::HoverPanel;
+    use crate::highlight::Highlights;
+    use crate::keymap::Keymap;
+    use crate::minibuffer::{MiniBuffer, Prompt};
+    use crate::pane::{EditorPane, Panes};
+    use crate::scene;
+    use ruster_core::buffer::Buffer;
+    use ruster_core::workspace::BufferStore;
+    use ruster_lsp::state::LspState;
+    use ruster_render::{Color, Theme};
+    use ruster_render_elements::{div, layout, Elem, PxRect, Styled};
+    use ruster_render_gles::tessellate::GlesTextMeasurer;
+    use ruster_shell::{Layout, Rect};
+    use smithay::output::{Mode, PhysicalProperties, Scale, Subpixel};
+
+    fn theme() -> Theme {
+        Theme::default()
+    }
+
+    fn status() -> TreeStatus {
+        TreeStatus {
+            layout: Some(Layout::Horizontal),
+            windows: 2,
+            floating: false,
+        }
+    }
+
+    fn synth(id: &str, x: f32, y: f32) -> Elem {
+        let mut e = div();
+        e.id(id)
+            .absolute()
+            .position(x, y)
+            .size(40.0, 40.0)
+            .bg(Color::Rgb(1, 2, 3));
+        e
+    }
+
+    /// The declarative scene must keep the old painter's order — borders,
+    /// statusline, mini-buffer, which-key, then panes — because a smithay
+    /// element list is front-to-back and the panel batch is reversed to match.
+    #[test]
+    fn compose_keeps_the_painter_s_order() {
+        let base = scene::compose(
+            vec![
+                synth("borders", 0.0, 0.0),
+                synth("statusline", 0.0, 60.0),
+                synth("minibuffer", 0.0, 120.0),
+                synth("whichkey", 0.0, 180.0),
+                synth("pane", 0.0, 240.0),
+            ],
+            &theme(),
+            800.0,
+            600.0,
+        );
+        let mut measurer = GlesTextMeasurer;
+        let laid = layout(
+            PxRect {
+                x: 0.0,
+                y: 0.0,
+                w: 800.0,
+                h: 600.0,
+            },
+            &base,
+            &mut measurer,
+        );
+        let order: Vec<&str> = laid.boxes.iter().map(|b| b.key.last().unwrap()).collect();
+        assert_eq!(
+            order,
+            ["borders", "statusline", "minibuffer", "whichkey", "pane"]
+        );
+    }
+
+    /// `chrome_scene` assembles the real widgets from a `FrameInput` and hands
+    /// the overlay layer back as its own element — the launcher and the hover
+    /// panel, the only chrome drawn over the base batch.
+    #[test]
+    fn chrome_scene_builds_the_base_and_keeps_hover_as_the_overlay() {
+        let output = Output::new(
+            "test".into(),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: "ruster".into(),
+                model: "test".into(),
+            },
+        );
+        let mode = Mode {
+            size: (800, 600).into(),
+            refresh: 60_000,
+        };
+        output.add_mode(mode);
+        output.change_current_state(
+            Some(mode),
+            Some(Transform::Normal),
+            Some(Scale::Fractional(1.0)),
+            Some((0, 0).into()),
+        );
+
+        let mut buffers = BufferStore::new();
+        let doc = buffers.create_scratch("doc");
+        buffers.get_mut(doc).unwrap().buffer =
+            Buffer::from_str("fn main() {\n    println!(\"hi\");\n}\n");
+
+        let mut panes = Panes::new();
+        let mut pane = EditorPane::new(doc);
+        pane.rows = 3;
+        panes.insert(WindowId(0), pane);
+
+        let toplevels = HashMap::new();
+        let geometry = vec![(WindowId(0), Rect::new(0, 0, 100, 60))];
+        let highlights = std::cell::RefCell::new(Highlights::default());
+        let lsp = LspState::default();
+        let keymap = Keymap::new(&[]);
+        let mut mb = MiniBuffer::new(Prompt::Command);
+        mb.input = ":echo hi".into();
+        let hover = HoverPanel {
+            pane: WindowId(0),
+            row: 0,
+            col: 0,
+            lines: vec!["hover line".to_string()],
+        };
+
+        let frame = FrameInput {
+            focus: Some(WindowId(0)),
+            toplevels: &toplevels,
+            output: &output,
+            workspace: 1,
+            focused_title: "doc",
+            cursor_status: &CursorImageStatus::Hidden,
+            cursor_location: Point::from((0.0, 0.0)),
+            geometry: &geometry,
+            tree_status: status(),
+            panes: &panes,
+            buffers: &buffers,
+            highlights: &highlights,
+            lsp: &lsp,
+            keymap: &keymap,
+            whichkey: None,
+            minibuffer: Some(&mb),
+            hover: Some(&hover),
+            launcher: None,
+        };
+
+        let mut measurer = GlesTextMeasurer;
+        let (base, overlay) = scene::chrome_scene(&frame, &theme(), &mut measurer);
+
+        // The overlay is exactly the hover panel: one rounded panel, one line.
+        let overlay_laid = layout(
+            PxRect {
+                x: 0.0,
+                y: 0.0,
+                w: 800.0,
+                h: 600.0,
+            },
+            overlay.as_ref().unwrap(),
+            &mut measurer,
+        );
+        assert_eq!(overlay_laid.boxes.len(), 1);
+        assert_eq!(overlay_laid.texts.len(), 1);
+
+        // The base is the frame in painter's order: window borders, statusline,
+        // mini-buffer, then the pane. (No which-key in this frame.)
+        let base_laid = layout(
+            PxRect {
+                x: 0.0,
+                y: 0.0,
+                w: 800.0,
+                h: 600.0,
+            },
+            &base,
+            &mut measurer,
+        );
+        let mut surfaces: Vec<&str> = Vec::new();
+        for b in &base_laid.boxes {
+            let top = b.key.0.first().map(String::as_str).unwrap_or("");
+            if surfaces.last().copied() != Some(top) {
+                surfaces.push(top);
+            }
+        }
+        assert_eq!(
+            surfaces,
+            ["window-borders", "statusline", "minibuffer", "pane:0"]
+        );
+
+        // With a launcher open the overlay carries it too — in front of the
+        // hover panel, because the launcher owns the screen while it is open
+        // and the hover explains text that may sit under it.
+        let launcher_frame = FrameInput {
+            launcher: Some(ruster_render::LauncherView {
+                query: "fire".into(),
+                rows: vec![ruster_render::LauncherRow {
+                    label: "Firefox".into(),
+                    detail: "Web Browser".into(),
+                    group: "apps".into(),
+                    selected: true,
+                }],
+                message: String::new(),
+                scrolled: 0,
+                total: 1,
+            }),
+            ..frame
+        };
+        let (_, overlay) = scene::chrome_scene(&launcher_frame, &theme(), &mut measurer);
+        let overlay_laid = layout(
+            PxRect {
+                x: 0.0,
+                y: 0.0,
+                w: 800.0,
+                h: 600.0,
+            },
+            overlay.as_ref().unwrap(),
+            &mut measurer,
+        );
+        let keys: Vec<&str> = overlay_laid
+            .boxes
+            .iter()
+            .map(|b| b.key.last().unwrap())
+            .collect();
+        let launcher_at = keys
+            .iter()
+            .position(|k| *k == "launcher")
+            .expect("the launcher panel is in the overlay");
+        let hover_at = keys
+            .iter()
+            .position(|k| *k == "hover")
+            .expect("the hover panel is still in the overlay");
+        assert!(
+            launcher_at < hover_at,
+            "the launcher is drawn before (in front of) the hover panel"
         );
     }
 

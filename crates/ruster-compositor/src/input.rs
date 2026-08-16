@@ -212,7 +212,7 @@ impl<B: Backend + 'static> CompositorState<B> {
     /// Physical pixels from the top-left of the tile at `origin` — the
     /// coordinate space a pane's frame is drawn in. Chrome is measured in
     /// physical pixels and the layout in logical ones; this is the conversion
-    /// `draw_window_borders` and the pane renderer both do.
+    /// the window-borders elements and the pane renderer both do.
     fn frame_local(
         &self,
         location: Point<f64, Logical>,
