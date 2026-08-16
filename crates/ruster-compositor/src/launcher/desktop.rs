@@ -195,6 +195,8 @@ pub struct AppsProvider {
     entries: Vec<DesktopEntry>,
     fuzzy: Fuzzy,
     loaded: bool,
+    /// The configured terminal, resolved once per open. See `prepare`.
+    terminal: Option<String>,
 }
 
 impl Default for AppsProvider {
@@ -203,6 +205,7 @@ impl Default for AppsProvider {
             entries: Vec::new(),
             fuzzy: Fuzzy::new(),
             loaded: false,
+            terminal: None,
         }
     }
 }
@@ -214,6 +217,7 @@ impl AppsProvider {
             entries,
             fuzzy: Fuzzy::new(),
             loaded: true,
+            terminal: None,
         }
     }
 
@@ -232,6 +236,12 @@ impl Provider for AppsProvider {
     }
 
     fn prepare(&mut self) {
+        // Resolved per open rather than per keystroke: `terminal_command` walks
+        // `PATH` looking for a binary, and `query` runs on every character typed
+        // into the launcher. Not hoisted all the way to construction, because a
+        // config reload can change which terminal is configured and an open is
+        // the last moment that answer can still be picked up.
+        self.terminal = crate::lua::terminal_command(None).map(|(cmd, _)| cmd);
         if self.loaded {
             return;
         }
@@ -260,7 +270,7 @@ impl Provider for AppsProvider {
     }
 
     fn query(&mut self, query: &str, _ctx: &ProviderCtx<'_>, limit: usize) -> Vec<Candidate> {
-        let terminal = crate::lua::terminal_command(None).map(|(cmd, _)| cmd);
+        let terminal = self.terminal.clone();
         let mut hits: Vec<Candidate> = Vec::new();
         for entry in &self.entries {
             // The name at full weight; the description at three quarters, so a
@@ -438,6 +448,57 @@ mod tests {
         assert_eq!(
             hits[0].activation,
             Activation::Action(Action::Spawn("firefox".into()))
+        );
+    }
+
+    #[test]
+    fn the_terminal_resolved_on_open_reaches_the_row_that_needs_one() {
+        // `launch_command` is tested directly above; what this covers is the
+        // wiring between them, which is the part that just changed. The lookup
+        // walks `PATH`, so it moved out of `query` — which runs per keystroke —
+        // and into `prepare`, which runs per open. Cached in the wrong place it
+        // goes stale; not cached at all it is a `PATH` walk per character; and
+        // dropped on the floor it silently launches a terminal program with no
+        // terminal, which looks like the program failing to start.
+        let htop = DesktopEntry {
+            name: "htop".into(),
+            exec: "htop".into(),
+            comment: String::new(),
+            terminal: true,
+            id: "htop.desktop".into(),
+        };
+        let mut p = AppsProvider::with_entries(vec![htop.clone()]);
+        p.terminal = Some("foot".into());
+        let hits = p.query("htop", &ProviderCtx::default(), 10);
+        assert_eq!(
+            hits[0].activation,
+            Activation::Action(Action::Spawn("foot -e htop".into())),
+            "the row must carry the terminal, not just know one exists"
+        );
+
+        // The half above sets the field by hand, so on its own it leaves
+        // `prepare` free to resolve nothing at all — a mutation that survived
+        // until this was added. Guarding it needs the real lookup, so it is
+        // skipped where there is no terminal to find rather than asserting
+        // something about the machine it happens to run on.
+        if crate::lua::terminal_command(None).is_some() {
+            let mut opened = AppsProvider::with_entries(Vec::new());
+            opened.prepare();
+            assert!(
+                opened.terminal.is_some(),
+                "opening the launcher must resolve the terminal, not just make room for one"
+            );
+        } else {
+            eprintln!("skipping the resolve half: no terminal is installed here");
+        }
+
+        // And with no terminal found, the raw command — which at least tries.
+        let mut bare = AppsProvider::with_entries(vec![htop]);
+        bare.terminal = None;
+        let hits = bare.query("htop", &ProviderCtx::default(), 10);
+        assert_eq!(
+            hits[0].activation,
+            Activation::Action(Action::Spawn("htop".into()))
         );
     }
 

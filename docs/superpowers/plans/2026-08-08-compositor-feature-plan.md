@@ -51,6 +51,18 @@ black (the blit is asynchronous and the wait is untested), and that it is the
 right way up (`Transform::Normal` is passed on the assumption that the DRM
 output carries no transform, unlike winit).
 
+**Update 2026-08-16.** Both capture paths are now heavily exercised *nested*, and
+the orientation question turned out to be sharper than this predicted. The two
+paths disagree about the flip and both are right: a screencopy client receives raw
+pixels and applies the output transform itself, while the keybind path encodes the
+PNG and must apply that transform on the way out. The winit output carries
+`Transform::Flipped180`; the assumption above is that a DRM output carries none.
+If that assumption is wrong, the keybind screenshot comes out inverted on hardware
+and `grim` does not — which is the specific thing to look for, since a capture that
+is upside down in only one of two paths is easy to write off as a fluke of the
+other. Also unexplained: an `eglQuerySurface BAD_SURFACE` follows every capture
+nested, survived but not understood, and hardware is a second data point on it.
+
 ---
 
 ## Tier 1 — Finish the control plane (Phase 2's back half)
@@ -115,20 +127,29 @@ Every line here is something `foot` logged as missing on the hardware boot. They
 are small individually and the difference between a demo and a desktop
 collectively.
 
-| Gap | What breaks without it | Size |
-| :--- | :--- | :--- |
-| **XKB layout from config** | The keymap is hardcoded. Any non-US layout is simply wrong, and there is a `TODO(next phase)` at `compositor.rs:442` saying so. This is the one that makes the compositor unusable for a whole class of user | S |
-| **`xdg_popup` positioning** | Client menus and tooltips have no parent-relative placement — `shell.rs:53` tracks no popups at all. Right-click menus land wherever | M |
-| **Primary selection** | Middle-click paste does not work anywhere | S |
-| **Decoration manager** | Clients use CSD unconditionally, so every window draws its own titlebar *inside* a tile that already has a border. Announcing server-side decorations is what makes the tiling look deliberate | S |
-| **`xdg-activation`** | No focus-stealing protocol, so `bell.urgent` falls back to colouring margins red, and a client asking for attention cannot get it | S |
-| **`cursor-shape-v1`** | Clients ship their own cursor bitmaps instead of naming a shape; the compositor already draws a software cursor and could serve them all | S |
-| **Fractional scaling** | Clients cannot render at the real scale, so text is resampled on any non-integer output | M |
-| **`text-input` / IME** | No input method at all. Blocks CJK entry outright | L |
+**Most of this tier is done.** The table below is kept with its outcomes rather
+than deleted, because the recommended order at the bottom turned out to be right
+and the reasoning is worth keeping. Verified against the globals the compositor
+actually creates (`compositor.rs`), not against memory.
+
+| Gap | What breaks without it | Size | State |
+| :--- | :--- | :--- | :--- |
+| **XKB layout from config** | The keymap is hardcoded. Any non-US layout is simply wrong, and there is a `TODO(next phase)` at `compositor.rs:442` saying so. This is the one that makes the compositor unusable for a whole class of user | S | ✅ done — and it was worse than described: the matcher recognised two hardcoded strings, so the Lua config could not bind *anything* |
+| **`xdg_popup` positioning** | Client menus and tooltips have no parent-relative placement — `shell.rs:53` tracks no popups at all. Right-click menus land wherever | M | ✅ done, with real grabs — the first version was invisible, because `PopupManager::commit` does not send the initial configure |
+| **Primary selection** | Middle-click paste does not work anywhere | S | ✅ done |
+| **Decoration manager** | Clients use CSD unconditionally, so every window draws its own titlebar *inside* a tile that already has a border. Announcing server-side decorations is what makes the tiling look deliberate | S | ✅ done — note that tiled states alone do not stop a toolkit drawing a titlebar, and a client that keeps CSD keeps its shadow, which is what `surface_origin` exists for |
+| **`xdg-activation`** | No focus-stealing protocol, so `bell.urgent` falls back to colouring margins red, and a client asking for attention cannot get it | S | ✅ done |
+| **`cursor-shape-v1`** | Clients ship their own cursor bitmaps instead of naming a shape; the compositor already draws a software cursor and could serve them all | S | ✅ done |
+| **Fractional scaling** | Clients cannot render at the real scale, so text is resampled on any non-integer output | M | ⬜ **open.** The scale *arithmetic* is there and tested; the `wp_fractional_scale_v1` global is not, so no client is ever told. Wants `wp_viewporter` alongside it, which is also absent |
+| **`text-input` / IME** | No input method at all. Blocks CJK entry outright | L | ⬜ open, untouched |
 
 Recommended order: XKB first (it is a correctness bug wearing a feature's
 clothes), then decorations + primary selection + activation together (three small
 handler impls), then popups, then scaling. IME last — it is a project.
+
+Also absent, and never listed here because `foot` does not ask for them:
+`wp_viewporter`, `presentation-time`, `relative-pointer` and `pointer-constraints`
+(games and remote desktop need the pair), `virtual-keyboard`, `input-method`.
 
 ---
 
@@ -169,9 +190,14 @@ Follows 3.1 for free if the buffer leaf reuses the editor's document model.
   than a noise-masked screen diff driven by injected input. Three bugs, none of
   them the one that had been blamed for a week — a flush-after-sleep deadlock, a
   missing `zxdg_output_manager_v1`, and a flip that the client already applies.
-- **Layer-shell** — bars, notification daemons, launchers. The single protocol
-  that unlocks the most third-party software.
-- **XWayland** — until then, no Electron app, no Steam, no legacy GTK2.
+- ~~**Layer-shell**~~ — **done 2026-08-16.** Bars, notification daemons and
+  wallpapers can map. It was written, correct and invisible twice over: killed by
+  `ensure_configured`, which raises the protocol error it sounds like it prevents,
+  and then drawn *behind* ruster's own statusline, because the element list is
+  front-to-back and the layers were emitted after the chrome. Nothing on this
+  machine speaks the protocol, so `crates/ruster-bar` is a real client that does.
+- **XWayland** — until then, no Electron app, no Steam, no legacy GTK2. The
+  largest remaining unlock by some distance.
 - ~~**Session restore**~~ — done, and confirmed on hardware: two windows put
   back at their positions in the tree, not merely respawned.
 - **Animations** — last, deliberately.
@@ -180,22 +206,46 @@ Follows 3.1 for free if the buffer leaf reuses the editor's document model.
 
 ## What I would actually do next
 
-**1.1 (live Lua API), then 2's XKB item, then 1.2/1.3 together.**
+*Original recommendation, all of it now done: 1.1 (live Lua API), then 2's XKB
+item, then 1.2/1.3 together. Tier 3 followed and did not slip. Kept below for the
+reasoning, which held up.*
 
-The Lua API is the biggest gap between the spec and the tree, and everything in
-Tier 1 gets easier once a command queue exists — the mini-buffer becomes a text
-box that pushes onto it, and the chord machine becomes a resolver that feeds it.
-XKB jumps the queue because a hardcoded keymap is a bug, not a missing feature,
-and it is cheap.
+> The Lua API is the biggest gap between the spec and the tree, and everything in
+> Tier 1 gets easier once a command queue exists — the mini-buffer becomes a text
+> box that pushes onto it, and the chord machine becomes a resolver that feeds it.
+> XKB jumps the queue because a hardcoded keymap is a bug, not a missing feature,
+> and it is cheap.
+>
+> Tier 2's small handlers are a good batch for a session where the hardware is
+> unavailable: they are pure protocol wiring, they are individually testable
+> nested, and each one removes a line from `foot`'s complaint list — which is a
+> verification signal that costs nothing to read.
+>
+> Tier 3 is where the project's actual thesis lives, and I would not start it
+> until Tier 1 is finished, because the leaf-type change in 3.1 touches every
+> consumer of the tree and is much less pleasant to do while the control plane is
+> still moving.
 
-Tier 2's small handlers are a good batch for a session where the hardware is
-unavailable: they are pure protocol wiring, they are individually testable
-nested, and each one removes a line from `foot`'s complaint list — which is a
-verification signal that costs nothing to read.
+### As of 2026-08-16
 
-Tier 3 is where the project's actual thesis lives, and I would not start it until
-Tier 1 is finished, because the leaf-type change in 3.1 touches every consumer of
-the tree and is much less pleasant to do while the control plane is still moving.
+**A hardware pass first, then XWayland.**
+
+Roughly forty rows of `docs/compositor.md` have only ever been proven nested.
+Everything from Phase 3 onward — the editor in a tile, LSP, the launcher,
+layer-shell, and the window-geometry fix — has never run on DRM. This project's
+record is unambiguous about what that is worth: the screencopy path was believed
+working for a week, the layer-shell bar logged success while being invisible, and
+the nautilus offset was found by *looking at it*, after every headless test was
+green. A VT session is the highest-yield hour available.
+
+Then **XWayland**, which unlocks more third-party software than everything else
+remaining put together. Fractional scaling after it, with `wp_viewporter`, since
+the arithmetic is already in place and tested — only the globals are missing.
+IME last, as it always was.
+
+One thing genuinely unexplained: an `eglQuerySurface BAD_SURFACE` follows every
+screencopy capture. It is survived rather than understood, and it is recorded that
+way in the matrix rather than being written off.
 
 ## Verification standard
 
