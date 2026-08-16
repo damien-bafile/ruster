@@ -1,0 +1,126 @@
+# Maintainer: Damien Bafile <damnhatesyou@gmail.com>
+#
+# A -git package: the version is derived from the commit count, so every pushed
+# commit is a newer version than the one installed and `pacman -Syu` sees an
+# update. There is no tagged release to track yet.
+#
+# This is built into a *local* repository (see `update-repo.sh`), not published.
+# The project carries no licence, which means no redistribution rights are
+# granted to anyone — so the package must not be uploaded to the AUR or any
+# public mirror until that changes.
+
+pkgname=ruster-git
+pkgver=r0.0000000
+pkgrel=1
+pkgdesc="Rust editor and Wayland compositor"
+arch=('x86_64')
+url="https://github.com/damien-bafile/ruster"
+# SPDX's way of saying "a licence that is not one of the known ones". Here it
+# means all rights reserved: the source is public, the rights are not.
+license=('LicenseRef-all-rights-reserved')
+
+# Determined by reading the built binary rather than by guessing: every entry
+# below is a library `ldd` reports against a `--features udev` build.
+depends=(
+  'libinput'
+  'libxkbcommon'
+  'seatd'
+  'mesa'
+  'libdrm'
+  'lua54'
+)
+# Deliberately not 'cargo' or 'rust'. This is built on a machine whose Rust
+# comes from rustup, and the pacman `rust`/`cargo` packages conflict with a
+# rustup toolchain rather than complementing it — makepkg would try to install
+# one and then build with the other. `prepare()` fails loudly if no cargo is on
+# PATH, which is the honest version of this dependency.
+makedepends=('git')
+# Xwayland is what lets X11 clients connect. The compositor warns and carries on
+# without it, so it is optional rather than a hard dependency.
+optdepends=(
+  'xorg-xwayland: run X11 clients under the compositor'
+  'rust-analyzer: Rust language support in the editor'
+)
+provides=('ruster')
+conflicts=('ruster')
+
+# Arch's makepkg.conf turns LTO on for every package. It cannot be on for this
+# one: tree-sitter's C runtime is compiled by cc-rs, and GCC's LTO objects have
+# no symbols a plain link can see, so `rust-lld` fails the whole build with
+# `undefined symbol: ts_query_new` and a hundred like it. Nothing about that
+# error names LTO, which is why it is worth this comment rather than a silent
+# flag.
+options=(!lto)
+
+source=("$pkgname::git+https://github.com/damien-bafile/ruster.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$srcdir/$pkgname"
+  printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+prepare() {
+  cd "$srcdir/$pkgname"
+  if ! command -v cargo >/dev/null; then
+    echo "cargo is not on PATH: install rustup (or the 'rust' package) first" >&2
+    return 1
+  fi
+  # Vendored up front so `build()` can run offline, which is what `--frozen`
+  # below enforces: a build that silently reaches the network is one that can
+  # fail differently on a machine that is not this one.
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$srcdir/$pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  # `udev` is the whole point of installing this system-wide: without it the
+  # compositor can only run nested inside another Wayland session, and not on a
+  # VT where a session actually lives.
+  cargo build --release --frozen --features ruster-compositor/udev
+}
+
+check() {
+  cd "$srcdir/$pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  # The same feature set as `build()`, and that is not a tidiness point. Cargo
+  # re-resolves features per invocation and rebuilds what changed, so a `cargo
+  # test` without `udev` here quietly *replaces* the udev binary `build()` just
+  # produced with one that has no DRM backend at all — and `package()` then
+  # installs that. It was caught by `ldd`-ing the packaged binary and finding no
+  # libseat: the package built, installed and ran, and `--drm` would have failed
+  # on a VT with "requires building with the `udev` feature".
+  cargo test --release --frozen --workspace --features ruster-compositor/udev
+}
+
+package() {
+  cd "$srcdir/$pkgname"
+
+  install -Dm0755 target/release/ruster "$pkgdir/usr/bin/ruster"
+  install -Dm0755 target/release/ruster-compositor "$pkgdir/usr/bin/ruster-compositor"
+  install -Dm0755 target/release/ruster-bar "$pkgdir/usr/bin/ruster-bar"
+
+  # The shipped Lua config, as a reference rather than as live configuration:
+  # the compositor reads `$XDG_CONFIG_HOME/ruster/compositor.lua`, and a package
+  # that wrote there would overwrite the user's own file on every update.
+  install -Dm0644 crates/ruster-compositor/assets/compositor.lua \
+    "$pkgdir/usr/share/ruster/compositor.lua"
+
+  # So a display manager can offer the compositor as a session.
+  install -Dm0644 /dev/stdin "$pkgdir/usr/share/wayland-sessions/ruster.desktop" <<'DESKTOP'
+[Desktop Entry]
+Name=ruster
+Comment=Rust editor and Wayland compositor
+Exec=ruster-compositor --drm
+Type=Application
+DESKTOP
+
+  for doc in README.md docs/compositor.md docs/keybindings.md; do
+    [ -f "$doc" ] && install -Dm0644 "$doc" "$pkgdir/usr/share/doc/ruster/$(basename "$doc")"
+  done
+  return 0
+}

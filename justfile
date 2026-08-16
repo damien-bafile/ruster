@@ -125,3 +125,15 @@ compositor:
 # Run the compositor on DRM (needs a free VT + seatd/logind access).
 compositor-drm:
     ./scripts/drm-test.sh
+
+# Not a plain `makepkg -si`: a repository is what makes pacman treat ruster like
+# any other package, so `pacman -Syu` upgrades it alongside everything else and
+# `pacman -Qo` can say which package owns a file. A hand-installed package is
+# invisible to both.
+#
+# It packages what is on the *remote*, not the working tree — push first. The
+# version is the commit count, so every pushed commit is an available upgrade.
+
+# Build ruster and publish it into the local pacman repository.
+package:
+    ./packaging/update-repo.sh
