@@ -123,6 +123,8 @@ pub struct FrameInput<'a> {
     pub hover: Option<&'a crate::compositor::HoverPanel>,
     /// The launcher overlay, when open.
     pub launcher: Option<ruster_render::LauncherView>,
+    /// X11 override-redirect windows, which are drawn but never tiled.
+    pub x11_unmanaged: &'a [smithay::xwayland::X11Surface],
 }
 
 /// Composite the focused toplevel fullscreen onto the output, draw ruster's
@@ -183,6 +185,7 @@ where
             }
             Stage::Layer(which) => elements.extend(layer_elements(scene, renderer, which)),
             Stage::Chrome => elements.extend(chrome_elements(scene, chrome, renderer)),
+            Stage::X11Unmanaged => elements.extend(x11_unmanaged_elements(scene, renderer)),
             Stage::Windows => elements.extend(window_elements(scene, renderer)),
         }
     }
@@ -207,6 +210,9 @@ pub enum Stage {
     /// Everything the compositor draws itself: statusline, borders, panes,
     /// which-key, the launcher.
     Chrome,
+    /// X11 menus, tooltips and drag icons — override-redirect windows, which
+    /// the window manager was told to keep its hands off.
+    X11Unmanaged,
     /// Tiled toplevels and their popups.
     Windows,
 }
@@ -218,11 +224,15 @@ pub enum Stage {
 /// statusline is the fallback for when nothing better is there, and a client
 /// that went to the trouble of asking for the space wins it. `Bottom` and
 /// `Background` — where a wallpaper setter lives — go behind the windows.
-pub const FRONT_TO_BACK: [Stage; 7] = [
+pub const FRONT_TO_BACK: [Stage; 8] = [
     Stage::Cursor,
     Stage::Layer(WlrLayer::Overlay),
     Stage::Layer(WlrLayer::Top),
     Stage::Chrome,
+    // In front of the windows, because a menu that renders behind the window it
+    // was opened from is indistinguishable from one that never opened — the same
+    // failure `xdg_popup` had, one protocol over.
+    Stage::X11Unmanaged,
     Stage::Windows,
     Stage::Layer(WlrLayer::Bottom),
     Stage::Layer(WlrLayer::Background),
@@ -392,6 +402,37 @@ where
     }
 
     elements
+}
+
+/// X11 override-redirect windows, drawn at the coordinates the client chose.
+///
+/// These are menus, tooltips and drag icons. They are not in the tree and must
+/// not be: an X client positions its own menu relative to the thing that opened
+/// it, and a tiling compositor that "helpfully" lays one out moves it somewhere
+/// meaningless. So unlike every other window here, the geometry comes from the
+/// client rather than from the layout.
+fn x11_unmanaged_elements<R: Renderer + ImportAll + ImportMem>(
+    scene: &FrameInput<'_>,
+    renderer: &mut R,
+) -> Vec<ChromeRenderElements<R>>
+where
+    <R as RendererSuper>::TextureId: Clone + 'static,
+{
+    let scale = Scale::from(scene.output.current_scale().fractional_scale());
+    let mut out = Vec::new();
+    for window in scene.x11_unmanaged {
+        let Some(surface) = window.wl_surface() else {
+            continue;
+        };
+        let origin = window.geometry().loc.to_physical_precise_round(scale);
+        let tree = SurfaceTree::from_surface(&surface);
+        out.extend(
+            AsRenderElements::<R>::render_elements(&tree, renderer, origin, scale, 1.0)
+                .into_iter()
+                .map(ChromeRenderElements::Surface),
+        );
+    }
+    out
 }
 
 /// Render elements for one layer of the output's `LayerMap`.
@@ -624,6 +665,17 @@ mod tests {
     }
 
     #[test]
+    fn an_x11_menu_is_drawn_in_front_of_the_window_that_opened_it() {
+        // Override-redirect windows are menus, tooltips and drag icons. Behind
+        // the windows they are indistinguishable from a menu that never opened —
+        // the exact failure `xdg_popup` had before popups were tracked, one
+        // protocol over — and in front of the chrome they would cover a
+        // statusline they know nothing about.
+        assert!(depth(Stage::X11Unmanaged) < depth(Stage::Windows));
+        assert!(depth(Stage::X11Unmanaged) > depth(Stage::Chrome));
+    }
+
+    #[test]
     fn wallpaper_layers_stay_behind_the_windows_they_are_behind() {
         // The other half: `Bottom` and `Background` are *below* the windows, so
         // a wallpaper setter cannot paint over the desktop it decorates.
@@ -658,8 +710,8 @@ mod tests {
         }
         assert_eq!(
             FRONT_TO_BACK.len(),
-            7,
-            "four layers, plus cursor/chrome/windows"
+            8,
+            "four layers, plus cursor/chrome/windows/x11-unmanaged"
         );
     }
 
@@ -803,6 +855,7 @@ mod tests {
             whichkey: None,
             minibuffer: Some(&mb),
             hover: Some(&hover),
+            x11_unmanaged: &[],
             launcher: None,
         };
 
@@ -851,6 +904,7 @@ mod tests {
         // hover panel, because the launcher owns the screen while it is open
         // and the hover explains text that may sit under it.
         let launcher_frame = FrameInput {
+            x11_unmanaged: &[],
             launcher: Some(ruster_render::LauncherView {
                 query: "fire".into(),
                 rows: vec![ruster_render::LauncherRow {

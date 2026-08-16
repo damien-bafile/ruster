@@ -278,6 +278,14 @@ pub fn run_drm() -> anyhow::Result<()> {
     // appears — there is no outer compositor to launch one into our socket by
     // hand — so a boot without it renders an empty screen no keybinding can
     // escape.
+    // The second of `xwayland::start`'s two call sites, and it must stay ahead of
+    // the config for the same reason as the first: the config launches the
+    // startup clients, and `start` is what sets `DISPLAY` for them. The default
+    // build cannot see this file, so a change made only in `winit_main.rs`
+    // compiles, passes, and silently leaves X11 clients unable to connect on
+    // hardware.
+    crate::xwayland::start(&state.display_handle.clone(), &event_loop.handle());
+
     let (control, shell) = load_compositor_config();
     apply_config_to_shell(&mut state, control, shell, &socket_name);
 
@@ -483,6 +491,7 @@ impl CompositorState<RusterUdevData> {
             keymap: &self.keymap,
             minibuffer: self.minibuffer.as_ref(),
             hover: self.hover.as_ref(),
+            x11_unmanaged: &self.x11_unmanaged,
             launcher: self.launcher.as_mut().map(|l| {
                 // One source for the viewport, so the scroll window and
                 // the drawing cannot disagree about how much fits.

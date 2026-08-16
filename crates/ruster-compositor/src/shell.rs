@@ -12,7 +12,7 @@ use smithay::desktop::{find_popup_root_surface, PopupKeyboardGrab, PopupKind, Po
     PopupUngrabStrategy};
 use smithay::input::pointer::Focus;
 use smithay::input::Seat;
-use smithay::utils::{Logical, Rectangle, Serial, SERIAL_COUNTER as SCOUNTER};
+use smithay::utils::{Logical, Rectangle, Serial};
 use smithay::wayland::compositor::{self, BufferAssignment};
 use smithay::wayland::shell::xdg::{
     decoration::XdgDecorationHandler, PopupSurface, PositionerState, ToplevelSurface,
@@ -22,7 +22,6 @@ use smithay::wayland::shell::xdg::{
 use crate::backend::Backend;
 use crate::compositor::CompositorState;
 use crate::focus::FocusTarget;
-use ruster_shell::Layout;
 
 /// Where a popup should sit, kept inside the output.
 ///
@@ -60,25 +59,8 @@ impl<B: Backend + 'static> XdgShellHandler for CompositorState<B> {
         // somewhere arbitrary — or on a workspace you are not watching. Unless
         // the saved session was waiting for this client, in which case it goes
         // back where it was, which may not be this workspace at all.
-        let near = self.shell.focus;
         let pid = crate::persist::client_pid(&surface, &self.display_handle);
-        if !self.place_restored_window(id, pid) {
-            self.workspaces.insert(id, near, Layout::Horizontal);
-        }
-        // A restored window can land on a workspace that is not on screen, and
-        // it must not take the keyboard there: every keystroke would go to a
-        // client the user cannot see. Until now every new window was inserted on
-        // the active workspace, so this could not arise.
-        if self.workspaces.is_visible(id) {
-            self.shell.set_focus(id);
-            self.pending_focus = Some(id);
-        } else {
-            self.shell.focus = self.workspaces.focus_for_active(self.shell.focus);
-        }
-        self.clients.insert(id, surface.into());
-        // Every existing window just got smaller; tell them before the new one
-        // draws, or the first frame overlaps its neighbour.
-        self.reconfigure_tiles();
+        self.place_new_client(id, surface.into(), pid);
         tracing::info!(?id, "new toplevel");
         // No configure is sent here: per the xdg protocol the initial
         // configure is sent on the first commit (anvil does the same).
@@ -232,18 +214,7 @@ impl<B: Backend + 'static> XdgShellHandler for CompositorState<B> {
         let Some(id) = self.window_for_surface(surface.wl_surface()) else {
             return;
         };
-        self.clients.remove(&id);
-        self.mapped.remove(&id);
-        // Wherever it was: a client can close while its workspace is hidden.
-        self.workspaces.remove(id);
-        // `remove_window` refocuses the shell onto the most recent window (or
-        // clears focus), but it knows nothing of workspaces and will happily
-        // name one that is off screen; the workspaces have the last word.
-        self.shell.remove_window(id);
-        self.shell.focus = self.workspaces.focus_for_active(self.shell.focus);
-        // The survivors grow into the space; they have to be told.
-        self.reconfigure_tiles();
-        self.update_keyboard_focus(SCOUNTER.next_serial());
+        self.remove_client(id);
         tracing::info!(?id, "toplevel destroyed");
     }
 }

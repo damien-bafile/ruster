@@ -264,6 +264,16 @@ pub struct CompositorState<B: Backend + 'static> {
     /// Bars, notification daemons and wallpapers: surfaces that sit outside the
     /// tiling rather than in it.
     pub layer_shell_state: WlrLayerShellState,
+    /// The `xwayland_shell_v1` global, which is how XWayland tells the
+    /// compositor that a given `wl_surface` belongs to a given X11 window.
+    pub xwayland_shell_state: smithay::wayland::xwayland_shell::XWaylandShellState,
+    /// The X11 window manager, once XWayland has started and said it is ready.
+    /// `None` before that, and for the whole session on a machine with no
+    /// `Xwayland` binary — which is a warning, not a failure.
+    pub xwm: Option<smithay::xwayland::X11Wm>,
+    /// X11 windows the window manager was told to keep its hands off: menus,
+    /// tooltips, drag icons. Drawn where the client put them, never tiled.
+    pub x11_unmanaged: Vec<smithay::xwayland::X11Surface>,
     /// The launcher overlay, when open.
     pub launcher: Option<crate::launcher::Launcher>,
     /// What answers a launcher query. Built once at startup.
@@ -317,11 +327,20 @@ impl<B: Backend + 'static> CompositorState<B> {
     /// destroyed-but-not-yet-committed window or a workspace switch can never
     /// grab the keyboard for a surface that is not on screen.
     pub fn update_keyboard_focus(&mut self, serial: Serial) {
-        let focus = self
+        let focused_id = self
             .pending_focus
             .take()
             .filter(|id| self.focusable(*id))
-            .or_else(|| self.shell.focus.filter(|id| self.focusable(*id)))
+            .or_else(|| self.shell.focus.filter(|id| self.focusable(*id)));
+        // X11 has no `wl_keyboard.enter`, so an X window is only "active"
+        // because the window manager said so. Told nothing, it draws itself
+        // greyed-out while receiving every keystroke — which reads as the
+        // compositor delivering input to the wrong window. Every window is told,
+        // including the ones losing focus, or the previous holder stays lit.
+        for (id, client) in &self.clients {
+            client.set_activated(Some(*id) == focused_id);
+        }
+        let focus = focused_id
             .and_then(|id| self.clients.get(&id))
             .and_then(|client| client.wl_surface());
         // Both clipboards follow the keyboard. smithay only offers a selection
@@ -1436,6 +1455,82 @@ impl<B: Backend + 'static> CompositorState<B> {
         }
     }
 
+    /// Put a newly created window into the tree and give it the keyboard.
+    ///
+    /// Shared by both protocols on purpose. `minibuffer.rs` states the rule this
+    /// follows — "no route into the WM can do something the others cannot" — and
+    /// the failure mode when an X11 window takes its own path is not a crash but
+    /// a divergence: it tiles but does not restore, or focuses but does not
+    /// reconfigure its neighbours, and every symptom looks like a different bug.
+    pub fn place_new_client(
+        &mut self,
+        id: WindowId,
+        client: crate::client::Client,
+        pid: Option<u32>,
+    ) {
+        // Insert beside whatever has focus, on the workspace being shown, so a
+        // new window splits the one you were looking at rather than appearing
+        // somewhere arbitrary — unless the saved session was waiting for this
+        // client, in which case it goes back where it was.
+        let near = self.shell.focus;
+        if !self.place_restored_window(id, pid) {
+            self.workspaces
+                .insert(id, near, ruster_shell::Layout::Horizontal);
+        }
+        // A restored window can land on a workspace that is not on screen, and
+        // it must not take the keyboard there: every keystroke would go to a
+        // client the user cannot see.
+        if self.workspaces.is_visible(id) {
+            self.shell.set_focus(id);
+            self.pending_focus = Some(id);
+        } else {
+            self.shell.focus = self.workspaces.focus_for_active(self.shell.focus);
+        }
+        self.clients.insert(id, client);
+        // Every existing window just got smaller; tell them before the new one
+        // draws, or the first frame overlaps its neighbour.
+        self.reconfigure_tiles();
+    }
+
+    /// Take a window out of the tree, wherever it was, and let the survivors
+    /// grow into the space.
+    pub fn remove_client(&mut self, id: WindowId) {
+        self.clients.remove(&id);
+        self.mapped.remove(&id);
+        // Wherever it was: a client can close while its workspace is hidden.
+        self.workspaces.remove(id);
+        // `remove_window` refocuses the shell onto the most recent window (or
+        // clears focus), but it knows nothing of workspaces and will happily
+        // name one that is off screen; the workspaces have the last word.
+        self.shell.remove_window(id);
+        self.shell.focus = self.workspaces.focus_for_active(self.shell.focus);
+        self.reconfigure_tiles();
+        self.update_keyboard_focus(SCOUNTER.next_serial());
+    }
+
+    /// Adopt an X11 window that XWayland has asked us to map.
+    pub fn insert_client(&mut self, client: crate::client::Client) -> WindowId {
+        let title = match &client {
+            crate::client::Client::X11(surface) => surface.title(),
+            crate::client::Client::Wayland(_) => String::new(),
+        };
+        let id = self.shell.add_window(title, 800, 600);
+        let pid = match &client {
+            crate::client::Client::X11(surface) => surface.pid(),
+            crate::client::Client::Wayland(_) => None,
+        };
+        self.place_new_client(id, client, pid);
+        id
+    }
+
+    /// The window id holding this X11 surface, if the tree has adopted it.
+    pub fn window_for_x11(&self, window: &smithay::xwayland::X11Surface) -> Option<WindowId> {
+        self.clients
+            .iter()
+            .find(|(_, client)| matches!(client, crate::client::Client::X11(s) if s == window))
+            .map(|(id, _)| *id)
+    }
+
     /// Put `window` in front of the user and give it the keyboard, switching
     /// workspaces if that is where it lives. Does nothing for a window that
     /// cannot be shown — see [`activation_workspace`].
@@ -1607,6 +1702,7 @@ struct InitGlobals<B: Backend + 'static> {
     xdg_decoration_state: XdgDecorationState,
     cursor_shape_state: CursorShapeManagerState,
     layer_shell_state: WlrLayerShellState,
+    xwayland_shell_state: smithay::wayland::xwayland_shell::XWaylandShellState,
     seat_state: SeatState<CompositorState<B>>,
     seat: Seat<CompositorState<B>>,
     keyboard: KeyboardHandle<CompositorState<B>>,
@@ -1684,6 +1780,9 @@ pub fn create_state<B: Backend + 'static>(
         hover: None,
         screencopy: crate::screencopy::ScreencopyState::default(),
         layer_shell_state: globals.layer_shell_state,
+        xwayland_shell_state: globals.xwayland_shell_state,
+        xwm: None,
+        x11_unmanaged: Vec::new(),
         launcher: None,
         providers: {
             // Registration order is the tie-break when two providers are
@@ -1783,6 +1882,10 @@ fn init_globals<B: Backend + 'static>(dh: &DisplayHandle, seat_name: String) -> 
     // wallpaper setters speak. Without it none of them can map a surface at
     // all, which is why an external launcher was never an option here either.
     let layer_shell_state = WlrLayerShellState::new::<CompositorState<B>>(dh);
+    // Advertised unconditionally. Only XWayland ever binds it, and it is how
+    // XWayland pairs an X11 window with the `wl_surface` carrying its pixels.
+    let xwayland_shell_state =
+        smithay::wayland::xwayland_shell::XWaylandShellState::new::<CompositorState<B>>(dh);
     // wlr-screencopy. Not a smithay state object — the protocol is not
     // implemented there, so this is a bare global whose `Dispatch` impls live in
     // `crate::screencopy`. Version 3 for `buffer_done`; only shm buffers are
@@ -1817,6 +1920,7 @@ fn init_globals<B: Backend + 'static>(dh: &DisplayHandle, seat_name: String) -> 
         xdg_decoration_state,
         cursor_shape_state,
         layer_shell_state,
+        xwayland_shell_state,
         seat_state,
         seat,
         keyboard,
@@ -1844,9 +1948,19 @@ impl<B: Backend + 'static> CompositorHandler for CompositorState<B> {
     }
 
     fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
+        // Two kinds of client now, and only one of them is ours. XWayland
+        // connects to the compositor as an ordinary Wayland client, but smithay
+        // spawns it and attaches its own `XWaylandClientData` — so the `expect`
+        // here, which had been true for every client since Phase 0, became a
+        // panic the moment X11 support was switched on. It fired on the first
+        // run: `client has no ClientState`, taking the whole compositor down
+        // before XWayland had finished starting.
+        if let Some(state) = client.get_data::<ClientState>() {
+            return &state.compositor_state;
+        }
         &client
-            .get_data::<ClientState>()
-            .expect("client has no ClientState")
+            .get_data::<smithay::xwayland::XWaylandClientData>()
+            .expect("a client that is neither ruster's nor XWayland's")
             .compositor_state
     }
 
@@ -2252,6 +2366,7 @@ smithay::delegate_compositor!(@<B: Backend + 'static> CompositorState<B>);
 smithay::delegate_shm!(@<B: Backend + 'static> CompositorState<B>);
 smithay::delegate_output!(@<B: Backend + 'static> CompositorState<B>);
 smithay::delegate_layer_shell!(@<B: Backend + 'static> CompositorState<B>);
+smithay::delegate_xwayland_shell!(@<B: Backend + 'static> CompositorState<B>);
 smithay::delegate_seat!(@<B: Backend + 'static> CompositorState<B>);
 smithay::delegate_xdg_shell!(@<B: Backend + 'static> CompositorState<B>);
 smithay::delegate_xdg_decoration!(@<B: Backend + 'static> CompositorState<B>);

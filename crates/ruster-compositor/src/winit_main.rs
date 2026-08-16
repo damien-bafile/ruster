@@ -146,6 +146,14 @@ fn run_winit() -> anyhow::Result<()> {
     let mut state = create_state(display, event_loop.handle(), data);
     let socket_name = init_listener(&mut state);
     log_startup_header(env!("CARGO_PKG_VERSION"), "winit", &socket_name);
+    // Before the config, because the config is what launches the startup
+    // clients and `start` is what sets `DISPLAY`. The other order is what this
+    // was written as, and it spawned an X11 startup client 0.1ms before the
+    // variable existed: the program exited immediately, having found no display,
+    // and the compositor logged a perfectly healthy XWayland that nothing ever
+    // connected to.
+    ruster_compositor::xwayland::start(&state.display_handle.clone(), &event_loop.handle());
+
     let (control, shell) = load_compositor_config();
     apply_config_to_shell(&mut state, control, shell, &socket_name);
 
@@ -259,6 +267,7 @@ fn run_winit() -> anyhow::Result<()> {
                     keymap: &state.keymap,
                     minibuffer: state.minibuffer.as_ref(),
                     hover: state.hover.as_ref(),
+                    x11_unmanaged: &state.x11_unmanaged,
                     launcher: state.launcher.as_mut().map(|l| {
                         // One source for the viewport, so the scroll window and
                         // the drawing cannot disagree about how much fits.
