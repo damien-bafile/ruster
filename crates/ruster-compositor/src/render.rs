@@ -31,7 +31,6 @@ use smithay::utils::{
 };
 use smithay::wayland::compositor::with_states;
 use smithay::wayland::shell::wlr_layer::Layer as WlrLayer;
-use smithay::wayland::shell::xdg::ToplevelSurface;
 
 use crate::chrome::{solid_elements_from_verts, Chrome, TreeStatus};
 use crate::scene;
@@ -91,7 +90,7 @@ pub struct FrameInput<'a> {
     /// The focused window. The surfaces themselves come from `geometry`; this
     /// is what the chrome names.
     pub focus: Option<WindowId>,
-    pub toplevels: &'a HashMap<WindowId, ToplevelSurface>,
+    pub clients: &'a HashMap<WindowId, crate::client::Client>,
     pub output: &'a Output,
     pub workspace: u32,
     pub focused_title: &'a str,
@@ -151,7 +150,7 @@ pub fn render_frame(
     let result =
         damage_tracker.render_output(renderer, framebuffer, age, &elements, CLEAR_COLOR)?;
     let damage = result.damage.cloned();
-    send_frame_callbacks(scene.geometry, scene.toplevels, scene.output);
+    send_frame_callbacks(scene.geometry, scene.clients, scene.output);
     Ok(damage)
 }
 
@@ -349,10 +348,12 @@ where
     let mut elements: Vec<ChromeRenderElements<R>> = Vec::new();
     let scale = Scale::from(scene.output.current_scale().fractional_scale());
     for (id, rect) in scene.geometry.iter().rev() {
-        let Some(surface) = scene.toplevels.get(id) else {
+        // Skipped rather than drawn empty when an X11 window has no surface
+        // yet: there is a real moment between the window existing and its pixels
+        // arriving, and it is not an error. See `Client::wl_surface`.
+        let Some(wl_surface) = scene.clients.get(id).and_then(|c| c.wl_surface()) else {
             continue;
         };
-        let wl_surface = surface.wl_surface().clone();
         // The tile is where the *window* goes. The surface can be bigger — a
         // client-side shadow lives outside the window geometry — so the surface
         // origin is the tile shifted back by that margin. See `surface_origin`.
@@ -568,7 +569,7 @@ where
 /// The 1s throttle still backstops surfaces not on a scan-out output.
 pub fn send_frame_callbacks(
     geometry: &[(WindowId, ruster_shell::Rect)],
-    toplevels: &HashMap<WindowId, ToplevelSurface>,
+    clients: &HashMap<WindowId, crate::client::Client>,
     output: &Output,
 ) {
     let frame_time = Clock::<Monotonic>::new().now() + Duration::from_millis(16);
@@ -576,11 +577,14 @@ pub fn send_frame_callbacks(
     // workspace is not in it and correctly gets nothing: it is not on screen,
     // and telling it to redraw would be asking for work nobody can see.
     for (id, _) in geometry {
-        let Some(toplevel) = toplevels.get(id) else {
+        // An X11 window that has not yet been paired with its Wayland surface
+        // has nothing to send a callback to, and that is a normal moment rather
+        // than an error — see `Client::wl_surface`.
+        let Some(surface) = clients.get(id).and_then(|c| c.wl_surface()) else {
             continue;
         };
         send_frames_surface_tree(
-            toplevel.wl_surface(),
+            &surface,
             output,
             frame_time,
             Some(Duration::from_secs(1)),
@@ -783,7 +787,7 @@ mod tests {
 
         let frame = FrameInput {
             focus: Some(WindowId(0)),
-            toplevels: &toplevels,
+            clients: &toplevels,
             output: &output,
             workspace: 1,
             focused_title: "doc",

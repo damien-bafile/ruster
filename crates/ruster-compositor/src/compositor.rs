@@ -36,7 +36,7 @@ use smithay::wayland::{
     },
     selection::{SelectionHandler, SelectionSource, SelectionTarget},
     shell::wlr_layer::{Layer as WlrLayer, LayerSurface, WlrLayerShellHandler, WlrLayerShellState},
-    shell::xdg::{decoration::XdgDecorationState, ToplevelSurface, XdgShellState},
+    shell::xdg::{decoration::XdgDecorationState, XdgShellState},
     shm::{ShmHandler, ShmState},
     tablet_manager::TabletSeatHandler,
     xdg_activation::{
@@ -190,7 +190,7 @@ pub struct CompositorState<B: Backend + 'static> {
     /// active tree, so the eight hidden ones cost nothing but memory.
     pub workspaces: Workspaces,
     /// xdg toplevel surfaces keyed by their `ShellState` window id.
-    pub toplevels: HashMap<WindowId, ToplevelSurface>,
+    pub clients: HashMap<WindowId, crate::client::Client>,
     /// Window that should take focus once the seat is set up (Task 10).
     pub pending_focus: Option<WindowId>,
     /// Toplevels that have committed a buffer and are thus rendered (Task 7).
@@ -322,8 +322,8 @@ impl<B: Backend + 'static> CompositorState<B> {
             .take()
             .filter(|id| self.focusable(*id))
             .or_else(|| self.shell.focus.filter(|id| self.focusable(*id)))
-            .and_then(|id| self.toplevels.get(&id))
-            .map(|toplevel| toplevel.wl_surface().clone());
+            .and_then(|id| self.clients.get(&id))
+            .and_then(|client| client.wl_surface());
         // Both clipboards follow the keyboard. smithay only offers a selection
         // to the client the *seat* considers focused, and it does not derive
         // that from the keyboard focus — so until this call existed neither
@@ -345,9 +345,9 @@ impl<B: Backend + 'static> CompositorState<B> {
     /// the id and wants the surface; the protocol handlers arrive with only a
     /// surface, and each of them used to open-code this same linear scan.
     pub fn window_for_surface(&self, surface: &wl_surface::WlSurface) -> Option<WindowId> {
-        self.toplevels
+        self.clients
             .iter()
-            .find(|(_, toplevel)| toplevel.wl_surface() == surface)
+            .find(|(_, client)| client.wl_surface().as_ref() == Some(surface))
             .map(|(id, _)| *id)
     }
 
@@ -615,7 +615,7 @@ impl<B: Backend + 'static> CompositorState<B> {
         self.workspaces
             .insert(id, self.shell.focus, ruster_shell::Layout::Horizontal);
         self.panes.insert(id, crate::pane::EditorPane::new(doc));
-        crate::pane::debug_assert_disjoint(&self.panes, &self.toplevels);
+        crate::pane::debug_assert_disjoint(&self.panes, &self.clients);
         self.shell.set_focus(id);
         self.reconfigure_tiles();
         // The seat keyboard has no surface to hold now, which is the correct
@@ -1424,22 +1424,15 @@ impl<B: Backend + 'static> CompositorState<B> {
                 pane.rows = rows;
                 continue;
             }
-            let Some(toplevel) = self.toplevels.get(&id) else {
+            let Some(client) = self.clients.get(&id) else {
                 continue;
             };
-            toplevel.with_pending_state(|state| {
-                state.size = Some((rect.w, rect.h).into());
-                // Tiled on every edge: the honest way to tell a client it does
-                // not own its borders, so it drops rounded corners and shadows.
-                // The titlebar goes away separately, via xdg-decoration (see
-                // `shell::answer_decoration`) — tiled states alone do not
-                // stop a toolkit drawing one.
-                state.states.set(xdg_toplevel::State::TiledLeft);
-                state.states.set(xdg_toplevel::State::TiledRight);
-                state.states.set(xdg_toplevel::State::TiledTop);
-                state.states.set(xdg_toplevel::State::TiledBottom);
-            });
-            toplevel.send_pending_configure();
+            // The tiled states and the X11 position both live in `configure`,
+            // because the two protocols need different things said to make the
+            // same thing true. The titlebar goes away separately, via
+            // xdg-decoration (see `shell::answer_decoration`) — tiled states
+            // alone do not stop a toolkit drawing one.
+            client.configure(rect);
         }
     }
 
@@ -1670,7 +1663,7 @@ pub fn create_state<B: Backend + 'static>(
         pointer: globals.pointer,
         cursor_status: CursorImageStatus::default_named(),
         workspaces: Workspaces::new(),
-        toplevels: HashMap::new(),
+        clients: HashMap::new(),
         pending_focus: None,
         mapped: HashSet::new(),
         // The user's theme, not the built-in one: the compositor drew with
@@ -1961,7 +1954,10 @@ impl<B: Backend + 'static> CompositorHandler for CompositorState<B> {
         // whole output — with one window those are the same thing, which is why
         // Phase 0 could get away with the output size.
         let rect = self.window_rect(id);
-        if let Some(toplevel) = self.toplevels.get(&id) {
+        // `xdg_shell`'s handshake alone. An X11 window has no `xdg_surface` and
+        // therefore no initial configure to withhold — XWayland maps it when the
+        // window manager says so, which happens in `map_window_request`.
+        if let Some(toplevel) = self.clients.get(&id).and_then(|c| c.toplevel()) {
             if !toplevel.is_initial_configure_sent() {
                 if let Some(rect) = rect {
                     toplevel.with_pending_state(|state| {

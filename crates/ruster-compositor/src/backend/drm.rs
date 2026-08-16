@@ -468,7 +468,7 @@ impl CompositorState<RusterUdevData> {
         let output_size = output.current_mode().map(|m| m.size).unwrap_or_default();
         let scene = FrameInput {
             focus: self.shell.focus,
-            toplevels: &self.toplevels,
+            clients: &self.clients,
             output: &output,
             workspace: self.workspaces.active(),
             focused_title: &focused_title,
@@ -500,7 +500,7 @@ impl CompositorState<RusterUdevData> {
             ),
         };
         let elements = collect_render_elements(&scene, &mut self.chrome, &mut renderer);
-        send_frame_callbacks(&geometry, &self.toplevels, &output);
+        send_frame_callbacks(&geometry, &self.clients, &output);
 
         let reschedule = match self.backend_data.drm_output.render_frame(
             &mut renderer,

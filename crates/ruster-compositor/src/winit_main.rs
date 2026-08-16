@@ -244,7 +244,7 @@ fn run_winit() -> anyhow::Result<()> {
                     .unwrap_or_default();
                 let scene = FrameInput {
                     focus: state.shell.focus,
-                    toplevels: &state.toplevels,
+                    clients: &state.clients,
                     output: &state.backend_data.output,
                     workspace: state.workspaces.active(),
                     focused_title: &focused_title,

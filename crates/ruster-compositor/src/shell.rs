@@ -75,7 +75,7 @@ impl<B: Backend + 'static> XdgShellHandler for CompositorState<B> {
         } else {
             self.shell.focus = self.workspaces.focus_for_active(self.shell.focus);
         }
-        self.toplevels.insert(id, surface);
+        self.clients.insert(id, surface.into());
         // Every existing window just got smaller; tell them before the new one
         // draws, or the first frame overlaps its neighbour.
         self.reconfigure_tiles();
@@ -232,7 +232,7 @@ impl<B: Backend + 'static> XdgShellHandler for CompositorState<B> {
         let Some(id) = self.window_for_surface(surface.wl_surface()) else {
             return;
         };
-        self.toplevels.remove(&id);
+        self.clients.remove(&id);
         self.mapped.remove(&id);
         // Wherever it was: a client can close while its workspace is hidden.
         self.workspaces.remove(id);

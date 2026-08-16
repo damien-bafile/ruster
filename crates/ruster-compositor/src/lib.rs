@@ -8,6 +8,7 @@
 
 pub mod backend;
 pub mod chrome;
+pub mod client;
 pub mod clipboard;
 pub mod compositor;
 pub mod focus;

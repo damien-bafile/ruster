@@ -262,8 +262,10 @@ impl<B: Backend + 'static> CompositorState<B> {
         if !self.mapped.contains(&id) {
             return None;
         }
-        let toplevel = self.toplevels.get(&id)?;
-        let parent = toplevel.wl_surface().clone();
+        // An X11 window with no surface yet has nothing under the pointer, so
+        // the pointer falls through to whatever is behind it rather than being
+        // swallowed by a window that cannot draw.
+        let parent = self.clients.get(&id)?.wl_surface()?;
 
         // A popup over this window takes the pointer before the window does.
         // Without this a menu is visible but unclickable — every click falls

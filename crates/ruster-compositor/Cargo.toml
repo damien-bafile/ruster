@@ -40,7 +40,13 @@ anyhow = "1"
 [target.'cfg(target_os = "linux")'.dependencies]
 ctrlc = { version = "3", features = ["termination"] }
 png = "0.18"
-smithay = { version = "0.7", default-features = false, features = ["renderer_gl", "wayland_frontend", "desktop"] }
+# `xwayland` is unconditional rather than a cargo feature. It could be one, but
+# every optional feature is a build variant somebody has to remember to check,
+# and this tree has already been bitten three times by the udev-only `FrameInput`
+# site that the default build cannot see. XWayland needs the `Xwayland` binary at
+# *run* time and degrades to a warning without it, so the gate that matters is a
+# runtime one and it already exists.
+smithay = { version = "0.7", default-features = false, features = ["renderer_gl", "wayland_frontend", "desktop", "xwayland"] }
 # wlr-screencopy, which smithay 0.7 does not implement — the protocol bindings
 # are generated here and the handlers are ours. Already in the tree as a
 # transitive dependency of smithay, so this costs a feature flag rather than a
