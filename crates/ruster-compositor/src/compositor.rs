@@ -73,6 +73,46 @@ pub fn tiling_area(
     Rect::new(zone.loc.x, zone.loc.y, zone.size.w, zone.size.h)
 }
 
+/// A toplevel's window geometry: the part of its surface that is the window
+/// proper, with the client-side drop shadow outside it.
+///
+/// `None` from a client that has not set one, which the protocol says means the
+/// whole surface is the window.
+pub fn window_geometry(
+    surface: &wl_surface::WlSurface,
+) -> Option<smithay::utils::Rectangle<i32, smithay::utils::Logical>> {
+    with_states(surface, |states| {
+        states
+            .cached_state
+            .get::<smithay::wayland::shell::xdg::SurfaceCachedState>()
+            .current()
+            .geometry
+    })
+}
+
+/// Where a toplevel's *surface* goes, given the tile its *window* has to fill.
+///
+/// These are not the same point, and assuming they were is a real bug this
+/// found: a GTK4 client hands over a buffer with an invisible shadow margin
+/// around it and says so via `set_window_geometry` — nautilus reports `(20,20)`.
+/// Drawn at the tile origin, the shadow is on screen in the top-left, every
+/// pixel of the window is 20px down and right of where it belongs, and the last
+/// 20px — the window controls, on a right-hand edge — is pushed off the output
+/// and clipped.
+///
+/// A free function because the renderer and hit-testing both need the answer,
+/// and the failure when they disagree is silent: the window draws correctly and
+/// every click lands 20px away from what it looks like it hit. The popup path
+/// has always done this (`render.rs`, subtracting `popup.geometry().loc`);
+/// toplevels are the case that was missed.
+pub fn surface_origin(
+    tile_loc: smithay::utils::Point<i32, smithay::utils::Logical>,
+    geometry: Option<smithay::utils::Rectangle<i32, smithay::utils::Logical>>,
+) -> smithay::utils::Point<i32, smithay::utils::Logical> {
+    let inset = geometry.map(|g| g.loc).unwrap_or_default();
+    tile_loc - inset
+}
+
 /// What a reply from a language server is for.
 ///
 /// A response carries only the id of the request it answers, so the intent has

@@ -438,12 +438,24 @@ where
             continue;
         };
         let wl_surface = surface.wl_surface().clone();
+        // The tile is where the *window* goes. The surface can be bigger — a
+        // client-side shadow lives outside the window geometry — so the surface
+        // origin is the tile shifted back by that margin. See `surface_origin`.
         let origin_logical = Point::<i32, Logical>::from((rect.x, rect.y));
-        let origin = origin_logical.to_physical_precise_round(scale);
+        let origin = crate::compositor::surface_origin(
+            origin_logical,
+            crate::compositor::window_geometry(&wl_surface),
+        )
+        .to_physical_precise_round(scale);
 
         // Popups first, so they land in front of the window that owns them —
         // this list is front-to-back. A menu drawn behind its own toplevel is
         // indistinguishable from one that never opened.
+        //
+        // Positioned from `origin_logical`, the *window* origin, not the surface
+        // origin above: a popup's offset is measured from its parent's window
+        // geometry, so the shadow margin cancels out and must not be subtracted
+        // twice.
         for (popup, offset) in PopupManager::popups_for_surface(&wl_surface) {
             let popup_origin =
                 (origin_logical + offset - popup.geometry().loc).to_physical_precise_round(scale);

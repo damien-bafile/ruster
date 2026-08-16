@@ -275,7 +275,20 @@ impl<B: Backend + 'static> CompositorState<B> {
                 return Some((popup.wl_surface().clone().into(), popup_origin));
             }
         }
-        Some((parent.into(), origin))
+        // The *surface* origin, not the tile origin — smithay subtracts this to
+        // get the surface-local position, and a client whose buffer carries a
+        // shadow margin has its surface starting outside its tile. Using the
+        // tile here after the renderer stopped doing so would put every click
+        // 20px from the thing it visibly landed on. The popups above keep the
+        // tile origin: their offsets are measured from the parent's window
+        // geometry, so the margin is already accounted for.
+        // `origin` is the tile origin, integral by construction in `tile_under`.
+        let tile_loc = Point::<i32, Logical>::from((origin.x as i32, origin.y as i32));
+        let surface_origin = crate::compositor::surface_origin(
+            tile_loc,
+            crate::compositor::window_geometry(&parent),
+        );
+        Some((parent.into(), surface_origin.to_f64()))
     }
 
     /// Route one backend input event to its handler. Generic over the input
@@ -1543,6 +1556,48 @@ mod tests {
         press(&mut state, KEY_ENTER);
         assert!(state.launcher.is_none(), "accepting closes it");
         assert_eq!(state.clipboard.text(), "42", "and the answer was copied");
+    }
+
+    #[test]
+    fn a_client_side_shadow_is_placed_outside_the_tile_rather_than_inside_it() {
+        use crate::compositor::surface_origin;
+        use smithay::utils::{Point, Rectangle};
+
+        // What nautilus actually reports: a 20px shadow margin all round, and a
+        // window geometry the size of the tile it was configured to.
+        let gtk = Some(Rectangle::new(Point::from((20, 20)), (1873, 1334).into()));
+        // Drawn 20px up and left of its tile, so the *window* lands on the tile
+        // and the shadow hangs off it. Placed at the tile origin instead — the
+        // bug — the shadow is on screen, every pixel of the window is 20px down
+        // and right of where it belongs, and the last 20px of it, which on a
+        // right-hand edge is the window controls, is clipped off the output.
+        assert_eq!(
+            surface_origin(Point::from((0, 0)), gtk),
+            Point::from((-20, -20)),
+            "the shadow belongs off-screen, not over the tile"
+        );
+        // The offset is relative to the tile, not the output: a window in the
+        // right-hand column is shifted by the same margin from *its* corner.
+        assert_eq!(
+            surface_origin(Point::from((960, 30)), gtk),
+            Point::from((940, 10))
+        );
+
+        // A client with no shadow — most toolkits, and every client before this
+        // was noticed — must not be moved at all. This is the case that made the
+        // bug survive: it is the common one, and it looks perfect.
+        assert_eq!(
+            surface_origin(Point::from((960, 30)), None),
+            Point::from((960, 30))
+        );
+        // A geometry at the origin is the same thing said explicitly.
+        assert_eq!(
+            surface_origin(
+                Point::from((960, 30)),
+                Some(Rectangle::new(Point::from((0, 0)), (100, 100).into()))
+            ),
+            Point::from((960, 30))
+        );
     }
 
     #[test]
