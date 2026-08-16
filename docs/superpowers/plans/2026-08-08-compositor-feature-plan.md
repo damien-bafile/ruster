@@ -6,9 +6,12 @@
 > Tier 3 — the project's actual thesis — is complete and verified, including a
 > live `rust-analyzer` round trip. Updated 2026-08-14.
 >
-> **What is left of this plan:** two Tier 2 items, fractional scaling (M) and
-> `text-input`/IME (L), and the whole of Tier 4. Everything above them has a row
-> in `docs/compositor.md`.
+> **What is left of this plan (2026-08-16):** two Tier 2 items — fractional
+> scaling (M) and `text-input`/IME (L) — and three of Tier 4: layer-shell,
+> XWayland and animations. `wlr-screencopy` and session restore are done and
+> verified. Everything finished has a row in `docs/compositor.md`, which now has
+> no ⛔ rows and one ⚠️: every capture loses the EGL context, and that turns out
+> to break the *next* capture rather than costing a frame.
 >
 > The judgement below is what survives, and it held up: XKB really was a
 > correctness bug wearing a feature's clothes, the small protocol handlers really
@@ -161,13 +164,16 @@ Follows 3.1 for free if the buffer leaf reuses the editor's document model.
 
 ## Tier 4 — Polish (spec Phase 4)
 
-- **`wlr-screencopy`** — would have made this entire session's verification a
-  `grim` call instead of a keybind, a blit and a PNG encoder. Worth doing for
-  testing alone, and it is what lets OBS and every screenshot tool work.
+- ~~**`wlr-screencopy`**~~ — **done 2026-08-15.** It predicted its own value
+  correctly: verification is now `grim` against the compositor's socket rather
+  than a noise-masked screen diff driven by injected input. Three bugs, none of
+  them the one that had been blamed for a week — a flush-after-sleep deadlock, a
+  missing `zxdg_output_manager_v1`, and a flip that the client already applies.
 - **Layer-shell** — bars, notification daemons, launchers. The single protocol
   that unlocks the most third-party software.
 - **XWayland** — until then, no Electron app, no Steam, no legacy GTK2.
-- **Session restore** — Tier 1.4 plus relaunching what was there.
+- ~~**Session restore**~~ — done, and confirmed on hardware: two windows put
+  back at their positions in the tree, not merely respawned.
 - **Animations** — last, deliberately.
 
 ---
