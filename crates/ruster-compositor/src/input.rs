@@ -238,6 +238,26 @@ impl<B: Backend + 'static> CompositorState<B> {
         &self,
         location: Point<f64, Logical>,
     ) -> Option<(crate::focus::FocusTarget, Point<f64, Logical>)> {
+        // A layer surface above the windows takes the pointer first. Without
+        // this a bar is visible and unclickable, and every click on it falls
+        // through to whatever is tiled underneath — which is the same defect
+        // untracked popups had, one layer up.
+        let output = self.backend_data.output().clone();
+        {
+            let map = smithay::desktop::layer_map_for_output(&output);
+            for which in [
+                smithay::wayland::shell::wlr_layer::Layer::Overlay,
+                smithay::wayland::shell::wlr_layer::Layer::Top,
+            ] {
+                if let Some(layer) = map.layer_under(which, location) {
+                    if let Some(geometry) = map.layer_geometry(layer) {
+                        let origin = geometry.loc.to_f64();
+                        return Some((layer.wl_surface().clone().into(), origin));
+                    }
+                }
+            }
+        }
+
         let (id, origin) = tile_under(&self.geometry(), location)?;
         if !self.mapped.contains(&id) {
             return None;
@@ -1523,6 +1543,40 @@ mod tests {
         press(&mut state, KEY_ENTER);
         assert!(state.launcher.is_none(), "accepting closes it");
         assert_eq!(state.clipboard.text(), "42", "and the answer was copied");
+    }
+
+    #[test]
+    fn a_bar_takes_its_strip_out_of_the_area_windows_tile_into() {
+        use crate::compositor::tiling_area;
+        use smithay::utils::{Rectangle, Size};
+        let output: Size<i32, smithay::utils::Logical> = (1920, 1080).into();
+
+        // No bars: the whole output.
+        assert_eq!(
+            tiling_area(output, Rectangle::new((0, 0).into(), (1920, 1080).into())),
+            Rect::new(0, 0, 1920, 1080)
+        );
+
+        // A 30px bar at the top. Windows start below it, and are that much
+        // shorter — a window laid out against the whole output would sit
+        // underneath the bar instead of beside it.
+        assert_eq!(
+            tiling_area(output, Rectangle::new((0, 30).into(), (1920, 1050).into())),
+            Rect::new(0, 30, 1920, 1050)
+        );
+
+        // A bar that claims everything. Tiling into a zero-sized area lays every
+        // window out at zero size, which reads as a compositor that has lost its
+        // windows; being underneath the bar is the better failure.
+        assert_eq!(
+            tiling_area(output, Rectangle::new((0, 1080).into(), (1920, 0).into())),
+            Rect::new(0, 0, 1920, 1080),
+            "an unusable zone is ignored rather than obeyed"
+        );
+        assert_eq!(
+            tiling_area(output, Rectangle::new((0, 0).into(), (0, 0).into())),
+            Rect::new(0, 0, 1920, 1080)
+        );
     }
 
     #[test]

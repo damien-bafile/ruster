@@ -35,6 +35,7 @@ use smithay::wayland::{
         set_primary_focus, PrimarySelectionHandler, PrimarySelectionState,
     },
     selection::{SelectionHandler, SelectionSource, SelectionTarget},
+    shell::wlr_layer::{Layer as WlrLayer, LayerSurface, WlrLayerShellHandler, WlrLayerShellState},
     shell::xdg::{decoration::XdgDecorationState, ToplevelSurface, XdgShellState},
     shm::{ShmHandler, ShmState},
     tablet_manager::TabletSeatHandler,
@@ -50,6 +51,27 @@ use crate::lua::Action;
 use crate::shell::CommitBuffer;
 use ruster_render::Theme;
 use ruster_shell::{Rect, ShellState, WindowId, Workspaces};
+
+/// The area windows are tiled into: the output, less whatever the bars reserved.
+///
+/// A free function because this is geometry, and geometry is where the bug will
+/// be — the same reason `launcher_layout` and `gutter_cols` are free functions.
+/// `non_exclusive_zone` is smithay's answer; the part worth testing is what
+/// happens when that answer is unusable.
+pub fn tiling_area(
+    output: smithay::utils::Size<i32, smithay::utils::Logical>,
+    zone: smithay::utils::Rectangle<i32, smithay::utils::Logical>,
+) -> Rect {
+    // A bar claiming the whole screen leaves nothing to tile into, and every
+    // window would then be laid out at zero size — which on screen is a
+    // compositor that appears to have lost its windows. Ignoring a zone that
+    // cannot be used is the better failure: the bar still draws, and the windows
+    // are merely underneath it.
+    if zone.size.w <= 0 || zone.size.h <= 0 {
+        return Rect::new(0, 0, output.w, output.h);
+    }
+    Rect::new(zone.loc.x, zone.loc.y, zone.size.w, zone.size.h)
+}
 
 /// What a reply from a language server is for.
 ///
@@ -199,6 +221,9 @@ pub struct CompositorState<B: Backend + 'static> {
     pub hover: Option<HoverPanel>,
     /// Screen captures a client has asked for and a frame has not yet served.
     pub screencopy: crate::screencopy::ScreencopyState,
+    /// Bars, notification daemons and wallpapers: surfaces that sit outside the
+    /// tiling rather than in it.
+    pub layer_shell_state: WlrLayerShellState,
     /// The launcher overlay, when open.
     pub launcher: Option<crate::launcher::Launcher>,
     /// What answers a launcher query. Built once at startup.
@@ -303,8 +328,19 @@ impl<B: Backend + 'static> CompositorState<B> {
 impl<B: Backend + 'static> CompositorState<B> {
     /// The output's whole area, in logical pixels, as the tree's root rectangle.
     pub fn output_rect(&self) -> Rect {
-        let size = logical_output_size(self.backend_data.output()).unwrap_or_default();
-        Rect::new(0, 0, size.w, size.h)
+        let output = self.backend_data.output();
+        let size = logical_output_size(output).unwrap_or_default();
+        // What is left after the bars. A layer surface with an exclusive zone —
+        // which is what a bar is — takes its strip out of the area windows are
+        // tiled into, so a window laid out against the whole output would sit
+        // underneath it. `arrange` is what turns the anchors and margins the
+        // client asked for into that number, and it has to run before the answer
+        // is read.
+        let mut map = smithay::desktop::layer_map_for_output(output);
+        map.arrange();
+        let zone = map.non_exclusive_zone();
+        drop(map);
+        tiling_area(size, zone)
     }
 
     /// The output's size in real pixels, which is what a framebuffer read
@@ -1537,6 +1573,7 @@ struct InitGlobals<B: Backend + 'static> {
     xdg_activation_state: XdgActivationState,
     xdg_decoration_state: XdgDecorationState,
     cursor_shape_state: CursorShapeManagerState,
+    layer_shell_state: WlrLayerShellState,
     seat_state: SeatState<CompositorState<B>>,
     seat: Seat<CompositorState<B>>,
     keyboard: KeyboardHandle<CompositorState<B>>,
@@ -1613,6 +1650,7 @@ pub fn create_state<B: Backend + 'static>(
         lsp: ruster_lsp::state::LspState::new(),
         hover: None,
         screencopy: crate::screencopy::ScreencopyState::default(),
+        layer_shell_state: globals.layer_shell_state,
         launcher: None,
         providers: {
             // Registration order is the tie-break when two providers are
@@ -1708,6 +1746,10 @@ fn init_globals<B: Backend + 'static>(dh: &DisplayHandle, seat_name: String) -> 
     // written as a zero-by-zero PNG. The delegate for this was already in place;
     // only the global was missing.
     let _output_manager_state = OutputManagerState::new_with_xdg_output::<CompositorState<B>>(dh);
+    // `zwlr_layer_shell_v1`: the protocol bars, notification daemons and
+    // wallpaper setters speak. Without it none of them can map a surface at
+    // all, which is why an external launcher was never an option here either.
+    let layer_shell_state = WlrLayerShellState::new::<CompositorState<B>>(dh);
     // wlr-screencopy. Not a smithay state object — the protocol is not
     // implemented there, so this is a bare global whose `Dispatch` impls live in
     // `crate::screencopy`. Version 3 for `buffer_done`; only shm buffers are
@@ -1741,6 +1783,7 @@ fn init_globals<B: Backend + 'static>(dh: &DisplayHandle, seat_name: String) -> 
         xdg_activation_state,
         xdg_decoration_state,
         cursor_shape_state,
+        layer_shell_state,
         seat_state,
         seat,
         keyboard,
@@ -1778,6 +1821,25 @@ impl<B: Backend + 'static> CompositorHandler for CompositorState<B> {
         // The popup manager needs every commit: it is what advances a popup
         // from "created" to "mapped".
         self.popups.commit(surface);
+        // A layer surface has to be told its size before it can draw, the same
+        // way a popup does — and the map has to be re-arranged when one changes,
+        // or a bar that grew keeps its old strip and the windows keep the old
+        // gap.
+        {
+            let output = self.backend_data.output().clone();
+            let mut map = smithay::desktop::layer_map_for_output(&output);
+            let found = map
+                .layer_for_surface(surface, smithay::desktop::WindowSurfaceType::ALL)
+                .cloned();
+            if let Some(layer) = found {
+                let initial = !layer.layer_surface().ensure_configured();
+                if map.arrange() || initial {
+                    drop(map);
+                    // Outside the map's borrow: re-tiling reads it again.
+                    self.reconfigure_tiles();
+                }
+            }
+        }
         // Sending the initial configure is *not* part of that, though this used
         // to claim it was. `track_popup` only records the popup and
         // `PopupManager::commit` only moves it between two lists — neither
@@ -1907,6 +1969,66 @@ impl<B: Backend + 'static> BufferHandler for CompositorState<B> {
 }
 
 // The `XdgShellHandler` impl lives in `crate::shell`.
+
+impl<B: Backend + 'static> WlrLayerShellHandler for CompositorState<B> {
+    fn shell_state(&mut self) -> &mut WlrLayerShellState {
+        &mut self.layer_shell_state
+    }
+
+    /// A bar, a notification daemon or a wallpaper has appeared.
+    ///
+    /// It goes into the output's `LayerMap` rather than into the container tree.
+    /// That is the whole distinction: a layer surface is not a window the user
+    /// tiles, it is chrome the compositor arranges from the anchors and margins
+    /// the client asked for — and smithay's `arrange` is what turns those into a
+    /// rectangle.
+    fn new_layer_surface(
+        &mut self,
+        surface: LayerSurface,
+        _output: Option<smithay::reexports::wayland_server::protocol::wl_output::WlOutput>,
+        layer: WlrLayer,
+        namespace: String,
+    ) {
+        // The client may name an output; with one output there is nothing to
+        // choose between, and honouring a name we cannot satisfy would be worse
+        // than putting it on the only screen there is.
+        let output = self.backend_data.output().clone();
+        let mut map = smithay::desktop::layer_map_for_output(&output);
+        // `LayerMap` works in `desktop::LayerSurface`, which pairs the shell
+        // surface with the namespace it announced — that name is what a config
+        // would key rules on, and what a warning has to be able to say.
+        let desktop_surface = smithay::desktop::LayerSurface::new(surface, namespace.clone());
+        if let Err(err) = map.map_layer(&desktop_surface) {
+            tracing::warn!(%namespace, ?layer, %err, "could not map a layer surface");
+            return;
+        }
+        tracing::info!(%namespace, ?layer, "layer surface mapped");
+        drop(map);
+        // The tiling area may have just shrunk — a bar takes its space out of
+        // it — so every window needs its rectangle again.
+        self.reconfigure_tiles();
+    }
+
+    fn layer_destroyed(&mut self, surface: LayerSurface) {
+        let output = self.backend_data.output().clone();
+        let mut map = smithay::desktop::layer_map_for_output(&output);
+        // Found by its `wl_surface` rather than kept in a side table: the map
+        // already owns the pairing, and a second record of which layer is which
+        // is a second thing to keep in step.
+        let found = map
+            .layer_for_surface(
+                surface.wl_surface(),
+                smithay::desktop::WindowSurfaceType::TOPLEVEL,
+            )
+            .cloned();
+        if let Some(layer) = found {
+            map.unmap_layer(&layer);
+        }
+        drop(map);
+        // And the space it reserved comes back.
+        self.reconfigure_tiles();
+    }
+}
 
 impl<B: Backend + 'static> OutputHandler for CompositorState<B> {
     fn output_bound(&mut self, _output: Output, _wl_output: wl_output::WlOutput) {}
@@ -2070,6 +2192,7 @@ impl<B: Backend + 'static> XdgActivationHandler for CompositorState<B> {
 smithay::delegate_compositor!(@<B: Backend + 'static> CompositorState<B>);
 smithay::delegate_shm!(@<B: Backend + 'static> CompositorState<B>);
 smithay::delegate_output!(@<B: Backend + 'static> CompositorState<B>);
+smithay::delegate_layer_shell!(@<B: Backend + 'static> CompositorState<B>);
 smithay::delegate_seat!(@<B: Backend + 'static> CompositorState<B>);
 smithay::delegate_xdg_shell!(@<B: Backend + 'static> CompositorState<B>);
 smithay::delegate_xdg_decoration!(@<B: Backend + 'static> CompositorState<B>);

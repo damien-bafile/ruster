@@ -29,6 +29,7 @@ use smithay::utils::{
     Clock, Logical, Monotonic, Physical, Point, Rectangle, Scale, Size, Transform,
 };
 use smithay::wayland::compositor::with_states;
+use smithay::wayland::shell::wlr_layer::Layer as WlrLayer;
 use smithay::wayland::shell::xdg::ToplevelSurface;
 
 use crate::chrome::{solid_elements_from_verts, Chrome, ChromeBatch, TreeStatus};
@@ -354,6 +355,13 @@ where
         );
     }
 
+    // Layer surfaces above the windows: `Top` is where a bar lives, `Overlay`
+    // where a notification or a lock screen does. Emitted before the window loop
+    // because this list is front-to-back.
+    for layer in [WlrLayer::Overlay, WlrLayer::Top] {
+        elements.extend(layer_elements(scene, renderer, layer));
+    }
+
     // Every tiled window, at the rectangle the container tree gave it. Drawn
     // back to front in reverse layout order so the focused window — which is
     // listed first below — ends up nearest the front; tiled windows do not
@@ -390,7 +398,45 @@ where
         );
     }
 
+    // And the two that sit beneath the windows: `Bottom`, and `Background`,
+    // which is what a wallpaper setter uses.
+    for layer in [WlrLayer::Bottom, WlrLayer::Background] {
+        elements.extend(layer_elements(scene, renderer, layer));
+    }
+
     elements
+}
+
+/// Render elements for one layer of the output's `LayerMap`.
+///
+/// The geometry comes from the map rather than from the surface: `arrange` has
+/// already resolved the anchors, margins and exclusive zone the client asked
+/// for, and asking the surface where it is would be a second opinion about the
+/// same rectangle.
+fn layer_elements<R: Renderer + ImportAll + ImportMem>(
+    scene: &FrameInput<'_>,
+    renderer: &mut R,
+    which: WlrLayer,
+) -> Vec<ChromeRenderElements<R>>
+where
+    <R as RendererSuper>::TextureId: Clone + 'static,
+{
+    let scale = Scale::from(scene.output.current_scale().fractional_scale());
+    let map = smithay::desktop::layer_map_for_output(scene.output);
+    let mut out = Vec::new();
+    for layer in map.layers_on(which) {
+        let Some(geometry) = map.layer_geometry(layer) else {
+            continue;
+        };
+        let origin = geometry.loc.to_physical_precise_round(scale);
+        let tree = SurfaceTree::from_surface(layer.wl_surface());
+        out.extend(
+            AsRenderElements::<R>::render_elements(&tree, renderer, origin, scale, 1.0)
+                .into_iter()
+                .map(ChromeRenderElements::Surface),
+        );
+    }
+    out
 }
 
 /// Build the render elements for the pointer, which sit in front of everything.
