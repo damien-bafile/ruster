@@ -1060,8 +1060,8 @@ mod tests {
         let panel = &laid.boxes[0];
 
         // The sigil sits at the panel's top-left corner plus its padding, and
-        // the query right of it by the sigil's advance — exactly where the old
-        // draw_launcher put them, in output coordinates.
+        // the query right of it by the sigil's advance — exactly where the
+        // hand-built launcher put them, in output coordinates.
         let sigil = laid
             .texts
             .iter()

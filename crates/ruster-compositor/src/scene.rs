@@ -547,7 +547,7 @@ pub fn chrome_scene(
 
     // Editor panes, at the rectangles the layout gave them. Chrome is measured
     // in physical pixels and the layout in logical ones, the same conversion
-    // `draw_window_borders` does. The hover anchor is resolved here because the
+    // the window-borders elements do. The hover anchor is resolved here because the
     // gutter — and therefore the first text column — depends on which lines
     // that pane is showing.
     let chrome_scale = scale as f32;
