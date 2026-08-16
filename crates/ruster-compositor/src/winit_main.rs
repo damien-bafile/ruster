@@ -115,7 +115,7 @@ fn pump(
         lsp: state.lsp.has_servers(),
         chord: state.chord.is_active(),
         next_deferred: state.wm.as_ref().and_then(|wm| wm.next_due(now)),
-        capture_deadline: state.screencopy.next_deadline(now),
+        capture_deadline: state.next_capture_deadline(now),
     });
     // Flush *before* sleeping, not after waking.
     //

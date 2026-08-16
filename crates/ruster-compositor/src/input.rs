@@ -1526,6 +1526,40 @@ mod tests {
     }
 
     #[test]
+    fn a_waiting_screenshot_bounds_how_long_the_loop_may_sleep() {
+        // Found the hard way: the compositor slept through its own quit with a
+        // screenshot pending and had to be forced out by the second signal.
+        //
+        // The give-up is checked once per loop pass and the loop blocks until
+        // something happens, so a deadline nothing wakes it for never arrives.
+        // The screencopy half of this was fixed when a client hung; this is the
+        // same bug on the keybind path.
+        let (_loop, mut state) = test_state();
+        let now = std::time::Instant::now();
+        assert_eq!(
+            state.next_capture_deadline(now),
+            None,
+            "nothing pending, nothing to wake for"
+        );
+
+        state.dispatch(Action::Screenshot);
+        let left = state
+            .next_capture_deadline(now)
+            .expect("a pending screenshot must bound the sleep");
+        assert!(
+            left <= std::time::Duration::from_secs(2) && !left.is_zero(),
+            "the deadline should be the timeout, got {left:?}"
+        );
+
+        // And an overdue one asks for no wait at all: come round now and fail it.
+        let later = now + std::time::Duration::from_secs(30);
+        assert_eq!(
+            state.next_capture_deadline(later),
+            Some(std::time::Duration::ZERO)
+        );
+    }
+
+    #[test]
     fn a_screenshot_that_never_gets_a_frame_says_so() {
         // The silence this replaces: a verification run dispatched four actions
         // on time, wrote no PNG, and logged nothing to explain the gap, because

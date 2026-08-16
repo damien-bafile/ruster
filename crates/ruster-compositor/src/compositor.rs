@@ -824,6 +824,22 @@ impl<B: Backend + 'static> CompositorState<B> {
     /// where no frame is coming at all.
     const SCREENSHOT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
+    /// How long until a waiting capture — of either kind — must be given up on.
+    ///
+    /// Both paths queue work that only a rendered frame can finish, and both
+    /// give up after a timeout that is checked once per loop pass. The loop
+    /// blocks until something happens, so a deadline nothing wakes it for is a
+    /// deadline that never arrives: the screencopy half of this was found when a
+    /// client hung, and the keybind half when the compositor slept through its
+    /// own quit and had to be forced out by the second signal.
+    pub fn next_capture_deadline(&self, now: std::time::Instant) -> Option<std::time::Duration> {
+        let screenshot = self.screenshot_pending.map(|asked| {
+            Self::SCREENSHOT_TIMEOUT.saturating_sub(now.saturating_duration_since(asked))
+        });
+        let screencopy = self.screencopy.next_deadline(now);
+        [screenshot, screencopy].into_iter().flatten().min()
+    }
+
     /// Say so when a screenshot has been waiting for a frame that is not coming.
     ///
     /// Called once per event-loop pass. Returns whether it gave up, which is
